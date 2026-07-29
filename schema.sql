@@ -119,5 +119,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   onboard_by    TEXT,                    -- 客戶希望到職日
   jd_url        TEXT,
   notes         TEXT,                    -- 顧問備註：這個客戶在意什麼、踩過什麼雷
-  status        TEXT NOT NULL DEFAULT 'open'
+  status        TEXT NOT NULL DEFAULT 'open',
+
+  -- 候選人在「反問時間」最常問的，官網上都沒有。
+  -- 顧問把答案先填在這裡，阿財才回答得出來——
+  -- 答不出來就只能推給下一階段，那會讓對方覺得這場面談沒什麼用。
+  team_size        TEXT,                 -- 目前編制，例：BIM 團隊 6 人，這次補 2 位
+  interview_rounds TEXT,                 -- 用人單位要面幾次，例：2 次
+  interview_who    TEXT,                 -- 分別跟誰面，例：一面人資＋用人主管，二面協理
+  has_test         TEXT,                 -- 有無測驗與內容，例：Revit 實作 40 分鐘
+  faq_notes        TEXT                  -- 其他可以直接回答候選人的事（自由文字）
 );
