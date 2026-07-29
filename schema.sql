@@ -89,3 +89,35 @@ CREATE TABLE IF NOT EXISTS reports (
   consultant_decision TEXT,              -- 顧問實際怎麼處置
   decided_at     TEXT
 );
+
+-- 職缺主檔（內部版）。跟官網公開的職缺頁是同一個職缺，但這裡帶客戶身分。
+--
+-- 為什麼要分開：官網職缺頁與表單的職缺清單是匿名的（公開內容不能出現客戶名稱），
+-- 但 AI 面談時候選人有權知道自己在應徵哪一家公司。同一份資料，兩種曝光層級。
+--
+-- ⚠️ client_name 只能出現在需要驗證的內部端點，
+--    不可以出現在 /apply 或任何公開回應裡。
+CREATE TABLE IF NOT EXISTS jobs (
+  slug          TEXT PRIMARY KEY,        -- 對應 step1ne.com/jobs/<slug>
+  title         TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+
+  -- 內部才看得到
+  client_name   TEXT,                    -- 真實公司名稱
+  client_intro  TEXT,                    -- 給候選人的一兩句介紹（產業、規模、在做什麼）
+  hiring_manager TEXT,
+
+  -- 硬條件：拆成可比對的欄位，面談時逐條對照。
+  -- 只存一段 JD 文字的話，AI 每次都要自己重新解讀，結果會不一致。
+  years_min     INTEGER,
+  must_skills   TEXT,                    -- 逗號分隔
+  salary_min    INTEGER,
+  salary_max    INTEGER,
+  salary_unit   TEXT DEFAULT 'MONTH',
+  locations     TEXT,                    -- 逗號分隔
+  employment    TEXT,                    -- 正職 / 派遣
+  onboard_by    TEXT,                    -- 客戶希望到職日
+  jd_url        TEXT,
+  notes         TEXT,                    -- 顧問備註：這個客戶在意什麼、踩過什麼雷
+  status        TEXT NOT NULL DEFAULT 'open'
+);
