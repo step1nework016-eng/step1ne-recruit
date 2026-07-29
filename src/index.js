@@ -5,8 +5,10 @@
  * 所以表單頁放在那邊、後端放在這邊，用 CORS 串起來。
  *
  * 端點：
- *   POST /apply          收表單（公開）
- *   GET  /admin/list     顧問後台用（需 ADMIN_TOKEN）
+ *   POST /apply                 收表單（公開）
+ *   GET  /export/applications   給 pm.aijob.com.tw 增量拉資料（需 SYNC_TOKEN）
+ *   GET  /export/resume/<id>    取履歷檔（需 SYNC_TOKEN）
+ *   GET  /admin/list            顧問後台用（需 ADMIN_TOKEN）
  *   POST /admin/decide   回寫處置（需 ADMIN_TOKEN）
  *   GET  /health         公開
  */
@@ -143,6 +145,56 @@ export default {
       );
 
       return json(request, { ok: true, id, mode });
+    }
+
+    // ── 對外同步：給 pm.aijob.com.tw 拉資料用 ──
+    // 用「他們來拉」而不是「我們推」：我們不知道對方的認證與資料結構，
+    // 拉的一方自己控制時機、重試與欄位對應，出錯時也在他們那邊看得到。
+    if (p.startsWith('/export/')) {
+      const auth = request.headers.get('authorization') || '';
+      if (!env.SYNC_TOKEN || !safeEqual(auth, `Bearer ${env.SYNC_TOKEN}`)) {
+        return json(request, { ok: false, error: 'unauthorized' }, 401);
+      }
+
+      if (p === '/export/applications') {
+        // 游標式增量：帶上次拿到的最大 created_at，只取更新的。
+        // 用時間當游標而不是頁碼——頁碼會因為新資料插入而錯位。
+        const since = url.searchParams.get('since') || '1970-01-01 00:00:00';
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
+        const { results } = await env.DB.prepare(
+          `SELECT id, created_at, job_slug, job_title, name, email, phone,
+                  expected_salary, available_date, location_ok,
+                  resume_url, note, utm_source, utm_medium, utm_campaign, referrer,
+                  interview_mode, remind_at, status, consent_at,
+                  CASE WHEN resume_file_id IS NULL THEN 0 ELSE 1 END AS has_resume_file
+             FROM applications
+            WHERE created_at > ?
+            ORDER BY created_at ASC LIMIT ?`
+        ).bind(since, limit).all();
+        return json(request, {
+          ok: true,
+          count: results.length,
+          // 下次帶這個值回來就接得上，不會漏也不會重複
+          next_since: results.length ? results[results.length - 1].created_at : since,
+          applications: results,
+        });
+      }
+
+      // 履歷檔另外拿。夾在列表裡會讓每次同步都傳一堆用不到的大檔案。
+      const m = p.match(/^\/export\/resume\/([\w-]+)$/);
+      if (m) {
+        const row = await env.DB.prepare(
+          `SELECT f.filename, f.mime, f.content_b64 FROM applications a
+             JOIN files f ON f.id = a.resume_file_id WHERE a.id = ?`
+        ).bind(m[1]).first();
+        if (!row) return json(request, { ok: false, error: '沒有這份履歷' }, 404);
+        return new Response(Uint8Array.from(atob(row.content_b64), (c) => c.charCodeAt(0)), {
+          headers: {
+            'content-type': row.mime || 'application/octet-stream',
+            'content-disposition': `attachment; filename="${encodeURIComponent(row.filename || 'resume')}"`,
+          },
+        });
+      }
     }
 
     // ── 顧問後台 ──
