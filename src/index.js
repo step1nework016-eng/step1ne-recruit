@@ -1722,6 +1722,61 @@ export default {
         return json(request, { ok: true, id });
       }
 
+      // ── 反向開發的入口：顧問說「我要開發做這種缺的客戶」──
+      //
+      // ⚠️ 2026-08-11 改過方向。原本是「挑一份履歷 → 找公司」，
+      //    但顧問腦子裡的順序是反的：他先想要開發什麼客戶，
+      //    才由系統去人才庫撈得上用場的人。入口做錯顧問就不會用。
+      if (p === '/admin/bd-request' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const role = String(b.role_family || '').trim();
+        if (!role) return json(request, { ok: false, error: '請填你要開發哪一種職缺的客戶' }, 400);
+        const id = uid(); const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT INTO bd_requests (id,created_at,submitted_by,role_family,industry,region,
+                                    service_line,target_count,note,status,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,'new',?)`
+        ).bind(id, now, b.submitted_by || null, role, b.industry || null, b.region || null,
+               b.service_line || null, Number(b.target_count) || 6, b.note || null, now).run();
+        await notify(env,
+          `🎯 收到開發需求\n要開發：${role}\n` +
+          (b.industry ? `產業：${b.industry}\n` : '') + (b.region ? `地區：${b.region}\n` : '') +
+          `送件人：${b.submitted_by || '未填'}\n` +
+          `總指揮會去人才庫撈得上用場的人選，配對後寫開發信送回這裡。`,
+          // 開發信一批就好幾則，丟「面試通知確認」會把面試的洗掉（2026-08-11 Jacky 反應過）
+          { message_thread_id: THREAD.system });
+        return json(request, { ok: true, id });
+      }
+
+      if (p === '/admin/bd-requests' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT r.*, (SELECT COUNT(*) FROM bd_outreach o WHERE o.request_id = r.id) AS letters
+             FROM bd_requests r ORDER BY r.created_at DESC LIMIT 40`).all();
+        return json(request, { ok: true, rows: results || [] });
+      }
+
+      // 匿名人才庫：所有「有履歷、而且沒有走到到職」的人。
+      // 🚨 只回不可辨識的欄位——這支的用途是給顧問看「庫裡有什麼樣的人」，
+      //    姓名與 email 在這裡沒有任何用處，回了只是多一個外洩點。
+      if (p === '/admin/talent-pool' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT a.id, a.created_at, a.job_title, a.interview_state, a.expected_salary,
+                  a.available_date, a.disc_primary,
+                  (SELECT p.stage FROM placements p WHERE p.application_id = a.id
+                    ORDER BY p.updated_at DESC LIMIT 1) AS stage,
+                  (SELECT COUNT(*) FROM bd_outreach o WHERE o.candidate_ref = a.id) AS used
+             FROM applications a
+             LEFT JOIN files f ON f.id = a.resume_file_id
+            WHERE a.superseded_by IS NULL
+              AND f.text_content IS NOT NULL AND length(f.text_content) > 200
+            ORDER BY a.created_at DESC`).all();
+        // 到職了就不該再拿去開發——那個人已經有工作了
+        const rows = (results || []).filter(
+          (r) => !['onboard', 'placed', '到職'].includes(String(r.stage || '')));
+        return json(request, { ok: true, rows });
+      }
+
       // ── 反向開發：待審的開發信 ──
       if (p === '/admin/bd' && request.method === 'GET') {
         const { results } = await env.DB.prepare(
@@ -1774,7 +1829,7 @@ export default {
             `UPDATE bd_outreach SET status='blocked', guard_json=?, updated_at=? WHERE id=?`
           ).bind(JSON.stringify(hit), now, bid).run();
           await notify(env, `⛔ 這封沒有寄出\n對象：${row.company}\n原因：${hit.why}\n（寄出前又比對了一次客戶名單）`,
-            { message_thread_id: THREAD.decide });
+            { message_thread_id: THREAD.system });
           return json(request, { ok: false, error: `${row.company} 在客戶名單上：${hit.why}` }, 400);
         }
         if (!row.contact_email) return json(request, { ok: false, error: '這封還沒有收件人 email' }, 400);
@@ -1785,7 +1840,7 @@ export default {
           `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`
         ).bind(who, now, now, now, bid).run();
         await notify(env, `📤 已寄出開發信\n對象：${row.company}（${row.contact_email}）\n核准人：${who}`,
-          { message_thread_id: THREAD.decide });
+          { message_thread_id: THREAD.system });
         return json(request, { ok: true, status: 'sent' });
       }
 

@@ -12,7 +12,14 @@ import urllib.error
 import urllib.request
 
 TG_ENV = os.path.expanduser('~/.config/workflow-os/step1ne-tg.env')
-THREAD_DECIDE = 2855      # 面試通知確認：需要人決定的都進這裡
+# 🚨 開發信不可以丟「面試通知確認」(2855)。
+#    2026-08-11 第一批試跑丟進去，一次 6 則直接把面試的訊息洗掉——
+#    Jacky 當場反應「為什麼你要一直發在面試確認」。
+#    反向開發一批就好幾則，一定要自己一個主題。
+#    2026-08-11 Jacky 定：改丟「系統回報」(1360)。
+#    可用 TG_THREAD_BD 覆寫（之後如果另開「客戶開發」主題的話）。
+THREAD_BD_ENV = 'TG_THREAD_BD'
+THREAD_BD_DEFAULT = 1360   # 系統回報
 API = 'https://api.telegram.org/bot{}/{}'
 
 
@@ -36,8 +43,9 @@ def _post(method, payload):
     if not tok or not chat:
         print('⚠️ 找不到 Telegram 設定，訊息沒有推出去')
         return None
+    thread = c.get(THREAD_BD_ENV) or THREAD_BD_DEFAULT
     payload.setdefault('chat_id', chat)
-    payload.setdefault('message_thread_id', THREAD_DECIDE)
+    payload.setdefault('message_thread_id', int(thread))
     req = urllib.request.Request(
         API.format(tok, method),
         data=json.dumps(payload).encode(),
