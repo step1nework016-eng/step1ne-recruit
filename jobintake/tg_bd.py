@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""反向開發的 Telegram 送審：一家公司一則訊息，三顆按鈕。
+
+為什麼一家一則、不是整批一則：顧問的決定是「這一家要不要寄」，
+不是「這批要不要寄」。整批一則的話，五家裡有一家不想寄，
+他只能整批退回，然後另外四家白等。
+"""
+
+import json
+import os
+import urllib.error
+import urllib.request
+
+TG_ENV = os.path.expanduser('~/.config/workflow-os/step1ne-tg.env')
+THREAD_DECIDE = 2855      # 面試通知確認：需要人決定的都進這裡
+API = 'https://api.telegram.org/bot{}/{}'
+
+
+def conf():
+    c = {}
+    try:
+        for line in open(TG_ENV, encoding='utf-8'):
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            c[k.strip()] = v.strip().strip('\'"')
+    except FileNotFoundError:
+        pass
+    return c
+
+
+def _post(method, payload):
+    c = conf()
+    tok, chat = c.get('TG_BOT_TOKEN'), c.get('TG_CHAT_ID')
+    if not tok or not chat:
+        print('⚠️ 找不到 Telegram 設定，訊息沒有推出去')
+        return None
+    payload.setdefault('chat_id', chat)
+    payload.setdefault('message_thread_id', THREAD_DECIDE)
+    req = urllib.request.Request(
+        API.format(tok, method),
+        data=json.dumps(payload).encode(),
+        headers={'content-type': 'application/json',
+                 # Cloudflare 會擋 Python-urllib 的預設 UA
+                 'user-agent': 'step1ne-bd/1.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode()).get('result', {}).get('message_id')
+    except urllib.error.HTTPError as e:
+        print(f'⚠️ Telegram 回 {e.code}：{e.read()[:200]}')
+    except Exception as e:
+        print(f'⚠️ Telegram 推送失敗：{e}')
+    return None
+
+
+def send_head(text):
+    return _post('sendMessage', {'text': text, 'disable_web_page_preview': True})
+
+
+def buttons(bid):
+    return {'inline_keyboard': [[
+        {'text': '📤 核准寄出', 'callback_data': f'bd_ok:{bid}'},
+        {'text': '✏️ 重寫',     'callback_data': f'bd_rw:{bid}'},
+        {'text': '❌ 不寄',     'callback_data': f'bd_no:{bid}'},
+    ]]}
+
+
+def send_letter(bid, t):
+    """一封信一則訊息。窗口沒查到的照樣送審——顧問可能自己有人脈。"""
+    to = t.get('contact_email') or '（窗口待補，核准前要先填）'
+    body = t.get('body') or ''
+    text = (f"✉️ <b>{_esc(t.get('company'))}</b>\n"
+            f"收件：{_esc(to)}"
+            + (f"　·　{_esc(t.get('contact_name'))}" if t.get('contact_name') else '') + '\n'
+            f"為什麼是這家：{_esc(t.get('why'))}\n"
+            f"────────────\n"
+            f"<b>{_esc(t.get('subject'))}</b>\n\n"
+            f"{_esc(body[:2600])}")
+    return _post('sendMessage', {
+        'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True,
+        'reply_markup': buttons(bid)})
+
+
+def _esc(s):
+    return (str(s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
