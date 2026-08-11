@@ -1326,7 +1326,7 @@ export default {
       const app = await env.DB.prepare(
         `SELECT a.id, a.name, a.job_slug, a.job_title, a.interview_state, a.status,
                 a.interview_started_at, a.interview_ended_at,
-                j.title AS job_full_title
+                j.title AS job_full_title, j.seniority
            FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug
           WHERE a.chat_token = ?`
       ).bind(token).first();
@@ -1341,9 +1341,16 @@ export default {
         // 面談室的入口只驗 chat_token，任何拿到連結的人都能直接開始打字——
         // 只在前端擋等於沒擋（舊信裡的連結、重新整理、直接貼網址都繞得過）。
         // 2026-08-07 加：沒做測驗就不讓他開口，並把他導回測驗頁。
-        const done = await env.DB.prepare(
+        // 🚨 中高階不擋測驗。
+        //    2026-08-11 實測時撞到：規範已經寫「中高階不要要求做工作風格測驗」，
+        //    但擋人的是這道閘門、不是阿財——中高階人選一開口就被踢去做 48 題。
+        //    一位九年資歷、帶過團隊的人被要求先做性向測驗才能講話，
+        //    那是把他當新鮮人，而中高階人選遇到這種流程就是直接離開。
+        //    要不要測驗由顧問自己判斷再另外發。
+        const needAssessment = (app.seniority || 'mid') !== 'senior';
+        const done = needAssessment ? await env.DB.prepare(
           `SELECT id FROM assessments WHERE application_id = ? LIMIT 1`
-        ).bind(app.id).first();
+        ).bind(app.id).first() : true;
         if (!done) {
           return json(request, {
             ok: false, error: 'assessment_required',

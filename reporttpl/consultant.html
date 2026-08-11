@@ -104,6 +104,17 @@ details{background:#fff;border:1px solid var(--line);border-radius:14px;padding:
 summary{cursor:pointer;font-size:13.5px;color:var(--ink3);font-weight:600}
 details dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0 0;font-size:13px}
 details dt{color:var(--ink3)} details dd{margin:0;color:var(--ink2)}
+
+  /* 基本資料：顧問拿到報告不用再去翻履歷才知道人住哪、幾歲 */
+  .basics{border:1px solid var(--line,#eee7db);border-radius:12px;padding:13px 16px;margin:14px 0 0;
+    background:var(--soft,#faf8f3);break-inside:avoid;}
+  .basics h3{font-size:12.5px;margin:0 0 9px;color:var(--gold,#a67c3d);letter-spacing:.06em;}
+  .bgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px 22px;}
+  .bgrid div{display:flex;gap:10px;font-size:12.5px;line-height:1.65;}
+  .bgrid i{font-style:normal;color:#8a8d95;white-space:nowrap;min-width:56px;}
+  .bgrid b{color:#23262d;font-weight:600;}
+  .bsrc{margin:9px 0 0;font-size:11px;color:#9a9da5;}
+  @media print{.bgrid{grid-template-columns:repeat(2,1fr);}}
 </style>
 <style>
 @page{size:A4;margin:10mm}
@@ -139,6 +150,7 @@ details dt{color:var(--ink3)} details dd{margin:0;color:var(--ink2)}
     <div class="r"><b>最大風險</b>{{TOP_RISK}}</div>
   </div>
   <div class="nums">{{NUMS}}</div>
+  {{BASICS}}
 </div>
 
 <div class="card">

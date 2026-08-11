@@ -334,6 +334,40 @@ def _cond(hard_conditions, with_evidence):
 
 
 # ─────────────────────────────────────────────────────────────
+
+def _basics(data, meta, for_client=False):
+    """基本資料列（居住地、年齡、學歷、語言、證照…）。
+
+    ⚠️ 2026-08-11 Jacky 要求兩版都要有。原本沒有這一區，
+    顧問拿到報告還要自己去翻履歷才知道人住哪、幾歲。
+
+    ⚠️ 就業服務法第 5 條的分寸：**禁止的是拿它當僱用判斷依據，不是禁止記錄**。
+    而且履歷本來就會跟報告一起寄給客戶（日式履歷書第一頁就印著生年月日），
+    報告刻意不寫等於自欺欺人。所以規則是：
+      · 只寫履歷／表單上他自己填的（來源那一行會印出來）
+      · 不准從畢業年份推算
+      · 只做事實揭露，不出現在任何判斷句裡
+    客戶版**匿名時不印年齡**——匿名的用意就是不讓對方在見面前鎖定特定個人，
+    年齡加上經歷組合起來辨識度很高。
+    """
+    b = (data.get('basics') or {}) if isinstance(data.get('basics'), dict) else {}
+    anon = for_client and is_anonymous(meta)
+    items = [('居住地', b.get('residence')),
+             ('通勤評估', b.get('commute_note')),
+             ('年齡', None if anon else b.get('age')),
+             ('學歷', b.get('education')),
+             ('語言', b.get('languages')),
+             ('證照', b.get('certificates')),
+             ('兵役', b.get('military'))]
+    items = [(k, v) for k, v in items if str(v or '').strip() and str(v).lower() != 'none']
+    if not items:
+        return ''
+    rows = ''.join(f'<div><i>{e(k)}</i><b>{e(v)}</b></div>' for k, v in items)
+    src = b.get('source') or '履歷／應徵表單，非面談詢問'
+    return (f'<div class="basics"><h3>基本資料</h3><div class="bgrid">{rows}</div>'
+            f'<p class="bsrc">來源：{e(src)}</p></div>')
+
+
 def build_client_html(data, meta):
     """客戶版（可轉給用人企業）。
 
@@ -408,6 +442,7 @@ def build_client_html(data, meta):
         'JOB': e(meta.get('job_title') or meta.get('job_slug') or ''),
         'POSITIONING': e(txt(data.get('one_liner'))),
         'NUMS': _nums(meta, _current_state(data)),
+        'BASICS': _basics(data, meta, for_client=True),
         'REASONS': reasons,
         'TRACK': _track(wh),
         'JOBS': _jobs(wh, scrub=True),
@@ -533,6 +568,7 @@ def build_consultant_html(data, meta):
         'SELLING_POINT': e(data.get('top_selling_point') or '（未填）'),
         'TOP_RISK': e(data.get('top_risk') or '（未填）'),
         'NUMS': _nums(meta, _current_state(data)),
+        'BASICS': _basics(data, meta, for_client=False),
         'ABANDONED_ALERT': alert,
         'SUMMARY': e(data.get('summary')),
         'MOTIVATION': motivation,

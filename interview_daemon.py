@@ -74,7 +74,22 @@ LINE_OA_URL = 'https://lin.ee/XcSWPzM'
 #    **整個回覆變成空的**。2026-08-07 實測：初篩因為 prompt 只有 2,900 字，
 #    直接被那條規則蓋過去，輸出 0 字元；阿財因為 prompt 有 15,000 字才沒被壓垮。
 #    這三個參數是一組的，不要只加一半。
-NO_TOOLS = ['--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+# 🚨 產報告的模型不該有任何工具。
+#
+# ⚠️ 2026-08-11 實測發現：`--tools ''` **完全沒有作用**。
+#    實際問它「你有哪些工具」，回答是 Task / Bash / Glob / Grep / Read /
+#    **Edit / Write** / AskUserQuestion——也就是說，這一年來產報告與產 JSON 的
+#    那個模型一直握有讀寫檔案與執行指令的權限。
+#    當天就出過事：把「請把報告轉成 JSON」的請求當成寫程式任務，
+#    跑去 Search interview_daemon.py，結果輸出不是 JSON，content_json 存成 NULL。
+#
+#    改用 --disallowed-tools 逐一列名（實測有效，只剩下無害的 plan/worktree 類）。
+#    ⚠️ 之後 Claude Code 新增工具時要回來補這份清單。
+_BAN_TOOLS = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
+              'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+              'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
+NO_TOOLS = ['--disallowed-tools', _BAN_TOOLS,
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--setting-sources', '']
 
 # 對談與報告用不同模型：
@@ -1037,6 +1052,16 @@ def engagement_block(app_id):
 REPORT_JSON_SPEC = r'''
 {
   "verdict": "值得轉給顧問|資訊不足建議補問|硬條件不符|待顧問判斷",
+  "basics": {
+    "residence": "居住地，縣市＋區。履歷或表單沒寫就填 null",
+    "commute_note": "從居住地到職缺地點的距離／通勤可行性，一句話。算不出來就 null",
+    "age": "年齡，例如「41 歲（1985/2 生）」。⚠️ 只抄履歷上寫的，不准從畢業年份推算，沒寫填 null",
+    "education": "最高學歷（學校＋科系），沒寫填 null",
+    "languages": "語言能力，含證照等級，沒寫填 null",
+    "certificates": "證照／駕照，沒寫填 null",
+    "military": "兵役，履歷有寫才填，沒有填 null",
+    "source": "basics 這一區的來源，固定寫「履歷／應徵表單，非面談詢問」"
+  },
   "one_liner": "一句話定位，30字內",
   "top_selling_point": "一句",
   "top_risk": "一句",
@@ -1086,9 +1111,17 @@ REPORT_JSON_RULES = (
     '   只記雙方各自的說法，判斷是顧問的事，不是你的。\n'
     '3. `hard_conditions` 每一筆的 `evidence_source` 一定要填，不可留空——\n'
     '   顧問要知道每一條依據是哪裡來的。真的不知道就填「未確認」。\n'
-    '4. **年齡、性別、婚姻、生育、國籍不可以出現在任何欄位**（就業服務法第 5 條）。\n'
+    '4. 就業服務法第 5 條的保護特徵（年齡、性別、婚姻、生育、國籍…）：\n'
+    '   **年齡與居住地寫進 `basics`，其餘一律不要出現在任何欄位。**\n'
+    '   ⚠️ `basics` 只抄履歷或應徵表單上他自己填的，**不准從畢業年份推算年齡**，\n'
+    '   沒寫就填 null。這一區只做事實揭露，**不准出現在任何判斷句裡**——\n'
+    '   不准寫「年齡偏大可能不適合」這種。\n'
     '   純文字報告裡若有「需顧問評估的客戶條件」那一段，該段的內容不要搬進 JSON。\n'
     '5. 報告裡沒有的資訊就留空字串或空陣列，**不要自己補**。\n'
+    '6. ⚠️ `basics` 是唯一的例外：它的來源是【履歷全文】與【應徵表單】，\n'
+    '   **不是報告本文**。報告沒寫沒關係，直接從履歷／表單抄進來。\n'
+    '   `commute_note` 要自己算：拿 basics.residence 跟職缺的 locations 比，\n'
+    '   寫成「距離約 X 公里／同縣市／人已在當地」這種一句話。算不出來才填 null。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -1134,6 +1167,16 @@ def _normalize_report_json(obj):
         'top_risk': s(obj.get('top_risk')),
         'summary': s(obj.get('summary')),
     }
+
+    # 基本資料（居住地、年齡、學歷、語言、證照…）。
+    # ⚠️ 這個函式是白名單——沒列進來的欄位會被整個丟掉。
+    #    2026-08-11 加 basics 時就踩過一次：SPEC 加了、模型也產了，
+    #    但這裡沒接，結果 content_json 裡永遠是 null。加欄位時兩邊都要改。
+    bsc = obj.get('basics') if isinstance(obj.get('basics'), dict) else {}
+    out['basics'] = {k: (s(bsc.get(k)) or None) for k in
+                     ('residence', 'commute_note', 'age', 'education',
+                      'languages', 'certificates', 'military')}
+    out['basics']['source'] = s(bsc.get('source')) or '履歷／應徵表單，非面談詢問'
 
     mot = obj.get('motivation') if isinstance(obj.get('motivation'), dict) else {}
     out['motivation'] = {k: s(mot.get(k)) for k in
@@ -1211,6 +1254,11 @@ def report_to_json(report, ctx, name=''):
         + REPORT_JSON_RULES
         + '\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
+        # ⚠️ 履歷一定要送。basics（居住地、年齡、學歷、語言、證照）的來源就是這裡，
+        #    而規則寫「報告裡沒有的不要自己補」——不送履歷就永遠是 null。
+        #    2026-08-11 這個漏送在 finish() 的報告 prompt 出過一次，這裡是第二次。
+        + ('\n\n【履歷全文】\n' + (ctx.get('resume_text') or '')[:20000]
+           if (ctx.get('resume_text') or '').strip() else '\n\n【履歷】無可讀的履歷檔案')
         + '\n\n【初篩報告全文】\n' + report
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
     try:
