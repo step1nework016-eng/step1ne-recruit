@@ -1,0 +1,1432 @@
+#!/usr/bin/env python3
+"""面談室的回話引擎：輪詢 D1，看到候選人講話就跑一次 claude，把回覆寫回去。
+
+為什麼是本機常駐而不是在 Worker 裡呼叫 API：
+使用者的決定——用本機 claude CLI，不另外開 Anthropic API 金鑰。
+代價是回覆會慢幾十秒，所以前端一定要有「正在輸入」的指示，
+否則候選人會以為當掉了。
+
+平行處理：每位候選人一條執行緒，同時最多 MAX_PARALLEL 場。
+超過就排隊——寧可讓第 6 個人多等，也不要六場一起變慢到全部逾時。
+
+用法：
+    python3 interview_daemon.py           # 常駐
+    python3 interview_daemon.py --once    # 跑一輪就結束（測試用）
+"""
+import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urllib.request
+import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
+import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB = 'step1ne-recruit'
+POLL_SEC = 8
+MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–400MB。
+                        # 設 5 會在剩 2.3GB 可用記憶體時開始 swap，
+                        # 那會讓「所有」進行中的面談一起變慢，不只排隊的。
+                        # 寧可讓第 4 個人排隊，也不要三個人一起卡住。
+CLAUDE_TIMEOUT = 240
+MAX_TURNS = 40          # 防跑不完：超過就強制收尾
+STALE_MIN = 15
+# 中途離開後，房間還要留多久給他回來（分鐘）。
+# 顧問常常在忙，15 分鐘就關掉等於誰都來不及反應。
+STALE_HOLD_MIN = 180          # 候選人多久沒回就當他離開了（閒置判定，跟下面的硬上限是兩件事）
+SOFT_TARGET_MIN = 40    # 阿財應該盡量在這個時間內收集完必問項並主動收尾（軟目標，寫進 prompt 讓它自己抓節奏）
+ROOM_HARD_LIMIT_MIN = 60  # 不管有沒有聊完，滿一小時就強制關閉——這是顧問對候選人的時間承諾上限
+
+# Step1ne LINE 官方帳號。沒履歷的候選人收尾時要給他這個，
+# 讓他接得上真人顧問、也有地方可以把履歷傳過來。
+# ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
+#
+# 原本什麼都往 2855 塞，變成大雜燴：要按按鈕的跟純告知的混在一起，
+# 重要的被洗掉。判準是「顧問要不要動手」：
+#
+#   2855 面試通知確認 ← 只放需要人決定／回應的（SOS、審核卡、停滯提醒）
+#    304 #4 履歷池   ← 面談報告與 PDF。那是資料不是決策，有空再看
+#   1360 系統回報     ← 排程結果、錯誤、逾時失敗。出事才看
+#      4 #3履歷進件   ← 新應徵、開始面談（Worker 那邊在用）
+THREAD_DECIDE = 2855
+THREAD_POOL = 304
+THREAD_SYSTEM = 1360
+
+LINE_OA_URL = 'https://lin.ee/XcSWPzM'
+
+# ── 阿財一律不帶任何工具 ──
+# 2026-08-07 實測發現的兩個問題，這一組參數同時解決：
+#
+# 1. **安全**：原本是 `--permission-mode acceptEdits`，而且內建工具與所有 MCP
+#    伺服器都會載入——實際輸出裡出現過「Skipping the accounting tool」，
+#    代表模型真的看得到 agentacct 這個工具並試圖呼叫它。
+#    阿財面對的是**外部候選人**，候選人打的字會整段進到 prompt 裡，
+#    等於把 Bash／Edit／Read 與一堆 MCP 工具暴露在一個可被注入的介面後面。
+#    阿財的工作只是產生一段 JSON 文字，一個工具都不需要。
+#
+# 2. **成本**：工具定義與 MCP schema 每一輪都要重送。實測同一段 prompt：
+#    帶工具 45,166 token／$0.1808，不帶工具 20,911 token／$0.1090——
+#    輸入少 54%、成本少 40%，回覆品質沒有差別。
+#
+# ⚠️ 不要為了「讓阿財可以自己查資料」把工具加回來。要給它資料就先查好、
+#    放進 prompt，不要讓外部輸入有機會驅動工具。
+#
+# 3. **`--setting-sources ''` 一定要一起帶。** 使用者的全域 ~/.claude/CLAUDE.md
+#    規定「第一個工具呼叫之前要先開 agentacct section」——那條是給互動 session 用的，
+#    但它對每一個 `claude -p` 都生效。工具還在時模型會照做（白燒 token）；
+#    把工具關掉之後模型會卡住，只吐出「agentacct_record_section」這幾個字就結束，
+#    **整個回覆變成空的**。2026-08-07 實測：初篩因為 prompt 只有 2,900 字，
+#    直接被那條規則蓋過去，輸出 0 字元；阿財因為 prompt 有 15,000 字才沒被壓垮。
+#    這三個參數是一組的，不要只加一半。
+NO_TOOLS = ['--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            '--setting-sources', '']
+
+# 對談與報告用不同模型：
+# 對談要的是「快」——真人電訪是一問一答，等 40 秒沒有人受得了。
+# 報告要的是「準」——那是顧問拿來決定推不推的依據，慢一分鐘沒差。
+TALK_MODEL = 'claude-sonnet-5'
+REPORT_MODEL = 'claude-sonnet-5'
+
+_busy = set()           # 正在處理的 application_id，避免同一場被跑兩次
+_lock = threading.Lock()
+
+
+def log(msg):
+    print(f"[{datetime.datetime.now():%H:%M:%S}] {msg}", flush=True)
+
+
+def env_with_cf():
+    env = dict(os.environ)
+    for conf in ('~/.config/workflow-os/cf.env',):
+        p = os.path.expanduser(conf)
+        if os.path.exists(p):
+            for line in open(p, encoding='utf-8'):
+                if '=' in line and not line.startswith('#'):
+                    k, v = line.strip().split('=', 1)
+                    env[k] = v
+    # claude CLI 在巢狀 session 裡會拒跑，這個變數一定要拿掉
+    env.pop('CLAUDECODE', None)
+    return env
+
+
+def d1_raw(sql):
+    """回傳整包結果（含 meta.changes），鎖機制要看 changes 才知道有沒有搶到。"""
+    r = subprocess.run(
+        ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--command={sql}'],
+        cwd=HERE, capture_output=True, text=True, env=env_with_cf(), timeout=180)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout)[-300:])
+    out = r.stdout[r.stdout.index('['):]
+    return json.loads(out)[0]
+
+
+
+RUNLOG = os.path.expanduser('~/aijob-automation/run-log.jsonl')
+
+
+def runlog(task, status, summary, metrics=None):
+    """把一次執行記進 run-log.jsonl，讓儀表板與 Telegram 的「今日執行」看得到。
+
+    2026-08-06 加。在此之前**只有 aijob 那批排程在寫**，招募這邊
+    （阿財、初篩、履歷池、履歷解析）一筆都沒有——
+    Step1ne 助手按「今日執行」永遠是「今天還沒有排程跑過」，
+    看起來像系統沒在跑，實際上一直在跑。
+
+    ⚠️ **沒事就不要記。** resumeparse 每 15 分、screening 每 20 分跑一次，
+    每次都記的話一天會塞進 168 筆「今天沒事」，那份紀錄就沒人看了。
+    只在真的處理了東西、或出錯的時候呼叫。
+    """
+    try:
+        os.makedirs(os.path.dirname(RUNLOG), exist_ok=True)
+        with open(RUNLOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'task': task, 'status': status, 'summary': summary,
+                'metrics': metrics or {}}, ensure_ascii=False) + '\n')
+    except Exception as e:
+        log(f'runlog 寫入失敗（不影響主流程）：{e}')
+
+def d1(sql):
+    return d1_raw(sql).get('results', [])
+
+
+def q(v):
+    return 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
+
+
+LOCK_TTL_SEC = 90   # 比一次 claude 呼叫（240s 逾時）短沒關係——
+                    # 這只防「同時搶著寫同一場」，不是防慢；過期就當作那次處理已經死掉，可以重搶
+
+
+def acquire_lock(app_id):
+    """跨行程的鎖：daemon 跟 force_close.py 都要用這個才不會同時動同一場的訊息。
+
+    2026-07-30 實際發生過：force_close.py 手動收尾的同時，daemon 剛好也在處理
+    同一位候選人，兩邊各自基於自己讀到的舊對話產生訊息，寫進去的順序交錯，
+    整場面談被搞壞兩次才發現。_busy 那個記憶體集合只防得住同一個 process 裡的重複，
+    防不住兩個各自獨立執行的 python 程序。
+
+    做法是一次原子性的 UPDATE：只有在鎖是空的或已經過期時才寫得進去，
+    寫入是否成功看 meta.changes（不是 0 就是搶到了）。
+    """
+    now = datetime.datetime.now()
+    now_s = now.strftime('%Y-%m-%d %H:%M:%S')
+    expires = (now + datetime.timedelta(seconds=LOCK_TTL_SEC)).strftime('%Y-%m-%d %H:%M:%S')
+    meta = d1_raw(
+        f"UPDATE applications SET lock_expires_at='{expires}' "
+        f"WHERE id={q(app_id)} AND (lock_expires_at IS NULL OR lock_expires_at < '{now_s}')"
+    ).get('meta', {})
+    return bool(meta.get('changes'))
+
+
+def release_lock(app_id):
+    d1(f"UPDATE applications SET lock_expires_at=NULL WHERE id={q(app_id)}")
+
+
+def notify_candidate(app_id, abandoned):
+    """請 Worker 寄面談結束通知給候選人。
+
+    為什麼繞一圈走 Worker：Resend 金鑰只放在 Cloudflare 的 secret 裡，
+    本機不留第二份。憑證存在一個地方就少一個外洩的點。
+    """
+    try:
+        tok = None
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if not tok:
+            return log('找不到 RECRUIT_ADMIN_TOKEN，跳過候選人通知信')
+        req = urllib.request.Request(
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/interview-done',
+            data=json.dumps({'id': app_id, 'abandoned': bool(abandoned)}).encode(),
+            headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                     # Cloudflare 會擋掉 Python-urllib 的預設 UA，一定要換掉
+                     'user-agent': 'step1ne-interview-daemon/1.0'})
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        log(f'候選人通知信：{"已寄出" if r.get("ok") else "寄送失敗"}')
+    except Exception as e:
+        log(f'候選人通知信失敗：{e}')   # 寄不出去不該影響報告與顧問通知
+
+
+def tg(text, thread=None):
+    # 這支用獨立的設定檔（step1ne-tg.env），不要跟總指揮 yuqi 共用的 tg.env 混在一起——
+    # 2026-07-31 差點把 yuqi 的 bot token 換成這個 bot，那樣 yuqi 會整個換身分。
+    try:
+        e = dict(l.strip().split('=', 1)
+                 for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
+                 if '=' in l and not l.startswith('#'))
+        body = {'chat_id': e['TG_CHAT_ID'], 'text': text}
+        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        if tid:
+            body['message_thread_id'] = tid
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+            data=urllib.parse.urlencode(body).encode(),
+            timeout=20)
+    except Exception as ex:
+        log(f'Telegram 推播失敗：{ex}')
+
+
+def tg_doc(data, filename, caption='', thread=None):
+    """把檔案當附件推到同一個 Telegram 群組。
+
+    為什麼要有這支：原本只推一行「報告在後台」＋連結。但顧問多半是在外面用手機
+    收到通知的，點進去還要輸入 ADMIN_TOKEN，等於當下看不了。
+    附件直接點開就能讀，不用登入、不用電腦。
+
+    標準庫沒有 multipart encoder，手動組。
+    """
+    try:
+        e = dict(l.strip().split('=', 1)
+                 for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
+                 if '=' in l and not l.startswith('#'))
+        b = '----s1' + uuid.uuid4().hex
+        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{e["TG_CHAT_ID"]}\r\n'.encode()]
+        if thread is not None:
+            e = dict(e, TG_THREAD_ID=str(thread))
+        if e.get('TG_THREAD_ID'):
+            parts.append(f'--{b}\r\nContent-Disposition: form-data; name="message_thread_id"'
+                         f'\r\n\r\n{e["TG_THREAD_ID"]}\r\n'.encode())
+        if caption:
+            parts.append(f'--{b}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n{caption[:1000]}\r\n'.encode())
+        ctype = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        parts.append((f'--{b}\r\nContent-Disposition: form-data; name="document"; '
+                      f'filename="{filename}"\r\nContent-Type: {ctype}\r\n\r\n').encode())
+        parts.append(data)
+        parts.append(f'\r\n--{b}--\r\n'.encode())
+        body = b''.join(parts)
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendDocument",
+            data=body, method='POST',
+            headers={'Content-Type': f'multipart/form-data; boundary={b}',
+                     'Content-Length': str(len(body))})
+        urllib.request.urlopen(req, timeout=60)
+        return True
+    except Exception as ex:
+        log(f'Telegram 附件推播失敗（{filename}）：{ex}')
+        return False
+
+
+def push_report_files(app_id, name, job_slug):
+    """面談結束後把「報告 PDF」與「履歷原檔」一起推給顧問。
+
+    ⚠️ 任何一步失敗都只記 log，不要往外拋——通知是附加價值，
+    不能因為 PDF 產不出來就讓整個面談收尾流程掛掉。
+    """
+    # 1) 報告 PDF。export_pdf.py 會 import 這支檔案，所以要開子行程跑，不能直接 import。
+    try:
+        out = f'/tmp/step1ne_report_{app_id[:8]}.pdf'
+        r = subprocess.run(['python3', os.path.join(HERE, 'export_pdf.py'), app_id, '--out', out],
+                           capture_output=True, text=True, env=env_with_cf(), timeout=120)
+        if r.returncode == 0 and os.path.exists(out):
+            with open(out, 'rb') as f:
+                tg_doc(f.read(), f'初篩報告_{name}_{job_slug}.pdf',
+                       f'📄 {name} 的初篩報告與逐字稿', THREAD_POOL)
+            os.remove(out)
+        else:
+            log(f'報告 PDF 產生失敗：{(r.stderr or r.stdout or "")[-200:]}')
+    except Exception as ex:
+        log(f'報告 PDF 例外：{ex}')
+
+    # 2) 履歷原檔。顧問要判斷推不推，光看報告不夠，常常要翻回履歷對細節。
+    try:
+        rows = d1(f"SELECT f.id AS fid, f.filename, f.content_b64, f.chunks FROM applications a "
+                  f"JOIN files f ON f.id = a.resume_file_id WHERE a.id = {q(app_id)}")
+        if not rows:
+            # 沒上傳檔案不代表沒履歷——很多人是貼雲端連結或個人作品集網站。
+            # 2026-08-07：原本這裡就只印一行「沒有履歷檔可推」，顧問在 Telegram 上
+            # 什麼都收不到，得自己回後台翻，等於這個推播對這類候選人形同沒有。
+            u = d1(f"SELECT resume_url, resume_url_note, LENGTH(COALESCE(resume_url_text,'')) L "
+                   f"FROM applications WHERE id = {q(app_id)}")
+            url = (u[0].get('resume_url') if u else None) or ''
+            # 從 FB 複製過來的連結會拖著 fbclid，佔掉整行還看不出是什麼站
+            url = re.sub(r'[?&](fbclid|gclid|utm_[a-z]+)=[^&]*', '', url).rstrip('?&')
+            if url:
+                note = (u[0].get('resume_url_note') or '')
+                ok = note == 'ok' and (u[0].get('L') or 0) > 0
+                tg(f'🔗 {name} 沒有上傳履歷檔，他留的是連結：\n{url}\n'
+                   + ('（內容有抓到，阿財面談時看得到）' if ok
+                      else f'⚠️ 這個連結抓不到內容（{note or "尚未解析"}），阿財面談時看不到，'
+                           '報告只根據對話內容'), THREAD_POOL)
+            else:
+                log(f'{name} 沒有履歷檔也沒有履歷連結')
+        else:
+            f = rows[0]
+            b64 = f.get('content_b64')
+            # ⚠️ 大檔案不是存在 content_b64，是切段存在 file_chunks。
+            # 2026-08-05 第一版只讀 content_b64，范博翔的履歷就被判定成「沒有」——
+            # 明明有檔案。Worker 那邊本來就有處理分段，這裡漏掉了。
+            if not b64 and f.get('chunks'):
+                seg = d1(f"SELECT b64 FROM file_chunks WHERE file_id = {q(f['fid'])} ORDER BY idx ASC")
+                b64 = ''.join(x['b64'] for x in seg)
+            if b64:
+                fn = f.get('filename') or 'resume.pdf'
+                # 候選人上傳的檔名常常已經含自己的名字（104 下載的就是），
+                # 再加一次會變成「履歷_周承緯_周承緯.pdf」。含了就不重複加。
+                stem = fn.rsplit('.', 1)[0]
+                out = fn if name in stem else f'履歷_{name}_{fn}'
+                tg_doc(base64.b64decode(b64), out, f'📎 {name} 的履歷原檔', THREAD_POOL)
+            else:
+                log(f'{name} 的履歷檔沒有內容（content_b64 與 file_chunks 都是空的）')
+    except Exception as ex:
+        log(f'履歷推播例外：{ex}')
+
+
+# ─────────────────────────────────────────────────────────────
+# 面談結束後的交付（2026-08-10 加）
+#
+# 在此之前，面談結束只推一行「面談完成 + 後台連結」。顧問人在外面、
+# 手機上點連結還要輸入 ADMIN_TOKEN，等於當下什麼都看不到。
+# 現在一次推四件事：
+#   ① 內部報告 PDF（顧問版）② 外部報告 PDF（客戶版，可直接轉給用人企業）
+#   ③ 人選原始履歷（有檔案推檔案，只有連結就把連結寫在訊息裡）＋作品集
+#   ④ 簡短結語 ＋ 顧問要協助的事項，結尾固定「詳細請參閱內部報告」
+#
+# ⚠️ 整段是「附加價值」，不是面談的一部分。任何一步失敗都只記 log，
+#    絕對不可以讓面談收尾流程掛掉——finish() 那邊也再包一層 try/except。
+def _delivery_meta(app_id, name, job_slug, abandoned):
+    """把樣板需要、但 content_json 裡沒有的欄位補齊。
+
+    刻意直接查 D1 而不是從 ctx 拿：ctx 是給模型看的快取，欄位會隨 prompt 需求變動；
+    交付要用的這幾欄（尤其 client_named／ai_disclosure 這兩個法遵開關）
+    必須每次讀當下的真值，不能吃到面談開始時的快照。
+    """
+    meta = {'name': name, 'job_slug': job_slug, 'abandoned': bool(abandoned),
+            'resume': {'kind': 'none'}, 'portfolio_urls': [], 'system_record': {}}
+    rows = d1(
+        f"SELECT a.expected_salary, a.available_date, a.location_ok, a.note, "
+        f"a.resume_url, a.resume_url_note, a.resume_file_id, "
+        f"a.disc_d, a.disc_i, a.disc_s, a.disc_c, "
+        f"a.interview_started_at, a.interview_ended_at, "
+        f"j.title AS job_title, j.client_named, j.ai_disclosure, j.client_relation "
+        f"FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug "
+        f"WHERE a.id = {q(app_id)}")
+    if not rows:
+        return meta
+    r = rows[0]
+    meta.update({
+        'job_title': r.get('job_title') or job_slug,
+        # ⚠️ 這兩個是客戶隱私與法遵開關，不要給預設值。
+        # deliver.is_anonymous() 對 NULL 一律從嚴當匿名處理。
+        'client_named': r.get('client_named'),
+        'ai_disclosure': r.get('ai_disclosure'),
+        # 客戶對象（signed／unsigned／private）。private＝朋友私人協助，
+        # 客戶版報告不可以有任何 Step1ne 品牌痕跡，見 deliver._branding()。
+        'client_relation': r.get('client_relation'),
+        'expected_salary': r.get('expected_salary'),
+        'available_date': r.get('available_date'),
+        'location_ok': r.get('location_ok'),
+        'disc': {'d': r.get('disc_d'), 'i': r.get('disc_i'),
+                 's': r.get('disc_s'), 'c': r.get('disc_c')},
+    })
+    if r.get('resume_file_id'):
+        meta['resume'] = {'kind': 'file', 'filename': None}
+    elif r.get('resume_url'):
+        meta['resume'] = {'kind': 'url', 'url': r['resume_url'],
+                          'note': r.get('resume_url_note')}
+    # 作品集沒有獨立欄位，候選人多半貼在備註裡。抓得到就印在報告上（規格：連結直接印）。
+    for u in re.findall(r'https?://\S+', r.get('note') or ''):
+        if u != (r.get('resume_url') or ''):
+            meta['portfolio_urls'].append(u)
+
+    n = d1(f"SELECT COUNT(*) AS n FROM messages WHERE application_id = {q(app_id)}")
+    meta['system_record'] = {
+        '面談時間': f"{r.get('interview_started_at') or '—'} – {r.get('interview_ended_at') or '（尚未關閉）'}",
+        '訊息數': f"{(n[0]['n'] if n else '—')} 則",
+        '結束方式': '⚠️ 候選人中途離開' if abandoned else '正常收尾',
+        'application_id': app_id,
+    }
+    return meta
+
+
+def _resume_attachment(app_id):
+    """履歷原檔的位元組內容。沒有檔案就回 (None, None)。
+
+    大檔案不是存在 content_b64，是切段存在 file_chunks——
+    2026-08-05 第一版漏了這段，有履歷的人被判成「沒有」。
+    """
+    rows = d1(f"SELECT f.id AS fid, f.filename, f.content_b64, f.chunks FROM applications a "
+              f"JOIN files f ON f.id = a.resume_file_id WHERE a.id = {q(app_id)}")
+    if not rows:
+        return None, None
+    f = rows[0]
+    b64 = f.get('content_b64')
+    if not b64 and f.get('chunks'):
+        seg = d1(f"SELECT b64 FROM file_chunks WHERE file_id = {q(f['fid'])} ORDER BY idx ASC")
+        b64 = ''.join(x['b64'] for x in seg)
+    if not b64:
+        return None, f.get('filename')
+    # 檔名是從瀏覽器上傳時帶進來的，中文常常是 percent-encoded
+    # （實際存到的是「%E5%91%A8%E6%89%BF%E7%B7%AF.pdf」）。
+    # 推到 Telegram 給人看的東西不該長這樣，解回中文。
+    fn = f.get('filename') or 'resume.pdf'
+    try:
+        if '%' in fn:
+            fn = urllib.parse.unquote(fn)
+    except Exception:
+        pass
+    return base64.b64decode(b64), fn
+
+
+def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
+    """推四件事。降級路徑：content_json 是 NULL 時只推純文字報告與履歷。"""
+    import deliver   # 放在函式內 import：這支檔案壞掉時不要連 daemon 都起不來
+
+    meta = _delivery_meta(app_id, name, job_slug, abandoned)
+
+    data = None
+    if report_json:
+        try:
+            data = json.loads(report_json)
+        except Exception as ex:
+            log(f'⚠️ {name} content_json 解析失敗，改走降級路徑：{ex}')
+
+    # ── 降級：沒有結構化報告就產不出兩版 PDF ──
+    # 這種情況必須「還是有東西給顧問」，而且要講清楚為什麼少了 PDF，
+    # 不然顧問會以為系統掉東西。
+    if data is None:
+        push_report_files(app_id, name, job_slug)   # 舊路徑：純文字報告 PDF ＋ 履歷
+        tg(deliver.closing_message({}, meta, degraded=True), THREAD_POOL)
+        return
+
+    # ① ② 兩版 PDF
+    made = []
+    tmp = tempfile.mkdtemp(prefix='step1ne_deliver_')
+    try:
+        made = deliver.build_pdfs(data, meta, tmp)
+        for kind, path, fn in made:
+            cap = (f'📄 {name}｜顧問版・面談評估（內部）' if kind == 'consultant'
+                   else f'📄 {deliver.client_display_name(meta)}｜客戶版・可轉給用人企業')
+            with open(path, 'rb') as fh:
+                tg_doc(fh.read(), fn, cap, THREAD_POOL)
+    except Exception as ex:
+        log(f'⚠️ {name} 報告 PDF 產生／推送失敗（不影響面談）：{ex}')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ③ 履歷原檔／連結 ＋ 作品集
+    try:
+        blob, fn = _resume_attachment(app_id)
+        if blob:
+            meta['resume']['filename'] = fn
+            tg_doc(blob, f'履歷_{name}_{fn}', f'📎 {name} 的履歷原檔', THREAD_POOL)
+        else:
+            # 只有連結的情況：規格要求把連結直接寫在訊息裡（PDF 裡的按鈕按不下去）
+            lines = []
+            res = meta.get('resume') or {}
+            if res.get('kind') == 'url':
+                u = deliver.clean_url(res.get('url'))
+                ok = (res.get('note') == 'ok')
+                lines.append(f'🔗 {name} 沒有上傳履歷檔，他留的是連結：\n{u}'
+                             + ('\n（內容有抓到，阿財面談時看得到）' if ok
+                                else f'\n⚠️ 這個連結抓不到內容（{res.get("note") or "尚未解析"}），'
+                                     '報告只根據對話內容'))
+            else:
+                lines.append(f'⚠️ {name} 沒有履歷檔，也沒有履歷連結。')
+            for u in meta.get('portfolio_urls') or []:
+                lines.append(f'🎨 作品集：{deliver.clean_url(u)}')
+            tg('\n\n'.join(lines), THREAD_POOL)
+    except Exception as ex:
+        log(f'⚠️ {name} 履歷推送失敗（不影響面談）：{ex}')
+
+    # ④ 結語 ＋ 顧問要協助的事項
+    msg = deliver.closing_message(data, meta)
+    if len(made) < 2:
+        msg += f'\n\n⚠️ 這次只產出 {len(made)} 份 PDF，另一份產生失敗，請至後台查看。'
+    tg(msg, THREAD_POOL)
+
+
+def active_sessions():
+    """所有進行中的面談，附上最後一則的角色與時間。"""
+    return d1("""
+        SELECT a.id, a.name, a.job_slug, a.interview_started_at,
+               (SELECT m.role FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) AS last_role,
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) AS last_at,
+               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n
+          FROM applications a
+         WHERE a.interview_state = 'active'
+    """)
+
+
+def pending(rows):
+    """正在等阿財回話：最後一則是候選人講的。"""
+    return [r for r in rows if r.get('last_role') == 'candidate']
+
+
+def stale(rows):
+    """候選人關掉視窗就走了——多數人本來就是這樣結束的。
+
+    沒有這一段的話，那些面談會永遠停在 active，報告永遠不會產生，
+    顧問也永遠不知道談過什麼。逾時自動收尾比等他回來務實得多。
+    """
+    now = datetime.datetime.now()
+    out = []
+    for r in rows:
+        if r.get('last_role') != 'assistant' or not r.get('last_at'):
+            continue        # 還輪到我們回話，不算閒置
+        try:
+            last = datetime.datetime.strptime(r['last_at'], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+        if (now - last).total_seconds() >= STALE_MIN * 60:
+            out.append(r)
+    return out
+
+
+def expired(rows):
+    """房間開了滿一小時的强制關閉——不管候選人還在不在、聊到哪。
+
+    跟 stale() 是兩件事：stale 是「他不見了」，這裡是「不管有沒有在聊，
+    這是對候選人的時間承諾上限」。阿財被要求盡量在 SOFT_TARGET_MIN（40 分鐘）
+    內主動收尾，這裡是萬一它沒抓好節奏時的最後防線。
+    """
+    now = datetime.datetime.now()
+    out = []
+    for r in rows:
+        if not r.get('interview_started_at'):
+            continue
+        try:
+            started = datetime.datetime.strptime(
+                r['interview_started_at'], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+        if (now - started).total_seconds() >= ROOM_HARD_LIMIT_MIN * 60:
+            out.append(r)
+    return out
+
+
+# ── 單場面談的靜態上下文快取 ──
+# 2026-08-07 顧問指出：context_for() 每一輪都整組重撈，但履歷、職缺資料、
+# 初篩結果整場面談根本不會變，只有「對話紀錄」每輪真的有新內容。
+# 原本的寫法是每輪拉一個子程序（fetch_application.py），裡面又跑好幾次
+# `wrangler d1 execute`——每次呼叫 wrangler CLI 本身就有啟動開銷，
+# 實測光這段（不含真正呼叫模型）就要 ~7 秒，一場 40 分鐘的面談會來回十幾輪，
+# 等於同樣的履歷、同樣的職缺資料被重複下載十幾次。
+#
+# 改法：履歷／職缺／初篩只在這場面談的第一輪抓一次，存進記憶體；
+# 之後每一輪只重撈真的會變的「對話紀錄」。
+# ⚠️ 快取的 key 是 app_id，一場面談對應一個 key，面談結束（finish()）
+# 一定要把它清掉，不然常駐程序跑久了記憶體會一直長。
+_STATIC_CACHE = {}
+_static_lock = threading.Lock()
+
+
+def _fetch_static(app_id):
+    r = subprocess.run(['python3', 'fetch_application.py', app_id],
+                       cwd=HERE, capture_output=True, text=True,
+                       env=env_with_cf(), timeout=200)
+    if r.returncode != 0:
+        raise RuntimeError(f'fetch_application 失敗：{(r.stderr or r.stdout)[-200:]}')
+    static = json.loads(r.stdout[r.stdout.index('{'):])
+
+    # 初篩已經算過分、也生好「該問哪幾題」了——阿財不用自己重想一遍。
+    # 2026-08-05 加：在此之前初篩與面談是兩條互不相干的線，
+    # 初篩辛苦生出來的追問沒有人用，等於白做。
+    asr = d1(f"SELECT b5_o, b5_c, b5_e, b5_a, b5_n, grit, grit_interest, grit_effort, "
+             f"quality_flag FROM assessments WHERE application_id = {q(app_id)} "
+             f"ORDER BY id DESC LIMIT 1")
+    if asr:
+        static['assessment'] = asr[0]
+
+    sc = d1(f"SELECT score, summary, risks, questions, hard_fail FROM screenings "
+            f"WHERE application_id = {q(app_id)} ORDER BY id DESC LIMIT 1")
+    if sc:
+        x = sc[0]
+        try:
+            static['screening'] = {
+                'score': x.get('score'),
+                'summary': x.get('summary'),
+                'risks': json.loads(x.get('risks') or '[]'),
+                'questions': json.loads(x.get('questions') or '[]'),
+                'hard_fail': x.get('hard_fail') or '',
+            }
+        except Exception:
+            pass
+    return static
+
+
+def clear_static_cache(app_id):
+    with _static_lock:
+        _STATIC_CACHE.pop(app_id, None)
+
+
+def context_for(app_id):
+    """把阿財開口前該知道的全部撈齊——履歷、表單、職缺（快取）＋目前對話（每輪重撈）。"""
+    with _static_lock:
+        static = _STATIC_CACHE.get(app_id)
+    if static is None:
+        static = _fetch_static(app_id)
+        with _static_lock:
+            _STATIC_CACHE[app_id] = static
+
+    ctx = dict(static)  # 淺拷貝，不要讓下面塞 conversation 汙染到快取本體
+    ctx['conversation'] = d1(f"SELECT role, content, created_at FROM messages "
+                             f"WHERE application_id = {q(app_id)} ORDER BY id ASC LIMIT 200")
+    return ctx
+
+
+SCHEMA_HINT = """
+只輸出一段 JSON，不要有其他文字、不要包在程式碼區塊裡：
+
+{"messages": ["第一則", "第二則"], "end": false, "note": "給顧問的一句話（可省略）"}
+
+- messages：要發給候選人的訊息，**每則三行以內**，最多三則。
+- end：這場面談是否結束（收尾講完、或候選人明確表示要離開）。
+- 面談結束時 end 設 true，並在 messages 放收尾的話。
+"""
+
+
+SKILL_PATH = os.path.expanduser(
+    '~/工作流程技能包/recruiting-workflow/interview-conductor/SKILL.md')
+
+
+def skill(section):
+    """讀技能規範。
+
+    section='talk' 只取到 Phase 6 為止——「怎麼寫報告」那一大段對談時用不到，
+    但它佔了整份的四分之一，每一則都送等於每一則都多等好幾秒。
+    section='report' 則整份送，因為產報告時前面的護欄與判準都還要用。
+    """
+    t = open(SKILL_PATH, encoding='utf-8').read()
+    if section == 'talk':
+        cut = t.find('## Phase 7')
+        return t[:cut].rstrip() if cut > 0 else t
+    return t
+
+
+def build_prompt(ctx, skill_md):
+    app = ctx['application']
+    job = ctx.get('job') or {}
+    conv = ctx.get('conversation') or []
+
+    lines = []
+    lines.append('你是「阿財」，正在跟一位候選人進行即時文字面談。以下是你的作業規範：\n')
+    lines.append(skill_md)
+    lines.append('\n\n─────────  本場資料  ─────────\n')
+
+    # 初篩已經算過分、也生好該問哪幾題了。放在最前面，讓阿財開口前就知道要往哪挖。
+    # 2026-08-05 加：在此之前初篩與面談互不相干，初篩生的追問沒人用，等於白做。
+    sc = ctx.get('screening')
+    if sc:
+        lines.append('【初篩結果（AI 事先看過履歷）】')
+        lines.append(f'  匹配 {sc.get("score")}／100：{sc.get("summary") or ""}')
+        if sc.get('hard_fail'):
+            lines.append(f'  🚨 硬性不符：{sc["hard_fail"]}')
+        if sc.get('risks'):
+            lines.append('  要釐清的：' + '；'.join(sc['risks'][:4]))
+        if sc.get('questions'):
+            lines.append('  ⚠️ 這幾題初篩已經想好了，這場一定要問到（可以改成你自己的講法）：')
+            for i, qq in enumerate(sc['questions'][:5], 1):
+                lines.append(f'    {i}. {qq}')
+        lines.append('  ⚠️ 分數不要跟候選人講，也不要暗示他被評分過——'
+                     '那是給顧問看的內部資訊。')
+        lines.append('')
+
+    lines.append('【應徵表單】')
+    for k in ('name', 'job_title', 'expected_salary', 'available_date',
+              'location_ok', 'note', 'created_at'):
+        if app.get(k):
+            lines.append(f'  {k}：{app[k]}')
+
+    if app.get('disc_primary'):
+        lines.append(
+            f"  DISC 傾向：{app['disc_primary']}"
+            f"（D{app.get('disc_d', 0)} I{app.get('disc_i', 0)}"
+            f" S{app.get('disc_s', 0)} C{app.get('disc_c', 0)}，滿分 20）"
+            "　— 這是表單填寫時測的，只用來對照面談中的實際表現，不要在面談中提起或解釋。")
+
+    # ── 人格測驗（Big Five ＋ Grit）──
+    # 2026-08-07 加。用途是**對照**，不是評分：看他自己填的樣子跟他講話的樣子是不是同一個人。
+    #
+    # ⚠️ 這不是測謊。人格測驗測不出說謊，不要往那個方向解讀。
+    #    能做的只有「自述與行為證據不一致」——那是**要追問的線索**，不是「他在騙人」的證據。
+    if ctx.get('assessment'):
+        a = ctx['assessment']
+        def band(v):
+            if v is None: return '—'
+            return '偏高' if v >= 3.8 else ('偏低' if v <= 2.5 else '中等')
+        lines.append('\n【人格測驗（他填表時做的，滿分 5）】')
+        lines.append(f"  盡責性 {a.get('b5_c')}（{band(a.get('b5_c'))}）"
+                     '　＝做事有沒有條理、收不收得了尾')
+        lines.append(f"  情緒起伏 {a.get('b5_n')}（{band(a.get('b5_n'))}）"
+                     '　＝分數高代表容易心煩，跟抗壓有關')
+        lines.append(f"  開放性 {a.get('b5_o')}（{band(a.get('b5_o'))}）　＝學新東西的意願")
+        lines.append(f"  外向性 {a.get('b5_e')}（{band(a.get('b5_e'))}）"
+                     f"　親和性 {a.get('b5_a')}（{band(a.get('b5_a'))}）")
+        lines.append(f"  恆毅力 {a.get('grit')}（{band(a.get('grit'))}）"
+                     f"　興趣持續 {a.get('grit_interest')}／努力持續 {a.get('grit_effort')}"
+                     '　＝遇到挫折會不會走、長期做得下去嗎')
+        if a.get('quality_flag'):
+            lines.append(f"  ⚠️ 作答品質警訊：{a['quality_flag']}"
+                         '（straight_line＝全選同一格、too_fast＝快到不可能讀完題目）'
+                         '——**這份分數不可靠，不要拿來當判斷依據**，但也不要因此質疑他的人格，'
+                         '那只代表他填問卷時不認真。')
+        lines.append('  ⚠️ 怎麼用這幾個數字：')
+        lines.append('     - **不要在面談中提起測驗結果、不要解釋分數、不要問他為什麼這樣填。**'
+                     '那會讓他開始揣測「正確答案」，後面講的話就不能用了。')
+        lines.append('     - 拿它當**追問的方向**。例如盡責性偏高但講不出具體把事情做完的例子，'
+                     '就多問一個實際案例；恆毅力偏低就多確認他過去換工作的節奏與原因。')
+        lines.append('     - **不一致不等於說謊。** 可能是他不會描述自己、也可能是測驗沒測準。'
+                     '報告裡只寫「自述與行為證據不一致，建議顧問確認」，'
+                     '**不准寫「他說謊」「他造假」這類判斷。**')
+
+    lines.append('\n【職缺與客戶（內部資料，可依規範對候選人說明）】')
+    if job:
+        # 🚨 服務線一定要送進去，而且要放在最前面。
+        #    2026-08-11 呂書帆（主管特助・中高階）中途退出面談，說
+        #    「問的都有履歷上面寫過的問題很沒效率」，改成直接跟顧問談。
+        #    事後查：這個缺的 service_line 早就是 executive，但**這個欄位從來沒進過 prompt**，
+        #    所以阿財對一位 41 歲、九年日本旅宿、N1、帶過團隊的人選，
+        #    跑了跟基層一模一樣的流程（請你自我介紹、慢慢聊 30-40 分鐘）。
+        #    中高階人選同時也在評估我們——流程沒效率，他退出是正常反應，不是他難搞。
+        if job.get('service_line'):
+            SL = {'executive': '中高階獵才', 'direct': '正職代招', 'dispatch': '人力派遣'}
+            lines.append(f'  🎯 service_line：{job["service_line"]}'
+                         f'（{SL.get(job["service_line"], job["service_line"])}）')
+            if job['service_line'] == 'executive':
+                lines.append('  🚨 **這是中高階職缺，一律走 SKILL.md 的「中高階短版」，不要跑標準流程。**')
+        for k in ('title', 'client_name', 'client_intro', 'team_size', 'interview_rounds',
+                  'interview_who', 'has_test', 'onboard_by', 'must_skills',
+                  'salary_min', 'salary_max', 'locations', 'employment', 'faq_notes'):
+            if job.get(k):
+                lines.append(f'  {k}：{job[k]}')
+
+        # ── 客戶身分保密 ──
+        # 2026-08-07 顧問指示：BIM 工程師這個缺的客戶名稱與廠區地名是客戶隱私，
+        # 已經把 client_name／client_intro／faq_notes 改成不指名的講法，
+        # 但候選人很可能直接問「是哪一間公司」「是不是美光」——
+        # 這條規則不寫清楚，阿財會照著「盡量回答候選人問題」的預設去猜或補完，等於還是講出去。
+        if job.get('confidential_client'):
+            lines.append('  🔒 這個職缺的客戶名稱與廠區地名不可以講。'
+                         '候選人問公司名稱、問是不是某間知名廠商（包含用猜的、用「是不是 XX」套話）：'
+                         '一律回「這部分顧問錄取後會說明，面談這階段先聚焦在您的經歷跟這個職缺合不合適」。'
+                         '不要迴避到讓對方覺得可疑，但絕對不要證實或否認任何具體公司名稱。')
+
+        # ── 這個職缺怎麼推銷 ──
+        # 2026-08-07 顧問指示：BIM 這個缺不要再拿「轉正」當話術賣點。
+        # 跟保密規則不一樣的地方：轉正這件事**不是不能提**，是不能由你主動當賣點推銷；
+        # 候選人自己問還是要誠實回答，不能為了促成應徵而迴避風險揭露。
+        if job.get('talking_points'):
+            lines.append(f'  💬 這個缺的推銷方式：{job["talking_points"]}')
+
+        # ── 薪資怎麼講 ──
+        # 2026-08-07：阿財對王雁群說「這個職缺目前開的是 40K 起，您期望 60K，差了不少」，
+        # 拿一個他以為是行情的數字去壓對方的期望。但那個 40000 根本不是客戶開的價——
+        # 104 上是「待遇面議（經常性薪資達 4 萬元或以上）」。
+        #
+        # 4 萬這個數字是**就業服務法的揭露門檻**：月薪未達 4 萬的職缺必須公開薪資範圍，
+        # 只有 4 萬以上才可以寫「面議」。所以「4 萬以上」的意思是
+        # 「這個缺至少 4 萬，上限沒說」，不是「這個缺開 4 萬」。
+        # 阿財把法定下限讀成客戶的出價，方向剛好相反——
+        # 這會讓真正有行情的候選人以為自己開太高而退場。
+        if job.get('salary_note'):
+            lines.append(f'  💰 薪資的正式說法（要照這個講，不要自己換算成數字）：{job["salary_note"]}')
+        lines.append('  ⚠️ 薪資規則：')
+        lines.append('     - salary_min 是「至少」，不是「開這個價」。'
+                     '只有 salary_max 也有值的時候，才可以講成一個區間。')
+        lines.append('     - 只有 salary_min、沒有 salary_max 時，一律講「X 萬以上，實際依經驗面談決定」，'
+                     '**絕對不要說「開的是 X 萬」或「起薪 X 萬」**。')
+        lines.append('     - 候選人期望比較高時，不要說「差了不少」這種話去壓他。'
+                     '改成問清楚他的期望怎麼來的、有沒有彈性，把數字跟理由記下來給顧問判斷。'
+                     '你不是談判的人，你是收集資訊的人。')
+
+        if job.get('notes'):
+            lines.append(f'  （顧問備註，不要對候選人講）：{job["notes"]}')
+    else:
+        lines.append('  （這個職缺在 jobs 表裡沒有資料，公司相關問題一律說會由顧問說明）')
+
+    lines.append('\n【履歷】')
+    if ctx.get('resume_readable'):
+        lines.append(f'  來源：{ctx.get("resume_source")}')
+        lines.append(ctx['resume_text'][:12000])
+    else:
+        lines.append('  ⚠️ 讀不到履歷內容：' + str(ctx.get('resume_note') or '未提供'))
+        lines.append('  ⚠️ 絕對不要說「您的履歷我看過了」。改成請對方口頭介紹經歷。')
+
+    lines.append('\n【目前對話】')
+    if not conv or all(m['content'] == '（候選人已進入面談室）' for m in conv):
+        lines.append('  （還沒開始。這是開場，請你先開口。）')
+    else:
+        for m in conv:
+            if m['content'] == '（候選人已進入面談室）':
+                continue
+            who = '你' if m['role'] == 'assistant' else '候選人'
+            lines.append(f'  {who}：{m["content"]}')
+
+    lines.append(f'\n  （已經來回 {len(conv)} 則。超過 {MAX_TURNS} 則就要收尾。）')
+
+    started, mins = app.get('interview_started_at'), None
+    if started:
+        try:
+            mins = int((datetime.datetime.now()
+                        - datetime.datetime.strptime(started, '%Y-%m-%d %H:%M:%S')).total_seconds() / 60)
+            lines.append(
+                f'  （面談已進行約 {mins} 分鐘。目標是 {SOFT_TARGET_MIN} 分鐘內主動收尾——'
+                f'快到時就開始往 Phase 5/6 收，不要等被硬性中斷。'
+                f'房間滿 {ROOM_HARD_LIMIT_MIN} 分鐘會被系統強制關閉，不要拖到那時候。）')
+        except Exception:
+            pass
+    # ── 讀不到履歷時的收尾交代 ──
+    # 2026-08-07 加。顧問的決定：**沒履歷不擋面談，照樣談完**，
+    # 但不能就這樣讓人走掉——談完了我們手上還是只有一份逐字稿，
+    # 顧問要推件給客戶時沒有東西可以附。
+    # 所以改成在快結束時把「補履歷」當成必辦事項，並給 LINE OA 讓他接得上真人顧問。
+    # 放在 prompt 最後面，因為越後面的指令越不會被前面那一大段規範蓋過去。
+    if not ctx.get('resume_readable'):
+        near_end = (len(conv) >= MAX_TURNS - 12) or (mins is not None and mins >= SOFT_TARGET_MIN - 12)
+        lines.append('\n─────────  這場沒有履歷，收尾前一定要做的事  ─────────')
+        lines.append(f'  這位候選人沒有可讀的履歷（原因：{ctx.get("resume_note") or "未提供"}）。')
+        lines.append('  談完之後顧問手上只會有這份逐字稿，沒有東西可以送件給客戶。')
+        if near_end:
+            lines.append('  ⚠️ 現在已經接近尾聲，**收尾的時候一定要講這兩件事**（用你自己的話，不要照唸）：')
+            lines.append('     1. 請他面談結束後補一份履歷——PDF、Word 或作品集連結都可以。')
+            lines.append(f'     2. 給他 LINE 官方帳號 {LINE_OA_URL}，'
+                         '說明加了之後可以直接跟負責這個案子的顧問聯繫，'
+                         '履歷也可以直接傳到那裡，有問題也在那邊問。')
+            lines.append('  講的時候要說明為什麼需要：顧問要把他推薦給客戶時，'
+                         '客戶端一定會要書面資料，沒有履歷這一步就卡住。')
+            lines.append('  ⚠️ 不要把這件事講成「你資料沒交」的責備語氣，'
+                         '這是我們在幫他把後面的路鋪好。')
+        else:
+            lines.append('  現在還在中段，先專心把經歷問清楚，'
+                         '補履歷與 LINE 的事等接近收尾時再講，不要現在打斷節奏。')
+
+    lines.append('\n─────────  輸出格式  ─────────')
+    lines.append(SCHEMA_HINT)
+    return '\n'.join(lines)
+
+
+def sanitize(t):
+    """清掉控制字元。
+
+    ⚠️ 這不是潔癖，是必要的：prompt 是用命令列參數傳給 claude 的，
+    參數裡只要有一個 \x00，subprocess 就直接丟 "embedded null byte"，整場面談掛掉。
+    2026-07-30 實際發生過——前端 pdf.js 對某些 PDF 字型抽出 1756 個空位元組。
+    """
+    if not t:
+        return t
+    return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
+
+
+def run_claude(prompt):
+    r = subprocess.run(
+        ['claude', '-p', sanitize(prompt), '--model', TALK_MODEL,
+         *NO_TOOLS, '--output-format', 'text'],
+        capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+    if r.returncode != 0:
+        raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
+    out = r.stdout.strip()
+    # 模型偶爾還是會包程式碼區塊或前後多講一句，抓最外層的 JSON 就好
+    i, j = out.find('{'), out.rfind('}')
+    if i < 0 or j < 0:
+        raise RuntimeError(f'回覆裡沒有 JSON：{out[:200]}')
+    return json.loads(out[i:j + 1])
+
+
+def engagement_block(app_id):
+    """算這場面談的投入度，回傳一段給報告用的文字（沒資料就回空字串）。
+
+    為什麼要有：2026-08-06 顧問說「就像打電話過去、但他在另一端不知道在幹嘛，
+    有沒有認真很難判斷」。用手上 7 筆真實資料驗過兩個訊號：
+      ✅ 候選人平均回覆字數——7 個人 7 個準（≥37 字全部活著、≤13 字全部掉了）
+      ❌ 回覆速度——分不出來（掉的人 188/252 秒，活著的呂皓宇 222 秒夾在中間；
+         而且每個人平均都要 2–4 分鐘，代表大家都在一邊做別的事）
+    所以字數進報告，速度不進。切走次數則是 2026-08-06 才開始收，早期面談沒有。
+
+    ⚠️ 只呈現事實，**不下「這個人不認真」的結論**，也不給分。
+    有人開另一個視窗查資料再回答，那是認真不是分心——判斷交給顧問。
+    """
+    rows = d1(f"SELECT role, LENGTH(content) L FROM messages WHERE application_id={q(app_id)}")
+    cand = [r['L'] for r in rows if r['role'] == 'candidate']
+    if not cand:
+        return ''
+    avg, mx = round(sum(cand) / len(cand)), max(cand)
+    lines = ['【投入度（系統量測，僅供參考）】',
+             f'  候選人回覆 {len(cand)} 則，平均 {avg} 字，最長一則 {mx} 字。']
+    # 目前手上的對照組：活著的人平均 37–87 字、最長 97–253 字；
+    # 掉的人平均 11–13 字、最長沒有超過 21 字。樣本只有 7 筆，寫進報告時要標明。
+    if avg <= 15 or mx <= 25:
+        lines.append('  ⚠️ 這個回覆長度明顯偏短。目前 7 筆歷史資料裡，平均 ≤13 字的三位'
+                     '後續都沒有進展（原因是「無意願」或「不接受條件」）——'
+                     '**樣本很小，只能當提醒，不能當結論。**')
+    eg = d1(f"SELECT * FROM engagement WHERE application_id={q(app_id)}")
+    if eg:
+        e = eg[0]
+        if e['away_count']:
+            m2, s2 = divmod(int(e['away_seconds']), 60)
+            lm, ls = divmod(int(e['longest_away']), 60)
+            lines.append(f"  面談期間切換到其他分頁／視窗 {e['away_count']} 次，"
+                         f"累計離開 {m2} 分 {s2} 秒，最久一次 {lm} 分 {ls} 秒。")
+        else:
+            lines.append('  面談期間沒有切換到其他分頁。')
+        if e['paste_count']:
+            lines.append(f"  有 {e['paste_count']} 次貼上，共 {e['paste_chars']} 字"
+                         f"——可能是準備好的稿或從別處複製，值得在複試時追問細節。")
+    else:
+        lines.append('  （切換分頁的紀錄從 2026-08-06 才開始收，這場面談可能沒有。）')
+    lines.append('  ⚠️ 這幾個數字只是行為事實，**不要據此判定人選不認真**——'
+                 '有人開另一個視窗查資料再回答。請和逐字稿內容一起看。')
+    return '\n'.join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 結構化報告（reports.content_json）
+#
+# 為什麼要有：顧問後台要做的視覺化報告、以及之後要產的「客戶版」，
+# 都需要逐欄取用。純文字的 content_md 拆不可靠——標題會被模型微調、
+# 條列符號會變、缺欄位時整段消失。所以另外存一份 JSON。
+#
+# ⚠️ **content_md 是主的，JSON 是附的。**
+# 後台現在讀的是 content_md，這裡任何失敗都不可以影響它。
+# 做法固定是「兩段式」：先照原本的流程產純文字（那段一個字都沒動），
+# 成功之後再拿那份文字去換 JSON。不做「一次要模型吐兩段」——
+# 那會讓 JSON 的格式壓力回頭影響純文字的品質，而純文字才是顧問在看的。
+REPORT_JSON_SPEC = r'''
+{
+  "verdict": "值得轉給顧問|資訊不足建議補問|硬條件不符|待顧問判斷",
+  "one_liner": "一句話定位，30字內",
+  "top_selling_point": "一句",
+  "top_risk": "一句",
+  "summary": "面談結果總結，150字內敘事",
+  "motivation": {
+    "why_leaving": "", "why_this_role": "", "salary_gap": "",
+    "notice_period": "", "other_offers": "", "blockers": ""
+  },
+  "values": ["標籤", "..."],
+  "values_basis": "推論依據一句",
+  "work_history": [
+    {"employer": "公司名或（未具名）", "role": "", "duration": "",
+     "source": "履歷|口述|未提供", "nature": "雇主|接案客戶",
+     "note": ""}
+  ],
+  "resume_vs_spoken": [
+    {"item": "年資", "resume_says": "", "candidate_says": "",
+     "explanation": "他的說明，沒問到就空字串", "status": "已確認|待釐清"}
+  ],
+  "hard_conditions": [
+    {"item": "", "verdict": "符合|不符|待確認", "detail": "",
+     "evidence_source": "履歷|應徵表單|他親口說|未確認"}
+  ],
+  "observations": {
+    "assessment": [{"trait": "S 穩定型", "score": 9,
+                    "verified": "面談印證|未觀察到|不一致", "evidence": ""}],
+    "communication_style": "",
+    "engagement": "一句人話，例如「全程專注，沒有中途離開」"
+  },
+  "candidate_questions": [{"question": "", "answered": true, "note": ""}],
+  "for_client": {
+    "reasons": ["三點"], "risks_to_disclose": ["要主動揭露的"],
+    "suggested_questions": ["建議客戶面試追問"]
+  },
+  "consultant_followups": ["顧問要自己追問的三件事"]
+}
+'''
+
+# 這幾條是欄位語意上的硬規則，不是格式偏好。每一條後面都有踩過的坑。
+REPORT_JSON_RULES = (
+    '⚠️ 硬規則，每一條都要遵守：\n'
+    '1. `resume_vs_spoken` **不可以是空陣列**。沒有任何落差時也要輸出一筆：\n'
+    '   {"item":"整體","resume_says":"","candidate_says":"",'
+    '"explanation":"履歷與口述一致","status":"已確認"}\n'
+    '   空陣列會被顧問誤讀成「這場沒有做比對」。\n'
+    '2. **不准在任何欄位寫「他說謊」「造假」「灌水」「誇大」這類判斷。**\n'
+    '   只記雙方各自的說法，判斷是顧問的事，不是你的。\n'
+    '3. `hard_conditions` 每一筆的 `evidence_source` 一定要填，不可留空——\n'
+    '   顧問要知道每一條依據是哪裡來的。真的不知道就填「未確認」。\n'
+    '4. **年齡、性別、婚姻、生育、國籍不可以出現在任何欄位**（就業服務法第 5 條）。\n'
+    '   純文字報告裡若有「需顧問評估的客戶條件」那一段，該段的內容不要搬進 JSON。\n'
+    '5. 報告裡沒有的資訊就留空字串或空陣列，**不要自己補**。\n'
+)
+
+_VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
+# 只用來記 log 提醒人去看，不自動改寫內容——擅自刪字會把顧問要看的原文弄壞
+_BANNED_WORDS = ('說謊', '造假', '灌水', '誇大不實')
+
+
+def _extract_json(text):
+    """從模型回覆裡挖出最外層的 JSON。挖不到或不合法就回 None（不丟例外）。"""
+    if not text:
+        return None
+    s = text.strip()
+    if s.startswith('```'):
+        s = s.split('\n', 1)[-1]
+        if s.rstrip().endswith('```'):
+            s = s.rstrip()[:-3]
+    i, j = s.find('{'), s.rfind('}')
+    if i < 0 or j <= i:
+        return None
+    try:
+        obj = json.loads(s[i:j + 1])
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _normalize_report_json(obj):
+    """把模型的輸出補成規格形狀。
+
+    模型少給一兩個欄位是常態，為此整份丟掉不划算——補好比丟掉有用。
+    但**不編造內容**：補進去的一律是空字串／空陣列，不是猜出來的值。
+    """
+    def s(v):
+        return v if isinstance(v, str) else ''
+
+    def arr(v):
+        return v if isinstance(v, list) else []
+
+    out = {
+        'verdict': obj.get('verdict') if obj.get('verdict') in _VERDICTS else '待顧問判斷',
+        'one_liner': s(obj.get('one_liner')),
+        'top_selling_point': s(obj.get('top_selling_point')),
+        'top_risk': s(obj.get('top_risk')),
+        'summary': s(obj.get('summary')),
+    }
+
+    mot = obj.get('motivation') if isinstance(obj.get('motivation'), dict) else {}
+    out['motivation'] = {k: s(mot.get(k)) for k in
+                         ('why_leaving', 'why_this_role', 'salary_gap',
+                          'notice_period', 'other_offers', 'blockers')}
+
+    out['values'] = [s(v) for v in arr(obj.get('values')) if s(v)]
+    out['values_basis'] = s(obj.get('values_basis'))
+
+    out['work_history'] = [
+        {'employer': s(w.get('employer')) or '（未具名）', 'role': s(w.get('role')),
+         'duration': s(w.get('duration')), 'source': s(w.get('source')) or '未提供',
+         'nature': s(w.get('nature')), 'note': s(w.get('note'))}
+        for w in arr(obj.get('work_history')) if isinstance(w, dict)]
+
+    rvs = [{'item': s(r.get('item')), 'resume_says': s(r.get('resume_says')),
+            'candidate_says': s(r.get('candidate_says')),
+            'explanation': s(r.get('explanation')),
+            'status': s(r.get('status')) or '待釐清'}
+           for r in arr(obj.get('resume_vs_spoken')) if isinstance(r, dict)]
+    if not rvs:
+        # 空陣列＝「沒比對過」，那是誤讀。規範要求沒落差也要留一筆。
+        rvs = [{'item': '整體', 'resume_says': '', 'candidate_says': '',
+                'explanation': '履歷與口述一致', 'status': '已確認'}]
+    out['resume_vs_spoken'] = rvs
+
+    out['hard_conditions'] = [
+        {'item': s(h.get('item')), 'verdict': s(h.get('verdict')) or '待確認',
+         'detail': s(h.get('detail')),
+         # 留空的話顧問不知道這條是哪來的，一律補成「未確認」
+         'evidence_source': s(h.get('evidence_source')) or '未確認'}
+        for h in arr(obj.get('hard_conditions')) if isinstance(h, dict)]
+
+    ob = obj.get('observations') if isinstance(obj.get('observations'), dict) else {}
+    assess = []
+    for a in arr(ob.get('assessment')):
+        if not isinstance(a, dict):
+            continue
+        try:
+            score = int(a.get('score'))
+        except (TypeError, ValueError):
+            score = None
+        assess.append({'trait': s(a.get('trait')), 'score': score,
+                       'verified': s(a.get('verified')) or '未觀察到',
+                       'evidence': s(a.get('evidence'))})
+    out['observations'] = {'assessment': assess,
+                           'communication_style': s(ob.get('communication_style')),
+                           'engagement': s(ob.get('engagement'))}
+
+    out['candidate_questions'] = [
+        {'question': s(c.get('question')), 'answered': bool(c.get('answered')),
+         'note': s(c.get('note'))}
+        for c in arr(obj.get('candidate_questions')) if isinstance(c, dict)]
+
+    fc = obj.get('for_client') if isinstance(obj.get('for_client'), dict) else {}
+    out['for_client'] = {k: [s(x) for x in arr(fc.get(k)) if s(x)]
+                         for k in ('reasons', 'risks_to_disclose', 'suggested_questions')}
+
+    out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
+    return out
+
+
+def report_to_json(report, ctx, name=''):
+    """把已經產好的純文字報告轉成結構化 JSON，回傳字串；任何失敗都回 None。
+
+    ⚠️ 這個函式**不准往外丟例外**。它失敗只代表 content_json 存 NULL，
+    純文字報告照存、通知照發、面談流程完全不受影響。
+    """
+    if not report or report.startswith('（報告產生失敗'):
+        return None
+    prompt = (
+        '以下是一份已經產好的初篩報告（純文字）。請把它轉成結構化 JSON。\n'
+        '**只做搬運與整理，不要重新判斷、不要加報告裡沒有的東西。**\n\n'
+        '【JSON 結構，欄位名稱與層級照這個，不要自己發明】\n' + REPORT_JSON_SPEC + '\n'
+        + REPORT_JSON_RULES
+        + '\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
+        + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
+        + '\n\n【初篩報告全文】\n' + report
+        + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
+    try:
+        r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
+                            # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
+                            *NO_TOOLS, '--output-format', 'text'],
+                           capture_output=True, text=True, env=env_with_cf(),
+                           timeout=CLAUDE_TIMEOUT)
+        obj = _extract_json(r.stdout)
+        if obj is None:
+            log(f'⚠️ {name} 結構化報告解析失敗，content_json 存 NULL'
+                f'（純文字報告不受影響）：{(r.stdout or r.stderr or "")[:200]}')
+            return None
+        data = _normalize_report_json(obj)
+        blob = json.dumps(data, ensure_ascii=False)
+        hit = [w for w in _BANNED_WORDS if w in blob]
+        if hit:
+            # 不自動改寫——顧問要看到模型原本寫了什麼，才知道這份能不能信
+            log(f'⚠️ {name} 結構化報告出現不該有的判斷字眼 {hit}，請人工看一下 content_json')
+        return blob
+    except Exception as e:
+        log(f'⚠️ {name} 結構化報告產生失敗，content_json 存 NULL'
+            f'（純文字報告不受影響）：{e}')
+        return None
+
+
+def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
+    """面談結束：產報告、寫回 D1、通知顧問。
+
+    abandoned=True 代表候選人中途離開，沒有正式收尾。
+    報告照樣要產——談到一半的內容也是資訊，而且顧問要知道他是在哪一題走的。
+
+    close=False 代表**只產報告、不關房間**（狀態存成 paused）。
+    ⚠️ 2026-08-10 加：原本候選人離開 15 分鐘就直接關房，顧問還在忙、
+    根本來不及看到通知，等他要處理時房間已經關了，候選人回來只看到
+    「面談已結束」。報告要早點給顧問（那是他判斷的依據），
+    但房間要留著給候選人回來——這是兩件事，不該綁在一起。
+    """
+    clear_static_cache(app_id)  # 面談結束，這場的快取沒用了，清掉避免常駐程序記憶體一直長
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if close:
+        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}', "
+           f"status='interviewed' WHERE id={q(app_id)}")
+    else:
+        # paused：房間還開著，候選人用原連結回來就能接續（Worker 的 /chat/send
+        # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
+        d1(f"UPDATE applications SET interview_state='paused', "
+           f"status='interviewed' WHERE id={q(app_id)}")
+
+    conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} ORDER BY id ASC")
+    transcript = '\n'.join(
+        f'{"阿財" if m["role"] == "assistant" else "候選人"}：{m["content"]}'
+        for m in conv if m['content'] != '（候選人已進入面談室）')
+
+    prompt = (
+        '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n\n'
+        + skill('report')
+        + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
+        + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
+        + '\n\n【逐字稿】\n' + transcript
+        + (('\n\n' + engagement_block(app_id)) if engagement_block(app_id) else '')
+        + ('\n\n⚠️ 這場面談沒有正式收尾——候選人在最後一則之後就沒有再回應，'
+           '推測是關掉視窗離開。請在報告開頭註明「面談未完成（候選人中途離開）」，'
+           '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
+           if abandoned else '')
+        + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
+    try:
+        r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
+                            *NO_TOOLS, '--output-format', 'text'],
+                           capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+        report = r.stdout.strip() or '（報告產生失敗，請看逐字稿）'
+        # 模型常把整份報告包在程式碼區塊裡，推到 Telegram 會多出兩行反引號
+        if report.startswith('```'):
+            report = report.split('\n', 1)[-1]
+            if report.rstrip().endswith('```'):
+                report = report.rstrip()[:-3].rstrip()
+    except Exception as e:
+        report = f'（報告產生失敗：{e}）'
+
+    # 額外產一份結構化 JSON 給後台視覺化／客戶版用。
+    # 失敗就是 None → 存 NULL，純文字報告照存，不影響下面任何一步。
+    report_json = report_to_json(report, ctx, name)
+
+    rid = f'r_{app_id[:8]}_{int(time.time())}'
+    d1(f"INSERT INTO reports (id, application_id, created_at, content_md, content_json) "
+       f"VALUES ({q(rid)}, {q(app_id)}, '{now}', {q(report)}, {q(report_json)})")
+
+    notify_candidate(app_id, abandoned)
+
+    head = '⚠️ 面談中斷（候選人未收尾）' if abandoned else '✅ 面談完成'
+    rec = ''
+    for line in report.splitlines():
+        if line.startswith('建議：'):
+            rec = line.strip(); break
+    # 一場面談結束就記一筆——這是招募這邊最有代表性的「今天做了什麼」
+    runlog('step1ne-interview', 'success',
+           f'{name} 完成 AI 面談並產出初篩報告'
+           + ('（候選人中途離開）' if abandoned else ''),
+           {'candidate': name, 'job': job_slug, 'abandoned': bool(abandoned)})
+    log(f'{name} 面談{"中斷" if abandoned else "結束"}，報告已存 {rid}')
+
+    # 連結給不了在外面的人。把兩版 PDF、履歷、結語直接推過去，手機上點開就能讀。
+    #
+    # ⚠️ 這一整段是面談之後的「交付」，不是面談本身。
+    #    包 try/except 是刻意的：報告已經寫進 D1 了（上面那段），
+    #    交付失敗頂多是顧問要自己回後台看，不可以讓 finish() 拋例外——
+    #    那會讓 wrap_up()／timeout_close() 走進錯誤分支，面談狀態變得不可預期。
+    try:
+        deliver_after_interview(app_id, name, job_slug, report_json, abandoned)
+    except Exception as ex:
+        log(f'❌ {name} 面談交付失敗（報告已存 D1，不影響面談）：{ex}')
+        # 保底：交付整個掛掉時，至少還原成舊的最小通知，顧問才知道有這場要看
+        tg(f'{head}：{name}（{job_slug}）\n'
+           f'{rec or "（報告已產出）"}\n'
+           f'⚠️ 報告 PDF 與履歷推送失敗，請至後台查看。\n\n'
+           f'報告與逐字稿：https://step1ne.com/consultant/reports/',
+       THREAD_POOL)
+
+
+def wrap_up(app):
+    """逾時收尾。
+
+    ⚠️ 一定要先在對話裡留一句話再結束。
+    直接把狀態改成 done 的話，候選人（如果還開著頁面）會看到面談突然結束、
+    畫面跳出「面談已結束」卻不知道為什麼——那很莫名其妙，而且他會覺得被放棄。
+    留一句話至少讓他知道發生什麼、還能不能回來。
+    """
+    app_id, name = app['id'], app['name']
+    try:
+        log(f'{name}：閒置超過 {STALE_MIN} 分鐘，判定離開，開始收尾')
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bye = [
+            '看您這邊暫時沒有回覆，我先把今天談到的內容整理給顧問。',
+            f'這個連結我會幫您留著，接下來 {STALE_HOLD_MIN // 60} 小時內回來都可以接著談。',
+            '想直接跟真人顧問聊也沒問題，透過下方的 LINE 告訴我們就可以。謝謝您今天撥出時間 🙏',
+        ]
+        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in bye)
+        d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+        finish(app_id, name, app['job_slug'], context_for(app_id),
+               abandoned=True, close=False)   # 只產報告，房間留著
+    except Exception as e:
+        log(f'❌ {name} 逾時收尾失敗：{e}')
+        tg(f'⚠️ 面談逾時收尾失敗：{name}（{app_id}）\n{str(e)[:300]}', THREAD_SYSTEM)
+    finally:
+        release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+def timeout_close(app):
+    """房間滿一小時的強制收尾——不管候選人還在不在、談到哪裡。
+
+    跟 wrap_up() 的差別只在講法：那邊是「你不見了」，這裡是「時間到了」，
+    不是候選人的問題，訊息不能用同一套，不然明明還在打字卻被講成不見了。
+    """
+    app_id, name = app['id'], app['name']
+    try:
+        log(f'{name}：房間已滿 {ROOM_HARD_LIMIT_MIN} 分鐘，強制收尾')
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bye = [
+            '不好意思，我們今天的面談時間到了，先在這裡跟您告一段落。',
+            '目前談到的內容我都會整理給顧問，不管有沒有下一步都會通知您，謝謝您今天撥空 🙏',
+        ]
+        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in bye)
+        d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+        finish(app_id, name, app['job_slug'], context_for(app_id),
+               abandoned=True, close=False)   # 只產報告，房間留著
+    except Exception as e:
+        log(f'❌ {name} 逾時強制收尾失敗：{e}')
+        tg(f'⚠️ 面談滿一小時強制收尾失敗：{name}（{app_id}）\n{str(e)[:300]}', THREAD_SYSTEM)
+    finally:
+        release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+def handle(app):
+    app_id, name = app['id'], app['name']
+    try:
+        ctx = context_for(app_id)
+        n = len(ctx.get('conversation') or [])
+        result = run_claude(build_prompt(ctx, skill('talk')))
+
+        msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+        if not msgs:
+            msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
+
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in msgs)
+        d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+        log(f'{name}：回了 {len(msgs)} 則')
+
+        if result.get('end') or n >= MAX_TURNS:
+            finish(app_id, name, app['job_slug'], ctx)
+
+    except Exception as e:
+        log(f'❌ {name}（{app_id}）處理失敗：{e}')
+        # 候選人不該乾等。給一句話讓他知道發生什麼，並通知顧問接手。
+        try:
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
+               f"({q(app_id)},'assistant',"
+               f"{q('不好意思，我這邊系統出了點狀況。我們的顧問會直接與您聯繫，很抱歉耽誤您的時間。')},"
+               f"'{now}')")
+        except Exception:
+            pass
+        tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
+           THREAD_DECIDE)
+    finally:
+        release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+def paused_sessions():
+    """已經產過報告、但房間還留著的場次。"""
+    return d1("""
+        SELECT a.id, a.name, a.job_slug,
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) AS last_at
+          FROM applications a
+         WHERE a.interview_state = 'paused'
+    """)
+
+
+def close_paused(app):
+    """留了 STALE_HOLD_MIN 還是沒回來，才真的關掉。
+
+    這裡不再產報告——wrap_up() 早就產過了，重複產只會讓顧問看到兩份。
+    """
+    app_id, name = app['id'], app['name']
+    try:
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}' "
+           f"WHERE id={q(app_id)} AND interview_state='paused'")
+        log(f'{name}：保留 {STALE_HOLD_MIN} 分鐘仍未回來，關閉面談室')
+    except Exception as e:
+        log(f'❌ {name} 關閉保留中的面談室失敗：{e}')
+    finally:
+        release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+def held_too_long(rows):
+    now = datetime.datetime.now()
+    out = []
+    for r in rows:
+        if not r.get('last_at'):
+            continue
+        try:
+            last = datetime.datetime.strptime(r['last_at'], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+        if (now - last).total_seconds() >= STALE_HOLD_MIN * 60:
+            out.append(r)
+    return out
+
+
+def tick():
+    try:
+        rows = active_sessions()
+    except Exception as e:
+        log(f'查詢進行中面談失敗：{e}')
+        return
+
+    # 滿一小時的優先權最高——就算候選人剛好回話了，也不要再讓阿財多聊一輪，
+    # 直接強制收尾，不然「硬上限」就變成「軟上限」了
+    expired_rows = expired(rows)
+    expired_ids = {r['id'] for r in expired_rows}
+    remaining = [r for r in rows if r['id'] not in expired_ids]
+
+    try:
+        held = held_too_long(paused_sessions() or [])
+    except Exception as e:
+        log(f'查詢保留中面談失敗：{e}')
+        held = []
+
+    jobs = ([(a, timeout_close) for a in expired_rows]
+            + [(a, handle) for a in pending(remaining)]
+            + [(a, wrap_up) for a in stale(remaining)]
+            + [(a, close_paused) for a in held])
+    for app, fn in jobs:
+        with _lock:
+            if app['id'] in _busy or len(_busy) >= MAX_PARALLEL:
+                continue
+            _busy.add(app['id'])
+        # DB 鎖：force_close.py 手動收尾時也搶同一把鎖，搶不到就跳過這輪，
+        # 下次輪詢再試——不會跟它同時寫同一場的訊息
+        if not acquire_lock(app['id']):
+            with _lock:
+                _busy.discard(app['id'])
+            continue
+        threading.Thread(target=fn, args=(app,), daemon=True).start()
+
+
+def main():
+    once = '--once' in sys.argv
+    log(f'面談引擎啟動（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
+    while True:
+        tick()
+        if once:
+            time.sleep(1)
+            while True:
+                with _lock:
+                    if not _busy:
+                        break
+                time.sleep(1)
+            return
+        time.sleep(POLL_SEC)
+
+
+if __name__ == '__main__':
+    main()
