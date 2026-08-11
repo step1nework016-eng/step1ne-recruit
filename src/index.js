@@ -335,13 +335,43 @@ async function guardCompany(env, company) {
 // 開發信跟給候選人的信不是同一種東西：
 // 這是 Jacky 用自己的名義寄給企業窗口的商務信，對方要能直接回信，
 // 所以不掛「請勿直接回覆」那套系統頁尾，也不放求職者用的 LINE。
-async function sendBdMail(env, to, subject, body) {
+// 檔案是切成 chunk 存的（D1 單筆有長度上限），要拼回來才能當附件。
+const PROFILE_FILE_ID = 'step1ne-profile-2026';   // 公司簡介 PDF，每封開發信都附
+
+async function fileB64(env, fileId) {
+  if (!fileId) return null;
+  const f = await env.DB.prepare(
+    `SELECT filename, mime, content_b64, chunks FROM files WHERE id = ?`).bind(fileId).first();
+  if (!f) return null;
+  let b64 = f.content_b64 || '';
+  if (!b64 && f.chunks) {
+    const { results } = await env.DB.prepare(
+      `SELECT b64 FROM file_chunks WHERE file_id = ? ORDER BY idx`).bind(fileId).all();
+    b64 = (results || []).map((r) => r.b64).join('');
+  }
+  if (!b64) return null;
+  return { filename: f.filename || 'attachment.pdf', content: b64 };
+}
+
+// 開發信跟給候選人的信不是同一種東西：
+// 這是 Jacky 用自己的名義寄給企業窗口的商務信，對方要能直接回信，
+// 所以不掛「請勿直接回覆」那套系統頁尾，也不放求職者用的 LINE。
+//
+// ⚠️ 一定要帶兩個附件（2026-08-11 Jacky 定）：匿名履歷 PDF ＋ 公司簡介 PDF。
+//    信裡只寫 3-4 條重點精華，完整經歷放在附件——
+//    對方要的是「這個人能不能用」，那要看履歷，不是看信裡的形容詞。
+async function sendBdMail(env, to, subject, body, cvFileId) {
   if (!env.RESEND_API_KEY || !to) return false;
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const html =
     `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;font-size:15px;` +
     `line-height:1.9;color:#23262d;max-width:620px;white-space:pre-wrap;">` +
     esc(body) + `</div>`;
+  const attachments = [];
+  for (const id of [cvFileId, PROFILE_FILE_ID]) {
+    const a = await fileB64(env, id);
+    if (a) attachments.push(a);
+  }
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -350,8 +380,9 @@ async function sendBdMail(env, to, subject, body) {
         from: 'Jacky Chen <official@step1ne.com>',
         to: [to], subject, text: body, html,
         reply_to: 'official@step1ne.com',
+        ...(attachments.length ? { attachments } : {}),
       }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(20000),
     });
     return r.ok;
   } catch {
@@ -937,7 +968,7 @@ export default {
             await ans('這封還沒有收件人 email，先去後台補上再核准');
             return new Response('ok');
           } else {
-            const ok2 = await sendBdMail(env, row.contact_email, row.subject, row.body);
+            const ok2 = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
             if (!ok2) { await ans('⚠️ 寄送失敗，信沒有送出去'); return new Response('ok'); }
             await env.DB.prepare(
               `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`
@@ -1834,7 +1865,7 @@ export default {
         }
         if (!row.contact_email) return json(request, { ok: false, error: '這封還沒有收件人 email' }, 400);
 
-        const sent = await sendBdMail(env, row.contact_email, row.subject, row.body);
+        const sent = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
         if (!sent) return json(request, { ok: false, error: '寄送失敗，信件沒有送出' }, 500);
         await env.DB.prepare(
           `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`

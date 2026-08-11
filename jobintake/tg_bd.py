@@ -74,17 +74,29 @@ def buttons(bid):
     ]]}
 
 
-def send_letter(bid, t):
-    """一封信一則訊息。窗口沒查到的照樣送審——顧問可能自己有人脈。"""
+def send_letter(bid, t, has_cv=True):
+    """一封信一則訊息。
+
+    顧問要判斷的第一件事是「這封有沒有錨點」——
+    有查到對方在徵什麼，這封的回覆率跟沒查到差很多。所以錨點放在最上面。
+    """
     to = t.get('contact_email') or '（窗口待補，核准前要先填）'
-    body = t.get('body') or ''
+    if t.get('probe'):
+        anchor = '🔍 探詢版（查不到公開職缺，主動問需求）'
+    elif t.get('job_title'):
+        anchor = (f"🎯 對到職缺：{_esc(t.get('job_title'))}"
+                  f"（{_esc(t.get('job_source') or '來源未填')}）")
+    else:
+        anchor = '⚠️ 沒有職缺錨點'
+    att = '📎 匿名履歷 ＋ 公司簡介' if has_cv else '⚠️ 只有公司簡介，匿名履歷產製失敗'
     text = (f"✉️ <b>{_esc(t.get('company'))}</b>\n"
+            f"{anchor}\n"
             f"收件：{_esc(to)}"
             + (f"　·　{_esc(t.get('contact_name'))}" if t.get('contact_name') else '') + '\n'
-            f"為什麼是這家：{_esc(t.get('why'))}\n"
+            f"{att}\n"
             f"────────────\n"
             f"<b>{_esc(t.get('subject'))}</b>\n\n"
-            f"{_esc(body[:2600])}")
+            f"{_esc((t.get('body') or '')[:2400])}")
     return _post('sendMessage', {
         'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True,
         'reply_markup': buttons(bid)})

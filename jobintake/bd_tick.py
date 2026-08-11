@@ -73,65 +73,138 @@ def pool(limit=12):
     return [r for r in rows if str(r.get('stage') or '') not in ('onboard', 'placed', '到職')]
 
 
-PROMPT = """你要做「反向開發」（MPC）：顧問想開發某一類客戶，
-你要從我們手上的人才庫裡挑出**真的配得上**的人，用他去敲還沒合作的公司。
+# ── 為什麼拆成兩支 prompt ──
+# 2026-08-11 第一版是一支大 prompt：挑人＋挑 5 家＋每家查 5 個求職管道＋寫 5 封信。
+# 結果 30 分鐘逾時，什麼都沒產出。查職缺是 IO 密集的工作，一家就要好幾次 WebSearch，
+# 五家串在同一次對話裡必然爆。
+# 拆開之後：第一支只做判斷（不上網，很快），第二支一家一次（各自可控）。
+# 任何一家查失敗也不會拖垮整批。
+
+PICK_PROMPT = """你是 Step1ne（德仁管理顧問）的業務開發。
 
 ## 顧問要開發什麼
 
 {ask}
 
-## 人才庫（都是已經面談過、但還沒到職的人）
+## 人才庫（面談過、還沒到職的人）
 
 {pool}
 
-## 你要產出
+## 你要做兩件事
 
-只輸出 JSON，不要有其他文字：
+### ① 從人才庫挑一個人
+
+配不上就說配不上（picked 填 null）。寄一封明顯不對題的信，那家公司以後就不會再看我們的信。
+
+### ② 列出 {n} 家目標公司
+
+- 要真的可能用到這種人的公司。寧可少而準。
+- 不要挑同業（人力銀行、獵頭、派遣公司）。
+- 不要挑我們客戶的終端客戶（例：客戶是設備商，它的終端晶圓廠不要挑）。
+- **這一步不要上網查職缺**，下一關會一家一家查。你只要給名單與理由。
+
+## 輸出
+
+只輸出 JSON：
 
 {{
-  "picked": "你挑中的人選 id（上面 [id=xxx] 那個）。挑不到就填 null",
-  "skip_reason": "如果挑不到，一句話說為什麼（例：庫裡沒有 MEP 背景的人）",
+  "picked": "挑中的人選 id（上面 [id=xxx]），挑不到填 null",
+  "skip_reason": "挑不到的話一句話說明",
   "candidate_ref": "內部代號，例如 MEP-0811-A。不可以是姓名",
-  "candidate_card": "匿名人選卡，5-8 行。寫背景、年資、能獨立處理什麼、稀缺在哪。
-    ⛔ 不可出現：姓名、現職公司名、前東家全名、學校全名、電話、Email。
+  "candidate_card": "匿名人選卡 5-8 行，給顧問看的內部摘要。
+    ⛔ 不可有姓名、現職公司名、前東家全名、學校全名、電話、Email。
     ⛔ 也不可以寫年齡、性別、役別、婚育、國籍、身心障礙——就業服務法第 5 條
-       禁止這些成為任用考量，我們主動寫進去等於把客戶推向違法。
-       『25 歲男性』要改成『工程資歷 1~2 年』這種只講能力的寫法。
-    產業可以寫（例：大型公用系統維運單位）。",
-  "targets": [
-    {{"company": "公司全名",
-      "why": "為什麼是這家。要連到人選的具體經歷，不能只寫『規模大』",
-      "contact_name": "窗口職稱或姓名，查不到寫 null",
-      "contact_email": "查到才寫，查不到寫 null",
-      "subject": "信件主旨",
-      "body": "信件全文，用 Jacky 的第一人稱"}}
-  ]
+       禁止這些成為任用考量，我們主動寫進去等於把客戶推向違法。",
+  "highlights": ["給對外信件用的重點精華 3-4 條，對著這個職能寫，同樣不可有可辨識資訊"],
+  "companies": [{{"company": "公司全名", "why": "為什麼是這家，一句話"}}]
 }}
+"""
 
-## 挑人的標準
 
-- **配不上就說配不上。** picked 填 null 比硬湊一個人去敲客戶好——
-  寄一封明顯不對題的信，那家公司以後就不會再看我們的信了。
-- 面談過的人優先（我們對他有第一手判斷）。
+LETTER_PROMPT = """你是 Step1ne（德仁管理顧問）的業務開發。目標：**把這家公司簽下來當客戶。**
 
-## 挑公司
+不是「介紹一個人」，是「用一個對得上的人選當敲門磚，換到一次對話」。
 
-- 挑 {n} 家。寧可少而準。
-- 不要挑同業（人力銀行、獵頭、派遣公司）。
-- 不要挑我們客戶的終端客戶。你不一定查得到，系統之後會再比對一次客戶名單。
+## 這一家
 
-## 信怎麼寫
+公司：{company}
+為什麼挑他：{why}
+顧問想開發的職能：{role}
 
-- **不提人選姓名、現職公司**，一個字都不行。
-- 第一段直接講「我手上有一位什麼樣的人」，不要先自我介紹三行。
-- 第二段講為什麼想到這家，要具體。
-- 結尾給對方好退場：「不合適就當我沒說」。
-- 全文 200-300 字。
+## 我們手上的人選（對外可用的重點，已去識別化）
+
+{highlights}
+
+## 第一步：查這家公司現在在招什麼
+
+管道全部都要試，不要查一個沒有就放棄：
+
+  104人力銀行　·　1111　·　CakeResume　·　公司官網的人才招募頁　·　LinkedIn Jobs
+
+用 WebSearch／WebFetch 實際去查，重點是找到跟上面這位人選對得上的職缺。
+查到要記下：**職缺名稱、地點、關鍵條件、你在哪個管道看到的、網址**。
+
+查不到公開職缺時分兩種：
+
+- **預設不開發**：`has_job=false`、`probe=false`。沒有錨點的信就是廣告信。
+- **例外，值得問問看**：`has_job=false`、`probe=true`。當這家明顯會用到這種人
+  （產業對、規模夠、近期有擴廠或得標新聞），主動問一句「近期有沒有這方面的人力需求」
+  本身就是開發，而且有機會問出沒公開的缺。信改成探詢語氣，**不可以假裝看到職缺**。
+
+⛔ **絕對不可以編造職缺。** 寫錯職缺名稱，這家公司就永遠不會回我們了。
+
+## 第二步：寫信
+
+**主旨**（決定會不會被打開）：
+
+- 要有具體的東西：職缺名 ＋ 人選最值錢的那一點
+- 12–24 字，手機看得完
+- 不要用「合作提案」「敬啟者」「毛遂自薦」「自我推薦」
+- 好例子：「貴公司廠務工程師｜一位消防＋空調＋電力都獨立扛過的人選」
+- 探詢版：「貴公司近期有廠務人力需求嗎？我這邊有一位剛釋出」
+
+**內文照這個順序，不要多加段落：**
+
+1. 一句自我介紹（一句，不是一段）：我是德仁管理顧問（Step1ne）的 Jacky
+2. **我在哪裡看到你們在徵什麼**，並複述一兩個他們寫的條件，證明你真的看過
+   （探詢版改成：為什麼想到這家公司）
+3. 「我這邊有一位配得上的人選」+ **3–4 條**重點精華，對著他們的條件寫
+4. 附件說明：匿名履歷（完整經歷、隱去可辨識資訊）與公司簡介
+5. 收尾：如果對這位人選有興趣可以進一步討論；不需要的話回一聲就不再打擾
+
+⛔ 不要推銷服務線（派遣／正職代招／中高階獵才），不要寫「想與貴公司合作」。
+   這封只做一件事：讓對方對這個人選有興趣而願意回信。合作是回信之後的事。
+
+- 全文 200–280 字。
 - 署名固定：
   Jacky Chen｜德仁管理顧問有限公司（Step1ne）
   電話／LINE ID：0958616744
   就業服務許可：北市就服字第 0363 號｜臺北市政府勞動局 114 年度評鑑 A 級
   https://step1ne.com/about/
+
+## 第三步：找收件窗口
+
+人資信箱、招募窗口 email。查不到填 null，顧問可能自己有人脈。
+
+## 輸出
+
+只輸出 JSON：
+
+{{
+  "company": "{company}",
+  "has_job": true,
+  "probe": false,
+  "job_title": "查到的職缺名稱，沒有填 null",
+  "job_source": "在哪個管道看到的，沒有填 null",
+  "job_url": "職缺網址，沒有填 null",
+  "job_requirements": "他們寫的關鍵條件，沒有填 null",
+  "contact_name": "窗口，查不到填 null",
+  "contact_email": "查不到填 null",
+  "subject": "信件主旨",
+  "body": "信件全文"
+}}
+
+⚠️ 如果 has_job=false 而且 probe=false，subject 與 body 都填 null，這家會被捨棄。
 """
 
 
@@ -152,16 +225,16 @@ def pool_text(ps):
     return '\n'.join(out)
 
 
-def run_commander(prompt, workdir):
+def run_commander(prompt, workdir, tag='prompt', timeout=900):
     os.makedirs(workdir, exist_ok=True)
-    open(os.path.join(workdir, 'prompt.txt'), 'w', encoding='utf-8').write(prompt)
+    open(os.path.join(workdir, f'{tag}.txt'), 'w', encoding='utf-8').write(prompt)
     r = subprocess.run(
         ['claude', '--print', '--model', MODEL,
          '--setting-sources', '', '--permission-mode', 'bypassPermissions'],
         input=prompt, capture_output=True, text=True, cwd=workdir,
-        env=D.env_with_cf(), timeout=1800)
+        env=D.env_with_cf(), timeout=timeout)
     out = (r.stdout or '').strip()
-    open(os.path.join(workdir, 'raw.txt'), 'w', encoding='utf-8').write(out)
+    open(os.path.join(workdir, f'{tag}.raw.txt'), 'w', encoding='utf-8').write(out)
     if not out:
         raise RuntimeError(f'總指揮沒有回應：{(r.stderr or "")[:300]}')
     s, e = out.find('{'), out.rfind('}')
@@ -184,6 +257,36 @@ def auto_mode():
     return len(clean) >= AUTO_AFTER
 
 
+
+def make_anon_pdf(app_id, workdir):
+    """產匿名履歷 PDF 並存進 files 表，回傳 file_id。
+
+    ⚠️ 一定要用 anon 模式：對方是還沒簽約的陌生公司，
+       給具名履歷等於未經同意把人選資料交出去。
+    """
+    import base64
+    out = os.path.join(workdir, f'anon_{app_id[:8]}.pdf')
+    r = subprocess.run(
+        ['python3', os.path.join(ROOT, 'make_anon_cv.py'), app_id, '--mode', 'anon', '--out', out],
+        capture_output=True, text=True, env=D.env_with_cf(), timeout=900)
+    if not os.path.exists(out):
+        log(f'⚠️ 匿名履歷產不出來，這批信不會有履歷附件：{(r.stderr or r.stdout)[-300:]}')
+        return None
+    b = open(out, 'rb').read()
+    b64 = base64.b64encode(b).decode()
+    fid = f'bdcv-{app_id[:8]}-{uuid.uuid4().hex[:6]}'
+    chunks = (len(b64) + 89999) // 90000
+    D.d1(f"""INSERT INTO files (id, created_at, filename, mime, size, chunks)
+             VALUES ({D.q(fid)}, datetime('now','+8 hours'),
+                     {D.q(os.path.basename(out).replace('anon_', '匿名履歷_'))},
+                     'application/pdf', {len(b)}, {chunks})""")
+    for i in range(chunks):
+        D.d1(f"INSERT INTO file_chunks (file_id, idx, b64) VALUES "
+             f"({D.q(fid)}, {i}, {D.q(b64[i * 90000:(i + 1) * 90000])})")
+    log(f'✅ 匿名履歷 PDF 已存（{len(b)//1024} KB，{chunks} chunk）')
+    return fid
+
+
 def handle(req):
     rid = req['id']
     D.d1(f"UPDATE bd_requests SET status='working', updated_at=datetime('now','+8 hours') "
@@ -196,13 +299,15 @@ def handle(req):
         tg_bd.send_head(f"⚠️ 開發需求「{req['role_family']}」跑不下去：人才庫裡沒有可用的履歷。")
         return
 
+    # ── 第一階段：挑人 ＋ 列名單（不上網，快）──
     spec = run_commander(
-        PROMPT.format(ask=ask_text(req), pool=pool_text(ps), n=req.get('target_count') or 6),
-        workdir)
-    json.dump(spec, open(os.path.join(workdir, 'spec.json'), 'w', encoding='utf-8'),
+        PICK_PROMPT.format(ask=ask_text(req), pool=pool_text(ps),
+                           n=req.get('target_count') or 6),
+        workdir, tag='pick', timeout=900)
+    json.dump(spec, open(os.path.join(workdir, 'pick.json'), 'w', encoding='utf-8'),
               ensure_ascii=False, indent=2)
 
-    if not spec.get('picked') or not spec.get('targets'):
+    if not spec.get('picked') or not spec.get('companies'):
         why = spec.get('skip_reason') or '總指揮沒有挑到配得上的人選'
         D.d1(f"UPDATE bd_requests SET status='failed', result_note={D.q(why)}, "
              f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
@@ -210,31 +315,71 @@ def handle(req):
                         f"（配不上就不硬湊——寄一封不對題的信，那家公司以後就不看我們的信了）")
         return
 
-    # 🚨 兩道關卡，順序不能換：先擋客戶，再掃就服法
+    # ── 客戶名單比對要在查職缺之前 ──
+    # 先擋掉不能碰的，免得白花十分鐘去查一家本來就不該敲的公司。
     clients = G.load_clients(D.d1)
-    ok, blocked, warned = G.filter_targets(spec['targets'], clients)
-    spec['targets'] = ok
+    ok_co, blocked, warned = G.filter_targets(spec['companies'], clients)
+    for b in blocked:
+        log(f'  ⛔ 移除 {b["company"]}：{b["why"]}（命中名單上的「{b["matched"]}」）')
+
+    # ── 第二階段：一家一次，各自去查職缺＋寫信 ──
+    hl = '\n'.join('・' + h for h in (spec.get('highlights') or []))
+    targets, no_anchor = [], []
+    for i, c in enumerate(ok_co):
+        name = c.get('company') if isinstance(c, dict) else str(c)
+        log(f'  [{i + 1}/{len(ok_co)}] 查 {name} 在招什麼⋯')
+        try:
+            t = run_commander(
+                LETTER_PROMPT.format(company=name, why=(c.get('why') if isinstance(c, dict) else ''),
+                                     role=req['role_family'], highlights=hl),
+                workdir, tag=f'letter{i}', timeout=900)
+        except Exception as e:
+            log(f'      ✗ 查不下去（{str(e)[:80]}），跳過這家')
+            continue
+        if not t.get('subject') or not t.get('body'):
+            no_anchor.append(name)
+            log(f'      · 查不到職缺、也不值得問問看 → 捨棄')
+            continue
+        anchor = ('探詢' if t.get('probe') else (t.get('job_title') or '無錨點'))
+        log(f'      ✓ {anchor}　窗口：{t.get("contact_email") or "待補"}')
+        targets.append(t)
+
+    spec['targets'] = targets
+    json.dump(spec, open(os.path.join(workdir, 'spec.json'), 'w', encoding='utf-8'),
+              ensure_ascii=False, indent=2)
+    if not targets:
+        why = f'{len(ok_co)} 家都查不到對得上的職缺，也不值得探詢'
+        D.d1(f"UPDATE bd_requests SET status='failed', result_note={D.q(why)}, "
+             f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
+        tg_bd.send_head(f"🟡 開發需求「{req['role_family']}」沒有出信\n原因：{why}")
+        return
+
+    # 就服法第 5 條掃描（客戶名單那一關在上面已經做過）
     law = scrub(spec)
     for lb, w in law:
         log(f'⚠️ 就服法第 5 條保護特徵出現在{lb}：「{w}」')
 
     batch = str(uuid.uuid4())[:8]
     auto = auto_mode() and not law     # 有法遵疑慮就一定要人看過，不自動寄
+    cv_fid = make_anon_pdf(spec['picked'], workdir)
     rows = []
-    for t in spec['targets']:
+    for t in targets:
         bid = str(uuid.uuid4())
         rows.append((bid, t))
         D.d1(f"""INSERT INTO bd_outreach
           (id, created_at, batch_id, request_id, candidate_ref, candidate_card, company,
-           why_company, contact_name, contact_email, subject, body, status, updated_at)
+           why_company, contact_name, contact_email, subject, body, status, updated_at,
+           cv_file_id, job_title, job_source, job_url, probe)
           VALUES ({D.q(bid)}, datetime('now','+8 hours'), {D.q(batch)}, {D.q(rid)},
                   {D.q(spec.get('candidate_ref') or batch)}, {D.q(spec.get('candidate_card'))},
                   {D.q(t.get('company'))}, {D.q(t.get('why'))}, {D.q(t.get('contact_name'))},
                   {D.q(t.get('contact_email'))}, {D.q(t.get('subject'))}, {D.q(t.get('body'))},
-                  'pending', datetime('now','+8 hours'))""")
+                  'pending', datetime('now','+8 hours'),
+                  {D.q(cv_fid)}, {D.q(t.get('job_title'))}, {D.q(t.get('job_source'))},
+                  {D.q(t.get('job_url'))}, {1 if t.get('probe') else 0})""")
 
     head = (f"🎯 開發需求：{req['role_family']}\n"
-            f"配對到人選 {spec.get('candidate_ref')}　·　{len(ok)} 家可敲"
+            f"配對到人選 {spec.get('candidate_ref')}　·　{len(targets)} 家出信"
             + (f"　·　⛔ {len(blocked)} 家被客戶名單擋下" if blocked else '')
             + '\n\n' + (spec.get('candidate_card') or ''))
     if blocked:
@@ -248,12 +393,12 @@ def handle(req):
     tg_bd.send_head(head)
 
     for bid, t in rows:
-        mid = tg_bd.send_letter(bid, t)
+        mid = tg_bd.send_letter(bid, t, has_cv=bool(cv_fid))
         if mid:
             D.d1(f"UPDATE bd_outreach SET tg_message_id={mid} WHERE id={D.q(bid)}")
 
     D.d1(f"UPDATE bd_requests SET status='done', batch_id={D.q(batch)}, "
-         f"result_note={D.q(f'{len(ok)} 家送審，{len(blocked)} 家被擋')}, "
+         f"result_note={D.q(f'{len(targets)} 家送審，{len(blocked)} 家被客戶名單擋，{len(no_anchor)} 家沒錨點')}, "
          f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
     log(f'✅ 需求 {rid[:8]}：送審 {len(rows)} 封，擋下 {len(blocked)} 家')
 
