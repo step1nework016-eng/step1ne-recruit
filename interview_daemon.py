@@ -890,6 +890,92 @@ def run_claude(prompt):
     return json.loads(out[i:j + 1])
 
 
+def snap_signals(app_id, at):
+    """阿財每發一次話就照一張行為快照。
+
+    為什麼要逐輪存：engagement 只有整場總計（離開幾次、貼上幾次），
+    但外語驗證真正要問的是「**在那一題**他有沒有切出去查翻譯」。
+    總計答不了這個問題——他可能是在別題離開的。
+    有了逐輪快照，用相鄰兩輪的差值就知道那一題發生了什麼。
+
+    ⚠️ 存不進去不能影響面談。這只是輔助訊號，不是流程的一環。
+    """
+    try:
+        eg = d1(f"SELECT * FROM engagement WHERE application_id={q(app_id)}")
+        e = eg[0] if eg else {}
+        n = d1(f"SELECT COUNT(*) c FROM turn_signals WHERE application_id={q(app_id)}")
+        seq = int((n[0]['c'] if n else 0)) + 1
+        d1(f"INSERT OR REPLACE INTO turn_signals "
+           f"(application_id, seq, at, away_count, away_seconds, paste_count, paste_chars, active_seconds) "
+           f"VALUES ({q(app_id)}, {seq}, {q(at)}, "
+           f"{int(e.get('away_count') or 0)}, {int(e.get('away_seconds') or 0)}, "
+           f"{int(e.get('paste_count') or 0)}, {int(e.get('paste_chars') or 0)}, "
+           f"{int(e.get('active_seconds') or 0)})")
+    except Exception as ex:
+        log(f'（行為快照沒存成，不影響面談：{ex}）')
+
+
+def answer_timing(app_id):
+    """每一則回答花了多久、期間有沒有切走或貼上。
+
+    ⚠️ 這一段的用途很窄：**驗外語那一題**。
+    2026-08-11 Jacky 問「怎麼防止人選去 Google 翻譯」——
+    文字面談擋不住翻譯，但可以讓它留下痕跡：
+    翻譯來回一定要切出視窗、要花時間、常常是貼上的。
+
+    ⚠️ 只呈現事實，不下判斷。有人切出去是查自己的舊資料，那是認真不是作弊。
+    """
+    msgs = d1(f"SELECT role, content, created_at FROM messages "
+              f"WHERE application_id={q(app_id)} ORDER BY id ASC")
+    snaps = d1(f"SELECT seq, at, away_count, away_seconds, paste_count, paste_chars "
+               f"FROM turn_signals WHERE application_id={q(app_id)} ORDER BY seq ASC")
+    if not msgs:
+        return ''
+    fmt = '%Y-%m-%d %H:%M:%S'
+
+    def t(s):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except Exception:
+            return None
+
+    out, last_q = [], None
+    for m in msgs:
+        if m['role'] == 'assistant':
+            last_q = m
+            continue
+        if not last_q or '候選人已進入' in (m['content'] or ''):
+            continue
+        a, b = t(last_q['created_at']), t(m['created_at'])
+        if not a or not b:
+            continue
+        sec = int((b - a).total_seconds())
+        # 這段時間內的行為差值：找出落在 [問, 答] 之間的快照
+        before = [s for s in snaps if t(s['at']) and t(s['at']) <= a]
+        after = [s for s in snaps if t(s['at']) and t(s['at']) >= b]
+        d = ''
+        if before and after:
+            x, y = before[-1], after[0]
+            da = int(y['away_count'] or 0) - int(x['away_count'] or 0)
+            ds = int(y['away_seconds'] or 0) - int(x['away_seconds'] or 0)
+            dp = int(y['paste_count'] or 0) - int(x['paste_count'] or 0)
+            bits = []
+            if da:
+                bits.append(f'期間切走 {da} 次共 {ds} 秒')
+            if dp:
+                bits.append(f'貼上 {dp} 次')
+            d = ('　' + '、'.join(bits)) if bits else '　期間沒有切走也沒有貼上'
+        out.append(f'  「{(last_q["content"] or "")[:34]}…」→ 回覆花了 {sec} 秒'
+                   f'（{len(m["content"] or "")} 字）{d}')
+        last_q = None
+    if not out:
+        return ''
+    return ('【每一題的回覆時間與行為（只呈現事實，不下判斷）】\n' + '\n'.join(out)
+            + '\n  ⚠️ 判讀外語那一題時才特別看這一段：'
+              '翻譯來回一定要切出視窗、要花時間，而且常常是貼上的。'
+              '其他題目切走可能只是去查自己的舊資料，那是認真不是作弊。')
+
+
 def engagement_block(app_id):
     """算這場面談的投入度，回傳一段給報告用的文字（沒資料就回空字串）。
 
@@ -1202,6 +1288,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         + resume_block
         + '\n\n【逐字稿】\n' + transcript
         + (('\n\n' + engagement_block(app_id)) if engagement_block(app_id) else '')
+        + (('\n\n' + answer_timing(app_id)) if answer_timing(app_id) else '')
         + ('\n\n⚠️ 這場面談沒有正式收尾——候選人在最後一則之後就沒有再回應，'
            '推測是關掉視窗離開。請在報告開頭註明「面談未完成（候選人中途離開）」，'
            '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
@@ -1331,6 +1418,7 @@ def handle(app):
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in msgs)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+        snap_signals(app_id, now)
         log(f'{name}：回了 {len(msgs)} 則')
 
         if result.get('end') or n >= MAX_TURNS:
