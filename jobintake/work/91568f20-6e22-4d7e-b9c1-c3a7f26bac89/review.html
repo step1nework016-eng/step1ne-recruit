@@ -1,0 +1,132 @@
+<!doctype html><meta charset="utf-8">
+<title>新職缺｜上架擬稿說明</title>
+<style>
+:root{--gold:#a67c3d;--ink:#23262d;--ink2:#4d5563;--ink3:#8a8d95;--line:#eee7db;--soft:#faf8f3;--bad:#c0392b}
+*{box-sizing:border-box}
+body{margin:0;background:#f4f1ea;color:var(--ink);font:15px/1.75 -apple-system,"Noto Sans TC",sans-serif;padding:22px 14px}
+.wrap{max-width:820px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:20px 22px;margin-bottom:13px}
+.hero{background:var(--ink);color:#fff;border-radius:17px;padding:22px 24px;margin-bottom:13px}
+.hero h1{font-size:21px;margin:0 0 4px}
+.hero p{margin:0;color:#a8adb8;font-size:13.5px}
+.meta{display:flex;gap:22px;flex-wrap:wrap;border-top:1px solid #3a3f49;margin-top:14px;padding-top:13px;font-size:12px;color:#a8adb8}
+.meta b{display:block;color:#fff;font-size:14px;font-weight:600;margin-top:2px}
+h2{font-size:15px;margin:22px 0 10px;color:var(--gold)}
+h1,h3{font-size:15.5px;margin:18px 0 8px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--soft);color:var(--ink3);font-size:12.5px}
+blockquote{margin:10px 0;padding:11px 14px;background:var(--soft);border-left:3px solid var(--gold);border-radius:0 9px 9px 0;font-size:13.5px;color:var(--ink2)}
+li{margin-bottom:5px;color:var(--ink2)}
+p{margin:8px 0;color:var(--ink2)}
+.hits{list-style:none;padding:0;margin:8px 0}
+.hits li{background:var(--soft);border-radius:9px;padding:9px 12px;margin-bottom:6px;font-size:13.5px}
+.hits li b{color:var(--bad);margin-right:9px}
+.hits.ok li b{color:var(--gold)}
+.warn{background:#fdecea;border:1px solid #f3c7c1;border-radius:11px;padding:13px 16px;color:#8a2b20;font-size:14px;margin-bottom:13px}
+.miss{background:#fdf6e9;border:1px solid #e8d5ab;border-radius:11px;padding:13px 16px;color:#8a5a1a;font-size:14px;margin-bottom:13px}
+.none{color:var(--ink3);font-size:13.5px}
+</style>
+<div class="wrap">
+<div class="hero">
+  <h1>（無標題）</h1>
+  <p>/jobs/?/</p>
+  <div class="meta">
+    <div>服務線<b>正職代招</b></div>
+    <div>客戶對象<b>朋友認識・私人協助</b></div>
+    <div>履歷<b>具名</b></div>
+    <div>AI 揭露<b>never</b></div>
+    <div>報告品牌<b>不掛品牌</b></div>
+  </div>
+</div>
+<div class="miss"><b>❓ 待你確認</b>（來源沒給，頁面上暫時不會出現）<br>工作地點、薪資下限、薪資上限、職缺導言、工作內容、應徵條件（必要）</div>
+<div class="card">
+  <h2>🚫 原稿擋下 0 處</h2>
+  <p class="none">（沒有命中）</p>
+  <h2>🔎 成品再掃一次</h2>
+  <p class="none">（沒有命中）</p>
+</div>
+<div class="card"><h1>職缺上架擬稿報告</h1>
+<blockquote>結論先講：這件不能上架。 顧問送進來的原始資料只有一串測試字串</blockquote>
+<blockquote>DEDUPE-TEST-2，沒有附檔案，也沒有任何職缺內容。</blockquote>
+<blockquote>我沒有替你把欄位補滿——照規範，寧可頁面短，也不刊沒驗證過的工作條件。</blockquote>
+<blockquote>spec.json 只留了服務線推得出來的兩個欄位，其餘全空。</blockquote>
+<p>---</p>
+<h2>一、我擋掉了什麼</h2>
+<p>規則式禁刊掃描沒有命中任何一條，我自己再逐條比對 Phase 2 的五類禁刊，結果如下：</p>
+<table>
+<tr><th>禁刊類型</th><th>本件狀況</th></tr>
+<tr><td>委任客戶公司名稱</td><td>無可判定。client_named = 1（已簽約可具名），但來源根本沒給公司名，所以頁面上目前也寫不出來。等你補了公司名，因為可具名，不需要匿名化改寫。</td></tr>
+<tr><td>歧視性條件（國籍／年齡／性別／婚育／容貌）</td><td>無。來源沒有任何條件敘述。</td></tr>
+<tr><td>內部獵頭搜尋策略</td><td>無。</td></tr>
+<tr><td>內部溝通備註</td><td>無。</td></tr>
+<tr><td>標註「待確認」的欄位</td><td>嚴格說，整份都是待確認，見第二段。</td></tr>
+</table>
+<p>規則掃不到、但我認為必須擋下來的一項：</p>
+<li>來源本身就不是職缺資料。 DEDUPE-TEST-2 看起來是你在測重複偵測／流程串接時</li>
+<p>  丟進來的測試 payload。這種輸入最危險的失敗模式，是 AI 為了「產出完整頁面」自行</p>
+<p>  腦補職稱、薪資、工作內容，產出一份看起來很完整、實際上整份都是編的 JD——一旦上線，</p>
+<p>  求職者投遞的是不存在的缺，阿財（AI 面談）也會拿假條件去面談、報告還會歸錯客戶。</p>
+<p>  所以我主動中止產稿，只寫出空殼 spec 並在 notes 標「不可上架」。</p>
+<li>順帶一提：如果這確實是測試件，建議測完後從佇列刪除，不要讓它留在 jobs 表裡，</li>
+<p>  免得日後有人誤以為是真缺而接手上架。</p>
+<p>---</p>
+<h2>二、待顧問確認</h2>
+<p>以下每一項求職者都一定會問，而來源全部沒有。這不是挑剔，是這份稿子連骨架都還沒有：</p>
+<p>最低限度、缺了就無法上架的（必填）</p>
+<p>1. 對外職稱——決定 title、slug、H1、&lt;title&gt; 與申請表下拉選單文字，是所有欄位的源頭。</p>
+<p>2. 公司名稱——本件 client_named = 1 可具名，但你沒給名字。是否確實要具名寫出？</p>
+<p>3. 工作地點——完整地址／至少縣市＋區（locality / region / locations）。</p>
+<p>4. 薪資——具體區間，或明確是「依經驗面議」。</p>
+<p>   - 若客戶給的是學歷分級表（例：一般大學 35K／前段校 43K），只公開總區間，不公開分級細節，避免被解讀成學歷歧視。</p>
+<p>   - 純面議則頁面寫「依經驗面議」，schema 不放 baseSalary。</p>
+<p>5. 工作內容——至少 3–5 條，我才有辦法改寫成求職者視角（不會直接貼客戶原文）。</p>
+<p>6. 必要條件 / 加分條件——含年資、學歷、語言、證照。</p>
+<p>會影響求職者投或不投、強烈建議補的</p>
+<p>7. 上下班時間、班別（早／中／晚／輪班）、加班常態與加班費計算方式</p>
+<p>8. 休假制度（週休二日？排休？）</p>
+<p>9. 需求人數</p>
+<p>10. 是否需出差、外派、駐點客戶端</p>
+<p>11. 福利（三節、年終、保險、教育訓練、交通／伙食補助）</p>
+<p>12. 產業別（industry）與職缺卡分類鍵（cat）——決定它掛在職缺專區哪個篩選按鈕下</p>
+<p>13. 面談流程說明——本件 ai_disclosure = never，所以流程要用中性描述（例：「初步電話／線上訪談」），</p>
+<p>    頁面與通知信一律不得提到 AI 面談、不得寫「阿財」。</p>
+<p>已由你決定、我不動也不再問（記錄備查）</p>
+<li>服務線：正職代招（標準版頁面）</li>
+<li>客戶對象：朋友認識・私人協助</li>
+<li>client_named = 1（可具名）</li>
+<li>ai_disclosure = never</li>
+<li>報告品牌：none — 客戶版報告不得有任何 Step1ne 痕跡：標題只寫「人選推薦」不寫「STEP1NE 人選推薦」、</li>
+<p>  不放 logo、拿掉頁尾德仁管理顧問／統一編號／就業服務許可證字號、聲明段落不提公司名。</p>
+<p>  （履歷本身仍具名，這點不變。）</p>
+<p>---</p>
+<h2>三、服務線與同名職缺</h2>
+<p>服務線判定：正職招募（正職代招・標準版）</p>
+<p>理由：這是你在派件時直接指定的，我不覆蓋。用 Phase 3 的訊號回頭驗算也不衝突——</p>
+<p>來源沒有「派遣雇主是自家公司／有轉正條件／時薪制基層職」的派遣訊號，也沒有</p>
+<p>「年薪百萬以上／主管職／需保密」的高階獵才訊號，沒有訊號指向另外兩條服務線，</p>
+<p>所以維持正職。頁面走標準版：標籤「正職」，不加派遣權益 FAQ，也不加</p>
+<p>「我還在職，投遞會不會曝光？」那類高階獵才 FAQ。</p>
+<p>對應寫進 spec 的只有 employment: [&quot;FULL_TIME&quot;] 與 track: &quot;fulltime&quot; 兩項——</p>
+<p>這是唯一能從你已確認的服務線安全推導出來、不涉及任何猜測的欄位。</p>
+<p>同名職缺區隔：本次無法執行</p>
+<p>Phase 4.5 要求「先查再寫」，但比對的起點是對外職稱，本件沒有職稱，</p>
+<p>D1 的 SELECT ... FROM jobs WHERE title LIKE &#x27;%…%&#x27; 連查詢字串都組不出來，</p>
+<p>因此這一關跳過，未執行，不是「查過沒有重複」。等你補上職稱後我會補跑。</p>
+<p>補跑時會做的事，先講清楚，你補資料時可以順便把區隔想好：</p>
+<p>1. 查 D1 有無同／近似職稱的既有職缺。</p>
+<p>2. 若有，只用求職者分得出來的維度區隔，優先序：班別 → 薪資帶 → 僱傭型態 → 外語加給 → 地點。</p>
+<p>   絕不用「A 公司／B 公司」「甲客戶」或編號——那等同洩漏客戶，跟直接寫公司名一樣違規。</p>
+<p>3. slug 依 &lt;領域&gt;-&lt;職務&gt;-&lt;地點&gt;-&lt;區隔&gt; 命名，要能自我說明；不接受 xxx-2、xxx-b、xxx-new。</p>
+<p>   ⚠️ 特別提醒：DEDUPE-TEST-2 這串字不可以流進 slug 或任何對外欄位。</p>
+<p>4. 若兩頁高度相似，判準是「求職者會不會兩個都投？」——會就分兩頁並讓標題／導言／</p>
+<p>   工作內容有實質差異（區隔字串要進 H1、&lt;title&gt;、meta description 與導言第一句）；</p>
+<p>   不會就合併，或次要頁掛 canonical 指向主頁，避免關鍵字互搶導致兩頁都排不上。</p>
+<p>5. 申請表下拉選單文字必須＝頁面標題（含區隔字串），否則阿財會抓錯 JD、報告歸錯客戶。</p>
+<p>---</p>
+<h2>下一步</h2>
+<p>把第二段 1–6 項補齊（有 JD 檔案直接丟檔最快，PDF／Excel／Word／純文字都可以），</p>
+<p>我會重跑 Phase 1 → 4.5，產出完整的 spec.json 與這份報告的正式版。</p>
+<p>依規範，我在此停手：沒有 git push、沒有執行 publish_job.py、沒有碰</p>
+<p>step1ne-stopgap-site 底下任何檔案，只寫出 spec.json 與 report.md 兩個檔。</p></div>
+</div>

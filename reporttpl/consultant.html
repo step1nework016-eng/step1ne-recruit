@@ -1,0 +1,234 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>面談報告 · {{NAME}}（顧問版）</title>
+<!--
+  顧問版（內部）樣板。內容＝客戶版全部 ＋ 動機與意願、價值觀、履歷vs口述落差、
+  人格觀察與驗證、追問三件事、系統紀錄。頂端固定標「顧問初審版 · 內部使用」。
+  ⚠️ 版面是 2026-08-10 拍板的，只把資料換成 {{變數}}，不要重新設計。
+  ⚠️ 處置按鈕不進 PDF（PDF 裡按鈕按不下去），照規格換成一行「請至顧問後台操作」。
+  列印用的 @media print 與客戶版是同一套：卡片可跨頁，只保護小單位。
+-->
+<style>
+:root{--gold:#a67c3d;--gold2:#c9a049;--ink:#23262d;--ink2:#4d5563;--ink3:#8a8d95;
+ --line:#eee7db;--soft:#faf8f3;--ok:#2f8f5b;--warn:#c98a1e;--bad:#c0392b;--bg:#f4f1ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+ font:15px/1.75 -apple-system,"Noto Sans TC",sans-serif;padding:26px 14px}
+.wrap{max-width:840px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin-bottom:14px}
+h2{font-size:14px;margin:0 0 15px;letter-spacing:.06em;color:var(--ink3);font-weight:700}
+h3{font-size:13.5px;margin:20px 0 9px;color:var(--gold)}
+h3:first-of-type{margin-top:4px}
+.hero{background:var(--ink);color:#fff;border-radius:18px;padding:24px 26px;margin-bottom:14px}
+.mark{display:inline-block;background:#3a3f49;color:#c9a049;font-size:11px;font-weight:700;
+ letter-spacing:.1em;border-radius:6px;padding:4px 10px;margin-bottom:12px}
+.tier{display:inline-block;background:var(--warn);color:#fff;font-size:12.5px;font-weight:800;
+ border-radius:999px;padding:5px 15px}
+.hero h1{font-size:15px;font-weight:600;color:#b9bec8;margin:15px 0 4px}
+.hero .pos{font-size:21px;line-height:1.5;margin:0 0 4px;font-weight:700}
+.hero .nm{font-size:13px;color:#a8adb8;margin:0 0 18px}
+.sr{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}
+@media(max-width:640px){.sr{grid-template-columns:1fr}}
+.sr div{background:#2e323b;border-radius:11px;padding:12px 15px;font-size:13.5px;line-height:1.65}
+.sr b{display:block;font-size:11.5px;letter-spacing:.08em;margin-bottom:4px}
+.sr .g b{color:#7fd0a0} .sr .r b{color:#f0a79e}
+.nums{display:flex;gap:26px;flex-wrap:wrap;border-top:1px solid #3a3f49;padding-top:15px}
+.nums div{font-size:12px;color:#a8adb8}
+.nums b{display:block;color:#fff;font-size:16px;font-weight:700;margin-top:2px}
+.alert{background:#fdecea;border:1px solid #f3c7c1;border-radius:11px;padding:13px 16px;
+ font-size:14px;color:#8a2b20;margin-bottom:16px}
+.lead{font-size:15.5px;color:var(--ink2);margin:0 0 4px}
+.mot{display:grid;grid-template-columns:auto 1fr;gap:8px 15px;margin:0;font-size:14px}
+.mot dt{color:var(--ink3);white-space:nowrap}
+.mot dd{margin:0;color:var(--ink2)}
+.gap{color:var(--bad);font-weight:600}
+.tags{display:flex;flex-wrap:wrap;gap:7px}
+.tags span{background:#fdf6e9;border:1px solid #e8d5ab;border-radius:999px;
+ padding:5px 13px;font-size:13px;color:#8a5a1a;font-weight:600}
+.src{font-size:12px;color:var(--ink3);margin:9px 0 0}
+.track{position:relative;margin:14px 0 18px;padding-top:26px;display:flex;overflow-x:auto}
+.track::before{content:"";position:absolute;top:9px;left:0;right:0;height:2px;background:var(--line)}
+.track div{flex:1 1 0;min-width:132px;position:relative;padding-right:14px;font-size:12.5px;line-height:1.55}
+.track div::before{content:"";position:absolute;top:-23px;left:0;width:11px;height:11px;
+ border-radius:50%;background:#fff;border:2.5px solid var(--gold2)}
+.track div:last-child::before{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px #f0e3c9}
+.track div b{display:block;font-size:13.5px;color:var(--ink);margin-bottom:1px}
+.track div i{font-style:normal;color:var(--ink3);font-size:11.5px;display:block}
+.track div s{text-decoration:none;color:var(--gold);font-size:12px;font-weight:700;display:block;margin-bottom:4px}
+.track div s.unk{color:#b9bcc4}
+.track div u{text-decoration:none;color:var(--ink3);font-size:11px;display:block;margin-top:3px}
+.track div em{font-style:normal;display:inline-block;font-size:10.5px;border-radius:5px;
+ padding:1px 6px;margin-top:4px;font-weight:600;background:#f2efe8;color:#8a8d95}
+.track div em.no{background:#fdecea;color:#a8392b}
+.track div.dim::before{border-style:dashed;border-color:#c9c4b8}
+.track div.dim b{color:var(--ink3)}
+.miss{background:#fdf6e9;border:1px solid #e8d5ab;border-radius:10px;padding:12px 15px;
+ font-size:13.5px;color:#8a5a1a;margin-top:12px}
+.cond{display:grid;gap:8px}
+.cond div{display:grid;grid-template-columns:20px 1fr;gap:11px;align-items:start;
+ background:var(--soft);border-radius:10px;padding:11px 14px;font-size:14px}
+.cond em{font-style:normal;color:var(--ink2);font-size:13px;display:block;margin-top:2px}
+.cond u{text-decoration:none;color:var(--ink3);font-size:11.5px;display:block;margin-top:3px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:700px){.two{grid-template-columns:1fr}}
+.bar{margin-bottom:12px}
+.bl{display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:5px}
+.bt{height:8px;background:#efe9dd;border-radius:99px;overflow:hidden}
+.bt i{display:block;height:100%;background:linear-gradient(90deg,var(--gold2),var(--gold))}
+.chk{font-size:12.5px;margin-top:5px}
+.chk.ok{color:var(--ok)} .chk.non{color:var(--ink3)}
+ol{margin:0;padding-left:20px} ol li{margin-bottom:9px;color:var(--ink2);font-size:14px}
+ol li b{color:var(--ink)}
+.risk{background:#fdecea;border:1px solid #f3c7c1;border-radius:10px;padding:12px 15px;
+ font-size:13.5px;color:#8a2b20;margin-top:12px}
+.spec{display:grid;gap:15px}
+.spec div{display:grid;grid-template-columns:82px 1fr 82px;gap:12px;align-items:center;font-size:12px}
+.spec s{text-decoration:none;color:var(--ink3);text-align:right}
+.spec u{text-decoration:none;color:var(--ink);font-weight:600}
+.spec i{position:relative;height:6px;border-radius:99px;
+ background:linear-gradient(90deg,#efe9dd,#e3d3ae);display:block}
+.spec i::after{content:"";position:absolute;top:50%;left:var(--p);width:13px;height:13px;
+ margin:-6.5px 0 0 -6.5px;border-radius:50%;background:var(--gold);border:2.5px solid #fff;
+ box-shadow:0 0 0 1.5px var(--gold)}
+.jobs{display:grid;gap:11px}
+.jobs>div{background:var(--soft);border-radius:11px;padding:13px 16px}
+.jobs b{font-size:14px}
+.jobs s{text-decoration:none;color:var(--gold);font-size:11.5px;font-weight:700;margin-left:9px}
+.jobs s.unk,.jobs s .unk{color:#b9bcc4;font-weight:600}
+.jobs>div>p{margin:5px 0 0;font-size:13.5px;color:var(--ink2);line-height:1.7}
+.note{font-size:12px;color:var(--ink3);margin:11px 0 0}
+.files{display:flex;gap:9px;flex-wrap:wrap;margin-top:15px}
+.files a{font-size:13.5px;font-weight:600;text-decoration:none;border:1px solid var(--line);
+ border-radius:999px;padding:9px 18px;color:var(--ink2);background:#fff}
+details{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 20px}
+summary{cursor:pointer;font-size:13.5px;color:var(--ink3);font-weight:600}
+details dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:14px 0 0;font-size:13px}
+details dt{color:var(--ink3)} details dd{margin:0;color:var(--ink2)}
+</style>
+<style>
+@page{size:A4;margin:10mm}
+@media print{
+  body{background:#fff;padding:0}
+  .wrap{max-width:none}
+  /* 跟客戶版同一套：卡片可跨頁，只保護不該被切開的小單位，
+     不然整張卡搬到下一頁會在前一頁留下大片空白 */
+  .card{break-inside:auto;margin-bottom:9px;padding:15px 18px}
+  .hero{padding:18px 20px;margin-bottom:9px}
+  h2{margin-bottom:11px}
+  h3{margin:15px 0 7px;break-after:avoid}
+  .jobs>div,.cond div,.miss,.risk,.alert,.spec div,.bar,ol li,details{break-inside:avoid}
+  h2,h3,.jobs b{break-after:avoid}
+  .two{grid-template-columns:1fr 1fr}
+  .jobs{gap:8px}
+  .jobs>div{padding:11px 14px}
+  .track{margin:10px 0 14px}
+  ol li{margin-bottom:6px}
+  .mot{gap:6px 15px}
+}
+</style>
+<div class="wrap">
+
+<div class="hero">
+  <span class="mark">顧問初審版 · 內部使用</span><br>
+  <span class="tier">{{VERDICT}}</span>
+  <h1>一句話定位</h1>
+  <p class="pos">{{ONE_LINER}}</p>
+  <p class="nm">{{NAME}}　→　{{JOB}}</p>
+  <div class="sr">
+    <div class="g"><b>最大賣點</b>{{SELLING_POINT}}</div>
+    <div class="r"><b>最大風險</b>{{TOP_RISK}}</div>
+  </div>
+  <div class="nums">{{NUMS}}</div>
+</div>
+
+<div class="card">
+  <h2>② 面談結果總結</h2>
+  {{ABANDONED_ALERT}}
+  <p class="lead">{{SUMMARY}}</p>
+
+  <h3>動機與意願</h3>
+  <dl class="mot">{{MOTIVATION}}</dl>
+
+  <!--@IF:values@-->
+  <h3>價值觀 · 從對話推得</h3>
+  <div class="tags">{{VALUES}}</div>
+  <p class="src">{{VALUES_BASIS}}</p>
+  <!--@ENDIF:values@-->
+</div>
+
+<!--@IF:history@-->
+<div class="card">
+  <h2>③ 工作經歷</h2>
+  <div class="track">{{TRACK}}</div>
+  <div class="jobs">{{JOBS}}</div>
+  <dl class="mot" style="margin-top:14px">{{FACTS}}</dl>
+  <!--@IF:gaps@-->
+  <div class="alert" style="margin:14px 0 0">
+    <b>⚠️ 履歷 vs 口述</b>
+    <table style="width:100%;border-collapse:collapse;margin-top:9px;font-size:13.5px">{{GAPS}}</table>
+    <p style="margin:9px 0 0;font-size:13px"><b>對不上不代表他說謊</b>——履歷可能久未更新。
+    但每一條都要在電訪時對過一次。</p>
+  </div>
+  <!--@ENDIF:gaps@-->
+  <div class="files">{{FILES}}</div>
+</div>
+<!--@ENDIF:history@-->
+
+<!--@IF:cond@-->
+<div class="card">
+  <h2>④ 硬條件逐條核對</h2>
+  <div class="cond">{{COND}}</div>
+</div>
+<!--@ENDIF:cond@-->
+
+<div class="two">
+  <div class="card">
+    <h2>⑤ 人格與行為觀察</h2>
+    {{ASSESSMENT}}
+    <p class="note">分數是他自填的自我描述，不是能力評價。「印證」只表示面談行為與自述相符。</p>
+  </div>
+
+  <div class="card">
+    <h2>⑥ 他問了什麼</h2>
+    {{ASKED}}
+    <!--@IF:style@-->
+    <h3>溝通風格</h3>
+    <p style="font-size:13.5px;color:var(--ink2);margin:0">{{STYLE}}</p>
+    <!--@ENDIF:style@-->
+  </div>
+</div>
+
+<!--@IF:forclient@-->
+<div class="card">
+  <h2>⑦ 要跟客戶說什麼</h2>
+  <ol>{{REASONS}}</ol>
+  {{RISKS}}
+</div>
+<!--@ENDIF:forclient@-->
+
+<!--@IF:spectrum@-->
+<div class="card">
+  <h2>⑧ 特質與風格（客戶版會看到的那張光譜）</h2>
+  <div class="spec">{{SPEC}}</div>
+  <p class="note">客戶版不給數字、只給光譜與「非標準化測驗結果」的註記。{{SPEC_NOTE}}</p>
+</div>
+<!--@ENDIF:spectrum@-->
+
+<!--@IF:followups@-->
+<div class="card">
+  <h2>⑨ 你要追問的事</h2>
+  <ol>{{FOLLOWUPS}}</ol>
+</div>
+<!--@ENDIF:followups@-->
+
+<div class="card">
+  <h2>⑩ 你的處置</h2>
+  <p class="note" style="margin:0">請至顧問後台操作：https://step1ne.com/consultant/reports/</p>
+</div>
+
+<details open>
+  <summary>▸ 系統紀錄（你平常不用看）</summary>
+  <dl>{{SYSREC}}</dl>
+</details>
+
+</div>

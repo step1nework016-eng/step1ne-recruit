@@ -35,19 +35,6 @@ ROOM_HARD_LIMIT_MIN = 60  # 不管有沒有聊完，滿一小時就強制關閉�
 
 # Step1ne LINE 官方帳號。沒履歷的候選人收尾時要給他這個，
 # 讓他接得上真人顧問、也有地方可以把履歷傳過來。
-# ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
-#
-# 原本什麼都往 2855 塞，變成大雜燴：要按按鈕的跟純告知的混在一起，
-# 重要的被洗掉。判準是「顧問要不要動手」：
-#
-#   2855 面試通知確認 ← 只放需要人決定／回應的（SOS、審核卡、停滯提醒）
-#    304 #4 履歷池   ← 面談報告與 PDF。那是資料不是決策，有空再看
-#   1360 系統回報     ← 排程結果、錯誤、逾時失敗。出事才看
-#      4 #3履歷進件   ← 新應徵、開始面談（Worker 那邊在用）
-THREAD_DECIDE = 2855
-THREAD_POOL = 304
-THREAD_SYSTEM = 1360
-
 LINE_OA_URL = 'https://lin.ee/XcSWPzM'
 
 # ── 阿財一律不帶任何工具 ──
@@ -204,7 +191,7 @@ def notify_candidate(app_id, abandoned):
         log(f'候選人通知信失敗：{e}')   # 寄不出去不該影響報告與顧問通知
 
 
-def tg(text, thread=None):
+def tg(text):
     # 這支用獨立的設定檔（step1ne-tg.env），不要跟總指揮 yuqi 共用的 tg.env 混在一起——
     # 2026-07-31 差點把 yuqi 的 bot token 換成這個 bot，那樣 yuqi 會整個換身分。
     try:
@@ -212,9 +199,8 @@ def tg(text, thread=None):
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
         body = {'chat_id': e['TG_CHAT_ID'], 'text': text}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
-        if tid:
-            body['message_thread_id'] = tid
+        if e.get('TG_THREAD_ID'):
+            body['message_thread_id'] = e['TG_THREAD_ID']
         urllib.request.urlopen(
             f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
             data=urllib.parse.urlencode(body).encode(),
@@ -223,7 +209,7 @@ def tg(text, thread=None):
         log(f'Telegram 推播失敗：{ex}')
 
 
-def tg_doc(data, filename, caption='', thread=None):
+def tg_doc(data, filename, caption=''):
     """把檔案當附件推到同一個 Telegram 群組。
 
     為什麼要有這支：原本只推一行「報告在後台」＋連結。但顧問多半是在外面用手機
@@ -238,8 +224,6 @@ def tg_doc(data, filename, caption='', thread=None):
                  if '=' in l and not l.startswith('#'))
         b = '----s1' + uuid.uuid4().hex
         parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{e["TG_CHAT_ID"]}\r\n'.encode()]
-        if thread is not None:
-            e = dict(e, TG_THREAD_ID=str(thread))
         if e.get('TG_THREAD_ID'):
             parts.append(f'--{b}\r\nContent-Disposition: form-data; name="message_thread_id"'
                          f'\r\n\r\n{e["TG_THREAD_ID"]}\r\n'.encode())
@@ -277,7 +261,7 @@ def push_report_files(app_id, name, job_slug):
         if r.returncode == 0 and os.path.exists(out):
             with open(out, 'rb') as f:
                 tg_doc(f.read(), f'初篩報告_{name}_{job_slug}.pdf',
-                       f'📄 {name} 的初篩報告與逐字稿', THREAD_POOL)
+                       f'📄 {name} 的初篩報告與逐字稿')
             os.remove(out)
         else:
             log(f'報告 PDF 產生失敗：{(r.stderr or r.stdout or "")[-200:]}')
@@ -303,7 +287,7 @@ def push_report_files(app_id, name, job_slug):
                 tg(f'🔗 {name} 沒有上傳履歷檔，他留的是連結：\n{url}\n'
                    + ('（內容有抓到，阿財面談時看得到）' if ok
                       else f'⚠️ 這個連結抓不到內容（{note or "尚未解析"}），阿財面談時看不到，'
-                           '報告只根據對話內容'), THREAD_POOL)
+                           '報告只根據對話內容'))
             else:
                 log(f'{name} 沒有履歷檔也沒有履歷連結')
         else:
@@ -321,7 +305,7 @@ def push_report_files(app_id, name, job_slug):
                 # 再加一次會變成「履歷_周承緯_周承緯.pdf」。含了就不重複加。
                 stem = fn.rsplit('.', 1)[0]
                 out = fn if name in stem else f'履歷_{name}_{fn}'
-                tg_doc(base64.b64decode(b64), out, f'📎 {name} 的履歷原檔', THREAD_POOL)
+                tg_doc(base64.b64decode(b64), out, f'📎 {name} 的履歷原檔')
             else:
                 log(f'{name} 的履歷檔沒有內容（content_b64 與 file_chunks 都是空的）')
     except Exception as ex:
@@ -442,7 +426,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
     # 不然顧問會以為系統掉東西。
     if data is None:
         push_report_files(app_id, name, job_slug)   # 舊路徑：純文字報告 PDF ＋ 履歷
-        tg(deliver.closing_message({}, meta, degraded=True), THREAD_POOL)
+        tg(deliver.closing_message({}, meta, degraded=True))
         return
 
     # ① ② 兩版 PDF
@@ -454,7 +438,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
             cap = (f'📄 {name}｜顧問版・面談評估（內部）' if kind == 'consultant'
                    else f'📄 {deliver.client_display_name(meta)}｜客戶版・可轉給用人企業')
             with open(path, 'rb') as fh:
-                tg_doc(fh.read(), fn, cap, THREAD_POOL)
+                tg_doc(fh.read(), fn, cap)
     except Exception as ex:
         log(f'⚠️ {name} 報告 PDF 產生／推送失敗（不影響面談）：{ex}')
     finally:
@@ -465,7 +449,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
         blob, fn = _resume_attachment(app_id)
         if blob:
             meta['resume']['filename'] = fn
-            tg_doc(blob, f'履歷_{name}_{fn}', f'📎 {name} 的履歷原檔', THREAD_POOL)
+            tg_doc(blob, f'履歷_{name}_{fn}', f'📎 {name} 的履歷原檔')
         else:
             # 只有連結的情況：規格要求把連結直接寫在訊息裡（PDF 裡的按鈕按不下去）
             lines = []
@@ -481,7 +465,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
                 lines.append(f'⚠️ {name} 沒有履歷檔，也沒有履歷連結。')
             for u in meta.get('portfolio_urls') or []:
                 lines.append(f'🎨 作品集：{deliver.clean_url(u)}')
-            tg('\n\n'.join(lines), THREAD_POOL)
+            tg('\n\n'.join(lines))
     except Exception as ex:
         log(f'⚠️ {name} 履歷推送失敗（不影響面談）：{ex}')
 
@@ -489,7 +473,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
     msg = deliver.closing_message(data, meta)
     if len(made) < 2:
         msg += f'\n\n⚠️ 這次只產出 {len(made)} 份 PDF，另一份產生失敗，請至後台查看。'
-    tg(msg, THREAD_POOL)
+    tg(msg)
 
 
 def active_sessions():
@@ -730,28 +714,6 @@ def build_prompt(ctx, skill_md):
 
     lines.append('\n【職缺與客戶（內部資料，可依規範對候選人說明）】')
     if job:
-        # 🚨 服務線一定要送進去，而且要放在最前面。
-        #    2026-08-11 呂書帆（主管特助・中高階）中途退出面談，說
-        #    「問的都有履歷上面寫過的問題很沒效率」，改成直接跟顧問談。
-        #    事後查：這個缺的 service_line 早就是 executive，但**這個欄位從來沒進過 prompt**，
-        #    所以阿財對一位 41 歲、九年日本旅宿、N1、帶過團隊的人選，
-        #    跑了跟基層一模一樣的流程（請你自我介紹、慢慢聊 30-40 分鐘）。
-        #    中高階人選同時也在評估我們——流程沒效率，他退出是正常反應，不是他難搞。
-        if job.get('service_line'):
-            SL = {'executive': '中高階獵才', 'direct': '正職代招', 'dispatch': '人力派遣'}
-            lines.append(f'  🎯 service_line：{job["service_line"]}'
-                         f'（{SL.get(job["service_line"], job["service_line"])}）')
-        # 🚨 職級跟服務線是兩件事，不要綁在一起判斷。
-        #    2026-08-11 Jacky 指出：**派遣也會有中高階職缺**。
-        #    如果用 service_line == 'executive' 當短版的開關，
-        #    一個派遣的廠長缺就會被當成基層跑 30 分鐘的標準流程，重蹈呂書帆那一場。
-        #    所以另外用 seniority 欄位，由顧問在 /consultant/jobs 自己設。
-        sen = job.get('seniority') or ('senior' if job.get('service_line') == 'executive' else 'mid')
-        SEN = {'senior': '中高階', 'mid': '一般', 'junior': '基層／無經驗可'}
-        lines.append(f'  🎯 seniority：{sen}（{SEN.get(sen, sen)}）')
-        if sen == 'senior':
-            lines.append('  🚨 **這是中高階職缺，一律走 SKILL.md 的「中高階短版」'
-                         '（10 分鐘、最多 5 題、不要測驗），不要跑標準流程。**')
         for k in ('title', 'client_name', 'client_intro', 'team_size', 'interview_rounds',
                   'interview_who', 'has_test', 'onboard_by', 'must_skills',
                   'salary_min', 'salary_max', 'locations', 'employment', 'faq_notes'):
@@ -1179,27 +1141,11 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         f'{"阿財" if m["role"] == "assistant" else "候選人"}：{m["content"]}'
         for m in conv if m['content'] != '（候選人已進入面談室）')
 
-    # 🚨 履歷全文一定要送進報告。
-    #    2026-08-11 呂書帆那份報告寫「resume_url 為空，無履歷檔案可交叉核對」、
-    #    工作經歷全部標「時間未提及」——但他的日文履歷書一直都在，2012 字、
-    #    七段職歷每段都有起訖年月，而且對談時阿財讀得到（開場說了「履歷我看過了」）。
-    #    原因就是這裡：report 的 prompt 送了職缺、表單、逐字稿，**唯獨漏了履歷**。
-    #    後果很具體：顧問拿到的報告說「僅為口述、未經文件核實」，
-    #    還要他自己去翻履歷補年月——這場面談等於做了一半。
-    resume_text = (ctx.get('resume_text') or '').strip()
-    resume_block = (
-        ('\n\n【履歷全文（面談時阿財看到的就是這份，報告要拿它跟逐字稿交叉比對）】\n'
-         + resume_text[:20000])
-        if resume_text else
-        '\n\n【履歷】這位候選人沒有可讀的履歷檔案，'
-        '報告裡的經歷一律標「來源：口述」。')
-
     prompt = (
         '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n\n'
         + skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
-        + resume_block
         + '\n\n【逐字稿】\n' + transcript
         + (('\n\n' + engagement_block(app_id)) if engagement_block(app_id) else '')
         + ('\n\n⚠️ 這場面談沒有正式收尾——候選人在最後一則之後就沒有再回應，'
@@ -1256,8 +1202,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         tg(f'{head}：{name}（{job_slug}）\n'
            f'{rec or "（報告已產出）"}\n'
            f'⚠️ 報告 PDF 與履歷推送失敗，請至後台查看。\n\n'
-           f'報告與逐字稿：https://step1ne.com/consultant/reports/',
-       THREAD_POOL)
+           f'報告與逐字稿：https://step1ne.com/consultant/reports/')
 
 
 def wrap_up(app):
@@ -1283,7 +1228,7 @@ def wrap_up(app):
                abandoned=True, close=False)   # 只產報告，房間留著
     except Exception as e:
         log(f'❌ {name} 逾時收尾失敗：{e}')
-        tg(f'⚠️ 面談逾時收尾失敗：{name}（{app_id}）\n{str(e)[:300]}', THREAD_SYSTEM)
+        tg(f'⚠️ 面談逾時收尾失敗：{name}（{app_id}）\n{str(e)[:300]}')
     finally:
         release_lock(app_id)
         with _lock:
@@ -1310,7 +1255,7 @@ def timeout_close(app):
                abandoned=True, close=False)   # 只產報告，房間留著
     except Exception as e:
         log(f'❌ {name} 逾時強制收尾失敗：{e}')
-        tg(f'⚠️ 面談滿一小時強制收尾失敗：{name}（{app_id}）\n{str(e)[:300]}', THREAD_SYSTEM)
+        tg(f'⚠️ 面談滿一小時強制收尾失敗：{name}（{app_id}）\n{str(e)[:300]}')
     finally:
         release_lock(app_id)
         with _lock:
@@ -1347,8 +1292,7 @@ def handle(app):
                f"'{now}')")
         except Exception:
             pass
-        tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
-           THREAD_DECIDE)
+        tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。')
     finally:
         release_lock(app_id)
         with _lock:

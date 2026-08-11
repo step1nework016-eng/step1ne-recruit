@@ -34,22 +34,13 @@
 
 const ORIGINS = ['https://step1ne.com', 'https://www.step1ne.com'];
 
-// ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
-// 判準是「顧問要不要動手」。原本什麼都往 2855 塞，變成大雜燴，重要的被洗掉。
+// 履歷健檢的通知要落在「#3履歷進件」這個 thread（＝ THREAD.intake）。
 //
-// 🚨 這個一定要放在模組層級。原本它被寫在 fetch() 裡面、而且卡在 /apply 那段路由的
-//    區塊內，於是**除了 /apply 以外每一支引用 THREAD.* 的路由都會炸**
-//    （ReferenceError: THREAD is not defined），而且是「資料已經寫進 D1、
-//    回應卻發不出去」——瀏覽器只看得到 Failed to fetch。
-//    2026-08-11 PH 送職缺就是踩到這個。改動這裡之前先想清楚作用域。
-const THREAD = {
-  decide: 2855,   // 面試通知確認：只放需要人決定／回應的
-  intake: 4,      // #3履歷進件：新應徵、預約、開始面談
-  pool: 304,      // #4 履歷池：面談報告與 PDF（資料，不是決策）
-  system: 1360,   // 系統回報：排程結果、寄送失敗、刪除紀錄
-};
-const CHECKUP_THREAD = THREAD.intake;
-const INTAKE_THREAD = THREAD.intake;
+// ⚠️ 這裡不能直接用 THREAD.intake：那個 const 是宣告在 fetch() 內部、
+//    而且位置在 /checkup 這段路由的**後面**，在它之前引用會踩到 TDZ
+//    （ReferenceError: Cannot access 'THREAD' before initialization），
+//    而且只有在真的有人送出健檢表單時才會炸。所以另外宣告一個模組層級的常數。
+const CHECKUP_THREAD = 4;
 
 
 // ── 寄信 ──
@@ -281,122 +272,6 @@ function escHtml(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ⚠️ 這是 jobintake/client_guard.py 的 JavaScript 複本，兩邊必須一致。
-//    Python 那份在擬稿當下擋；這份在「顧問按下核准寄出」的當下再擋一次。
-//    要兩道的原因：客戶名單是活的。擬稿當天可以敲的公司，
-//    顧問三天後才按核准，中間可能已經簽約了。
-const CLIENT_BLOCK = {
-  signed: '已簽約客戶。我們是他的乙方，不會反過來推人選給他當開發案',
-  negotiating: '正在談簽約中，這時候寄開發信會讓對方以為我們在亂槍打鳥',
-  end_client: '是我們某個客戶的終端客戶。去敲等於跟自己的客戶搶案子',
-  blocked: '顧問明確標記不可接觸',
-};
-const _SUFFIX = /(股份)?有限公司$|公司$|集團$|企業社$|工程行$|科技$|系統$/;
-
-function nameVariants(name, aliases) {
-  const out = new Set();
-  const list = [name].concat(
-    String(aliases || '').split('\n').map((s) => s.trim()).filter(Boolean));
-  for (const raw of list) {
-    const s = String(raw || '').trim();
-    if (!s) continue;
-    out.add(s);
-    let stem = s;
-    for (let i = 0; i < 3; i++) {
-      const nxt = stem.replace(_SUFFIX, '').trim();
-      if (nxt === stem) break;
-      stem = nxt;
-      if (stem.length >= 2) out.add(stem);
-    }
-  }
-  // 一個字的主體不比對，會誤殺
-  return [...out].filter((v) => v.length >= 2);
-}
-
-async function guardCompany(env, company) {
-  const c = String(company || '').trim();
-  if (!c) return null;
-  const cv = nameVariants(c, '');
-  const { results } = await env.DB.prepare(
-    `SELECT name, aliases, relation, blocked_reason, via_client FROM clients`).all();
-  for (const row of results || []) {
-    if (!CLIENT_BLOCK[row.relation]) continue;
-    for (const v of nameVariants(row.name, row.aliases)) {
-      if (cv.some((x) => x.includes(v) || v.includes(x))) {
-        let why = row.blocked_reason || CLIENT_BLOCK[row.relation];
-        if (row.relation === 'end_client' && row.via_client) why += `（透過 ${row.via_client}）`;
-        return { company: c, matched: row.name, relation: row.relation, why };
-      }
-    }
-  }
-  return null;
-}
-
-// 開發信跟給候選人的信不是同一種東西：
-// 這是 Jacky 用自己的名義寄給企業窗口的商務信，對方要能直接回信，
-// 所以不掛「請勿直接回覆」那套系統頁尾，也不放求職者用的 LINE。
-// 檔案是切成 chunk 存的（D1 單筆有長度上限），要拼回來才能當附件。
-const PROFILE_FILE_ID = 'step1ne-profile-2026';   // 公司簡介 PDF，每封開發信都附
-
-async function fileB64(env, fileId) {
-  if (!fileId) return null;
-  const f = await env.DB.prepare(
-    `SELECT filename, mime, content_b64, chunks FROM files WHERE id = ?`).bind(fileId).first();
-  if (!f) return null;
-  let b64 = f.content_b64 || '';
-  if (!b64 && f.chunks) {
-    const { results } = await env.DB.prepare(
-      `SELECT b64 FROM file_chunks WHERE file_id = ? ORDER BY idx`).bind(fileId).all();
-    b64 = (results || []).map((r) => r.b64).join('');
-  }
-  if (!b64) return null;
-  return { filename: f.filename || 'attachment.pdf', content: b64 };
-}
-
-// 開發信跟給候選人的信不是同一種東西：
-// 這是 Jacky 用自己的名義寄給企業窗口的商務信，對方要能直接回信，
-// 所以不掛「請勿直接回覆」那套系統頁尾，也不放求職者用的 LINE。
-//
-// ⚠️ 一定要帶兩個附件（2026-08-11 Jacky 定）：匿名履歷 PDF ＋ 公司簡介 PDF。
-//    信裡只寫 3-4 條重點精華，完整經歷放在附件——
-//    對方要的是「這個人能不能用」，那要看履歷，不是看信裡的形容詞。
-async function sendBdMail(env, to, subject, body, cvFileId) {
-  if (!env.RESEND_API_KEY || !to) return false;
-  const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  const html =
-    `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;font-size:15px;` +
-    `line-height:1.9;color:#23262d;max-width:620px;white-space:pre-wrap;">` +
-    esc(body) + `</div>`;
-  const attachments = [];
-  for (const id of [cvFileId, PROFILE_FILE_ID]) {
-    const a = await fileB64(env, id);
-    if (a) attachments.push(a);
-  }
-  try {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        from: 'Jacky Chen <official@step1ne.com>',
-        to: [to], subject, text: body, html,
-        // 回信要能被系統讀到才追蹤得了。
-        // ⚠️ 不能用 Cloudflare Email Routing 接管 official@step1ne.com——
-        //    step1ne.com 的信箱在 GoDaddy（MX 指向 secureserver.net），
-        //    開 Email Routing 會取代 apex 的 MX，整個公司信箱直接收不到信。
-        //    改用子網域：BD_REPLY_TO 設成 reply@bd.step1ne.com，
-        //    由 bd.step1ne.com 這個子網域的 Email Routing 轉寄進來，主信箱完全不動。
-        //    沒設定就退回 official@，行為跟以前一樣。
-        reply_to: env.BD_REPLY_TO || 'official@step1ne.com',
-        ...(attachments.length ? { attachments } : {}),
-      }),
-      signal: AbortSignal.timeout(20000),
-    });
-    return r.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function notify(env, text, extra) {
   if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return;
   try {
@@ -413,11 +288,6 @@ async function notify(env, text, extra) {
             : (env.TG_THREAD_ID ? { message_thread_id: Number(env.TG_THREAD_ID) } : {})),
         ...(extra || {}),
       }),
-      // ⚠️ 一定要有逾時。2026-08-11 PH 送職缺時看到「Failed to fetch」，
-      //    但資料其實已經寫進 D1 了——因為這支是「寫完 DB → 等 Telegram 回來 →
-      //    才回應瀏覽器」，Telegram 一慢就把整個連線拖到被砍。
-      //    對顧問來說那等於「不知道到底送出去沒有」，然後他會再按一次。
-      signal: AbortSignal.timeout(6000),
     });
   } catch {
     // 通知失敗不能影響應徵送出——人已經填完了，資料進 DB 才是重點
@@ -931,74 +801,6 @@ export default {
 
       const cq = update.callback_query;
 
-      // ── 反向開發開發信的三顆按鈕 ──
-      // 🚨 「核准寄出」是這整套系統裡唯一會真的把信寄出去的地方。
-      //    agent 產生信件、但拿不到寄信權限；顧問按下去之前一封都不會寄。
-      if (cq && cq.data && String(cq.data).startsWith('bd_')) {
-        const [action, bid] = String(cq.data).split(':');
-        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
-        const ans = async (text) => {
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: true }),
-          }).catch(() => {});
-        };
-        const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id = ?`).bind(bid || '').first();
-        if (!row) { await ans('❌ 找不到這封'); return new Response('ok'); }
-        if (row.status === 'sent') { await ans('這封已經寄出去了，不重複寄'); return new Response('ok'); }
-        const now = nowTaipei();
-        let label = '';
-
-        if (action === 'bd_no') {
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='rejected', decided_by=?, decided_at=?, updated_at=? WHERE id=?`
-          ).bind(who, now, now, bid).run();
-          label = `❌ ${who} 決定不寄`;
-          await ans('❌ 不寄了');
-        } else if (action === 'bd_rw') {
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='draft', decided_by=?, decided_at=?, updated_at=? WHERE id=?`
-          ).bind(who, now, now, bid).run();
-          label = `✏️ ${who} 退回重寫`;
-          await ans('✏️ 退回了。直接「回覆」這則訊息告訴總指揮要改什麼');
-        } else if (action === 'bd_ok') {
-          // 寄之前再比對一次客戶名單——名單是活的，擬稿當天可以敲的，
-          // 顧問三天後才按核准，中間可能已經簽約了
-          const hit = await guardCompany(env, row.company);
-          if (hit) {
-            await env.DB.prepare(
-              `UPDATE bd_outreach SET status='blocked', guard_json=?, updated_at=? WHERE id=?`
-            ).bind(JSON.stringify(hit), now, bid).run();
-            await ans(`⛔ 沒有寄出：${row.company} 在客戶名單上（${hit.relation}）`);
-            label = `⛔ 客戶名單擋下：${hit.why}`;
-          } else if (!row.contact_email) {
-            await ans('這封還沒有收件人 email，先去後台補上再核准');
-            return new Response('ok');
-          } else {
-            const ok2 = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
-            if (!ok2) { await ans('⚠️ 寄送失敗，信沒有送出去'); return new Response('ok'); }
-            await env.DB.prepare(
-              `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`
-            ).bind(who, now, now, now, bid).run();
-            label = `📤 ${who} 已核准，信已寄至 ${row.contact_email}`;
-            await ans('📤 寄出去了');
-          }
-        } else {
-          await ans('未知的操作');
-          return new Response('ok');
-        }
-
-        // 把按鈕換成結果，免得有人再按一次
-        await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: cq.message.chat.id, message_id: cq.message.message_id,
-            reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] },
-          }),
-        }).catch(() => {});
-        return new Response('ok');
-      }
-
       // ── 職缺送審的三顆按鈕 ──
       // ⚠️ 這裡**只改狀態**，不會產生任何頁面。真正動網站的是本機的
       //    jobintake/publish_approved.py，而它只撿 status='approved' 的單子。
@@ -1272,6 +1074,15 @@ export default {
 
       // 純資訊通知，不是待辦——這個人剛送出基本資料，正要去填測驗，
       // 還沒有任何需要顧問決定的事。丟一般進件那個 thread 就好。
+      // ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
+// 判準是「顧問要不要動手」。原本什麼都往 2855 塞，變成大雜燴，重要的被洗掉。
+const THREAD = {
+  decide: 2855,   // 面試通知確認：只放需要人決定／回應的
+  intake: 4,      // #3履歷進件：新應徵、預約、開始面談
+  pool: 304,      // #4 履歷池：面談報告與 PDF（資料，不是決策）
+  system: 1360,   // 系統回報：排程結果、寄送失敗、刪除紀錄
+};
+const INTAKE_THREAD = 4;
       await notify(
         env,
         `📥 新應徵：${b.name}\n職缺：${b.job_title || b.job_slug}\n` +
@@ -1606,27 +1417,6 @@ export default {
         const id = uid();
         const now = nowTaipei();
 
-        // 重送防呆：同一個人、同樣的內容、15 分鐘內——當成同一張單子。
-        //
-        // 為什麼需要：這支是「寫完 DB 才回應」，網路一斷顧問就會看到失敗訊息，
-        // 但資料其實已經進去了（2026-08-11 PH 遇到的就是這個）。他理所當然會再按一次，
-        // 於是總指揮會擬兩份 JD、群組跳兩次審核按鈕。與其教顧問先去查，
-        // 不如讓重送這件事本身沒有後果。
-        const dupKey = String(b.raw_text || '') + ' ' + String(b.source_url || '');
-        if (dupKey.replace(/ /g, '').trim()) {
-          const dup = await env.DB.prepare(
-            `SELECT id FROM job_intakes
-              WHERE ifnull(submitted_by,'') = ifnull(?,'')
-                AND ifnull(raw_text,'')     = ifnull(?,'')
-                AND ifnull(source_url,'')   = ifnull(?,'')
-                AND created_at >= datetime(?, '-15 minutes')
-              ORDER BY created_at DESC LIMIT 1`
-          ).bind(b.submitted_by || null, b.raw_text || null, b.source_url || null, now).first();
-          if (dup) {
-            return json(request, { ok: true, intake_id: dup.id, files: 0, deduped: true });
-          }
-        }
-
         // 原始檔先存——存不進去就不要建收件單，免得留下一張沒有底稿的單子
         const savedFiles = [];
         for (const f of files) {
@@ -1708,296 +1498,6 @@ export default {
           ok: true, checkup: c,
           files: files.results || [], links: links.results || [], messages: msgs.results || [],
         });
-      }
-
-      // ── 客戶關係名單 ──
-      //
-      // 🚨 這張表是反向開發的安全帶。在它之前，系統裡唯一的客戶資料是
-      //    jobs.client_name（＝已經有職缺頁的客戶），而真正會出事的三種
-      //    一筆都不在裡面：洽談中的、客戶的終端客戶、明確禁止接觸的。
-      //    2026-08-10 agent 提議去敲台灣美光（律准的終端客戶），
-      //    2026-08-11 提議去敲帆宣（顧問正在談簽約）——兩次都是因為查不到。
-      if (p === '/admin/clients' && request.method === 'GET') {
-        const { results } = await env.DB.prepare(
-          `SELECT id, name, aliases, relation, blocked_reason, via_client, owner, note,
-                  created_at, updated_at
-             FROM clients ORDER BY
-               CASE relation WHEN 'end_client' THEN 0 WHEN 'negotiating' THEN 1
-                             WHEN 'signed' THEN 2 WHEN 'blocked' THEN 3 ELSE 4 END,
-               name`
-        ).all();
-        return json(request, { ok: true, rows: results || [] });
-      }
-
-      if (p === '/admin/clients' && request.method === 'POST') {
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const now = nowTaipei();
-        if (b.delete && b.id) {
-          await env.DB.prepare(`DELETE FROM clients WHERE id = ?`).bind(b.id).run();
-          return json(request, { ok: true, deleted: b.id });
-        }
-        const name = String(b.name || '').trim();
-        if (!name) return json(request, { ok: false, error: '請填公司名稱' }, 400);
-        const REL = ['signed', 'negotiating', 'end_client', 'past', 'prospect', 'blocked'];
-        if (!REL.includes(b.relation)) {
-          return json(request, { ok: false, error: '關係請選：已簽約／洽談中／終端客戶／曾合作／已開發過／禁止接觸' }, 400);
-        }
-        // 終端客戶一定要寫是誰的，不然日後沒人知道為什麼不能碰，就會有人把它刪掉
-        if (b.relation === 'end_client' && !String(b.via_client || '').trim()) {
-          return json(request, { ok: false, error: '「客戶的終端客戶」請填是透過哪一家接觸到的，否則日後沒人知道為什麼不能碰' }, 400);
-        }
-        const id = String(b.id || '').trim() || uid();
-        await env.DB.prepare(
-          `INSERT INTO clients (id,name,aliases,relation,blocked_reason,via_client,owner,note,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(id) DO UPDATE SET
-             name=excluded.name, aliases=excluded.aliases, relation=excluded.relation,
-             blocked_reason=excluded.blocked_reason, via_client=excluded.via_client,
-             owner=excluded.owner, note=excluded.note, updated_at=excluded.updated_at`
-        ).bind(id, name, b.aliases || null, b.relation, b.blocked_reason || null,
-               b.via_client || null, b.owner || null, b.note || null, now, now).run();
-        return json(request, { ok: true, id });
-      }
-
-      // ── 反向開發的入口：顧問說「我要開發做這種缺的客戶」──
-      //
-      // ⚠️ 2026-08-11 改過方向。原本是「挑一份履歷 → 找公司」，
-      //    但顧問腦子裡的順序是反的：他先想要開發什麼客戶，
-      //    才由系統去人才庫撈得上用場的人。入口做錯顧問就不會用。
-      if (p === '/admin/bd-request' && request.method === 'POST') {
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const role = String(b.role_family || '').trim();
-        if (!role) return json(request, { ok: false, error: '請填你要開發哪一種職缺的客戶' }, 400);
-        const id = uid(); const now = nowTaipei();
-        await env.DB.prepare(
-          `INSERT INTO bd_requests (id,created_at,submitted_by,role_family,industry,region,
-                                    service_line,target_count,note,status,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,'new',?)`
-        ).bind(id, now, b.submitted_by || null, role, b.industry || null, b.region || null,
-               b.service_line || null, Number(b.target_count) || 6, b.note || null, now).run();
-        await notify(env,
-          `🎯 收到開發需求\n要開發：${role}\n` +
-          (b.industry ? `產業：${b.industry}\n` : '') + (b.region ? `地區：${b.region}\n` : '') +
-          `送件人：${b.submitted_by || '未填'}\n` +
-          `總指揮會去人才庫撈得上用場的人選，配對後寫開發信送回這裡。`,
-          // 開發信一批就好幾則，丟「面試通知確認」會把面試的洗掉（2026-08-11 Jacky 反應過）
-          { message_thread_id: THREAD.system });
-        return json(request, { ok: true, id });
-      }
-
-      if (p === '/admin/bd-requests' && request.method === 'GET') {
-        const { results } = await env.DB.prepare(
-          `SELECT r.*, (SELECT COUNT(*) FROM bd_outreach o WHERE o.request_id = r.id) AS letters
-             FROM bd_requests r ORDER BY r.created_at DESC LIMIT 40`).all();
-        return json(request, { ok: true, rows: results || [] });
-      }
-
-      // 匿名人才庫：所有「有履歷、而且沒有走到到職」的人。
-      // 🚨 只回不可辨識的欄位——這支的用途是給顧問看「庫裡有什麼樣的人」，
-      //    姓名與 email 在這裡沒有任何用處，回了只是多一個外洩點。
-      if (p === '/admin/talent-pool' && request.method === 'GET') {
-        const { results } = await env.DB.prepare(
-          `SELECT a.id, a.created_at, a.job_title, a.interview_state, a.expected_salary,
-                  a.available_date, a.disc_primary,
-                  (SELECT p.stage FROM placements p WHERE p.application_id = a.id
-                    ORDER BY p.updated_at DESC LIMIT 1) AS stage,
-                  (SELECT COUNT(*) FROM bd_outreach o WHERE o.candidate_ref = a.id) AS used
-             FROM applications a
-             LEFT JOIN files f ON f.id = a.resume_file_id
-            WHERE a.superseded_by IS NULL
-              AND f.text_content IS NOT NULL AND length(f.text_content) > 200
-            ORDER BY a.created_at DESC`).all();
-        // 到職了就不該再拿去開發——那個人已經有工作了
-        const rows = (results || []).filter(
-          (r) => !['onboard', 'placed', '到職'].includes(String(r.stage || '')));
-        return json(request, { ok: true, rows });
-      }
-
-      // ── 反向開發：待審的開發信 ──
-      if (p === '/admin/bd' && request.method === 'GET') {
-        const { results } = await env.DB.prepare(
-          `SELECT id, created_at, batch_id, candidate_ref, company, why_company,
-                  contact_name, contact_email, subject, status, sent_at, decided_by, guard_json
-             FROM bd_outreach ORDER BY created_at DESC LIMIT 60`
-        ).all();
-        return json(request, { ok: true, rows: results || [] });
-      }
-
-      if (p.startsWith('/admin/bd/') && request.method === 'GET') {
-        const bid = decodeURIComponent(p.slice('/admin/bd/'.length));
-        const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id = ?`).bind(bid).first();
-        if (!row) return json(request, { ok: false, error: '找不到這封' }, 404);
-        return json(request, { ok: true, row });
-      }
-
-      // 補窗口／改信件內容。
-      // 查不到 email 的那幾封在群組裡按核准也寄不出去，顧問需要一個地方補。
-      if (p.startsWith('/admin/bd/') && p.endsWith('/patch') && request.method === 'POST') {
-        const bid = decodeURIComponent(p.slice('/admin/bd/'.length, -'/patch'.length));
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const row = await env.DB.prepare(`SELECT id, status FROM bd_outreach WHERE id = ?`).bind(bid).first();
-        if (!row) return json(request, { ok: false, error: '找不到這封' }, 404);
-        if (row.status === 'sent') return json(request, { ok: false, error: '這封已經寄出去了，改不動' }, 400);
-
-        const sets = [], vals = [];
-        for (const k of ['contact_email', 'contact_name', 'subject', 'body']) {
-          if (b[k] === undefined) continue;
-          sets.push(`${k} = ?`);
-          vals.push(String(b[k]).trim() || null);
-        }
-        if (!sets.length) return json(request, { ok: false, error: '沒有要改的欄位' }, 400);
-        vals.push(nowTaipei(), bid);
-        await env.DB.prepare(
-          `UPDATE bd_outreach SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).bind(...vals).run();
-        return json(request, { ok: true });
-      }
-
-      // 顧問決定要不要寄。⚠️ 只有這裡會真的寄出去，agent 自己不寄。
-      if (p.startsWith('/admin/bd/') && p.endsWith('/decide') && request.method === 'POST') {
-        const bid = decodeURIComponent(p.slice('/admin/bd/'.length, -'/decide'.length));
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id = ?`).bind(bid).first();
-        if (!row) return json(request, { ok: false, error: '找不到這封' }, 404);
-        if (row.status === 'sent') return json(request, { ok: false, error: '這封已經寄出去了，不重複寄' }, 400);
-        if (row.status === 'blocked') return json(request, { ok: false, error: '這家在客戶名單上，不可以寄' }, 400);
-
-        const who = String(b.decided_by || '顧問').trim();
-        const now = nowTaipei();
-
-        if (b.action === 'reject') {
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='rejected', decided_by=?, decided_at=?, reply_note=?, updated_at=? WHERE id=?`
-          ).bind(who, now, b.note || null, now, bid).run();
-          return json(request, { ok: true, status: 'rejected' });
-        }
-        if (b.action === 'rewrite') {
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='draft', decided_by=?, decided_at=?, reply_note=?, updated_at=? WHERE id=?`
-          ).bind(who, now, String(b.note || '').trim() || null, now, bid).run();
-          return json(request, { ok: true, status: 'draft' });
-        }
-        if (b.action !== 'send') return json(request, { ok: false, error: '未知的動作' }, 400);
-
-        // 寄之前再擋一次客戶名單。名單是會變的——擬稿當下沒事，
-        // 顧問三天後才按核准，中間可能已經跟這家簽約了。
-        const hit = await guardCompany(env, row.company);
-        if (hit) {
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='blocked', guard_json=?, updated_at=? WHERE id=?`
-          ).bind(JSON.stringify(hit), now, bid).run();
-          await notify(env, `⛔ 這封沒有寄出\n對象：${row.company}\n原因：${hit.why}\n（寄出前又比對了一次客戶名單）`,
-            { message_thread_id: THREAD.system });
-          return json(request, { ok: false, error: `${row.company} 在客戶名單上：${hit.why}` }, 400);
-        }
-        if (!row.contact_email) return json(request, { ok: false, error: '這封還沒有收件人 email' }, 400);
-
-        const sent = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
-        if (!sent) return json(request, { ok: false, error: '寄送失敗，信件沒有送出' }, 500);
-        await env.DB.prepare(
-          `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`
-        ).bind(who, now, now, now, bid).run();
-        await notify(env, `📤 已寄出開發信\n對象：${row.company}（${row.contact_email}）\n核准人：${who}`,
-          { message_thread_id: THREAD.system });
-        return json(request, { ok: true, status: 'sent' });
-      }
-
-      // ── 擬稿：顧問直接看／直接改 ──
-      //
-      // 為什麼要這支：原本顧問只有 Telegram 上三顆按鈕，要改一個字也只能按
-      // 「重寫」整份重擬——重擬一次要幾分鐘，而且改回來的其他段落又要重看一遍。
-      // 大部分情況顧問只是想動一兩個欄位（標題、地點、薪資、某一則 FAQ）。
-      //
-      // 這裡回的是 draft_json（總指揮擬好的規格），不是網站上的頁面——
-      // 改完仍然要按「核准發布」才會上線，而 publish_approved.py 發布前
-      // 還會再跑一次禁刊過濾器，所以顧問手改也不會把違法內容推上去。
-      if (p.startsWith('/admin/job-draft/') && request.method === 'GET') {
-        const iid = decodeURIComponent(p.slice('/admin/job-draft/'.length));
-        const row = await env.DB.prepare(
-          `SELECT id, created_at, submitted_by, service_line, client_relation,
-                  client_named, ai_disclosure, brand_mode, client_name, client_code,
-                  status, draft_json, review_text, filter_json, rewrite_note,
-                  raw_text, source_url, note, published_slug
-             FROM job_intakes WHERE id = ?`
-        ).bind(iid).first();
-        if (!row) return json(request, { ok: false, error: '找不到這張收件單' }, 404);
-        let draft = null;
-        try { draft = JSON.parse(row.draft_json || 'null'); } catch { draft = null; }
-        let filters = null;
-        try { filters = JSON.parse(row.filter_json || 'null'); } catch { filters = null; }
-        return json(request, { ok: true, intake: { ...row, draft_json: undefined, filter_json: undefined }, draft, filters });
-      }
-
-      // 顧問改擬稿。兩種用法，靠 mode 分：
-      //   mode=save  顧問自己把欄位改掉，改完還是 pending，等他按核准發布
-      //   mode=ai    顧問只留一句話，交給總指揮重擬（＝ Telegram 那顆「重寫」，
-      //              但可以順便帶著已經手改過的欄位一起給它當基礎）
-      if (p.startsWith('/admin/job-draft/') && p.endsWith('/patch') && request.method === 'POST') {
-        const iid = decodeURIComponent(p.slice('/admin/job-draft/'.length, -'/patch'.length));
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-
-        const row = await env.DB.prepare(
-          `SELECT id, status, draft_json FROM job_intakes WHERE id = ?`
-        ).bind(iid).first();
-        if (!row) return json(request, { ok: false, error: '找不到這張收件單' }, 404);
-        // 已經發布的不給從這裡改——那要走改版流程，不是改擬稿
-        if (['published'].includes(row.status)) {
-          return json(request, { ok: false, error: '這個職缺已經發布了，要改請走職缺頁改版，不是改擬稿' }, 400);
-        }
-
-        const mode = b.mode === 'ai' ? 'ai' : 'save';
-        const note = String(b.note || '').trim();
-        if (mode === 'ai' && !note) {
-          return json(request, { ok: false, error: '請寫一句話告訴總指揮要改什麼，不然它重擬出來多半還是一樣' }, 400);
-        }
-
-        let draft = {};
-        try { draft = JSON.parse(row.draft_json || '{}') || {}; } catch { draft = {}; }
-
-        // 只允許動對外欄位。client_named／ai_disclosure／brand_mode／service_line
-        // 是「客戶對象」連動出來的，從這裡改等於繞過那套規則，後果是客戶隱私外洩。
-        const EDITABLE = new Set([
-          'title', 'subtitle', 'page_title', 'description', 'intro',
-          'locations', 'locality', 'region', 'employment', 'years_min',
-          'salary_min', 'salary_max', 'salary_note', 'keywords', 'tags',
-          'must_skills', 'benefits', 'spec', 'duties', 'must', 'plus', 'why', 'faq',
-          'industry', 'card_meta', 'card_desc',
-        ]);
-        const changed = [];
-        for (const [k, v] of Object.entries(b.fields || {})) {
-          if (!EDITABLE.has(k)) continue;
-          if (JSON.stringify(draft[k]) === JSON.stringify(v)) continue;
-          draft[k] = v;
-          changed.push(k);
-        }
-
-        const who = String(b.edited_by || '').trim() || '顧問';
-        const nextStatus = mode === 'ai' ? 'rewrite' : 'pending';
-
-        await env.DB.prepare(
-          `UPDATE job_intakes
-              SET draft_json = ?, status = ?, rewrite_note = ?,
-                  updated_at = datetime('now','+8 hours')
-            WHERE id = ?`
-        ).bind(JSON.stringify(draft), nextStatus, note || null, iid).run();
-
-        await notify(env,
-          (mode === 'ai'
-            ? `✏️ ${who} 把擬稿退回給總指揮重擬\n`
-            : `📝 ${who} 直接改了擬稿\n`) +
-          `職缺：${draft.title || iid}\n` +
-          (changed.length ? `改動欄位：${changed.join('、')}\n` : '') +
-          (note ? `交代：${note}\n` : '') +
-          (mode === 'ai'
-            ? '總指揮會照著重擬，擬完再送一次審核。'
-            : '狀態仍是「待核准」，網站目前沒有任何改動。'),
-        { message_thread_id: THREAD.decide });
-
-        return json(request, { ok: true, status: nextStatus, changed, mode });
       }
 
       // 收件單清單（後台看進度用）。不回傳 draft_json 全文，那份很大。
@@ -2247,10 +1747,6 @@ export default {
         const where = ['a.superseded_by IS NULL']; const bind = [];
         if (q) { where.push('(a.name LIKE ? OR a.email LIKE ?)'); bind.push(`%${q}%`, `%${q}%`); }
         if (st) { where.push('a.interview_state = ?'); bind.push(st); }
-        // ⚠️ 2026-08-11：職缺下拉在「所有面談紀錄」分頁沒反應，因為只有
-        //    /admin/reports 收 job 參數，這支漏了。前端一直有送，後端沒接。
-        const jb = url.searchParams.get('job') || '';
-        if (jb) { where.push('a.job_slug = ?'); bind.push(jb); }
 
         const { results } = await env.DB.prepare(
           `SELECT a.id, a.created_at, a.name, a.email, a.phone, a.job_slug, a.job_title,
@@ -2281,79 +1777,23 @@ export default {
         const { results } = await env.DB.prepare(
           // 漏斗數字一起帶出來。只看應徵數會誤判——20 個應徵但 0 個送到客戶，
           // 跟 3 個應徵送出 2 個，是完全不同的狀況，而後者才是好職缺。
-          `SELECT j.slug, j.title, j.service_line, j.client_relation, j.seniority,
+          `SELECT j.slug, j.title, j.service_line, j.client_relation,
                   j.client_named, j.ai_disclosure, j.client_code, j.status,
-                  -- ① 應徵：填完申請表送出的人（不含重複投遞被標記取代的）
                   (SELECT COUNT(*) FROM applications a
                     WHERE a.job_slug = j.slug AND a.superseded_by IS NULL) AS applicants,
-                  -- ② 初審：阿財談完、報告已產出，但顧問還沒決定要不要送客戶。
-                  --    這一關卡住＝人在等我們，不是在等客戶。
-                  -- ⚠️ 一個人可能有多份報告（中斷重談就會多一份），
-                  --    用 COUNT(*) 會把同一個人算好幾次——實測出現過「應徵 4 人、初審 5 人」。
-                  --    只看最新那份報告的處置狀態。
                   (SELECT COUNT(*) FROM applications a
-                    WHERE a.job_slug = j.slug AND a.superseded_by IS NULL
-                      AND a.interview_state IN ('done','paused')
-                      AND (SELECT r.consultant_decision FROM reports r
-                            WHERE r.application_id = a.id
-                            ORDER BY r.created_at DESC LIMIT 1) IS NULL) AS screening,
-                  -- ③ 客戶面談：從顧問把履歷送給客戶那一刻起算，
-                  --    客戶不論面試幾關都算在這一關，直到錄取才離開。
+                    WHERE a.job_slug = j.slug AND a.interview_state IN ('done','paused')) AS interviewed,
+                  (SELECT COUNT(DISTINCT e.application_id) FROM pipeline_events e
+                    WHERE e.job_slug = j.slug AND e.stage = 'submitted') AS submitted,
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
                     WHERE p.job_slug = j.slug
-                      AND UPPER(p.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW')
-                      AND p.onboard_date IS NULL) AS client_stage,
-                  -- ④ 錄取：客戶決定要了、還沒到職（談offer、辦離職、等報到都在這）
-                  (SELECT COUNT(DISTINCT p.application_id) FROM placements p
-                    WHERE p.job_slug = j.slug
-                      AND UPPER(p.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED')
-                      AND p.onboard_date IS NULL) AS offered,
-                  -- ⑤ 到職：真的上工了。這一關才算成案。
+                      AND UPPER(p.stage) IN ('CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW')) AS client_iv,
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
                     WHERE p.job_slug = j.slug AND p.onboard_date IS NOT NULL) AS onboard
              FROM jobs j
             ORDER BY (j.status = 'closed'), j.service_line, j.slug`
         ).all();
         return json(request, { ok: true, jobs: results || [] });
-      }
-
-      // 漏斗某一關裡面有誰。
-      //
-      // 為什麼要有：漏斗只給數字，看到「初審 3」還是不知道是誰卡住、卡多久。
-      // 點下去要能直接看到人、開履歷、開報告、按處置——不然那個數字只是好看。
-      if (p === '/admin/funnel' && request.method === 'GET') {
-        const slug = url.searchParams.get('slug') || '';
-        const stage = url.searchParams.get('stage') || 'applicants';
-        const base = `SELECT a.id, a.name, a.email, a.phone, a.created_at,
-                             a.expected_salary, a.available_date, a.location_ok,
-                             a.interview_state, a.status, a.resume_file_id, a.resume_url,
-                             CAST((julianday('now','+8 hours') - julianday(a.created_at)) AS INT) AS days_in,
-                             (SELECT r.id FROM reports r WHERE r.application_id = a.id
-                               ORDER BY r.created_at DESC LIMIT 1) AS report_id,
-                             (SELECT r.consultant_decision FROM reports r WHERE r.application_id = a.id
-                               ORDER BY r.created_at DESC LIMIT 1) AS decision,
-                             (SELECT r.created_at FROM reports r WHERE r.application_id = a.id
-                               ORDER BY r.created_at DESC LIMIT 1) AS report_at,
-                             (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS msgs
-                        FROM applications a
-                       WHERE a.job_slug = ? AND a.superseded_by IS NULL`;
-        let where = '';
-        if (stage === 'screening') {
-          where = ` AND a.interview_state IN ('done','paused')
-                    AND (SELECT r.consultant_decision FROM reports r WHERE r.application_id = a.id
-                          ORDER BY r.created_at DESC LIMIT 1) IS NULL`;
-        } else if (stage === 'client_stage' || stage === 'offered' || stage === 'onboard') {
-          const st = stage === 'onboard'
-            ? `p2.onboard_date IS NOT NULL`
-            : (stage === 'offered'
-                ? `UPPER(p2.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED') AND p2.onboard_date IS NULL`
-                : `UPPER(p2.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW') AND p2.onboard_date IS NULL`);
-          where = ` AND EXISTS (SELECT 1 FROM placements p2
-                                 WHERE p2.application_id = a.id AND ${st})`;
-        }
-        const { results } = await env.DB.prepare(base + where + ' ORDER BY a.created_at ASC')
-          .bind(slug).all();
-        return json(request, { ok: true, stage, slug, candidates: results || [] });
       }
 
       // 更新分類。⚠️ 客戶對象一改，三個連動欄位要一起改，
@@ -2380,21 +1820,13 @@ export default {
           sets.push('client_relation = ?', 'client_named = ?', 'ai_disclosure = ?');
           bind.push(b.client_relation, rel[0], rel[1]);
         }
-        // 職級跟服務線是兩件事。派遣也會有中高階（派遣的廠長、專案總監），
-        // 而阿財的面談長度是看職級決定的——設錯就會用基層流程去面中高階人選。
-        if (b.seniority) {
-          if (!['junior', 'mid', 'senior'].includes(b.seniority)) {
-            return json(request, { ok: false, error: '職級請選：基層／一般／中高階' }, 400);
-          }
-          sets.push('seniority = ?'); bind.push(b.seniority);
-        }
         if (b.client_code !== undefined) { sets.push('client_code = ?'); bind.push(b.client_code || null); }
         if (!sets.length) return json(request, { ok: false, error: '沒有要更新的欄位' }, 400);
 
         await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`)
           .bind(...bind, slug).run();
         const row = await env.DB.prepare(
-          `SELECT slug, service_line, client_relation, seniority, client_named, ai_disclosure, client_code
+          `SELECT slug, service_line, client_relation, client_named, ai_disclosure, client_code
              FROM jobs WHERE slug = ?`).bind(slug).first();
         if (!row) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
         return json(request, { ok: true, job: row });

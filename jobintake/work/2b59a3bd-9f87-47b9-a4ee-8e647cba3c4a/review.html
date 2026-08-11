@@ -1,0 +1,125 @@
+<!doctype html><meta charset="utf-8">
+<title>新職缺｜上架擬稿說明</title>
+<style>
+:root{--gold:#a67c3d;--ink:#23262d;--ink2:#4d5563;--ink3:#8a8d95;--line:#eee7db;--soft:#faf8f3;--bad:#c0392b}
+*{box-sizing:border-box}
+body{margin:0;background:#f4f1ea;color:var(--ink);font:15px/1.75 -apple-system,"Noto Sans TC",sans-serif;padding:22px 14px}
+.wrap{max-width:820px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:20px 22px;margin-bottom:13px}
+.hero{background:var(--ink);color:#fff;border-radius:17px;padding:22px 24px;margin-bottom:13px}
+.hero h1{font-size:21px;margin:0 0 4px}
+.hero p{margin:0;color:#a8adb8;font-size:13.5px}
+.meta{display:flex;gap:22px;flex-wrap:wrap;border-top:1px solid #3a3f49;margin-top:14px;padding-top:13px;font-size:12px;color:#a8adb8}
+.meta b{display:block;color:#fff;font-size:14px;font-weight:600;margin-top:2px}
+h2{font-size:15px;margin:22px 0 10px;color:var(--gold)}
+h1,h3{font-size:15.5px;margin:18px 0 8px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--soft);color:var(--ink3);font-size:12.5px}
+blockquote{margin:10px 0;padding:11px 14px;background:var(--soft);border-left:3px solid var(--gold);border-radius:0 9px 9px 0;font-size:13.5px;color:var(--ink2)}
+li{margin-bottom:5px;color:var(--ink2)}
+p{margin:8px 0;color:var(--ink2)}
+.hits{list-style:none;padding:0;margin:8px 0}
+.hits li{background:var(--soft);border-radius:9px;padding:9px 12px;margin-bottom:6px;font-size:13.5px}
+.hits li b{color:var(--bad);margin-right:9px}
+.hits.ok li b{color:var(--gold)}
+.warn{background:#fdecea;border:1px solid #f3c7c1;border-radius:11px;padding:13px 16px;color:#8a2b20;font-size:14px;margin-bottom:13px}
+.miss{background:#fdf6e9;border:1px solid #e8d5ab;border-radius:11px;padding:13px 16px;color:#8a5a1a;font-size:14px;margin-bottom:13px}
+.none{color:var(--ink3);font-size:13.5px}
+</style>
+<div class="wrap">
+<div class="hero">
+  <h1>（無標題）</h1>
+  <p>/jobs/?/</p>
+  <div class="meta">
+    <div>服務線<b>正職代招</b></div>
+    <div>客戶對象<b>朋友認識・私人協助</b></div>
+    <div>履歷<b>具名</b></div>
+    <div>AI 揭露<b>never</b></div>
+    <div>報告品牌<b>不掛品牌</b></div>
+  </div>
+</div>
+<div class="miss"><b>❓ 待你確認</b>（來源沒給，頁面上暫時不會出現）<br>工作地點、薪資下限、薪資上限、職缺導言、工作內容、應徵條件（必要）</div>
+<div class="card">
+  <h2>🚫 原稿擋下 0 處</h2>
+  <p class="none">（沒有命中）</p>
+  <h2>🔎 成品再掃一次</h2>
+  <p class="none">（沒有命中）</p>
+</div>
+<div class="card"><h1>職缺上架擬稿報告</h1>
+<blockquote>結論：這份來源無法上架。 顧問輸入只有一串識別碼 DEDUPE-TEST-1，</blockquote>
+<blockquote>沒有任何職缺內容。依規範「不要把待確認欄位用合理猜測填滿，寧可不寫，</blockquote>
+<blockquote>也不要刊錯的工作條件」，我沒有替你生一份看起來完整、實際上全是編出來的</blockquote>
+<blockquote>職缺頁。spec.json 只保留你已經決定的服務線與揭露設定。</blockquote>
+<p>---</p>
+<h2>一、我擋掉了什麼</h2>
+<p>規則式禁刊掃描：0 條命中（來源沒有可掃的內容，不是「掃過確認乾淨」）。</p>
+<p>我另外擋掉的，是流程本身的風險：</p>
+<table>
+<tr><th>我擋掉的</th><th>為什麼</th></tr>
+<tr><td>用常見職缺範本把 title／薪資／工作內容／應徵條件補滿</td><td>這些是會被求職者當成僱傭條件看的資訊。編出來的薪資帶與工時，等於刊登不實勞動條件，人選投遞後才發現不符，客訴與商譽風險都落在你身上</td></tr>
+<tr><td>憑「私人協助」推測產業或客戶名寫進 client_name</td><td>client_named=1 是「允許具名」，不是「已經知道名字」。沒拿到公司全名就寫，會寫錯公司</td></tr>
+<tr><td>生一個 slug 與 page_title</td><td>slug 格式要求 &lt;領域&gt;-&lt;職務&gt;-&lt;地點&gt;-&lt;區隔&gt;，四個維度我一個都沒有。生 dedupe-test-1 這種看不出差別的 slug，正好是規範明列的反例（game-cs-2／game-cs-b／game-cs-new）</td></tr>
+<tr><td>生 FAQ 與「為什麼選這個機會」</td><td>這兩塊全靠職缺實質內容支撐，沒有內容就只會產出空話，對 AEO 也沒有幫助</td></tr>
+</table>
+<p>另外提醒兩件與這一筆設定綁在一起、之後產內容時我會盯的：</p>
+<p>1. ai_disclosure = never → 頁面與應徵流程不得出現「AI 面談」「阿財」「自動化初談」字樣，</p>
+<p>   一律寫成中性描述（例：「初步電話／線上訪談，由顧問安排」）。</p>
+<p>2. 報告品牌 none → 客戶版報告標題只寫「人選推薦」，不放 logo，</p>
+<p>   頁尾拿掉德仁管理顧問／統編／就服許可證，聲明段落也不得提及任何公司名。</p>
+<p>   注意：這只約束客戶版報告，履歷本身仍具名。</p>
+<p>---</p>
+<h2>二、待顧問確認</h2>
+<p>以下每一項求職者都一定會問，來源全部未提供。打星號的是沒有就不能上架的：</p>
+<p>必要（缺一不可）</p>
+<li>★ 對外職稱</li>
+<li>★ 工作地點（縣市／區／完整地址）</li>
+<li>★ 工作內容（3–5 條主要職責）</li>
+<li>★ 薪資：具體區間，或明確指定「依經驗面議」</li>
+<p>  - 若客戶給的是學歷分級表（例：普通大學 35K／前四大 43K），只公開總區間，</p>
+<p>    分級細節不上頁面，避免被解讀成學歷歧視</p>
+<li>★ 僱傭型態確認：正職代招 → 直聘正職（FULL_TIME），請確認不是派遣或約聘</li>
+<li>★ 客戶公司全名（client_named=1，可具名，但我需要拿到正式名稱）</li>
+<p>求職者必問（沒有就頁面會顯得可疑）</p>
+<li>需求人數</li>
+<li>學歷要求／年資下限</li>
+<li>必要條件與加分條件（技能、工具、語言、證照）</li>
+<li>上班時間、班別、是否輪班、加班常態與加班費計算</li>
+<li>休假制度（週休二日？排休？）</li>
+<li>出差需求與比例</li>
+<li>福利（三節、年終、保險、補助）</li>
+<li>產業別（industry，職缺卡分類用）</li>
+<li>面試流程與關卡數</li>
+<p>私人協助案特有、建議先跟客戶對過</p>
+<li>這個缺可不可以公開刊在 step1ne.com？（「朋友認識・私人協助」有時候客戶只想私下找人，</li>
+<p>  不希望職缺被同業或自家員工看到。若是，就不走上架流程，改走私下媒合。）</p>
+<li>客戶願意具名到什麼程度：公司全名？還是只寫集團／品牌名？</li>
+<p>---</p>
+<h2>三、服務線與同名職缺</h2>
+<p>服務線：正職代招（標準版頁面） — 依你的指定，我沒有改判。</p>
+<p>供你日後核對的判定理由：一般企業委託代招正職，標籤寫「正職」、走標準版版型。</p>
+<p>另外兩條線這次都不適用——沒有年薪百萬／主管職／保密需求（高階獵才），</p>
+<p>雇主也不是我方、沒有轉正條件（人力派遣），所以不加「顧問保密初談」FAQ，</p>
+<p>也不加「派遣權益跟正職一樣嗎？」FAQ。</p>
+<p>同名職缺區隔（Phase 4.5）：本次未執行。</p>
+<p>沒有職稱就無法對 D1 jobs 表下 title LIKE 查詢，區隔維度也無從挑起。</p>
+<p>等你補上職稱與地點後，我會先跑：</p>
+<p>bash</p>
+<p>npx --yes wrangler d1 execute step1ne-recruit --remote \</p>
+<p>  --command=&quot;SELECT slug,title,locations,employment,salary_min,salary_max FROM jobs WHERE title LIKE &#x27;%&lt;職稱關鍵字&gt;%&#x27;;&quot;</p>
+<p></p>
+<p>若查到同職稱，我會依序從班別 → 薪資帶 → 僱傭型態 → 外語加給 → 地點挑區隔維度，</p>
+<p>寫進 H1、&lt;title&gt;、meta description 與導言第一句，避免兩頁 SEO 互搶；</p>
+<p>並確保申請表下拉選單文字與頁面標題完全一致（含區隔字串），</p>
+<p>以免面談抓錯 JD、報告歸錯客戶。</p>
+<p>不會用的區隔方式：公司名、客戶代稱（甲／乙、A 廠／B 廠）、client_code、流水號。</p>
+<p>即使這筆 client_named=1 可以具名，同名職缺的區隔也不走「用公司名分」——</p>
+<p>一旦站上並列兩則同職稱職缺、其中一則具名，等於把另一則未具名客戶的存在與招募動向</p>
+<p>一起曝光給同業。區隔一律用求職者分得出來的實質差異。</p>
+<p>---</p>
+<h2>下一步</h2>
+<p>把「待顧問確認」的 ★ 六項補齊（一段文字或一份 JD 檔案都可以），</p>
+<p>我就能直接續跑 Phase 2 禁刊過濾 → Phase 4 改寫 → Phase 4.5 去重 → 產出完整 spec.json。</p>
+<p>本次沒有做任何部署動作：未 git push、未執行 publish_job.py、</p>
+<p>未更動 step1ne-stopgap-site 底下任何檔案。</p></div>
+</div>

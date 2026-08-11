@@ -36,7 +36,19 @@ CREATE TABLE IF NOT EXISTS applications (
                 -- new / booked / interviewed / reported / passed / rejected / no_show
   consent_at    TEXT NOT NULL,           -- 個資告知同意時間，法律要求
   handled_by    TEXT,
-  handled_note  TEXT
+  handled_note  TEXT,
+
+  -- DISC 人格傾向量表（表單填寫時測，面談時阿財只做觀察對照，不重測）
+  -- 分數是 20 組強制選擇（每組選最像/最不像）的計數，範圍約 0–20，非官方量表分數
+  disc_d        INTEGER,
+  disc_i        INTEGER,
+  disc_s        INTEGER,
+  disc_c        INTEGER,
+  disc_primary  TEXT,                   -- 分數最高一到兩碼，例："D" 或 "DC"
+
+  -- 跨行程鎖：daemon 輪詢跟 force_close.py 手動收尾都要搶這個才能動訊息，
+  -- 避免兩邊同時處理同一場、寫入順序交錯把面談搞壞（2026-07-30 實際發生過）
+  lock_expires_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_app_status  ON applications(status);
@@ -50,7 +62,14 @@ CREATE TABLE IF NOT EXISTS files (
   filename    TEXT,
   mime        TEXT,
   size        INTEGER,
-  content_b64 TEXT
+  content_b64 TEXT,
+
+  -- 履歷全文，表單送出後由本機排程先抽好。
+  -- 不在面談當下才解析：那會讓候選人等，而且每次面談都要把 PDF 塞進 context，
+  -- 同一份履歷解析很多次，token 全花在重複的事情上。
+  text_content TEXT,
+  parsed_at    TEXT,
+  parse_note   TEXT   -- 抽不出來的原因，例如掃描影像式 PDF
 );
 
 -- 預約時段。no_show 要記——那個比例決定這個流程值不值得繼續。
@@ -84,6 +103,8 @@ CREATE TABLE IF NOT EXISTS reports (
   application_id TEXT NOT NULL,
   created_at     TEXT NOT NULL,
   content_md     TEXT NOT NULL,
+  content_json   TEXT,                   -- 同一份報告的結構化版本（給後台視覺化／客戶版）；
+                                         -- 模型解析失敗時是 NULL，content_md 才是主的
   hard_pass      INTEGER,                -- 硬條件是否全數符合
   recommend      TEXT,                   -- worth_interview / need_more_info / not_fit
   consultant_decision TEXT,              -- 顧問實際怎麼處置
@@ -128,5 +149,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   interview_rounds TEXT,                 -- 用人單位要面幾次，例：2 次
   interview_who    TEXT,                 -- 分別跟誰面，例：一面人資＋用人主管，二面協理
   has_test         TEXT,                 -- 有無測驗與內容，例：Revit 實作 40 分鐘
-  faq_notes        TEXT                  -- 其他可以直接回答候選人的事（自由文字）
+  faq_notes        TEXT,                 -- 其他可以直接回答候選人的事（自由文字）
+
+  -- 客戶開出的條件裡，我們依法不能拿來篩選、但顧問需要知道的那些。
+  --
+  -- 典型是年齡。就服法第 5 條禁止以年齡歧視，AI 不能問、不能據此篩人——
+  -- 但顧問要跟客戶交代，所以報告裡要出現。
+  --
+  -- 處理方式：阿財**陳述履歷上看得到的事實**（例如畢業年份），
+  -- 不做「符合／不符合」的判斷，並註明此項由顧問評估。
+  -- 這樣顧問看報告就能決定推不推，不用再回後台翻履歷。
+  --
+  -- ⚠️ 這個欄位絕對不可以出現在對候選人的任何回應裡。
+  client_screen_conditions TEXT
 );

@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""顧問按了「✅ 核准發布」之後，才由這一支真的動網站。
+
+這是整條流程唯一會改到 step1ne.com 的地方，而且**只處理 status='approved'**。
+狀態是顧問在 Telegram 按按鈕、由 Worker 的 /telegram/webhook 寫進去的——
+也就是說，沒有人按過核准，這支就什麼都不會做。
+
+它做的事：
+  ① 取出核准的收件單與擬好的規格 JSON
+  ② 發布前再跑一次禁刊過濾器（成品對外欄位）。有命中就**停下來**，
+     退回 rewrite 狀態並通知顧問——不要相信「上次掃過了」
+  ③ 呼叫既有的 publish_job.py：職缺頁＋職缺專區卡片＋sitemap＋apply/jobs.json＋D1
+  ④ 補寫 publish_job.py 沒有處理的幾個欄位：
+     client_relation／service_line／client_named／ai_disclosure／client_code／intake_id
+  ⑤ 通知群組有新職缺（阿財就是靠 D1 的 jobs 表抓 JD，寫進去它就讀得到）
+
+用法：
+    python3 publish_approved.py --dry            # 只產檔到 /tmp，不動網站也不動 D1
+    python3 publish_approved.py                  # 真的產檔＋寫 D1（仍不 git push）
+    python3 publish_approved.py --intake <id>    # 只處理指定那一筆
+
+⚠️ 這支**不會 git push**。產完檔案要不要部署由人決定：
+   cd ~/下載項目/step1ne-stopgap-site && git add -A && git commit && git push deploy HEAD:main
+"""
+import os, sys, json, argparse, subprocess, importlib.util
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+WORK = os.path.join(HERE, 'work')
+
+sys.path.insert(0, HERE)
+import publishing_filters as PF          # noqa: E402
+import draft_job as DJ                   # noqa: E402（借用 tg_send／_esc／log）
+
+_spec = importlib.util.spec_from_file_location('d', os.path.join(ROOT, 'interview_daemon.py'))
+D = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(D)
+
+PUBLIC_KEYS = ('title', 'subtitle', 'page_title', 'description', 'keywords',
+               'og_title', 'og_desc', 'intro', 'tags', 'locations', 'locality',
+               'region', 'must_skills', 'benefits', 'spec', 'duties', 'must',
+               'plus', 'why', 'faq', 'industry', 'card_meta', 'card_desc', 'slug')
+
+
+def final_check(intake, spec):
+    """發布前的最後一道。回傳命中清單，空的才可以發布。"""
+    blob = json.dumps({k: spec.get(k) for k in PUBLIC_KEYS}, ensure_ascii=False, indent=1)
+    return PF.scan_output(
+        blob,
+        client_name=intake.get('client_name') if spec.get('client_named') == 0 else None,
+        client_code=intake.get('client_code'))
+
+
+def upsert_extra_columns(spec):
+    """publish_job.py 的 upsert_d1() 沒寫這幾欄，補上。
+
+    為什麼不直接改 publish_job.py 的 SQL：那支是既有、線上在用的工具，
+    改它的 INSERT 欄位清單風險比在後面補一次 UPDATE 高。
+    """
+    sets = []
+    for col in ('client_relation', 'service_line', 'ai_disclosure', 'client_code', 'intake_id'):
+        if spec.get(col) is not None:
+            sets.append(f"{col}={D.q(spec[col])}")
+    if spec.get('client_named') is not None:
+        sets.append(f"client_named={int(spec['client_named'])}")
+    if not sets:
+        return
+    D.d1(f"UPDATE jobs SET {', '.join(sets)} WHERE slug={D.q(spec['slug'])}")
+
+
+def notify_new_job(spec, dry):
+    """通知群組有新職缺。阿財讀的是 D1 的 jobs 表，寫進去它就抓得到 JD。"""
+    text = (f'🆕 <b>新職缺已上架</b>　{DJ._esc(spec.get("title"))}\n'
+            f'網址：https://step1ne.com/jobs/{DJ._esc(spec.get("slug"))}/\n'
+            f'服務線：{DJ._esc(spec.get("service_line"))}　｜　'
+            f'客戶對象：{DJ._esc(spec.get("client_relation"))}\n'
+            f'阿財已可抓到這份 JD（jobs 表已更新）。\n'
+            f'⚠️ 頁面檔案已產出，但**尚未部署**——要上線請自行 git push。')
+    if dry:
+        print('\n[--dry] 原本會送出的新職缺通知：\n' + text)
+        return
+    DJ.tg_send(text, [], spec.get('slug'))
+
+
+def process(intake, dry=False):
+    iid = intake['id']
+    spec = json.loads(intake['draft_json'] or '{}')
+    if not spec.get('slug'):
+        DJ.log(f'❌ {iid} 沒有可用的規格 JSON')
+        return
+
+    hits = final_check(intake, spec)
+    if hits:
+        DJ.log(f'⛔ 發布前最後一道擋下 {len(hits)} 處，停止發布')
+        print(PF.format_report(hits, title='發布前最後一道'))
+        if not dry:
+            D.d1(f"UPDATE job_intakes SET status='rewrite', "
+                 f"rewrite_note='發布前最後一道禁刊檢查未通過，需重擬', "
+                 f"updated_at=datetime('now','+8 hours') WHERE id={D.q(iid)}")
+            DJ.tg_send('⛔ <b>發布中止</b>\n這份職缺在發布前的最後一道禁刊檢查沒過：\n'
+                       + DJ._esc(PF.format_report(hits, title='')[:800])
+                       + '\n已退回重寫，網站沒有任何改動。', [], iid)
+        return
+
+    workdir = os.path.join(WORK, iid)
+    os.makedirs(workdir, exist_ok=True)
+    spec_path = os.path.join(workdir, 'spec.publish.json')
+    json.dump(spec, open(spec_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+
+    cmd = ['python3', os.path.join(ROOT, 'publish_job.py'), spec_path]
+    if dry:
+        cmd.append('--dry')
+    DJ.log('跑 publish_job.py' + ('（--dry）' if dry else ''))
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
+    print(r.stdout or r.stderr)
+    if r.returncode != 0:
+        DJ.log('❌ publish_job.py 失敗，狀態不變更')
+        return
+
+    if not dry:
+        upsert_extra_columns(spec)
+        D.d1(f"UPDATE job_intakes SET status='published', published_slug={D.q(spec['slug'])}, "
+             f"updated_at=datetime('now','+8 hours') WHERE id={D.q(iid)}")
+    notify_new_job(spec, dry)
+    DJ.log(f'✅ 完成：{spec["slug"]}' + ('（--dry，只產檔到 /tmp）' if dry else '（尚未部署）'))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--intake')
+    ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--local', help='本機收件單 JSON（離線測試，draft_json 直接讀 work/<id>/spec.json）')
+    a = ap.parse_args()
+
+    if a.local:
+        intake = json.load(open(a.local, encoding='utf-8'))
+        iid = intake['id']
+        sp = os.path.join(WORK, iid, 'spec.json')
+        intake['draft_json'] = open(sp, encoding='utf-8').read()
+        process(intake, dry=a.dry)
+        return
+
+    where = f"id={D.q(a.intake)}" if a.intake else "status='approved'"
+    rows = D.d1(f"SELECT * FROM job_intakes WHERE {where}")
+    rows = [r for r in rows if r['status'] == 'approved' or a.intake]
+    if not rows:
+        DJ.log('沒有已核准待發布的收件單')
+        return
+    for r in rows:
+        process(r, dry=a.dry)
+
+
+if __name__ == '__main__':
+    main()

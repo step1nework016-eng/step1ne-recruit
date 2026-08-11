@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""把一位候選人做成「匿名履歷」PDF，用來推給客戶。
+
+去識別化照 Step1ne 現行範本的標準：姓＋先生／小姐、公司寫成「產業＋規模」、
+保留年齡、居住地、語言、駕照與具體成就數字。**只有一種版本**——
+不管對方簽約了沒有，給的東西一樣，顧問自己決定要不要送。
+
+內容不是套版產生的——履歷原文與初篩報告交給 claude 讀，抽成結構化 JSON 再排版。
+套版做不到「把『大型證券商』這種去識別化描述寫得像人寫的」。
+
+用法：
+    python3 make_anon_cv.py 呂皓宇
+    python3 make_anon_cv.py <application_id> --out ~/Desktop/x.pdf
+"""
+import os, sys, json, argparse, subprocess, datetime, html, importlib.util, re
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview_daemon.py'))
+D = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(D)
+
+MODEL = 'opus'   # 這份是要拿去談生意的，寫壞比慢更貴
+
+# ── 去識別化規則（照 Step1ne 現行範本，只有一套）──
+RULE = """- 公司寫成「產業＋規模」，例：大型證券商（500 人以上）、連鎖餐飲集團、
+     環境衛生服務業（澳洲廠務清潔）。**不要**出現公司全名。
+   - 姓名只留姓＋先生／小姐；英文只留姓。
+   - 居住地可到行政區、年齡可寫出生年與歲數與役別、證照可列類別明細、
+     任職期間可到月——這些是說服力來源，範本本來就有，保留。
+   - 學校名稱不寫，只寫學歷層級。"""
+
+SCHEMA = """{
+  "surname": "只有姓，例：呂",
+  "surname_en": "英文姓，例：Lu",
+  "gender_title": "先生 或 小姐（履歷判斷得出來才填，判斷不出來填「先生／小姐」）",
+  "basic": [["欄位名","值"], ...],
+  "summary": [["標籤","一句話說明"], ...],
+  "bullets": ["條列的優勢，每條一句話，4–7 條"],
+  "motivation": {"quote": "人選自己說的話，第一人稱，可從逐字稿或履歷擷取；沒有就填空字串", "note": "（本段由顧問協助整理人選應徵動機）"},
+  "experiences": [{"org":"去識別化後的服務單位","period":"任職期間","title":"職稱","points":["工作內容重點"]}],
+  "fit": "兩三句話：為什麼這個人適合這個職缺／這類職缺"
+}"""
+
+
+def build_prompt(app, job, resume_text, report_md):
+    return f"""你是資深獵頭顧問，要把一位候選人做成「匿名履歷」，交給客戶評估。
+對方可能還沒跟我們簽約——目的是讓他想見這個人，進而願意委任我們。
+
+## 去識別化規則（最重要，違反等於洩漏個資）
+{RULE}
+
+共通鐵則：
+- **絕對不出現**：全名、電話、Email、現職公司全名、學校名稱、身分證字號、地址門牌。
+- **不要出現可反查的獨特組合**。寫完後自己反問一次：「拿這份去 Google 或 LinkedIn
+  搜得到他本人嗎？」搜得到就把最獨特的那個細節再模糊一級。
+- 就業服務法第 5 條：**不要**主動寫入婚育狀況、宗教、政黨、星座、血型。
+- **不要美化、不要編**。履歷與報告裡沒有的東西一個字都不能加。
+  沒有的欄位就不要放進 basic／summary，寧可少也不要編。
+- 成就要保留**具體數字**（帶幾人、幾年、幾張證照、幾點到幾點），那是說服力來源。
+
+## 職缺
+{job.get('title') or ''}／{job.get('client_name') or '（未綁客戶）'}
+必備條件：{job.get('must_skills') or '（未填）'}
+
+## 候選人履歷原文
+{(resume_text or '（無履歷文字）')[:12000]}
+
+## AI 初篩報告（顧問視角的觀察，可引用結論但不要照抄）
+{(report_md or '（無報告）')[:6000]}
+
+## 輸出
+只輸出一個 JSON 物件，不要有其他文字、不要包在程式碼區塊裡。結構：
+{SCHEMA}
+"""
+
+
+CSS = """
+@page{size:A4;margin:14mm 13mm 16mm}
+body{ /* 2026-08-06：字型順序不要改。原本 PingFang 排第一，WeasyPrint 子集化 .ttc（PingFang 是字型集合）會產出壞掉的 CID 字型——文字層是對的（pdftotext 讀得出來），但字形畫不出來，顧問收到一份亂碼履歷。Noto Sans CJK TC 是 .otf，子集化正常。注意 CSS 要寫「Noto Sans CJK TC」，不是「Noto Sans TC」——後者配對不到會退回 PingFang。*/ font-family:"Noto Sans CJK TC","PingFang TC","Heiti TC",sans-serif;font-size:10.5pt;
+ color:#1c1f26;line-height:1.65}
+.top{background:#1e3a5f;color:#fff;padding:9px 12px;font-size:9.5pt;line-height:1.55;font-weight:600}
+.top b{letter-spacing:.06em}
+.auth{font-size:9pt;color:#5a6472;font-style:italic;margin:7px 0 16px;
+ display:flex;justify-content:space-between;gap:12px}
+h2{background:#1e3a5f;color:#fff;font-size:11pt;padding:6px 12px;margin:20px 0 0;
+ border-radius:3px 3px 0 0}
+table{width:100%;border-collapse:collapse}
+td{border:1px solid #d4d8de;padding:7px 11px;vertical-align:top}
+td.k{width:30%;background:#f6f7f9;font-weight:700}
+ul{margin:10px 0 0;padding-left:19px}
+li{margin-bottom:6px}
+.quote{border-left:3px solid #1e3a5f;background:#f6f7f9;padding:11px 14px;margin:11px 0 6px;
+ font-style:italic;line-height:1.85}
+.qnote{font-size:9pt;color:#7b8290}
+.exp td.h{background:#eef1f5;font-weight:700;border-bottom:2px solid #1e3a5f}
+.fit{background:#f6f7f9;border:1px solid #d4d8de;padding:11px 14px;margin-top:10px;border-radius:4px}
+.foot{margin-top:22px;font-size:8.5pt;color:#8a9099;text-align:center;
+ border-top:1px solid #e2e5ea;padding-top:9px}
+"""
+
+
+def render_html(c, job):
+    e = html.escape
+    nm = f"{e(c['surname'])}{e(c.get('gender_title') or '先生／小姐')}"
+    rows = ''.join(f'<tr><td class="k">{e(k)}</td><td>{e(v)}</td></tr>' for k, v in c.get('basic', []))
+    summ = ''.join(f'<tr><td class="k">{e(k)}</td><td>{e(v)}</td></tr>' for k, v in c.get('summary', []))
+    bl = ''.join(f'<li>{e(x)}</li>' for x in c.get('bullets', []))
+    mot = ''
+    if (c.get('motivation') or {}).get('quote'):
+        mot = (f'<h2>應徵動機</h2><div class="quote">「{e(c["motivation"]["quote"])}」</div>'
+               f'<div class="qnote">{e(c["motivation"].get("note") or "")}</div>')
+    exp = ''
+    for x in c.get('experiences', []):
+        pts = ''.join(f'<li>{e(p)}</li>' for p in x.get('points', []))
+        exp += (f'<tr><td>{e(x.get("org") or "")}</td><td>{e(x.get("period") or "")}</td>'
+                f'<td>{e(x.get("title") or "")}</td><td><ul>{pts}</ul></td></tr>')
+    today = datetime.date.today().isoformat()
+    scope = '提供致客戶進行工作職位媒合之使用'
+    return f"""<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
+<div class="top"><b>STEP1NE</b>　本資料由德仁管理顧問有限公司提供，{scope}，
+不得轉交第三人，請保護人選個資。</div>
+<div class="auth"><span>相關授權文件已由人選提供予德仁管理顧問有限公司。</span>
+<span>推薦日期：{today}</span></div>
+
+<h2>基本資料</h2><table>
+<tr><td class="k">人　選</td><td>{nm}</td></tr>
+<tr><td class="k">Candidate</td><td>Mr./Ms. {e(c.get('surname_en') or '')}</td></tr>
+{rows}</table>
+
+<h2>Summary 及個人特質、優勢</h2><table>{summ}</table>
+<ul>{bl}</ul>
+{mot}
+
+<h2>Work Experiences</h2><table class="exp">
+<tr><td class="h">服務單位（去識別化）</td><td class="h">任職期間</td>
+<td class="h">職稱</td><td class="h">工作內容重點</td></tr>
+{exp}</table>
+
+{'<h2>顧問觀點</h2><div class="fit">' + e(c.get('fit') or '') + '</div>' if c.get('fit') else ''}
+
+<div class="foot">Step1ne 德仁管理顧問有限公司　｜　{e(job.get('title') or '')}　｜　{today}</div>
+</body></html>"""
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('who', help='候選人姓名或 application_id')
+    ap.add_argument('--out')
+    a = ap.parse_args()
+
+    rows = D.d1(f"SELECT id,name,job_slug,job_title,resume_file_id,resume_url_text "
+                f"FROM applications WHERE id={D.q(a.who)} OR name={D.q(a.who)} LIMIT 1")
+    if not rows:
+        sys.exit(f'找不到候選人：{a.who}')
+    app = rows[0]
+
+    job = (D.d1(f"SELECT title,client_name,must_skills FROM jobs WHERE slug={D.q(app['job_slug'])}") or [{}])[0]
+
+    # 履歷文字：優先用檔案抽出來的，沒有就用連結抓的
+    txt = app.get('resume_url_text') or ''
+    if app.get('resume_file_id'):
+        f = D.d1(f"SELECT text_content FROM files WHERE id={D.q(app['resume_file_id'])}")
+        if f and f[0].get('text_content'):
+            txt = f[0]['text_content']
+    rep = D.d1(f"SELECT content_md FROM reports WHERE application_id={D.q(app['id'])} "
+               f"ORDER BY created_at DESC LIMIT 1")
+    report_md = rep[0]['content_md'] if rep else ''
+
+    if not txt and not report_md:
+        sys.exit('這位候選人既沒有履歷文字也沒有報告，做不出匿名履歷')
+
+    print(f"讀取 {app['name']}：履歷 {len(txt)} 字、報告 {len(report_md)} 字")
+    r = subprocess.run(['claude', '-p', build_prompt(app, job, txt, report_md),
+                        '--model', MODEL, '--output-format', 'text'],
+                       capture_output=True, text=True, env=D.env_with_cf(), timeout=600)
+    out = (r.stdout or '').strip()
+    if out.startswith('```'):
+        out = out.split('\n', 1)[-1]
+        if out.rstrip().endswith('```'):
+            out = out.rstrip()[:-3]
+    m = re.search(r'\{.*\}', out, re.S)
+    if not m:
+        # 把 stderr 一起吐出來。第一版只印 stdout，模型回空的時候等於沒有任何線索。
+        sys.exit(f'模型沒有回傳 JSON\n  returncode={r.returncode}\n'
+                 f'  stdout（前 300 字）：{out[:300]}\n'
+                 f'  stderr（後 500 字）：{(r.stderr or "")[-500:]}')
+    c = json.loads(m.group(0))
+
+    # 最後一道防線：模型再怎麼被交代過，還是可能把全名寫回去
+    full = app['name']
+    bad = [x for x in (full, full[1:]) if x and len(x) >= 2]
+    body = json.dumps(c, ensure_ascii=False)
+    for b in bad:
+        if b in body:
+            print(f'⚠️ 產出裡出現了候選人全名或名字「{b}」，已自動移除')
+            body = body.replace(b, '')
+    c = json.loads(body)
+
+    out_pdf = a.out or f"/tmp/匿名履歷_{c.get('surname','')}先生_{app['job_slug']}.pdf"
+    html_path = out_pdf.replace('.pdf', '.html')
+    open(html_path, 'w', encoding='utf-8').write(render_html(c, job))
+    subprocess.run(['weasyprint', html_path, out_pdf], check=True, timeout=120)
+    # ⚠️ 2026-08-06 起保留 HTML。原本產完就刪，結果字型出問題要重修時，
+    # 只能連 AI 那段（約 5 分鐘）一起重跑。留著就能 `weasyprint x.html x.pdf` 幾秒重產。
+    # os.remove(html_path)
+    print(f'✅ {out_pdf}')
+    return out_pdf
+
+
+if __name__ == '__main__':
+    main()

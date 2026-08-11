@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>人選推薦｜Step1ne</title>
+<!--
+  客戶版（給用人企業）樣板。
+  ⚠️ 版面、配色、區塊順序、光譜圖都是 2026-08-10 Jacky 看過三輪後拍板的，
+     不要重新設計。這份檔案只把資料位置換成 {{變數}}，其餘一個字都沒動。
+  ⚠️ 哪些內容絕對不能出現在這一版，見 memory/report_two_versions_spec.md，
+     過濾邏輯寫在 deliver.py 的 CLIENT_BANNED_RE 與 build_client_view()。
+  語法：{{VAR}} = 直接代換；<!--@IF:key@-->…<!--@ENDIF:key@--> = 沒資料就整段刪掉。
+-->
+<style>
+:root{--gold:#a67c3d;--gold2:#c9a049;--ink:#23262d;--ink2:#4d5563;--ink3:#8a8d95;
+ --line:#eee7db;--soft:#faf8f3;--ok:#2f8f5b;--bad:#c0392b;--bg:#f4f1ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+ font:15px/1.75 -apple-system,"Noto Sans TC",sans-serif;padding:26px 14px}
+.wrap{max-width:820px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin-bottom:14px}
+h2{font-size:14px;margin:0 0 15px;letter-spacing:.06em;color:var(--ink3);font-weight:700}
+h3{font-size:13.5px;margin:20px 0 9px;color:var(--gold)}
+.hero{background:var(--ink);color:#fff;border-radius:18px;padding:24px 26px;margin-bottom:14px}
+.brand{font-size:11px;letter-spacing:.16em;color:var(--gold2);font-weight:700}
+.hero h1{font-size:23px;margin:14px 0 3px}
+.hero .sub{font-size:14px;color:#a8adb8;margin:0 0 18px}
+.hero .pos{font-size:16.5px;line-height:1.7;margin:0 0 18px;color:#e8e4dc}
+.nums{display:flex;gap:26px;flex-wrap:wrap;border-top:1px solid #3a3f49;padding-top:15px}
+.nums div{font-size:12px;color:#a8adb8}
+.nums b{display:block;color:#fff;font-size:16px;font-weight:700;margin-top:2px}
+.track{position:relative;margin:14px 0 18px;padding-top:26px;display:flex;overflow-x:auto}
+.track::before{content:"";position:absolute;top:9px;left:0;right:0;height:2px;background:var(--line)}
+.track div{flex:1 1 0;min-width:126px;position:relative;padding-right:14px;font-size:12.5px;line-height:1.55}
+.track div::before{content:"";position:absolute;top:-23px;left:0;width:11px;height:11px;
+ border-radius:50%;background:#fff;border:2.5px solid var(--gold2)}
+.track div:last-child::before{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px #f0e3c9}
+.track div b{display:block;font-size:13.5px;color:var(--ink);margin-bottom:1px}
+.track div i{font-style:normal;color:var(--ink3);font-size:11.5px;display:block}
+.track div s{text-decoration:none;color:var(--gold);font-size:12px;font-weight:700;display:block;margin-bottom:4px}
+.track div s.unk{color:#b9bcc4}
+.track div u{text-decoration:none;color:var(--ink3);font-size:11px;display:block;margin-top:3px}
+.track div.dim::before{border-style:dashed;border-color:#c9c4b8}
+.track div.dim b{color:var(--ink3)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:8px 15px;margin:0;font-size:14px}
+dt{color:var(--ink3);white-space:nowrap} dd{margin:0;color:var(--ink2)}
+.cond{display:grid;gap:8px}
+.cond div{display:grid;grid-template-columns:20px 1fr;gap:11px;align-items:start;
+ background:var(--soft);border-radius:10px;padding:11px 14px;font-size:14px}
+.cond em{font-style:normal;color:var(--ink2);font-size:13px;display:block;margin-top:2px}
+ol{margin:0;padding-left:20px} ol li{margin-bottom:9px;color:var(--ink2);font-size:14.5px}
+ol li b{color:var(--ink)}
+.spec{display:grid;gap:15px}
+.spec div{display:grid;grid-template-columns:82px 1fr 82px;gap:12px;align-items:center;font-size:12px}
+.spec s{text-decoration:none;color:var(--ink3);text-align:right}
+.spec u{text-decoration:none;color:var(--ink);font-weight:600}
+.spec i{position:relative;height:6px;border-radius:99px;
+ background:linear-gradient(90deg,#efe9dd,#e3d3ae);display:block}
+.spec i::after{content:"";position:absolute;top:50%;left:var(--p);width:13px;height:13px;
+ margin:-6.5px 0 0 -6.5px;border-radius:50%;background:var(--gold);border:2.5px solid #fff;
+ box-shadow:0 0 0 1.5px var(--gold)}
+.jobs{display:grid;gap:11px}
+.jobs>div{background:var(--soft);border-radius:11px;padding:13px 16px}
+.jobs b{font-size:14px}
+.jobs s{text-decoration:none;color:var(--gold);font-size:11.5px;font-weight:700;margin-left:9px}
+.jobs s.unk,.jobs s .unk{color:#b9bcc4;font-weight:600}
+.jobs>div>p{margin:5px 0 0;font-size:13.5px;color:var(--ink2);line-height:1.7}
+.jobs ul{margin:7px 0 0;padding-left:18px}
+.jobs li{font-size:13.5px;color:var(--ink2);line-height:1.8;margin-bottom:2px}
+.jobs li::marker{color:var(--gold2)}
+.tags{display:flex;flex-wrap:wrap;gap:7px}
+.tags span{background:var(--soft);border:1px solid var(--line);border-radius:999px;
+ padding:5px 13px;font-size:13px;color:var(--ink2)}
+.risk{background:#fffaf0;border:1px solid #e8d5ab;border-radius:11px;padding:14px 16px;
+ font-size:14px;color:#7a5518;margin-top:14px}
+.risk b{color:#5e400f}
+.ask{background:var(--soft);border-left:3px solid var(--gold);border-radius:0 10px 10px 0;
+ padding:11px 14px;margin-bottom:9px;font-size:13.5px;color:var(--ink)}
+.files{display:flex;gap:9px;flex-wrap:wrap;margin-top:15px}
+.files a{font-size:13.5px;font-weight:600;text-decoration:none;border:1px solid var(--line);
+ border-radius:999px;padding:9px 18px;color:var(--ink2);background:#fff}
+.foot{font-size:12px;color:var(--ink3);line-height:1.9;text-align:center;margin:22px 0 0}
+.stamp{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 17px;
+ font-size:12.5px;color:var(--ink3);line-height:1.8}
+</style>
+<style>
+@page{size:A4;margin:10mm}
+@media print{
+  body{background:#fff;padding:0}
+  .wrap{max-width:none}
+  /* 卡片本身允許跨頁，只保護「不該被切開的小單位」，
+     否則整張卡搬到下一頁會留下大片空白 */
+  .card{break-inside:auto;margin-bottom:9px;padding:15px 18px}
+  .hero{padding:18px 20px;margin-bottom:9px}
+  h2{margin-bottom:11px}
+  h3{margin:15px 0 7px;break-after:avoid}
+  .jobs>div,.cond div,.ask,.risk,.spec div,.stamp,ol li{break-inside:avoid}
+  h2,h3,.jobs b{break-after:avoid}
+  .jobs{gap:8px}
+  .jobs>div{padding:11px 14px}
+  .jobs li{line-height:1.65}
+  .track{margin:10px 0 14px}
+  ol li{margin-bottom:6px}
+  dl{gap:6px 15px}
+  .foot{margin-top:14px}
+}
+</style>
+<div class="wrap">
+
+<div class="hero">
+  <span class="brand">STEP1NE 人選推薦</span>
+  <h1>{{NAME}}</h1>
+  <p class="sub">推薦職缺：{{JOB}}</p>
+  <p class="pos">{{POSITIONING}}</p>
+  <div class="nums">{{NUMS}}</div>
+</div>
+
+<!--@IF:reasons@-->
+<div class="card">
+  <h2>推薦理由</h2>
+  <ol>{{REASONS}}</ol>
+</div>
+<!--@ENDIF:reasons@-->
+
+<!--@IF:history@-->
+<div class="card">
+  <h2>工作經歷</h2>
+  <div class="track">{{TRACK}}</div>
+  <h3 style="margin-top:22px">各段實際做了什麼</h3>
+  <div class="jobs">{{JOBS}}</div>
+  <dl>{{FACTS}}</dl>
+</div>
+<!--@ENDIF:history@-->
+
+<!--@IF:cond@-->
+<div class="card">
+  <h2>與職缺條件對照</h2>
+  <div class="cond">{{COND}}</div>
+  {{RISKS}}
+</div>
+<!--@ENDIF:cond@-->
+
+<!--@IF:asked@-->
+<div class="card">
+  <h2>面談中他主動詢問的問題</h2>
+  {{ASKED}}
+</div>
+<!--@ENDIF:asked@-->
+
+<!--@IF:spectrum@-->
+<div class="card">
+  <h2>特質與風格</h2>
+  <div class="spec">{{SPEC}}</div>
+  <p style="font-size:13.5px;color:var(--ink2);margin:16px 0 0">
+  以上為初步面談中的行為觀察，非標準化測驗結果，僅供面試時參考。{{SPEC_NOTE}}</p>
+</div>
+<!--@ENDIF:spectrum@-->
+
+<div class="stamp">
+  本人選已完成 Step1ne 的<b>{{INTERVIEW_PHRASE}}</b>，上述內容為面談紀錄與應徵資料之摘要整理。
+  本摘要不取代候選人本人之作品集與後續面試查證。
+</div>
+
+<p class="foot">
+  德仁管理顧問有限公司（Step1ne）　統一編號 85046127<br>
+  就業服務許可證：北市就服字第 0363 號
+</p>
+
+</div>
