@@ -13,3 +13,9 @@ database_id = "67077b4b-42d9-4086-8d04-b3658a89cffd"
 crons = ["*/15 * * * *"]
 
 # ADMIN_TOKEN / TG_BOT_TOKEN / TG_CHAT_ID 用 wrangler secret put 設定，不寫在這裡
+
+# 語音口說驗證用 Workers AI 的 Whisper 做轉寫。
+# 為什麼選這個：我們已經在 Cloudflare 上，不必再申請一把 OpenAI 金鑰、
+# 也不必把候選人的錄音送到第三方——音檔在同一個帳號裡處理完就好。
+[ai]
+binding = "AI"

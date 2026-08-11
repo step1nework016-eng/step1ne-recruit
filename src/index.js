@@ -1332,6 +1332,68 @@ export default {
       ).bind(token).first();
       if (!app) return json(request, { ok: false, error: 'not found' }, 404);
 
+
+      // ── 語音回覆（外語口說驗證）──
+      //
+      // 為什麼要做：文字面談擋不住 Google 翻譯。2026-08-11 Jacky 問「怎麼防止」，
+      // 結論是——文字層只能讓作弊留下痕跡，真正解法是語音：
+      // 一段 60 秒的錄音同時解決三件事，翻譯貼上不可能、口說能力直接聽到、即時性看得出來。
+      // 而客戶要的正是這個（日方會議即時溝通、跟海外據點開會），
+      // JLPT N1 證書證明不了，一段語音可以。
+      //
+      // ⚠️ 只在外語驗證那一題用。中高階最忌諱冗長流程，五題都要錄會把人逼走。
+      if (action === 'voice' && request.method === 'POST') {
+        if (app.interview_state === 'done') {
+          return json(request, { ok: false, error: '這場面談已經結束了' }, 409);
+        }
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const b64 = String(b.audio_b64 || '');
+        if (!b64) return json(request, { ok: false, error: '沒有收到錄音' }, 400);
+        // 60 秒的 webm/opus 大約 100–500KB。抓 8MB 當上限，超過多半是壞掉的錄音
+        if (b64.length > 8 * 1024 * 1024 * 4 / 3) {
+          return json(request, { ok: false, error: '錄音太長，請控制在 60 秒內' }, 400);
+        }
+        if (!env.AI) return json(request, { ok: false, error: '語音轉寫服務尚未啟用' }, 503);
+
+        const now = nowTaipei();
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+        let text = '';
+        try {
+          const out = await env.AI.run('@cf/openai/whisper', { audio: [...bin] });
+          text = String((out && (out.text || out.transcription)) || '').trim();
+        } catch (e) {
+          return json(request, { ok: false, error: '轉寫失敗：' + String(e).slice(0, 120) }, 500);
+        }
+        if (!text) return json(request, { ok: false, error: '這段錄音聽不出內容，請再錄一次' }, 422);
+
+        // 音檔留存。顧問要能自己聽——轉寫再準，「聽起來像不像會開會的人」
+        // 只有耳朵判斷得出來，而那是客戶真正在意的。
+        const fid = uid();
+        await env.DB.prepare(
+          `INSERT INTO files (id, created_at, filename, mime, size, content_b64,
+                              text_content, parsed_at, parse_note)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        ).bind(fid, now, `語音回覆_${app.id.slice(0, 8)}_${Date.now()}.webm`,
+               b.mime || 'audio/webm', bin.length, b64, text, now,
+               '面談語音回覆（Whisper 轉寫）').run();
+
+        const secs = Math.max(1, Math.round(Number(b.seconds) || 0));
+        // ⚠️ 一定要標成語音。阿財看到的是文字，如果不標，
+        //    它會把「口說回答」當成「打字回答」來判斷流暢度，那是兩回事。
+        const marked = `［語音回覆 ${secs} 秒・系統轉寫］${text}`;
+        await env.DB.prepare(
+          `INSERT INTO messages (application_id, role, content, created_at) VALUES (?,?,?,?)`
+        ).bind(app.id, 'candidate', marked, now).run();
+
+        if (app.interview_state !== 'active') {
+          await env.DB.prepare(
+            `UPDATE applications SET interview_state='active' WHERE id = ?`).bind(app.id).run();
+        }
+        return json(request, { ok: true, text, file_id: fid, seconds: secs });
+      }
+
       // 送出一句話
       if (action === 'send' && request.method === 'POST') {
         if (app.interview_state === 'done') {
