@@ -379,7 +379,14 @@ async function sendBdMail(env, to, subject, body, cvFileId) {
       body: JSON.stringify({
         from: 'Jacky Chen <official@step1ne.com>',
         to: [to], subject, text: body, html,
-        reply_to: 'official@step1ne.com',
+        // 回信要能被系統讀到才追蹤得了。
+        // ⚠️ 不能用 Cloudflare Email Routing 接管 official@step1ne.com——
+        //    step1ne.com 的信箱在 GoDaddy（MX 指向 secureserver.net），
+        //    開 Email Routing 會取代 apex 的 MX，整個公司信箱直接收不到信。
+        //    改用子網域：BD_REPLY_TO 設成 reply@bd.step1ne.com，
+        //    由 bd.step1ne.com 這個子網域的 Email Routing 轉寄進來，主信箱完全不動。
+        //    沒設定就退回 official@，行為跟以前一樣。
+        reply_to: env.BD_REPLY_TO || 'official@step1ne.com',
         ...(attachments.length ? { attachments } : {}),
       }),
       signal: AbortSignal.timeout(20000),
@@ -1823,6 +1830,29 @@ export default {
         const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id = ?`).bind(bid).first();
         if (!row) return json(request, { ok: false, error: '找不到這封' }, 404);
         return json(request, { ok: true, row });
+      }
+
+      // 補窗口／改信件內容。
+      // 查不到 email 的那幾封在群組裡按核准也寄不出去，顧問需要一個地方補。
+      if (p.startsWith('/admin/bd/') && p.endsWith('/patch') && request.method === 'POST') {
+        const bid = decodeURIComponent(p.slice('/admin/bd/'.length, -'/patch'.length));
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const row = await env.DB.prepare(`SELECT id, status FROM bd_outreach WHERE id = ?`).bind(bid).first();
+        if (!row) return json(request, { ok: false, error: '找不到這封' }, 404);
+        if (row.status === 'sent') return json(request, { ok: false, error: '這封已經寄出去了，改不動' }, 400);
+
+        const sets = [], vals = [];
+        for (const k of ['contact_email', 'contact_name', 'subject', 'body']) {
+          if (b[k] === undefined) continue;
+          sets.push(`${k} = ?`);
+          vals.push(String(b[k]).trim() || null);
+        }
+        if (!sets.length) return json(request, { ok: false, error: '沒有要改的欄位' }, 400);
+        vals.push(nowTaipei(), bid);
+        await env.DB.prepare(
+          `UPDATE bd_outreach SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).bind(...vals).run();
+        return json(request, { ok: true });
       }
 
       // 顧問決定要不要寄。⚠️ 只有這裡會真的寄出去，agent 自己不寄。
