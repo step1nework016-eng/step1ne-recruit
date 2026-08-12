@@ -998,6 +998,28 @@ export default {
         });
       }
 
+      // 健檢對談結束後的體驗評分——照阿財 /chat/<token>/feedback 同一套，
+      // 星星一點就送（rating 必填），意見欄選填，不填也能送出。
+      if (action === 'feedback' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const rating = Number(b.rating);
+        if (!(rating >= 1 && rating <= 5)) return json(request, { ok: false, error: '評分要在 1 到 5' }, 400);
+        const comment = String(b.comment || '').trim().slice(0, 1000);
+        await env.DB.prepare(
+          `INSERT INTO checkup_feedback (checkup_id, created_at, rating, comment)
+           VALUES (?,?,?,?)
+           ON CONFLICT(checkup_id) DO UPDATE SET
+             rating = excluded.rating, comment = excluded.comment, created_at = excluded.created_at`
+        ).bind(c.id, nowTaipei(), rating, comment || null).run();
+        if (rating <= 2) {
+          await notify(env, `⚠️ 健檢體驗評分偏低：${rating}/5\n${c.name}\n` +
+            (comment ? `他寫：${comment}\n` : '') + `健檢單號：${c.id}`,
+            { message_thread_id: THREAD.system });
+        }
+        return json(request, { ok: true });
+      }
+
       // PDF 版本——2026-08-12 Jacky 要求：報告要能讓本人「帶走」，不是只能在
       // 網頁上看。⚠️ 一開始直接存單一欄位 report_pdf_b64（~1.8MB base64）撞到
       // SQLITE_TOOBIG——D1 單值/單一 SQL 陳述式都有長度上限，即使走 --file 匯入
