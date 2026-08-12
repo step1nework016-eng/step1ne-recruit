@@ -1127,6 +1127,26 @@ REPORT_JSON_RULES = (
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
 # 只用來記 log 提醒人去看，不自動改寫內容——擅自刪字會把顧問要看的原文弄壞
 _BANNED_WORDS = ('說謊', '造假', '灌水', '誇大不實')
+# 否定詞。2026-08-12 鍾欣修那份報告寫「逐段加總與履歷自寫大致相符，**無灌水跡象**」，
+# 被當成「出現不該有的判斷字眼」報警——意思正好相反。
+# 這種誤報比漏報更糟：警告一多，真正該看的那則就會被當成雜訊略過。
+_NEGATIONS = ('無', '沒有', '未見', '未發現', '不是', '非', '未有', '查無')
+
+
+def _accuses(text, word):
+    """這個字是拿來指控候選人的，還是拿來說「沒有這件事」的？
+
+    只看緊鄰在前面的幾個字。「無灌水跡象」放行，「有灌水嫌疑」照樣示警。
+    """
+    i = 0
+    while True:
+        i = text.find(word, i)
+        if i < 0:
+            return False
+        before = text[max(0, i - 6):i]
+        if not any(n in before for n in _NEGATIONS):
+            return True
+        i += len(word)
 
 
 def _extract_json(text):
@@ -1274,7 +1294,7 @@ def report_to_json(report, ctx, name=''):
             return None
         data = _normalize_report_json(obj)
         blob = json.dumps(data, ensure_ascii=False)
-        hit = [w for w in _BANNED_WORDS if w in blob]
+        hit = [w for w in _BANNED_WORDS if _accuses(blob, w)]
         if hit:
             # 不自動改寫——顧問要看到模型原本寫了什麼，才知道這份能不能信
             log(f'⚠️ {name} 結構化報告出現不該有的判斷字眼 {hit}，請人工看一下 content_json')
