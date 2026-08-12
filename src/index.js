@@ -826,7 +826,13 @@ export default {
       if (load.active + load.pending < LIVE_LIMIT) {
         await env.DB.prepare(`UPDATE applications SET status='ready', interview_mode='now' WHERE id=?`)
           .bind(app.id).run();
-        return json(request, { ok: true, route: 'now', chat_token: app.chat_token });
+        // ⚠️ 時段也要一起回。2026-08-11 Jacky 反應「測驗做完怎麼沒有可以選
+        //    直接開始面試或預約」——原因就在這裡：面談室有空時只回 route:'now'，
+        //    前端只長得出「進入面談室」一顆按鈕。現在不方便的人沒有第二條路，
+        //    只能把視窗關掉，而關掉的人多半不會再回來。
+        //    有空 ≠ 他現在方便。兩條路都要給他，讓他自己選。
+        return json(request, { ok: true, route: 'now', chat_token: app.chat_token,
+                               slots: await openSlots(env) });
       }
       // 額滿 → 只能預約。誠實告訴他現在有幾個人在談，不要只說「請稍後」
       return json(request, {
