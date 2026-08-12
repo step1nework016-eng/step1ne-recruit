@@ -47,6 +47,7 @@ const THREAD = {
   intake: 4,      // #3履歷進件：新應徵、預約、開始面談
   pool: 304,      // #4 履歷池：面談報告與 PDF（資料，不是決策）
   system: 1360,   // 系統回報：排程結果、寄送失敗、刪除紀錄
+  report: 3161,   // 顧問人選回報區：顧問用人話回報進度，總指揮翻成漏斗狀態
 };
 const CHECKUP_THREAD = THREAD.intake;
 const INTAKE_THREAD = THREAD.intake;
@@ -908,6 +909,35 @@ export default {
       let update;
       try { update = await request.json(); } catch { return new Response('ok'); }
 
+      // ── 顧問在「顧問人選回報區」講的話 ──
+      //
+      // 漏斗的後三關（客戶面談→錄取→到職）在這之前沒有任何入口，
+      // 所以 placements 只有 2 筆、還是事後補登的。顧問不會為了填表單開後台，
+      // 但一定會用 Telegram——入口就做在他本來待的地方。
+      //
+      // 這裡**只負責收下來**。翻譯成漏斗狀態是本機 report_tick.py 的事
+      // （Worker 跑不了 claude），而且一律先問過顧問才寫入。
+      {
+        const rm = update.message;
+        // ⚠️ 不可以用 !rm.reply_to_message 來排除。
+        //    論壇主題裡的每一則訊息**本身就帶著 reply_to_message**（指向主題根訊息），
+        //    加了那個條件等於全部擋掉——2026-08-12 第一次上線就是這樣，
+        //    Jacky 打了「湯豐銘客戶約週四下午面試」完全沒進資料庫。
+        //    主題 id 已經夠精確了，其他主題不會落到這裡。
+        if (rm && Number(rm.message_thread_id) === THREAD.report &&
+            String(rm.text || '').trim()) {
+          const who = (rm.from && (rm.from.username || rm.from.first_name)) || '顧問';
+          // 自己發的確認訊息不要再收一次
+          if (!(rm.from && rm.from.is_bot)) {
+            await env.DB.prepare(
+              `INSERT INTO consultant_reports (id, created_at, tg_message_id, sender, raw_text, status, updated_at)
+               VALUES (?,?,?,?,?, 'new', ?)`
+            ).bind(uid(), nowTaipei(), rm.message_id, who, rm.text.trim(), nowTaipei()).run();
+          }
+          return new Response('ok');
+        }
+      }
+
       // ── 顧問按「重寫」之後，直接回覆那則訊息補意見 ──
       // Telegram 的 inline 按鈕收不到自由文字，所以按鈕只負責把狀態改成 rewrite，
       // 意見靠「回覆同一則訊息」收。不做這一段的話，顧問按了重寫之後
@@ -936,6 +966,139 @@ export default {
       }
 
       const cq = update.callback_query;
+
+
+      // ── 顧問回報的確認按鈕 ──
+      // 🚨 這裡是唯一會把顧問的話寫進 placements 的地方。
+      //    總指揮只負責看懂與提議，寫入一定要顧問按過「對」——
+      //    認錯人的話，把 A 的面試日期寫到 B 身上，顧問要花更久才會發現，
+      //    而且中間可能已經照著錯的資料去跟客戶講話。
+      if (cq && cq.data && String(cq.data).startsWith('cr_')) {
+        const [action, rid] = String(cq.data).split(':');
+        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+        const ans = async (t) => {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cq.id, text: t }),
+          }).catch(() => {});
+        };
+        const row = await env.DB.prepare(
+          `SELECT * FROM consultant_reports WHERE id = ?`).bind(rid || '').first();
+        if (!row) { await ans('找不到這則回報'); return new Response('ok'); }
+        if (row.status === 'applied') { await ans('這則已經寫進去了'); return new Response('ok'); }
+        const now = nowTaipei();
+        let label = '';
+
+        if (action === 'cr_no') {
+          await env.DB.prepare(
+            `UPDATE consultant_reports SET status='rejected', decided_by=?, decided_at=?, updated_at=? WHERE id=?`
+          ).bind(who, now, now, rid).run();
+          label = `❌ ${who} 說不對，沒有寫入`;
+          await ans('好，沒有寫進去。直接再講一次就可以');
+        } else if (action === 'cr_ok') {
+          // ⚠️ 一則訊息可能同時回報好幾位。2026-08-12 ph 的第一則就是——
+          //    她引用整批提醒、在每個人下面標一句，一次講了四位。
+          //    原本假設「一則＝一位」，那則直接 failed。
+          //
+          // 🚨 stage 一定要是既有的英文代碼（SUBMITTED/INTERVIEWING/OFFER_ACCEPTED/
+          //    ONBOARDED/CLOSED_LOST），不可以是中文。漏斗查詢比對的是
+          //    UPPER(stage) IN ('SUBMITTED', ...) 這種英文碼——2026-08-12 第一版
+          //    讓總指揮直接吐中文（「客戶面談」「結案」），寫進去之後漏斗完全看不到，
+          //    等於白寫。這裡再做一次白名單防呆，report_tick.py 那邊已經正規化過，
+          //    但 Worker 不該假設上游一定乾淨。
+          const STAGE_OK = new Set(['SUBMITTED', 'INTERVIEWING', 'OFFER_ACCEPTED', 'ONBOARDED', 'CLOSED_LOST']);
+          const STAGE_LABEL = { SUBMITTED: '已送件', INTERVIEWING: '客戶面談',
+                                OFFER_ACCEPTED: '錄取', ONBOARDED: '到職', CLOSED_LOST: '結案' };
+          let items = [];
+          try {
+            const pj = JSON.parse(row.parse_json || '{}');
+            items = (pj.items || []).filter(
+              (i) => i && i.application_id && i.confidence === 'high');
+          } catch { items = []; }
+          if (!items.length) { await ans('這則沒有可以寫入的人選'); return new Response('ok'); }
+
+          const done = [];
+          for (const it of items) {
+            const app = await env.DB.prepare(
+              `SELECT a.id, a.name, a.job_slug, a.job_title, j.client_name
+                 FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug
+                WHERE a.id = ?`).bind(it.application_id).first();
+            if (!app) continue;
+            const stage = STAGE_OK.has(String(it.stage || '').toUpperCase())
+              ? String(it.stage).toUpperCase() : null;
+            const noteTxt = (it.note || '') + `（${now.slice(0, 10)} ${who} 於群組回報）`;
+            // 有狀態變化才動 placements；純備註只留在 consultant_reports 裡。
+            // ⚠️ 一位人選在同一個職缺只留一筆 placements，用 stage 往前推——
+            //    每次插新的會讓漏斗把同一個人算好幾次
+            //    （8/11 那個「應徵 4、初審 5」就是這樣來的）。
+            if (stage) {
+              // ONBOARDED 不是漏斗直接比對的代碼——「到職」那一關看的是
+              // onboard_date IS NOT NULL，不是 stage 字串。到職之後案子
+              // 進入保證期關懷（CARE_POINTS 邏輯要求 stage==='GUARANTEE'），
+              // 所以這裡要落地成 stage='GUARANTEE' + onboard_date，不能照字面寫 'ONBOARDED'。
+              const writeStage = stage === 'ONBOARDED' ? 'GUARANTEE' : stage;
+              const since = it.date || now.slice(0, 10);
+              const onboardSql = stage === 'ONBOARDED' ? ', onboard_date = ?' : '';
+              const exist = await env.DB.prepare(
+                `SELECT id FROM placements WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
+              ).bind(app.id).first();
+              if (exist) {
+                const sql = `UPDATE placements SET stage=?, stage_since=?, owner=?, note=?, updated_at=?${onboardSql} WHERE id=?`;
+                const binds = [writeStage, since, who, noteTxt, now];
+                if (stage === 'ONBOARDED') binds.push(since);
+                binds.push(exist.id);
+                await env.DB.prepare(sql).bind(...binds).run();
+              } else {
+                const sql = `INSERT INTO placements (application_id, candidate_name, job_slug, job_title,
+                                         client_name, stage, stage_since, owner, note, created_at, updated_at${stage === 'ONBOARDED' ? ', onboard_date' : ''})
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?${stage === 'ONBOARDED' ? ',?' : ''})`;
+                const binds = [app.id, app.name, app.job_slug, app.job_title, app.client_name || null,
+                               writeStage, since, who, noteTxt, now, now];
+                if (stage === 'ONBOARDED') binds.push(since);
+                await env.DB.prepare(sql).bind(...binds).run();
+              }
+            }
+            // 🚨 有狀態變化時，順便把報告的處置狀態補上。
+            //    2026-08-12 真實事故：ph 在群組回報「林均緯 pass 結案」，
+            //    寫進了 placements.stage=CLOSED_LOST，但「初審」那格看的是
+            //    reports.consultant_decision（顧問在報告頁按過推薦/需補問/婉拒才算）——
+            //    這支只碰了 placements，於是他同時卡在「未處置」跟「結案」兩邊，
+            //    顧問看畫面會覺得系統壞了。
+            //    只補「還沒處置過」的報告，已經按過的不要動——尊重顧問原本的判斷。
+            if (stage) {
+              const decision = stage === 'CLOSED_LOST' ? 'rejected' : 'forwarded';
+              await env.DB.prepare(
+                `UPDATE reports SET consultant_decision = ?, decided_at = ?
+                   WHERE id = (SELECT id FROM reports WHERE application_id = ?
+                                ORDER BY created_at DESC LIMIT 1)
+                     AND consultant_decision IS NULL`
+              ).bind(decision, now, app.id).run();
+            }
+            // 沒有狀態變化的也要留痕跡——顧問回報「客戶還在考慮」也是資訊
+            await env.DB.prepare(
+              `UPDATE applications SET handled_note = ? WHERE id = ?`
+            ).bind(noteTxt, app.id).run();
+            done.push(`${app.name}${stage ? ' → ' + (STAGE_LABEL[stage] || stage) : '（備註）'}`);
+          }
+          await env.DB.prepare(
+            `UPDATE consultant_reports SET status='applied', decided_by=?, decided_at=?, updated_at=? WHERE id=?`
+          ).bind(who, now, now, rid).run();
+          label = `✅ ${who} 確認：${done.join('、')}`.slice(0, 120);
+          await ans(`寫進去了（${done.length} 位）`);
+        } else {
+          await ans('未知的操作');
+          return new Response('ok');
+        }
+
+        await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+            reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] },
+          }),
+        }).catch(() => {});
+        return new Response('ok');
+      }
 
       // ── 反向開發開發信的三顆按鈕 ──
       // 🚨 「核准寄出」是這整套系統裡唯一會真的把信寄出去的地方。
@@ -2385,7 +2548,12 @@ export default {
                       AND p.onboard_date IS NULL) AS offered,
                   -- ⑤ 到職：真的上工了。這一關才算成案。
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
-                    WHERE p.job_slug = j.slug AND p.onboard_date IS NOT NULL) AS onboard
+                    WHERE p.job_slug = j.slug AND p.onboard_date IS NOT NULL) AS onboard,
+                  -- ⑥ 結案：送出去之後客戶不要或人選拒絕，案子停在這裡不會再動。
+                  --    2026-08-12 加：在這之前 CLOSED_LOST 的人不落在任何一關，
+                  --    畫面上就是憑空消失——顧問完全看不出「送了多少、掉了多少」。
+                  (SELECT COUNT(DISTINCT p.application_id) FROM placements p
+                    WHERE p.job_slug = j.slug AND UPPER(p.stage) = 'CLOSED_LOST') AS closed
              FROM jobs j
             ORDER BY (j.status = 'closed'), j.service_line, j.slug`
         ).all();
@@ -2402,6 +2570,7 @@ export default {
         const base = `SELECT a.id, a.name, a.email, a.phone, a.created_at,
                              a.expected_salary, a.available_date, a.location_ok,
                              a.interview_state, a.status, a.resume_file_id, a.resume_url,
+                             a.handled_note,
                              CAST((julianday('now','+8 hours') - julianday(a.created_at)) AS INT) AS days_in,
                              (SELECT r.id FROM reports r WHERE r.application_id = a.id
                                ORDER BY r.created_at DESC LIMIT 1) AS report_id,
@@ -2409,6 +2578,8 @@ export default {
                                ORDER BY r.created_at DESC LIMIT 1) AS decision,
                              (SELECT r.created_at FROM reports r WHERE r.application_id = a.id
                                ORDER BY r.created_at DESC LIMIT 1) AS report_at,
+                             (SELECT p.stage FROM placements p WHERE p.application_id = a.id
+                               ORDER BY p.updated_at DESC LIMIT 1) AS pipeline_stage,
                              (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS msgs
                         FROM applications a
                        WHERE a.job_slug = ? AND a.superseded_by IS NULL`;
@@ -2417,12 +2588,14 @@ export default {
           where = ` AND a.interview_state IN ('done','paused')
                     AND (SELECT r.consultant_decision FROM reports r WHERE r.application_id = a.id
                           ORDER BY r.created_at DESC LIMIT 1) IS NULL`;
-        } else if (stage === 'client_stage' || stage === 'offered' || stage === 'onboard') {
+        } else if (stage === 'client_stage' || stage === 'offered' || stage === 'onboard' || stage === 'closed') {
           const st = stage === 'onboard'
             ? `p2.onboard_date IS NOT NULL`
             : (stage === 'offered'
                 ? `UPPER(p2.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED') AND p2.onboard_date IS NULL`
-                : `UPPER(p2.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW') AND p2.onboard_date IS NULL`);
+                : (stage === 'closed'
+                    ? `UPPER(p2.stage) = 'CLOSED_LOST'`
+                    : `UPPER(p2.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW') AND p2.onboard_date IS NULL`));
           where = ` AND EXISTS (SELECT 1 FROM placements p2
                                  WHERE p2.application_id = a.id AND ${st})`;
         }
@@ -2520,23 +2693,38 @@ export default {
         const q = (url.searchParams.get('q') || '').trim();
         const state = url.searchParams.get('state') || '';   // 顧問處置狀態
         const job = url.searchParams.get('job') || '';
+        const id = (url.searchParams.get('id') || '').trim();
         const limit = Math.min(Number(url.searchParams.get('limit') || 50), 200);
         const offset = Number(url.searchParams.get('offset') || 0) || 0;
 
         const where = ['1=1'];
         const bind = [];
-        if (q) {
+        // 從職缺分類頁的漏斗彈窗點「處置」深連結進來時用——那邊給的是報告 id。
+        // ⚠️ 有 id 就不套 state／job 篩選：這是「直接開這一份」，不是「在清單裡找」，
+        //    原本沒有這個分支，深連結進來永遠套用預設的「待處置」篩選，
+        //    已經處置過或篩選條件對不上的人選看起來就像連結失效、跳到別的頁面。
+        if (id) { where.push('r.id = ?'); bind.push(id); }
+        else if (q) {
           where.push('(a.name LIKE ? OR a.email LIKE ? OR r.content_md LIKE ?)');
           bind.push(`%${q}%`, `%${q}%`, `%${q}%`);
         }
-        if (job) { where.push('a.job_slug = ?'); bind.push(job); }
-        if (state === 'undecided') where.push('r.consultant_decision IS NULL');
-        else if (state) { where.push('r.consultant_decision = ?'); bind.push(state); }
+        if (!id && job) { where.push('a.job_slug = ?'); bind.push(job); }
+        // ⚠️ 這兩支都要防 id 存在的情況。前端 load() 每次都會帶預設的
+        //    state=undecided 一起送，深連結雖然設了 id 但不會特地清掉 state，
+        //    第二支原本沒擋，'undecided' 會被當成 consultant_decision 的值去比對——
+        //    但真實值只有 forwarded/need_more/rejected，查不到任何人，深連結一樣會壞掉。
+        if (!id && state === 'undecided') where.push('r.consultant_decision IS NULL');
+        else if (!id && state) { where.push('r.consultant_decision = ?'); bind.push(state); }
 
         const sql =
           `SELECT r.id, r.created_at, r.recommend, r.consultant_decision, r.decided_at,
                   a.id AS app_id, a.name, a.email, a.phone, a.job_slug, a.job_title,
                   a.expected_salary, a.available_date, a.interview_started_at, a.interview_ended_at,
+                  a.handled_note,
+                  (SELECT p.stage FROM placements p WHERE p.application_id = a.id
+                    ORDER BY p.updated_at DESC LIMIT 1) AS pipeline_stage,
+                  (SELECT p.updated_at FROM placements p WHERE p.application_id = a.id
+                    ORDER BY p.updated_at DESC LIMIT 1) AS pipeline_updated_at,
                   (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS turns,
                   substr(r.content_md, 1, 400) AS preview
              FROM reports r JOIN applications a ON a.id = r.application_id
@@ -2681,7 +2869,10 @@ export default {
         await notify(env,
           `⏳ 有 ${stalled.length} 位談完了但沒人處置\n\n${lines.join('\n')}\n\n` +
           `到後台按「推薦給客戶／備取／婉拒」就不會再提醒：\nhttps://step1ne.com/consultant/reports/`,
-          { message_thread_id: 2855 });
+          // 2026-08-12 Jacky：跟 Pipeline 提醒一起搬到「顧問人選回報區」。
+          // 提醒與回報在同一個主題，顧問不用切來切去。
+          // ⚠️ 這裡原本寫死 2855，不是用 THREAD.decide——改動時很容易漏掉。
+          { message_thread_id: THREAD.report });
         // 標記今天已提醒過，同一天不重複吵
         for (const s of stalled) {
           await env.DB.prepare(`UPDATE applications SET stale_pinged_on = ? WHERE id = ?`)
@@ -2825,6 +3016,10 @@ async function pipelineReminders(env) {
   if (near.length) msg.push(`🟡 快到期\n${near.map(x => '・' + x).join('\n')}`);
   if (care.length) msg.push(`💚 該關懷了（正常也要問）\n${care.map(x => '・' + x).join('\n')}`);
   msg.push('https://workflow-os-due.pages.dev/');
-  await notify(env, '📋 招募 Pipeline 提醒\n\n' + msg.join('\n\n'),
-        { message_thread_id: THREAD.decide });
+  // 2026-08-12 Jacky：這則改發「顧問人選回報區」。
+  // 理由是動線——提醒在哪裡跳出來，顧問就在哪裡回報，不用切主題。
+  // 「該去跟進誰」跟「跟進完了回報一句」本來就是同一件事的兩端。
+  await notify(env, '📋 招募 Pipeline 提醒\n\n' + msg.join('\n\n')
+        + '\n\n跟進完直接在這個主題講一句就好，例如「張博州客戶約週四面試」，我會幫你更新狀態。',
+        { message_thread_id: THREAD.report });
 }
