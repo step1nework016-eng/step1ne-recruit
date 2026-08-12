@@ -366,6 +366,11 @@ def finish(cid, name, ctx, abandoned=False):
         log(f'❌ {name} 報告產生失敗：{e}')
 
     if spec is None:
+        # ⚠️ 2026-08-12 E2E 測試時發現：這裡原本沒呼叫 log()，report 產生失敗時
+        # daemon.log 完全看不出發生過什麼事，只能靠 D1 裡 status 停在 talking
+        # 才猜得到——那不該是唯一的線索。
+        log(f'❌ {name} 報告 JSON 解析失敗（extract_json 回 None 或 run_claude 例外），'
+            f'status 退回 talking，健檢單號 {cid}')
         tg(f'⚠️ {name} 的健檢報告產生失敗，請人工查看對談紀錄（{cid}）。', THREAD_SYSTEM)
         d1(f"UPDATE checkups SET status='talking', updated_at='{now}' WHERE id={q(cid)}")
         return
