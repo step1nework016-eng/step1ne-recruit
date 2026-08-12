@@ -25,7 +25,9 @@ CLAUDE_TIMEOUT = 240
 MAX_TURNS = 30          # 健檢對談通常比面談短，防跑不完的上限也設低一點
 STALE_MIN = 15          # 本人多久沒回就當他離開了（先轉 paused，不是直接關）
 STALE_HOLD_MIN = 120    # 房間留著給他回來的時間，比面談的 3 小時短——健檢的急迫性較低
-ROOM_HARD_LIMIT_MIN = 45  # 不管聊到哪，滿 45 分鐘強制收尾產報告
+ROOM_HARD_LIMIT_MIN = 60  # 2026-08-12 Jacky 定：健檢一人最多 1 小時，不管聊到哪都強制收尾產報告
+WARN_BEFORE_MIN = 10     # 快到上限前幾分鐘先提醒一次，不要無預警被切斷
+TIME_WARN_MARK = '⏰'    # 用來判斷這句提醒有沒有發過，避免同一場重複提醒
 
 TALK_MODEL = 'claude-sonnet-5'
 REPORT_MODEL = 'claude-sonnet-5'
@@ -347,6 +349,50 @@ def build_report_prompt(ctx, transcript, abandoned):
     )
 
 
+def upload_report_pdf(cid, name, pdf_path):
+    """把本機產出的健檢報告 PDF 傳給 Worker 存進 D1（走 files/file_chunks 切塊）。
+    需要 RECRUIT_ADMIN_TOKEN，跟 notify_candidate_checkup() 同一組。"""
+    import base64
+    try:
+        tok = None
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if not tok:
+            return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告 PDF 上傳')
+        pdf_b64 = base64.b64encode(open(pdf_path, 'rb').read()).decode('ascii')
+        req = urllib.request.Request(
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-pdf',
+            data=json.dumps({'id': cid, 'name': name, 'pdf_b64': pdf_b64}).encode(),
+            headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                     'user-agent': 'step1ne-checkup-daemon/1.0'})
+        r = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        log(f'{name} 健檢報告 PDF 上傳：{"成功" if r.get("ok") else "失敗 " + str(r.get("error"))}')
+    except Exception as e:
+        log(f'❌ {name} 健檢報告 PDF 上傳失敗：{e}')   # 不影響報告本身（HTML 已經存好）
+
+
+def notify_candidate_checkup(cid):
+    """請 Worker 寄健檢報告連結給本人。金鑰只放在 Cloudflare secret，本機不留第二份，
+    理由跟 interview_daemon.py 的 notify_candidate() 一樣。"""
+    try:
+        tok = None
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if not tok:
+            return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告通知信')
+        req = urllib.request.Request(
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-done',
+            data=json.dumps({'id': cid}).encode(),
+            headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                     'user-agent': 'step1ne-checkup-daemon/1.0'})
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        log(f'健檢報告通知信：{"已寄出" if r.get("ok") else "寄送失敗"}')
+    except Exception as e:
+        log(f'健檢報告通知信失敗：{e}')   # 寄不出去不該影響報告本身
+
+
 def finish(cid, name, ctx, abandoned=False):
     """對談結束：產報告、存 D1、通知顧問。"""
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -443,10 +489,23 @@ def finish(cid, name, ctx, abandoned=False):
     d1_file(f"UPDATE checkups SET {', '.join(fields)} WHERE id={q(cid)}")
     if html_content:
         d1_file(f"UPDATE checkups SET report_html={q(html_content)} WHERE id={q(cid)}")
+    # PDF 也存進 D1，讓本人能直接下載帶走，不是只能看網頁版。
+    # ⚠️ 2026-08-12 實測：base64（~1.8MB）直接塞單一欄位撞到 SQLITE_TOOBIG，
+    # 即使走 d1_file() 的 --file 匯入也一樣——那只解決 CLI 參數長度問題，
+    # 解決不了 D1 本身的單值/單陳述式長度上限。改成打 Worker 的
+    # /admin/checkup-pdf，讓它走履歷附件同一套 files/file_chunks 切塊機制存。
+    if os.path.exists(pdf_path):
+        upload_report_pdf(cid, name, pdf_path)
 
     runlog('step1ne-checkup', 'success', f'{name} 完成健檢對談並產出報告',
            {'name': name, 'abandoned': bool(abandoned)})
     log(f'{name} 健檢{"中斷" if abandoned else "完成"}，報告已存 {html_path}')
+
+    # 2026-08-12 Jacky 要求：報告不能只留在對談連結裡等本人自己回去點，
+    # 要主動寄到信箱。中途離開（abandoned）的場次先不寄——那種情況報告內容
+    # 通常不完整，等本人真的聊完再寄比較不會讓他覺得「怎麼才聊一半就結束」。
+    if not abandoned:
+        notify_candidate_checkup(cid)
 
     # 推給顧問：PDF + 結語。跟阿財那條線一樣，連結給不了在外面的人，直接推附件。
     try:
@@ -491,6 +550,50 @@ def stale(rows):
         if (now - last).total_seconds() >= STALE_MIN * 60:
             out.append(r)
     return out
+
+
+def nearing_limit(rows):
+    """離 1 小時上限還剩 WARN_BEFORE_MIN 分鐘內的房間，且還沒提醒過。"""
+    now = datetime.datetime.now()
+    out = []
+    for r in rows:
+        started = d1(f"SELECT chat_started_at FROM checkups WHERE id={q(r['id'])}")
+        st = started[0].get('chat_started_at') if started else None
+        if not st:
+            continue
+        try:
+            t0 = datetime.datetime.strptime(st, '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            continue
+        elapsed_min = (now - t0).total_seconds() / 60
+        if not (ROOM_HARD_LIMIT_MIN - WARN_BEFORE_MIN <= elapsed_min < ROOM_HARD_LIMIT_MIN):
+            continue
+        already = d1(
+            f"SELECT id FROM checkup_messages WHERE checkup_id={q(r['id'])} "
+            f"AND role='afu' AND content LIKE {q('%' + TIME_WARN_MARK + '%')} LIMIT 1")
+        if already:
+            continue
+        out.append(r)
+    return out
+
+
+def warn_soon(c):
+    """快到 1 小時上限，先提醒一句，不要無預警被切斷。"""
+    cid, name = c['id'], c['name']
+    try:
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        msg = (f'{TIME_WARN_MARK} 提醒一下，這場健檢對談最長進行 {ROOM_HARD_LIMIT_MIN} 分鐘，'
+               f'還剩不到 {WARN_BEFORE_MIN} 分鐘就會自動收尾整理報告——'
+               f'如果有還想確認的事，麻煩把握這段時間喔。')
+        d1(f"INSERT INTO checkup_messages (checkup_id, role, content, created_at) VALUES "
+           f"({q(cid)},'afu',{q(msg)},'{now}')")
+        log(f'{name}：快到 1 小時上限，已提醒')
+    except Exception as e:
+        log(f'❌ {name} 時間提醒失敗：{e}')
+    finally:
+        release_lock(cid)
+        with _lock:
+            _busy.discard(cid)
 
 
 def expired(rows):
@@ -610,7 +713,8 @@ def tick():
 
     jobs = ([(c, timeout_close) for c in expired_rows]
             + [(c, handle) for c in pending(remaining)]
-            + [(c, wrap_up) for c in stale(remaining)])
+            + [(c, wrap_up) for c in stale(remaining)]
+            + [(c, warn_soon) for c in nearing_limit(remaining)])
     for c, fn in jobs:
         with _lock:
             if c['id'] in _busy or len(_busy) >= MAX_PARALLEL:

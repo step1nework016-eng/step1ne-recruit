@@ -983,7 +983,7 @@ export default {
       if (token.length < 32) return json(request, { ok: false, error: 'bad token' }, 400);
 
       const c = await env.DB.prepare(
-        `SELECT id, name, status, chat_state, report_html
+        `SELECT id, name, status, chat_state, report_html, report_pdf_file_id
            FROM checkups WHERE chat_token = ?`
       ).bind(token).first();
       if (!c) return json(request, { ok: false, error: 'not found' }, 404);
@@ -995,6 +995,24 @@ export default {
         if (!c.report_html) return json(request, { ok: false, error: 'not_ready' }, 404);
         return new Response(c.report_html, {
           headers: { 'content-type': 'text/html; charset=utf-8', ...cors(request) },
+        });
+      }
+
+      // PDF 版本——2026-08-12 Jacky 要求：報告要能讓本人「帶走」，不是只能在
+      // 網頁上看。⚠️ 一開始直接存單一欄位 report_pdf_b64（~1.8MB base64）撞到
+      // SQLITE_TOOBIG——D1 單值/單一 SQL 陳述式都有長度上限，即使走 --file 匯入
+      // 一樣會被擋。改用履歷附件同一套 files／file_chunks 切塊機制（saveUpload），
+      // 那套本來就是為了處理「單值存不下」這個情境設計的，不要重新發明。
+      if (action === 'report.pdf') {
+        const f = await fileB64(env, c.report_pdf_file_id);
+        if (!f) return json(request, { ok: false, error: 'not_ready' }, 404);
+        const bytes = Uint8Array.from(atob(f.content), (ch) => ch.charCodeAt(0));
+        return new Response(bytes, {
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': `attachment; filename="AI履歷健檢報告_${encodeURIComponent(c.name || '')}.pdf"`,
+            ...cors(request),
+          },
         });
       }
 
@@ -2297,6 +2315,7 @@ export default {
           `SELECT c.id, c.created_at, c.name, c.email, c.current_title, c.current_industry,
                   c.status, c.fee_status, c.resume_readable, c.parsed_at, c.report_at,
                   c.led_headcount, c.budget_scale, c.crowdfunding_raised,
+                  c.chat_token, c.chat_state,
                   (SELECT COUNT(*) FROM checkup_files  f WHERE f.checkup_id = c.id) AS file_count,
                   (SELECT COUNT(*) FROM checkup_links  l WHERE l.checkup_id = c.id) AS link_count,
                   (SELECT COUNT(*) FROM checkup_messages m WHERE m.checkup_id = c.id) AS msg_count
@@ -2702,6 +2721,42 @@ export default {
       // 那些正是最需要有人去看一眼的。
       // 面談結束通知。由本機面談引擎在產完報告後呼叫——
       // Resend 金鑰只放在 Worker 的 secret，本機不留一份。
+      // 阿福健檢報告 PDF 上傳——checkup_daemon.py 本機產出 PDF 後打這支存進 D1，
+      // 用跟履歷附件同一套 files/file_chunks 切塊機制（saveUpload），避開單值長度上限。
+      if (p === '/admin/checkup-pdf' && request.method === 'POST') {
+        const b = await request.json();
+        if (!b.id || !b.pdf_b64) return json(request, { ok: false, error: '缺 id 或 pdf_b64' }, 400);
+        const now = nowTaipei();
+        const saved = await saveUpload(env, { b64: b.pdf_b64, name: `健檢報告_${b.name || b.id}.pdf`, mime: 'application/pdf' }, now);
+        if (!saved || saved.tooBig) return json(request, { ok: false, error: 'PDF 太大存不下' }, 400);
+        await env.DB.prepare(`UPDATE checkups SET report_pdf_file_id = ? WHERE id = ?`)
+          .bind(saved.fileId, b.id).run();
+        return json(request, { ok: true, fileId: saved.fileId });
+      }
+
+      // 阿福健檢報告完成，寄信通知本人——2026-08-12 Jacky 要求：報告不能只留在
+      // 對談連結裡等本人自己回去點，要主動寄到信箱。跟阿財那條線分開，
+      // 因為 checkups 是獨立資料表，收件人是「來問自己市場價值的本人」，
+      // 不是「應徵了某個職缺的候選人」，語氣跟連結都不一樣。
+      if (p === '/admin/checkup-done' && request.method === 'POST') {
+        const b = await request.json();
+        const c = await env.DB.prepare(
+          `SELECT name, email, chat_token, report_at FROM checkups WHERE id = ?`
+        ).bind(b.id).first();
+        if (!c) return json(request, { ok: false, error: '找不到這筆健檢' }, 404);
+        if (!c.report_at) return json(request, { ok: false, error: '報告還沒產出' }, 400);
+        const url = `https://step1ne-recruit-api.aiagentg888.workers.dev/checkup-chat/${c.chat_token}/report`;
+        const ok = await sendMail(
+          env, c.email,
+          `您的 AI 履歷健檢報告已經完成`,
+          [`${c.name} 您好，`,
+           `謝謝您撥空跟阿福聊完這場履歷健檢，報告已經整理好了。`,
+           `點下方連結隨時可以查看，同一個連結也能下載 PDF 留存。`],
+          { text: '查看我的健檢報告', url }
+        );
+        return json(request, { ok });
+      }
+
       if (p === '/admin/interview-done' && request.method === 'POST') {
         const b = await request.json();
         const app = await env.DB.prepare(
