@@ -13,7 +13,7 @@
     python3 parse_resumes.py          # 處理所有未解析的
     python3 parse_resumes.py --force  # 全部重抽（改了抽取邏輯時用）
 """
-import base64, json, os, re, subprocess, sys, tempfile, datetime
+import base64, io, json, os, re, subprocess, sys, tempfile, datetime
 import urllib.parse, urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +93,29 @@ def extract(raw, filename, mime):
 
         if ext in ('.txt', '.md'):
             return raw.decode('utf-8', 'replace')[:MAX_CHARS], None
+
+        if ext == '.xlsx':
+            # 日式履歴書（日本的標準履歷表格）很多是用 Excel 範本填寫的，
+            # 不是單一巧合——2026-08-12 台日兩地那個職缺已經第二次遇到。
+            # 逐列把非空儲存格接起來，不重建版面，只求文字讀得到。
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+                lines = []
+                for ws in wb.worksheets:
+                    for row in ws.iter_rows():
+                        cells = [str(c.value).strip() for c in row
+                                if c.value is not None and str(c.value).strip()]
+                        if cells:
+                            lines.append('　'.join(cells))
+                text = '\n'.join(lines).strip()
+                if not text:
+                    return None, '.xlsx 檔案是空的或抽不到內容'
+                if meaningful_ratio(text) < 0.05:
+                    return None, '.xlsx 內容像是圖片或格式異常，抽到的文字沒有意義'
+                return text[:MAX_CHARS], None
+            except Exception as e:
+                return None, f'.xlsx 讀取失敗：{str(e)[:100]}'
 
         return None, f'不支援的格式：{ext or mime or "未知"}'
     finally:
