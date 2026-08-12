@@ -9,6 +9,10 @@
  *   POST /checkup               AI 履歷健檢申請表（公開）——阿福，跟阿財完全分開
  *   GET  /admin/checkups        健檢收件清單（需 ADMIN_TOKEN）
  *   GET  /admin/checkup/<id>    單筆健檢：附件、連結、對談紀錄（需 ADMIN_TOKEN）
+ *   GET  /checkup-chat/<token>         阿福對談室：讀取狀態與歷史（公開，token 即權限）
+ *   POST /checkup-chat/<token>/send    本人送出一句話
+ *   GET  /checkup-chat/<token>/poll    取阿福的新訊息（前端輪詢）
+ *   GET  /checkup-chat/<token>/report  健檢報告本文（公開，token 即權限，報告產出後才有內容）
  *   GET  /export/applications   給 pm.aijob.com.tw 增量拉資料（需 SYNC_TOKEN）
  *   GET  /export/resume/<id>    取履歷檔（需 SYNC_TOKEN）
  *   GET  /admin/resume/<id>     下載履歷（需 ADMIN_TOKEN，供顧問後台按鈕用）
@@ -29,6 +33,8 @@
  *   GET  /chat/<token>/poll     取阿財的新訊息（前端輪詢）
  *   POST /chat/<token>/report   候選人回報問題（公開，token 即權限）
  *   POST /chat/<token>/feedback 面談結束後的體驗評分（公開，token 即權限）
+ *   POST /line-webhook    LINE OA「查詢面試進度」（公開，用 x-line-signature 驗證）
+ *   GET  /admin/line-bindings   LINE 綁定清單：候選人姓名、手機、綁定時間（需 ADMIN_TOKEN）
  *   GET  /health         公開
  */
 
@@ -58,6 +64,10 @@ const INTAKE_THREAD = THREAD.intake;
 // 三種情況都需要一封信把他帶回來。信寄不出去不能讓表單失敗，所以全程吞例外。
 const FROM = 'Step1ne 德仁管理顧問 <noreply@step1ne.com>';
 const LINE_URL = 'https://lin.ee/XcSWPzM';
+
+// LINE 圖文選單「追蹤面試進度」按鈕固定送出的文字（message-type action）。
+// 2026-08-12 加。Jacky 之後要換字，改這裡就好，不用去 LINE 後台跟 Worker 兩邊對。
+const LINE_PROGRESS_TRIGGER = '查詢我的面試進度';
 
 // 履歷存檔：base64 切塊寫進 file_chunks，files 只留 metadata。
 //
@@ -498,6 +508,219 @@ async function notifyScreening(env, app, job) {
   }
 }
 
+// ── LINE OA「查詢面試進度」──────────────────────────────────
+//
+// 2026-08-12 加。候選人在 LINE 官方帳號（全民獵才）按選單裡的「追蹤面試進度」
+// 或直接打字送出 LINE_PROGRESS_TRIGGER，系統要能自己回答「你現在到哪一關」，
+// 不用每次都靠顧問手動回。
+//
+// 狀態機（存在 line_bindings，跟阿財面談用的 interview_state 是兩件事）：
+//   沒有這個 line_user_id 的紀錄 → 只在收到觸發文字時才開始問手機號碼
+//   pending_phone → 下一則訊息當手機號碼比對；比對失敗維持 pending_phone（可以再試，但不主動催）
+//   bound         → 之後收到觸發文字直接查目前狀態回覆，不用再問一次
+
+// LINE 簽章驗證：x-line-signature 是 HMAC-SHA256(channel secret, raw body) 的 base64。
+// 一定要用 request.text() 拿到的原始字串去算，不能先 JSON.parse 再字串化——
+// 字串化之後的空白／欄位順序跟 LINE 原本送來的不會完全一樣，簽章會對不起來。
+async function verifyLineSignature(secret, rawBody, signatureB64) {
+  if (!secret || !signatureB64) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+    const computed = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+    return safeEqual(computed, signatureB64);
+  } catch {
+    return false;
+  }
+}
+
+async function lineReply(env, replyToken, text) {
+  if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return;
+  try {
+    await fetch('https://api.line.me/v2/bot/message/reply', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+      },
+      // LINE 單則文字上限 5000 字，這裡的回覆不可能逼近，不特別處理截斷
+      body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    // 回覆失敗不該讓 webhook 整支掛掉——LINE 沒收到訊息頂多是候選人再按一次
+  }
+}
+
+// 台灣手機號碼正規化：只留數字，886 開頭換成 0 開頭，方便跟 applications.phone
+// 裡各種格式（有無 -、有無空格、有無 +886）比對。
+function normalizePhone(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('886')) d = '0' + d.slice(3);
+  if (d.length === 9 && d[0] !== '0') d = '0' + d;
+  return d;
+}
+
+function safeJsonArray(s) {
+  try {
+    const v = JSON.parse(s || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+// 單筆應徵的「候選人看得懂的現況」。
+//
+// ⚠️ 判斷邏輯直接複用 /admin/jobs 與 /admin/funnel 那一套漏斗分類
+//    （applicants / screening / client_stage / offered / onboard / closed），
+//    不要自己另外發明一套——不然候選人在 LINE 看到的階段會跟顧問後台看到的對不起來。
+async function deriveApplicationProgress(env, appId) {
+  const app = await env.DB.prepare(
+    `SELECT id, name, job_slug, job_title, interview_state, handled_note
+       FROM applications WHERE id = ?`
+  ).bind(appId).first();
+  if (!app) return null;
+
+  const report = await env.DB.prepare(
+    `SELECT consultant_decision FROM reports
+      WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+  ).bind(appId).first();
+
+  const placement = await env.DB.prepare(
+    `SELECT stage, onboard_date FROM placements
+      WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
+  ).bind(appId).first();
+
+  const jobTitle = app.job_title || app.job_slug || '這個職缺';
+  const stageUp = placement ? String(placement.stage || '').toUpperCase() : '';
+  let message;
+
+  if (placement && placement.onboard_date) {
+    // 到職——恭喜語氣
+    message = '恭喜您已經到職了！之後有任何問題歡迎隨時透過選單聯繫顧問。';
+  } else if (placement && stageUp === 'CLOSED_LOST') {
+    // 已婉拒／結案——委婉但誠實，不用「淘汰」這種字眼
+    // （用詞分寸參考顧問版／客戶版報告的既有規則：不確定的不編、但也不用傷人的說法）
+    message = '這個職缺這次很可惜沒有繼續往下走，很抱歉沒有帶來好消息。'
+      + '您的資料我們會留著，未來有更合適的職缺會再與您聯繫，也歡迎透過選單直接找顧問聊聊。';
+  } else if (placement && ['OFFER', 'OFFER_ACCEPTED', 'HIRED'].includes(stageUp)) {
+    message = '好消息，客戶已經決定邀請您加入，目前在談後續入職事宜，顧問會盡快與您確認細節。';
+  } else if (placement && ['SUBMITTED', 'CLIENT_INTERVIEW', 'INTERVIEWING', 'INTERVIEW'].includes(stageUp)) {
+    message = '您的資料已經送到客戶那邊，目前正在安排／進行客戶面試。'
+      + (app.handled_note ? `顧問補充：${app.handled_note}` : '有進一步消息顧問會盡快與您聯繫。');
+  } else if (report && report.consultant_decision === 'rejected') {
+    message = '顧問審閱後，這次沒有把您推薦給這個職缺，很抱歉沒有帶來好消息。'
+      + '歡迎持續留意我們之後釋出的其他職缺。';
+  } else if (report && report.consultant_decision === 'need_more') {
+    message = '顧問審閱後想再跟您確認一些細節，會盡快主動聯繫您，麻煩留意來電或訊息。';
+  } else if (app.interview_state === 'done' || app.interview_state === 'paused') {
+    message = '您的初談阿財已經收到了，顧問正在審閱中，通常 1-2 個工作天內會有進一步消息。';
+  } else {
+    message = '您的面談還沒有完成，建議點選單裡的「AI阿財面試」繼續完成初談。';
+  }
+
+  return { jobTitle, message };
+}
+
+async function buildProgressReply(env, applicationIds) {
+  const ids = Array.isArray(applicationIds) ? applicationIds : [];
+  if (!ids.length) {
+    return '目前查不到您的應徵紀錄，想直接找顧問，歡迎透過下方選單聯繫我們。';
+  }
+  const rows = [];
+  for (const id of ids) {
+    const row = await deriveApplicationProgress(env, id);
+    if (row) rows.push(row);
+  }
+  if (!rows.length) {
+    return '目前查不到您的應徵紀錄，想直接找顧問，歡迎透過下方選單聯繫我們。';
+  }
+  // 一個人可能同時應徵不只一個職缺，逐筆列出來，不要含糊帶過是哪一筆
+  return rows.map((r) => `【${r.jobTitle}】\n${r.message}`).join('\n\n');
+}
+
+const LINE_ASK_PHONE_TEXT = '請提供您應徵時留的手機號碼，我幫您查詢目前的面試進度。';
+const LINE_NO_MATCH_TEXT =
+  '這支手機號碼查不到應徵紀錄，可能是留了別的號碼，或我們還沒收到您的申請。'
+  + '想直接找顧問，歡迎透過下方選單聯繫我們。';
+
+async function handleLineEvent(env, ev) {
+  if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
+  const userId = ev.source && ev.source.userId;
+  const replyToken = ev.replyToken;
+  if (!userId || !replyToken) return;
+  const text = String(ev.message.text || '').trim();
+  const now = nowTaipei();
+
+  const binding = await env.DB.prepare(
+    `SELECT * FROM line_bindings WHERE line_user_id = ?`
+  ).bind(userId).first();
+
+  // 第一次出現：只在候選人主動觸發（按鈕／打字）時才介入，
+  // 其他訊息不搶著回——這支只負責「查進度」這一件事，不要變成搶走
+  // Jacky 之後可能在 LINE Official Account Manager 設的其他自動回覆的地盤。
+  if (!binding) {
+    if (text !== LINE_PROGRESS_TRIGGER) return;
+    await env.DB.prepare(
+      `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at)
+       VALUES (?, 'pending_phone', ?, ?)`
+    ).bind(userId, now, now).run();
+    return lineReply(env, replyToken, LINE_ASK_PHONE_TEXT);
+  }
+
+  if (binding.state === 'bound') {
+    if (text !== LINE_PROGRESS_TRIGGER) return; // 已綁定的人閒聊不接手
+    const msg = await buildProgressReply(env, safeJsonArray(binding.application_ids));
+    return lineReply(env, replyToken, msg);
+  }
+
+  // state === 'pending_phone'：把這則訊息當手機號碼比對
+  if (text === LINE_PROGRESS_TRIGGER) {
+    // 已經在等他回手機號碼了，同樣的提示再說一次，不用另外講「你已經問過了」
+    return lineReply(env, replyToken, LINE_ASK_PHONE_TEXT);
+  }
+
+  const norm = normalizePhone(text);
+  if (norm.length < 8) {
+    // 看起來不像手機號碼——不當一次有效嘗試，也不逼問，讓他自己決定要不要重打
+    return;
+  }
+
+  // 應徵量對這間公司的規模來說不大，直接掃全表在 JS 裡正規化比對，
+  // 比在 SQL 裡處理各種手機號碼格式（有無 -、+886）簡單也不容易漏比對。
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, phone FROM applications
+      WHERE superseded_by IS NULL AND phone IS NOT NULL AND phone != ''`
+  ).all();
+  const matched = (results || []).filter((r) => normalizePhone(r.phone) === norm);
+
+  if (!matched.length) {
+    await env.DB.prepare(
+      `UPDATE line_bindings SET updated_at = ? WHERE line_user_id = ?`
+    ).bind(now, userId).run();
+    return lineReply(env, replyToken, LINE_NO_MATCH_TEXT);
+  }
+
+  const ids = matched.map((m) => m.id);
+  await env.DB.prepare(
+    `UPDATE line_bindings SET state='bound', phone=?, application_ids=?, bound_at=?, updated_at=?
+      WHERE line_user_id = ?`
+  ).bind(text, JSON.stringify(ids), now, now, userId).run();
+
+  // 配對紀錄要讓顧問在後台看得到，這裡先推一則 Telegram 通知——
+  // 跟「顧問人選回報區」不是同一件事，放系統回報主題就好，不用麻煩顧問回應。
+  await notify(env,
+    `🔗 LINE 查詢進度：${matched[0].name} 完成手機號碼綁定（${matched.length} 筆應徵紀錄）`,
+    { message_thread_id: THREAD.system });
+
+  const msg = await buildProgressReply(env, ids);
+  return lineReply(env, replyToken, msg);
+}
+
 // 待審核處置的共用邏輯：/admin/screen-decide（網頁後台）跟 /telegram/webhook
 // （Telegram 按鈕）都呼叫這支，不要各寫一份，不然兩邊會慢慢長出不同的行為。
 async function applyScreenDecision(env, applicationId, decision, opts = {}) {
@@ -680,6 +903,12 @@ export default {
 
       const id = uid();
       const now = nowTaipei();
+      // 對談室的 token。跟 /apply 生 chat_token 是同一套做法（32 bytes hex），
+      // 直接在送件當下就發，前端可以馬上帶本人進對談室，不用等信件往返。
+      // 履歷還沒解析完也沒關係——checkup_parse.py 幾秒內就會跑到，
+      // 阿福開口前一定會先讀到解析完的版本（daemon 每輪都先跑解析再處理對話）。
+      const chatToken = [...crypto.getRandomValues(new Uint8Array(24))]
+        .map((x) => x.toString(16).padStart(2, '0')).join('');
 
       // 檔案先存。存不進去就不要建單，免得留下一張沒有原料的健檢單。
       const savedFiles = [];
@@ -698,14 +927,15 @@ export default {
         `INSERT INTO checkups
            (id, created_at, name, email, phone, current_title, current_industry, note,
             resume_file_id, status, consent_at, fee_status,
-            utm_source, utm_medium, utm_campaign, referrer, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,'new',?,'free',?,?,?,?,?)`
+            utm_source, utm_medium, utm_campaign, referrer, updated_at,
+            chat_token, chat_state)
+         VALUES (?,?,?,?,?,?,?,?,?,'new',?,'free',?,?,?,?,?,?,'not_started')`
       ).bind(
         id, now, name, email, b.phone || null,
         b.current_title || null, b.current_industry || null, b.note || null,
         mainResume ? mainResume.fileId : null, now,
         b.utm_source || null, b.utm_medium || null, b.utm_campaign || null,
-        b.referrer || null, now
+        b.referrer || null, now, chatToken
       ).run();
 
       for (const s of savedFiles) {
@@ -733,7 +963,99 @@ export default {
         { message_thread_id: CHECKUP_THREAD });
       }
 
-      return json(request, { ok: true, checkup_id: id, files: savedFiles.length, links: links.length });
+      return json(request, {
+        ok: true, checkup_id: id, files: savedFiles.length, links: links.length,
+        chat_token: chatToken,
+      });
+    }
+
+    // ── AI 履歷健檢：阿福對談室（跟阿財的 /chat/<token> 是同一個模式，
+    //    但完全獨立的資料表——checkup_messages／checkups.chat_state，
+    //    一個欄位都不會碰 messages／applications）──
+    //
+    // 端點只做三件事：進房間（含歷史）、送一句話、輪詢新訊息。
+    // 回話的大腦是本機的 checkup_daemon.py，不在 Worker 裡呼叫模型
+    // （跟阿財那條線同一個理由：不開額外的 API 金鑰，用本機 claude CLI）。
+    if (p.startsWith('/checkup-chat/')) {
+      const seg = p.split('/').filter(Boolean); // ['checkup-chat', token, action?]
+      const token = seg[1] || '';
+      const action = seg[2] || '';
+      if (token.length < 32) return json(request, { ok: false, error: 'bad token' }, 400);
+
+      const c = await env.DB.prepare(
+        `SELECT id, name, status, chat_state, report_html
+           FROM checkups WHERE chat_token = ?`
+      ).bind(token).first();
+      if (!c) return json(request, { ok: false, error: 'not found' }, 404);
+
+      // 健檢報告本文。本人用同一組 token 就能打開，不用另外寄連結或密碼。
+      // 內容直接存在 checkups.report_html（見 schema_checkup_chat.sql 的說明：
+      // Worker 連不到本機檔案系統，checkup_reports/*.html 那份是本機底稿用的）。
+      if (action === 'report') {
+        if (!c.report_html) return json(request, { ok: false, error: 'not_ready' }, 404);
+        return new Response(c.report_html, {
+          headers: { 'content-type': 'text/html; charset=utf-8', ...cors(request) },
+        });
+      }
+
+      // 本人送出一句話
+      if (action === 'send' && request.method === 'POST') {
+        if (c.chat_state === 'done') {
+          return json(request, { ok: false, error: '這場對談已經結束了' }, 409);
+        }
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const text = String(b.text || '').trim().slice(0, 4000);
+        if (!text) return json(request, { ok: false, error: '訊息是空的' }, 400);
+
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT INTO checkup_messages (checkup_id, role, content, created_at) VALUES (?,?,?,?)`
+        ).bind(c.id, 'user', text, now).run();
+
+        // 中途離開又回來：房間時鐘歸零，不然會被「太久沒動」誤判成早就該收尾。
+        if (c.chat_state === 'paused') {
+          await env.DB.prepare(
+            `UPDATE checkups SET chat_state='active', chat_started_at=?, chat_ended_at=NULL WHERE id=?`
+          ).bind(now, c.id).run();
+        } else if (c.chat_state !== 'active') {
+          await env.DB.prepare(
+            `UPDATE checkups SET chat_state='active', chat_started_at=COALESCE(chat_started_at,?) WHERE id=?`
+          ).bind(now, c.id).run();
+        }
+        return json(request, { ok: true });
+      }
+
+      // 輪詢新訊息。after 是前端已經拿到的最後一個 id。
+      if (action === 'poll') {
+        const after = Number(url.searchParams.get('after') || 0) || 0;
+        const { results } = await env.DB.prepare(
+          `SELECT id, role, content, created_at FROM checkup_messages
+            WHERE checkup_id = ? AND id > ? ORDER BY id ASC LIMIT 50`
+        ).bind(c.id, after).all();
+        return json(request, {
+          ok: true, messages: results || [], state: c.chat_state,
+          waiting: c.chat_state === 'active',
+          report_ready: !!c.report_html,
+        });
+      }
+
+      // 進入對談室：拿基本資料與全部歷史
+      if (!action) {
+        const { results } = await env.DB.prepare(
+          `SELECT id, role, content, created_at FROM checkup_messages
+            WHERE checkup_id = ? ORDER BY id ASC LIMIT 200`
+        ).bind(c.id).all();
+        return json(request, {
+          ok: true, name: c.name, state: c.chat_state,
+          // 履歷還沒解析完（checkup_parse.py 還沒跑到這筆）時，前端顯示「阿福正在讀你的履歷」。
+          resume_ready: c.status !== 'new',
+          messages: results || [],
+          report_ready: !!c.report_html,
+        });
+      }
+
+      return json(request, { ok: false, error: 'unknown action' }, 404);
     }
 
     // ── 測驗：讀取這個人的狀態（前端進測驗頁時先問一次）──
@@ -897,6 +1219,34 @@ export default {
       await notify(env, `📅 ${app.name} 預約了面談：${slot}\n職缺：${app.job_title || app.job_slug}`,
                    { message_thread_id: 4 });
       return json(request, { ok: true, slot_at: slot });
+    }
+
+    // LINE OA「查詢面試進度」webhook（全民獵才帳號）。公開端點，
+    // LINE 從外面呼叫沒辦法帶 ADMIN_TOKEN，改用 x-line-signature 驗證。
+    //
+    // ⚠️ 2026-08-12 加。這支目前**沒有**被設成 LINE 頻道正式的 webhook 網址——
+    //    那個網址正式指到 linehook.step1ne.com（見 Cloudflare API 查到的
+    //    channel/webhook/endpoint），要不要切過來由 Jacky 決定，不在這裡自己切。
+    //    這支路由先寫好等切換；也可以先用假的 LINE 事件 payload 直接打這支測。
+    if (p === '/line-webhook' && request.method === 'POST') {
+      const rawBody = await request.text();
+      const sig = request.headers.get('x-line-signature') || '';
+      if (!(await verifyLineSignature(env.LINE_CHANNEL_SECRET, rawBody, sig))) {
+        return new Response('forbidden', { status: 403 });
+      }
+      let body;
+      try { body = JSON.parse(rawBody); } catch { return new Response('ok'); }
+      const events = Array.isArray(body.events) ? body.events : [];
+      for (const ev of events) {
+        try {
+          await handleLineEvent(env, ev);
+        } catch (e) {
+          await notify(env, `⚠️ LINE 事件處理失敗：${String(e && e.message || e).slice(0, 200)}`,
+            { message_thread_id: THREAD.system });
+        }
+      }
+      // LINE 只要求 200，內容不重要
+      return new Response('ok');
     }
 
     // Telegram 按鈕回呼。這支是公開端點（Telegram 從外面呼叫，沒辦法帶 ADMIN_TOKEN），
@@ -1814,6 +2164,38 @@ export default {
       const auth = request.headers.get('authorization') || '';
       if (!env.ADMIN_TOKEN || !safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`)) {
         return json(request, { ok: false, error: 'unauthorized' }, 401);
+      }
+
+      // LINE「查詢面試進度」的配對紀錄清單。Jacky 明確要求：這件事顧問要看得到，
+      // 不能只是候選人自己在 LINE 上查完就沒有任何紀錄留在後台。
+      if (p === '/admin/line-bindings' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT line_user_id, state, phone, application_ids, created_at, bound_at, updated_at
+             FROM line_bindings ORDER BY updated_at DESC LIMIT 500`
+        ).all();
+        const rows = [];
+        for (const r of results || []) {
+          const ids = safeJsonArray(r.application_ids);
+          let apps = [];
+          if (ids.length) {
+            const placeholders = ids.map(() => '?').join(',');
+            const { results: appRows } = await env.DB.prepare(
+              `SELECT id, name, job_slug, job_title FROM applications WHERE id IN (${placeholders})`
+            ).bind(...ids).all();
+            apps = appRows || [];
+          }
+          rows.push({
+            line_user_id: r.line_user_id,
+            state: r.state,
+            phone: r.phone,
+            candidate_name: apps[0] ? apps[0].name : null,
+            bound_at: r.bound_at,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            applications: apps.map((a) => ({ id: a.id, job_slug: a.job_slug, job_title: a.job_title })),
+          });
+        }
+        return json(request, { ok: true, bindings: rows });
       }
 
       // ── 顧問自助新增職缺：收件 ──
