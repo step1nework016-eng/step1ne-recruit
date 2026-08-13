@@ -591,7 +591,12 @@ async function notifyLineProgress(env, applicationId) {
 
     const prog = await deriveApplicationProgress(env, applicationId);
     if (!prog) return;
-    const text = `【進度更新】${prog.jobTitle}\n${prog.message}`;
+    // 2026-08-13 Jacky 要求：要看得出是誰、哪一場、現在到哪一步，加 emoji 分段——
+    // 候選人可能同時應徵過不只一個職缺，沒有名字跟日期會看不出這則在講哪一次。
+    const text = `📋 ${prog.name} 您好\n\n`
+      + `🗓 面試日期：${prog.interviewDate || '尚未面談'}\n`
+      + `💼 應徵職缺：${prog.jobTitle}\n\n`
+      + `📈 目前進度：\n${prog.message}`;
     for (const b of hits) await linePush(env, b.line_user_id, text);
   } catch {
     // 推播是加值功能，出錯不該影響顧問處置報告這個主流程
@@ -624,7 +629,8 @@ function safeJsonArray(s) {
 //    不要自己另外發明一套——不然候選人在 LINE 看到的階段會跟顧問後台看到的對不起來。
 async function deriveApplicationProgress(env, appId) {
   const app = await env.DB.prepare(
-    `SELECT id, name, job_slug, job_title, interview_state, handled_note
+    `SELECT id, name, job_slug, job_title, interview_state, handled_note,
+            interview_started_at, created_at
        FROM applications WHERE id = ?`
   ).bind(appId).first();
   if (!app) return null;
@@ -667,7 +673,12 @@ async function deriveApplicationProgress(env, appId) {
     message = '您的面談還沒有完成，建議點選單裡的「AI阿財面試」繼續完成初談。';
   }
 
-  return { jobTitle, message };
+  // 面試日期：有實際面談時間就用那個，還沒面談過就用應徵時間，
+  // 讓候選人知道這則訊息是在講「哪一次」——他可能同時應徵過不只一個職缺。
+  const dateRaw = app.interview_started_at || app.created_at || '';
+  const interviewDate = dateRaw ? dateRaw.slice(5, 10).replace('-', '/') : '';
+
+  return { jobTitle, message, name: app.name || '', interviewDate };
 }
 
 async function buildProgressReply(env, applicationIds) {
@@ -683,8 +694,12 @@ async function buildProgressReply(env, applicationIds) {
   if (!rows.length) {
     return '目前查不到您的應徵紀錄，想直接找顧問，歡迎透過下方選單聯繫我們。';
   }
-  // 一個人可能同時應徵不只一個職缺，逐筆列出來，不要含糊帶過是哪一筆
-  return rows.map((r) => `【${r.jobTitle}】\n${r.message}`).join('\n\n');
+  // 一個人可能同時應徵不只一個職缺，逐筆列出來，不要含糊帶過是哪一筆。
+  // 格式跟 notifyLineProgress() 的主動推播同一套，候選人不會覺得兩邊講法不一樣。
+  return rows.map((r) =>
+    `📋 ${r.name} 您好\n\n🗓 面試日期：${r.interviewDate || '尚未面談'}\n`
+    + `💼 應徵職缺：${r.jobTitle}\n\n📈 目前進度：\n${r.message}`
+  ).join('\n\n───\n\n');
 }
 
 const LINE_ASK_PHONE_TEXT = '請提供您應徵時留的手機號碼，我幫您查詢目前的面試進度。';
