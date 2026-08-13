@@ -2779,6 +2779,37 @@ export default {
         return json(request, { ok });
       }
 
+      // 重新開啟面談室——2026-08-13 真實事故換來的端點：候選人因為系統
+      // 問題（用量上限、逾時⋯）被迫中斷，顧問承諾「之後再進來即可」，
+      // 但原本只有固定 3 小時的保留時鐘，講好聽是「保留」，實際上顧問講完
+      // 那句話沒多久房間就自己關了。這支端點讓顧問自己在後台重開，
+      // 不用每次都回頭找工程端手動改資料庫。
+      if (p === '/admin/reopen-interview' && request.method === 'POST') {
+        const b = await request.json();
+        const app = await env.DB.prepare(
+          `SELECT id, name FROM applications WHERE id = ?`
+        ).bind(b.id).first();
+        if (!app) return json(request, { ok: false, error: '找不到這筆應徵' }, 404);
+
+        const days = Math.max(1, Math.min(90, Number(b.hold_days) || 30));
+        const now = nowTaipei();
+        const holdUntil = new Date(Date.now() + days * 86400000)
+          .toISOString().slice(0, 19).replace('T', ' ');
+        const note = String(b.note || '不好意思，這邊系統剛才出了點狀況，現在已經修復了——您可以直接在這裡繼續打字，我會接著談。').slice(0, 500);
+
+        await env.DB.batch([
+          env.DB.prepare(
+            `INSERT INTO messages (application_id, role, content, created_at) VALUES (?,?,?,?)`
+          ).bind(app.id, 'assistant', note, now),
+          env.DB.prepare(
+            `UPDATE applications SET interview_state='paused', interview_ended_at=NULL,
+                    interview_started_at=?, hold_until=?, status='interviewing'
+              WHERE id=?`
+          ).bind(now, holdUntil, app.id),
+        ]);
+        return json(request, { ok: true, hold_until: holdUntil });
+      }
+
       if (p === '/admin/interview-done' && request.method === 'POST') {
         const b = await request.json();
         const app = await env.DB.prepare(

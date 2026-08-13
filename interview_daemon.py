@@ -131,6 +131,32 @@ def d1_raw(sql):
     return json.loads(out)[0]
 
 
+def d1_file(sql):
+    """跟 d1_raw 一樣，但把 SQL 寫進暫存檔用 --file 執行，不走 --command。
+
+    2026-08-12 加。d1_raw 把整段 SQL（含值）塞進單一 CLI 參數，
+    報告內容（content_md／content_json）長一點就會撞到
+    `statement too long: SQLITE_TOOBIG`——尹緯正那場報告就是這樣整個沒存進去、
+    顧問拿到「請接手」卻沒有任何報告內容。
+    --file 走檔案讀取，不受 CLI 參數長度限制，行為跟 --command 完全一樣。
+    只有真的可能很長的寫入（目前就是 reports 表）才需要用這個，
+    其他短查詢繼續用 d1_raw／d1 就好。
+    """
+    with tempfile.NamedTemporaryFile('w', suffix='.sql', delete=False, encoding='utf-8') as f:
+        f.write(sql)
+        path = f.name
+    try:
+        r = subprocess.run(
+            ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--file={path}'],
+            cwd=HERE, capture_output=True, text=True, env=env_with_cf(), timeout=180)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout)[-300:])
+        out = r.stdout[r.stdout.index('['):]
+        return json.loads(out)[0]
+    finally:
+        os.unlink(path)
+
+
 
 RUNLOG = os.path.expanduser('~/aijob-automation/run-log.jsonl')
 
@@ -1380,8 +1406,8 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     report_json = report_to_json(report, ctx, name)
 
     rid = f'r_{app_id[:8]}_{int(time.time())}'
-    d1(f"INSERT INTO reports (id, application_id, created_at, content_md, content_json) "
-       f"VALUES ({q(rid)}, {q(app_id)}, '{now}', {q(report)}, {q(report_json)})")
+    d1_file(f"INSERT INTO reports (id, application_id, created_at, content_md, content_json) "
+            f"VALUES ({q(rid)}, {q(app_id)}, '{now}', {q(report)}, {q(report_json)})")
 
     notify_candidate(app_id, abandoned)
 
@@ -1514,7 +1540,7 @@ def handle(app):
 def paused_sessions():
     """已經產過報告、但房間還留著的場次。"""
     return d1("""
-        SELECT a.id, a.name, a.job_slug,
+        SELECT a.id, a.name, a.job_slug, a.hold_until,
                (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
                  ORDER BY m.id DESC LIMIT 1) AS last_at
           FROM applications a
@@ -1542,11 +1568,29 @@ def close_paused(app):
 
 
 def held_too_long(rows):
+    """⚠️ 2026-08-13 真實事故換來的欄位：徐先生的面談因為系統撞到用量上限
+    被迫中斷，我們回信說「明天上午再進來即可」，但這支函式原本只認
+    STALE_HOLD_MIN（3 小時）這個固定時鐘，完全不知道顧問已經承諾了
+    「不確定哪時候」的更長時間——結果他隔天點連結，房間早就被這裡關了。
+
+    現在多認 applications.hold_until：顧問／後台在還不確定人選什麼時候
+    回得來時，可以把這個欄位設成很久以後的日期，這裡就不會按 3 小時的
+    固定時鐘關房間，直到 hold_until 到期或顧問手動收掉為止。
+    沒有設 hold_until 的維持原本 3 小時的行為（這是多數「聊到一半離開」
+    的正常情況，不需要每筆都手動处理）。
+    """
     now = datetime.datetime.now()
     out = []
     for r in rows:
         if not r.get('last_at'):
             continue
+        hu = r.get('hold_until')
+        if hu:
+            try:
+                if now < datetime.datetime.strptime(hu, '%Y-%m-%d %H:%M:%S'):
+                    continue   # 顧問特別交代要留久一點，還沒到期，不關
+            except Exception:
+                pass
         try:
             last = datetime.datetime.strptime(r['last_at'], '%Y-%m-%d %H:%M:%S')
         except Exception:
