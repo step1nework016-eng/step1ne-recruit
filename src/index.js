@@ -554,6 +554,50 @@ async function lineReply(env, replyToken, text) {
   }
 }
 
+// 主動推播（跟 lineReply 不同——沒有 replyToken 這種「回應對方訊息」的情境，
+// 是系統自己找候選人講話，要用 push 這個端點，而且要能對同一個人一次推多則）。
+async function linePush(env, lineUserId, text) {
+  if (!env.LINE_CHANNEL_ACCESS_TOKEN || !lineUserId) return false;
+  try {
+    const r = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({ to: lineUserId, messages: [{ type: 'text', text }] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    return r.ok;
+  } catch {
+    return false;   // 推播失敗不能讓顧問處置報告的主流程掛掉
+  }
+}
+
+// 2026-08-13 加：顧問處置報告／回報進度時，如果這個人選已經跟 LINE 綁定過
+// （line_bindings 表，見昨天做的「查詢面試進度」），主動推一則更新給他，
+// 不用等他自己想到要來問。跟 deriveApplicationProgress 共用同一套判斷邏輯，
+// 保證他在 LINE 主動收到的訊息，跟他自己來問時看到的說法一致。
+async function notifyLineProgress(env, applicationId) {
+  if (!applicationId) return;
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT line_user_id, application_ids FROM line_bindings
+        WHERE state = 'bound'`
+    ).all();
+    const hits = (results || []).filter((b) =>
+      safeJsonArray(b.application_ids).includes(applicationId));
+    if (!hits.length) return;   // 這個人選沒綁過 LINE，沒地方可以推
+
+    const prog = await deriveApplicationProgress(env, applicationId);
+    if (!prog) return;
+    const text = `【進度更新】${prog.jobTitle}\n${prog.message}`;
+    for (const b of hits) await linePush(env, b.line_user_id, text);
+  } catch {
+    // 推播是加值功能，出錯不該影響顧問處置報告這個主流程
+  }
+}
+
 // 台灣手機號碼正規化：只留數字，886 開頭換成 0 開頭，方便跟 applications.phone
 // 裡各種格式（有無 -、有無空格、有無 +886）比對。
 function normalizePhone(raw) {
@@ -1468,6 +1512,9 @@ export default {
             await env.DB.prepare(
               `UPDATE applications SET handled_note = ? WHERE id = ?`
             ).bind(noteTxt, app.id).run();
+            // 狀態真的變了才推播——純備註（客戶還在考慮之類）候選人不需要知道，
+            // 每次顧問打字都推播會變成騷擾，只在漏斗階段真的往前/往後動的時候推。
+            if (stage) await notifyLineProgress(env, app.id);
             done.push(`${app.name}${stage ? ' → ' + (STAGE_LABEL[stage] || stage) : '（備註）'}`);
           }
           await env.DB.prepare(
@@ -3308,6 +3355,7 @@ export default {
             }
           }
         }
+        if (b.app_id) await notifyLineProgress(env, b.app_id);
         return json(request, { ok: true, decided_at: now, placement_id });
       }
 
