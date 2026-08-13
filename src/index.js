@@ -733,7 +733,29 @@ async function handleLineEvent(env, ev) {
 
   if (binding.state === 'bound') {
     if (text !== LINE_PROGRESS_TRIGGER) return; // 已綁定的人閒聊不接手
-    const msg = await buildProgressReply(env, safeJsonArray(binding.application_ids));
+
+    // ⚠️ 2026-08-13 補：application_ids 原本只在「第一次綁定」那一刻掃過
+    // 手機號碼算好、之後存死不再更新——如果他後來又應徵了別的職缺，
+    // 不會自動出現在這裡。改成每次查詢都順手重掃一次手機號碼，
+    // 有新的應徵記錄就併進去，讓他隨時查都是最新的，不用重新走一次綁定流程。
+    let ids = safeJsonArray(binding.application_ids);
+    if (binding.phone) {
+      const norm = normalizePhone(binding.phone);
+      const { results } = await env.DB.prepare(
+        `SELECT id FROM applications
+          WHERE superseded_by IS NULL AND phone IS NOT NULL AND phone != ''`
+      ).all();
+      const matched = (results || []).filter((r) => normalizePhone(r.phone) === norm).map((r) => r.id);
+      const merged = Array.from(new Set([...ids, ...matched]));
+      if (merged.length !== ids.length) {
+        ids = merged;
+        await env.DB.prepare(
+          `UPDATE line_bindings SET application_ids=?, updated_at=? WHERE line_user_id=?`
+        ).bind(JSON.stringify(ids), now, userId).run();
+      }
+    }
+
+    const msg = await buildProgressReply(env, ids);
     return lineReply(env, replyToken, msg);
   }
 
@@ -1155,6 +1177,56 @@ export default {
       }
 
       return json(request, { ok: false, error: 'unknown action' }, 404);
+    }
+
+    // ── 人選挑面談時段的頁面——公開，token 即權限，跟 /book 同一套認證模式。
+    //    ⚠️ 2026-08-13 一開始誤放在下面 `/admin/` 那個要驗證權杖的區塊裡，
+    //    因為 `if (p.startsWith('/admin/'))` 本身就會擋掉不是 /admin/ 開頭
+    //    的路徑，導致這支永遠進不去、外部一律收到 404——實測到才發現，
+    //    搬出來變成獨立的公開區塊，跟 /checkup-chat/、/chat/ 同一個層級。
+    if (p.startsWith('/appointment/')) {
+      const seg = p.split('/').filter(Boolean);
+      const token = seg[1] || '';
+      if (token.length < 20) return json(request, { ok: false, error: 'bad token' }, 400);
+
+      const appt = await env.DB.prepare(
+        `SELECT ia.*, a.name, a.job_title, a.job_slug
+           FROM interview_appointments ia
+           JOIN applications a ON a.id = ia.application_id
+          WHERE ia.token = ?`
+      ).bind(token).first();
+      if (!appt) return json(request, { ok: false, error: 'not found' }, 404);
+
+      if (request.method === 'GET') {
+        return json(request, {
+          ok: true, name: appt.name, job_title: appt.job_title || appt.job_slug,
+          note: appt.note, status: appt.status,
+          slots: safeJsonArray(appt.slots), confirmed_slot: appt.confirmed_slot,
+        });
+      }
+
+      if (seg[2] === 'confirm' && request.method === 'POST') {
+        if (appt.status === 'confirmed') {
+          return json(request, { ok: false, error: '這場面談時間已經確認過了', confirmed_slot: appt.confirmed_slot }, 409);
+        }
+        const b = await request.json();
+        const slots = safeJsonArray(appt.slots);
+        const picked = slots.find((s) => s.slot_at === b.slot_at);
+        if (!picked) return json(request, { ok: false, error: '這個時段不在選項裡' }, 400);
+
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `UPDATE interview_appointments SET status='confirmed', confirmed_slot=?, confirmed_at=? WHERE id=?`
+        ).bind(b.slot_at, now, appt.id).run();
+
+        await notify(env,
+          `📅 面談時間已確認\n${appt.name}（${appt.job_title || appt.job_slug}）\n選了：${b.slot_at}（${picked.format || ''}）`,
+          { message_thread_id: THREAD.decide });
+
+        return json(request, { ok: true });
+      }
+
+      return json(request, { ok: false, error: 'not found' }, 404);
     }
 
     // ── 測驗：讀取這個人的狀態（前端進測驗頁時先問一次）──
@@ -2841,6 +2913,59 @@ export default {
         return json(request, { ok });
       }
 
+      // 顧問安排客戶面談時段，讓人選自己挑——2026-08-13 加。
+      // 跟 /book（阿財面談的固定時段格）不是同一件事：這裡是顧問針對
+      // 「這一位人選、這一次客戶面談」手動輸入幾個候選時段，不是系統自動排的格子。
+      if (p === '/admin/appointment' && request.method === 'POST') {
+        const b = await request.json();
+        if (!b.application_id || !Array.isArray(b.slots) || !b.slots.length) {
+          return json(request, { ok: false, error: '缺 application_id 或 slots' }, 400);
+        }
+        const app = await env.DB.prepare(
+          `SELECT id, name, job_title, job_slug FROM applications WHERE id = ?`
+        ).bind(b.application_id).first();
+        if (!app) return json(request, { ok: false, error: '找不到這筆應徵' }, 404);
+
+        const slots = b.slots
+          .map((s) => ({
+            slot_at: String(s.slot_at || '').slice(0, 16),
+            format: String(s.format || '').slice(0, 20),
+          }))
+          .filter((s) => s.slot_at);
+        if (!slots.length) return json(request, { ok: false, error: 'slots 格式不對' }, 400);
+
+        const id = uid();
+        const token = uid().replace(/-/g, '') + uid().replace(/-/g, '').slice(0, 16);
+        const now = nowTaipei();
+        const note = String(b.note || '').slice(0, 500);
+
+        await env.DB.prepare(
+          `INSERT INTO interview_appointments
+             (id, application_id, created_at, created_by, slots, note, status, token)
+           VALUES (?,?,?,?,?,?, 'pending', ?)`
+        ).bind(id, app.id, now, b.by || null, JSON.stringify(slots), note, token).run();
+
+        const url = `https://step1ne.com/appointment/?t=${token}`;
+
+        // 推播給人選（如果他綁過 LINE）——跟查進度那條線共用同一個 line_bindings 表。
+        try {
+          const { results } = await env.DB.prepare(
+            `SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound'`
+          ).all();
+          const hits = (results || []).filter((row) =>
+            safeJsonArray(row.application_ids).includes(app.id));
+          if (hits.length) {
+            const text = `📅 ${app.name} 您好\n\n`
+              + `💼 應徵職缺：${app.job_title || app.job_slug}\n`
+              + `顧問已經安排好面談時段，麻煩點下方連結選一個方便的時間：\n${url}`;
+            for (const row of hits) await linePush(env, row.line_user_id, text);
+          }
+        } catch { /* 推播失敗不影響安排本身已經存好 */ }
+
+        return json(request, { ok: true, id, token, url });
+      }
+
+      // 人選挑面談時段的頁面在讀資料——公開，token 即權限，跟 /book 同一套認證模式
       // 重新開啟面談室——2026-08-13 真實事故換來的端點：候選人因為系統
       // 問題（用量上限、逾時⋯）被迫中斷，顧問承諾「之後再進來即可」，
       // 但原本只有固定 3 小時的保留時鐘，講好聽是「保留」，實際上顧問講完
