@@ -27,6 +27,49 @@ spec2 = importlib.util.spec_from_file_location('bg', os.path.join(HERE, 'jobtpl'
 BG = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(BG)
 
 
+def ld_description(j):
+    """JobPosting 的 description：Google 會直接顯示這段，要帶結構不能只給一句話。
+
+    2026-08-12 發現的問題：原本只放 intro（一句話），但線上 20 頁的 schema
+    描述全是帶 <h3>／<ul> 的完整內容。也就是說，任何人拿這支重產既有職缺，
+    都會把描述從完整版降級成一句話——**而且不會有任何警告**。
+    這支是唯一該用的更新工具，它自己不能是有損的。
+    """
+    # 不做 HTML 逃逸——這些欄位本來就允許作者寫 <strong> 之類的標記，
+    # 頁面本體（body_gen）也是原樣輸出。這裡逃逸會讓 <strong> 變成可見的文字。
+    esc = lambda s: s or ''
+    p = [f"<p>{esc(j.get('intro') or j['title'])}</p>"]
+    if j.get('duties'):
+        p.append('<h3>工作內容</h3>')
+        for b in j['duties']:
+            if b.get('h'):
+                p.append(f"<h4>{esc(b['h'])}</h4>")
+            p.append('<ul>' + ''.join(f"<li>{esc(i)}</li>" for i in b.get('items', [])) + '</ul>')
+    if j.get('must') or j.get('plus'):
+        p.append('<h3>應徵條件</h3>')
+        if j.get('must'):
+            p.append('必要條件<ul>' + ''.join(f"<li>{esc(i)}</li>" for i in j['must']) + '</ul>')
+        if j.get('plus'):
+            p.append('加分條件<ul>' + ''.join(f"<li>{esc(i)}</li>" for i in j['plus']) + '</ul>')
+    return ''.join(p)
+
+
+def posted_date(j):
+    """刊登日：JSON 有就用 JSON 的；沒有就沿用線上那一頁既有的。
+
+    ⚠️ 不能每次重產都填今天——改一個薪資欄位不該讓 Google 以為這是新缺，
+    那是謊報刊登日期。只有真的沒有既有頁面時才用今天。
+    """
+    if j.get('posted'):
+        return j['posted']
+    page = os.path.join(SITE, 'jobs', j['slug'], 'index.html')
+    if os.path.exists(page):
+        m = re.search(r'"datePosted"\s*:\s*"([\d-]+)"', open(page, encoding='utf-8').read())
+        if m:
+            return m.group(1)
+    return __import__('datetime').date.today().isoformat()
+
+
 def jsonld(j):
     """JobPosting 結構化資料。Google 會直接拿去做職缺搜尋結果。
 
@@ -35,8 +78,8 @@ def jsonld(j):
     """
     d = {
         "@context": "https://schema.org", "@type": "JobPosting",
-        "title": j['title'], "description": j.get('intro') or j['title'],
-        "datePosted": j.get('posted') or __import__('datetime').date.today().isoformat(),
+        "title": j['title'], "description": ld_description(j),
+        "datePosted": posted_date(j),
         "validThrough": j.get('valid_through') or f"{__import__('datetime').date.today().year}-12-31",
         "employmentType": j.get('employment') or ["FULL_TIME"],
         "hiringOrganization": {"@type": "Organization", "name": "Step1ne 德仁管理顧問有限公司",
@@ -46,10 +89,17 @@ def jsonld(j):
             "addressRegion": j.get('region') or '', "addressCountry": "TW"}},
         "directApply": True,
     }
-    if j.get('salary_min') and j.get('salary_max'):
-        d["baseSalary"] = {"@type": "MonetaryAmount", "currency": "TWD",
-                           "value": {"@type": "QuantitativeValue", "minValue": j['salary_min'],
-                                     "maxValue": j['salary_max'], "unitText": "MONTH"}}
+    # 只有下限也要輸出 baseSalary。來源常寫「待遇面議，經常性薪資達 4 萬元以上」，
+    # 那是真實的下限，不是沒資料。原本要 min 與 max 都有才輸出，結果這類職缺
+    # 在 Google Jobs 完全沒有薪資資訊（2026-08-12 稽核 20 頁時發現）。
+    # ⚠️ 上限沒有就不要填——不能為了湊格式編一個數字。
+    if j.get('salary_min') or j.get('salary_max'):
+        qv = {"@type": "QuantitativeValue", "unitText": "MONTH"}
+        if j.get('salary_min'):
+            qv["minValue"] = j['salary_min']
+        if j.get('salary_max'):
+            qv["maxValue"] = j['salary_max']
+        d["baseSalary"] = {"@type": "MonetaryAmount", "currency": "TWD", "value": qv}
     if j.get('benefits'):
         d["jobBenefits"] = j['benefits']
     return json.dumps(d, ensure_ascii=False, indent=2)
@@ -127,9 +177,12 @@ def update_applyjson(j):
     p = os.path.join(SITE, 'apply', 'jobs.json'); d = json.load(open(p, encoding='utf-8'))
     lst = d if isinstance(d, list) else d['jobs']
     row = {'slug': j['slug'], 'title': j['title'], 'loc': j.get('locations', '')}
+    # 應徵表單那邊還會用到 pay／emp／exp／req。這支只認得三個欄位，
+    # 原本是整列覆蓋——更新一個既有職缺，那四欄就被無聲刪掉了（2026-08-12 發現）。
+    # 改成合併：這支管得到的欄位更新，管不到的保留原值，不要動到別人寫的東西。
     for i, x in enumerate(lst):
         if x['slug'] == j['slug']:
-            lst[i] = row; break
+            lst[i] = {**x, **row}; break
     else:
         lst.insert(0, row)
     json.dump(d, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)

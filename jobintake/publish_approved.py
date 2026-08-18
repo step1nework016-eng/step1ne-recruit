@@ -68,14 +68,51 @@ def upsert_extra_columns(spec):
     D.d1(f"UPDATE jobs SET {', '.join(sets)} WHERE slug={D.q(spec['slug'])}")
 
 
-def notify_new_job(spec, dry):
+SITE_ROOT = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+
+
+def git_push(spec):
+    """2026-08-18 加：顧問要求審核通過就直接上線，不用再手動 push。
+
+    ⚠️ 這是拿掉一道人工把關——原本刻意設計成「產完檔案先不推，等人看過再
+    手動 push」，是最後一道防線。改成自動推之後，AI 流程只要顧問在
+    Telegram 按核准，職缺就會直接上站，不會再有「上線前最後看一眼」的
+    機會，出錯（例如禁刊沒擋乾淨、頁面壞掉）會直接反映在正式站上。
+    只 add 這次新增/修改到的檔案，不用 -A，避免把使用者手上其他未完成的
+    修改一起推上去。
+    """
+    slug = spec.get('slug')
+    paths = ['apply/jobs.json', 'jobs/index.html', 'sitemap.xml', f'jobs/{slug}/']
+    try:
+        subprocess.run(['git', 'add', *paths], cwd=SITE_ROOT, check=True,
+                        capture_output=True, text=True, timeout=30)
+        diff = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=SITE_ROOT)
+        if diff.returncode == 0:
+            DJ.log('⚠️ git push 略過：沒有偵測到檔案變更（可能已經推過）')
+            return True, None
+        subprocess.run(['git', 'commit', '-m', f'新增職缺：{spec.get("title")}'],
+                        cwd=SITE_ROOT, check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(['git', 'push', 'deploy', 'HEAD:main'],
+                        cwd=SITE_ROOT, check=True, capture_output=True, text=True, timeout=60)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, (e.stderr or e.stdout or str(e))[-500:]
+
+
+def notify_new_job(spec, dry, pushed=None, push_err=None):
     """通知群組有新職缺。阿財讀的是 D1 的 jobs 表，寫進去它就抓得到 JD。"""
+    if pushed:
+        deploy_line = '✅ 已自動推上線，部署到各節點需要幾分鐘，網址可能先 404 再變正常，屬正常現象。'
+    elif push_err:
+        deploy_line = f'⚠️ 自動推上線失敗，頁面檔案已產出但**尚未部署**，需要手動處理：\n{DJ._esc(push_err)}'
+    else:
+        deploy_line = '⚠️ 頁面檔案已產出，但**尚未部署**——要上線請自行 git push。'
     text = (f'🆕 <b>新職缺已上架</b>　{DJ._esc(spec.get("title"))}\n'
             f'網址：https://step1ne.com/jobs/{DJ._esc(spec.get("slug"))}/\n'
             f'服務線：{DJ._esc(spec.get("service_line"))}　｜　'
             f'客戶對象：{DJ._esc(spec.get("client_relation"))}\n'
             f'阿財已可抓到這份 JD（jobs 表已更新）。\n'
-            f'⚠️ 頁面檔案已產出，但**尚未部署**——要上線請自行 git push。')
+            f'{deploy_line}')
     if dry:
         print('\n[--dry] 原本會送出的新職缺通知：\n' + text)
         return
@@ -117,12 +154,18 @@ def process(intake, dry=False):
         DJ.log('❌ publish_job.py 失敗，狀態不變更')
         return
 
+    pushed, push_err = None, None
     if not dry:
         upsert_extra_columns(spec)
         D.d1(f"UPDATE job_intakes SET status='published', published_slug={D.q(spec['slug'])}, "
              f"updated_at=datetime('now','+8 hours') WHERE id={D.q(iid)}")
-    notify_new_job(spec, dry)
-    DJ.log(f'✅ 完成：{spec["slug"]}' + ('（--dry，只產檔到 /tmp）' if dry else '（尚未部署）'))
+        DJ.log('git push 部署中…')
+        pushed, push_err = git_push(spec)
+        if push_err:
+            DJ.log(f'❌ git push 失敗：{push_err}')
+    notify_new_job(spec, dry, pushed=pushed, push_err=push_err)
+    DJ.log(f'✅ 完成：{spec["slug"]}' + ('（--dry，只產檔到 /tmp）' if dry else
+           ('（已推上線）' if pushed else '（部署失敗，需人工處理）')))
 
 
 def main():

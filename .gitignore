@@ -1,2 +1,10 @@
 node_modules
 .wrangler
+
+# ── 2026-08-18 加：工作產出不進版控 ──
+# 這兩個目錄放的是候選人的實際產出（健檢報告、匿名履歷、開發信），
+# 每跑一個案子就多幾份，全都是個資。程式碼要備份，這些不要。
+checkup_reports/
+jobintake/bd_work/
+__pycache__/
+*.pyc

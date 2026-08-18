@@ -1,0 +1,15 @@
+name = "step1ne-recruit-api"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "step1ne-recruit"
+database_id = "67077b4b-42d9-4086-8d04-b3658a89cffd"
+
+# 提醒排程：每 15 分鐘檢查一次。面談前 15 分鐘那則要準時，
+# 間隔拉長會漏掉。
+[triggers]
+crons = ["*/15 * * * *"]
+
+# ADMIN_TOKEN / TG_BOT_TOKEN / TG_CHAT_ID 用 wrangler secret put 設定，不寫在這裡

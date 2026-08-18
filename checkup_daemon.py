@@ -55,6 +55,24 @@ NO_TOOLS = ['--disallowed-tools', _BAN_TOOLS,
 _busy = set()
 _lock = threading.Lock()
 
+# ⚠️ 2026-08-14 加：這台機器上 interview_daemon.py 跟這支共用同一個本機 claude
+# 登入額度，額度打滿時 claude -p 不一定乾脆地失敗——有時候會回一段文字說「這段
+# 對話結尾怪怪的，我不該亂編」，不是預期的 JSON，直接被當成一般錯誤處理。
+# 一般錯誤的處理方式是塞一句道歉訊息給本人，但這樣會把 last_role 從
+# 'user' 翻成 'afu'，15 分鐘後 stale() 就會誤判本人閒置、提早收尾產報告——
+# 陳厚瑞那場就是這樣被腰斬的，他其實還在認真回答。
+# 額度用盡不該算在本人頭上：不插入道歉訊息（讓 last_role 留在 'user'，
+# 下一輪自動重試），改用長一點的鎖節流（不要每 8 秒打一次注定失敗的 claude），
+# 額度重置後自然接上，本人不用重講一次。
+RATE_LIMIT_RETRY_SEC = 300      # 額度打滿時，同一場隔多久才重試一次
+RATE_LIMIT_NOTIFY_COOLDOWN_SEC = 1800  # 同一次額度事故只提醒 Jacky 一次，不要洗版
+_rate_limit_notified_at = 0.0
+
+
+def _is_rate_limit_error(e):
+    s = str(e).lower()
+    return 'hit your limit' in s or 'usage limit' in s
+
 
 def log(msg):
     print(f"[{datetime.datetime.now():%H:%M:%S}] {msg}", flush=True)
@@ -372,6 +390,28 @@ def upload_report_pdf(cid, name, pdf_path):
         log(f'❌ {name} 健檢報告 PDF 上傳失敗：{e}')   # 不影響報告本身（HTML 已經存好）
 
 
+def notify_candidate_system_error(cid):
+    """2026-08-14 加：本人因為系統錯誤（不是他自己閒置）被腰斬時，寄一封道歉信，
+    附上原本的聊天室連結請他再進來——跟 notify_candidate_checkup() 寄的是
+    「報告完成」信不一樣，這封是「抱歉、麻煩你回來」。失敗不影響報告本身。"""
+    try:
+        tok = None
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if not tok:
+            return log('找不到 RECRUIT_ADMIN_TOKEN，跳過系統錯誤道歉信')
+        req = urllib.request.Request(
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-system-error',
+            data=json.dumps({'id': cid}).encode(),
+            headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                     'user-agent': 'step1ne-checkup-daemon/1.0'})
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        log(f'系統錯誤道歉信：{"已寄出" if r.get("ok") else "寄送失敗"}')
+    except Exception as e:
+        log(f'系統錯誤道歉信失敗：{e}')
+
+
 def notify_candidate_checkup(cid):
     """請 Worker 寄健檢報告連結給本人。金鑰只放在 Cloudflare secret，本機不留第二份，
     理由跟 interview_daemon.py 的 notify_candidate() 一樣。"""
@@ -504,8 +544,15 @@ def finish(cid, name, ctx, abandoned=False):
     # 2026-08-12 Jacky 要求：報告不能只留在對談連結裡等本人自己回去點，
     # 要主動寄到信箱。中途離開（abandoned）的場次先不寄——那種情況報告內容
     # 通常不完整，等本人真的聊完再寄比較不會讓他覺得「怎麼才聊一半就結束」。
+    #
+    # ⚠️ 2026-08-14 加：但如果是「系統出錯」害他被腰斬（不是他自己不回），
+    # 完全不寄信會讓他一頭霧水、以為對談莫名其妙斷了。這種情況改寄道歉信
+    # 附連結請他回來，不是寄（可能不完整的）報告。
     if not abandoned:
         notify_candidate_checkup(cid)
+    elif ctx.get('checkup', {}).get('system_error_at'):
+        notify_candidate_system_error(cid)
+        d1(f"UPDATE checkups SET system_error_at=NULL WHERE id={q(cid)}")
 
     # 推給顧問：PDF + 結語。跟阿財那條線一樣，連結給不了在外面的人，直接推附件。
     try:
@@ -615,6 +662,7 @@ def expired(rows):
 
 def handle(c):
     cid, name = c['id'], c['name']
+    rate_limited = False
     try:
         ctx = fetch_checkup(cid)
         conv = ctx.get('messages') or []
@@ -637,17 +685,45 @@ def handle(c):
             finish(cid, name, ctx)
     except Exception as e:
         log(f'❌ {name}（{cid}）處理失敗：{e}')
-        try:
-            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            d1(f"INSERT INTO checkup_messages (checkup_id, role, content, created_at) VALUES "
-               f"({q(cid)},'afu',"
-               f"{q('不好意思，我這邊系統出了點狀況，稍後會請顧問直接跟您聯繫，很抱歉耽誤您的時間。')},"
-               f"'{now}')")
-        except Exception:
-            pass
-        tg(f'⚠️ 健檢對談出錯：{name}（{cid}）\n{str(e)[:400]}', THREAD_SYSTEM)
+        if _is_rate_limit_error(e):
+            rate_limited = True
+            log(f'⏳ {name}：額度打滿，安靜重試，不插道歉訊息')
+            global _rate_limit_notified_at
+            now_ts = time.time()
+            if now_ts - _rate_limit_notified_at > RATE_LIMIT_NOTIFY_COOLDOWN_SEC:
+                _rate_limit_notified_at = now_ts
+                tg(f'⏳ claude 額度用盡：{name}（健檢）這場先安靜排隊重試，不用手動處理，'
+                   f'額度重置後會自動接上。', THREAD_SYSTEM)
+        else:
+            try:
+                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                d1(f"INSERT INTO checkup_messages (checkup_id, role, content, created_at) VALUES "
+                   f"({q(cid)},'afu',"
+                   f"{q('不好意思，我這邊系統出了點狀況，稍後會請顧問直接跟您聯繫，很抱歉耽誤您的時間。')},"
+                   f"'{now}')")
+                # 2026-08-14 加：這句道歉訊息會讓 last_role 變成 'afu'，等一下有可能
+                # 被 stale() 誤判成本人閒置、提早收尾——陳厚瑞那場就是這樣被腰斬，
+                # 而且因為收尾時 abandoned=True，finish() 原本會直接跳過寄信，
+                # 本人完全不知道發生什麼事、也拿不到重新進來的連結。
+                # 記一個時間戳，finish() 看到這個時間戳就知道「這場是被系統錯誤
+                # 腰斬的」，改寄一封道歉信附連結，而不是靜悄悄不寄。
+                d1(f"UPDATE checkups SET system_error_at={q(now)} WHERE id={q(cid)}")
+            except Exception:
+                pass
+            tg(f'⚠️ 健檢對談出錯：{name}（{cid}）\n{str(e)[:400]}', THREAD_SYSTEM)
     finally:
-        release_lock(cid)
+        # 額度打滿：不釋放鎖，改成延長鎖到 RATE_LIMIT_RETRY_SEC 之後才能再搶——
+        # 節流用，不要每 8 秒就打一次注定失敗的 claude。一般錯誤照舊立刻放鎖，
+        # 下一輪照常搶。
+        if rate_limited:
+            try:
+                expires = (datetime.datetime.now()
+                           + datetime.timedelta(seconds=RATE_LIMIT_RETRY_SEC)).strftime('%Y-%m-%d %H:%M:%S')
+                d1(f"UPDATE checkups SET lock_expires_at={q(expires)} WHERE id={q(cid)}")
+            except Exception:
+                pass
+        else:
+            release_lock(cid)
         with _lock:
             _busy.discard(cid)
 

@@ -15,7 +15,11 @@ def _spec(rows):
         sub = r[2] if len(r) > 2 else ''
         subhtml = (f'<span style="display:block;font-weight:400;font-size:14px;'
                    f'color:#55585f;margin-top:4px;">{sub}</span>') if sub else ''
-        cls = 'spec-row highlight' if i == 0 else 'spec-row'
+        # 第一列預設反白。其餘要反白就在該列尾端多給一個 true——
+        # 直播主那頁把「抽成／分潤」「應徵條件」也反白，是刻意要人看見的風險項，
+        # 產生器只認第一列的話，重產一次就會把那個強調洗掉（2026-08-12）。
+        hl = i == 0 or (len(r) > 3 and r[3])
+        cls = 'spec-row highlight' if hl else 'spec-row'
         out.append(f'<div class="{cls}"><dt>{k}</dt><dd>{v}{subhtml}</dd></div>')
     return f'<dl class="spec">{"".join(out)}</dl>'
 
@@ -86,5 +90,6 @@ color:#fff;font-weight:700;font-size:16px;padding:15px 34px;border-radius:999px;
 <span style="margin-left:14px;"><a href="https://lin.ee/XcSWPzM" target="_blank" rel="noopener"
 style="color:#a67c3d;font-weight:600;">或用 LINE 直接洽詢 →</a></span>
 {sec('常見問題', f'<div style="display:flex;flex-direction:column;gap:12px;">{faq}</div>' if faq else '')}
-</div></section>
-</main>"""
+</div></section>"""
+# ⚠️ 這裡不要收 </main>——<main> 是 chrome_top 開的，chrome_bot 第一行就會收。
+# 兩邊都收會讓每一頁多出一個 </main>（2026-08-12 重產職缺頁時比對發現）。

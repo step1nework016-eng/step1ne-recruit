@@ -3050,7 +3050,7 @@ export default {
           // posting/posted 才會生效），搶不到鎖代表已經在發或發過了，
           // 直接短路擋掉，不再跑一次 Threads API。
           const claim = await env.DB.prepare(
-            `UPDATE social_post_queue SET status='posting', posting_at=datetime('now','+8 hours') WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
+            `UPDATE social_post_queue SET status='posting' WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
           ).bind(qid).run();
           if (!claim.meta || !claim.meta.changes) {
             await answer(row.status === 'posted' ? '✅ 這則已經發過了，沒有重複發' : '⏳ 正在發文中，請稍等，不要重複按', true);
@@ -3169,7 +3169,7 @@ export default {
               permalink = linkD.permalink || null;
             } catch { /* 查連結失敗不影響已經發出去這件事 */ }
 
-            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL WHERE id=?`)
+            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=? WHERE id=?`)
               .bind(permalink, qid).run();
             await answer('✅ 已經發到 Threads 上了', true);
             await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
@@ -3190,7 +3190,7 @@ export default {
             }).catch(() => {});
           } catch (e) {
             // 失敗要解鎖，不然這篇就卡在 posting 狀態，之後永遠按不動、也重發不了。
-            await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
+            await env.DB.prepare(`UPDATE social_post_queue SET status=NULL WHERE id=? AND status='posting'`).bind(qid).run();
             await answer('❌ 發文失敗：' + String(e).slice(0, 150), true);
             await notify(env, `⚠️ Threads 發文失敗：${row.title}\n${String(e).slice(0, 300)}`,
               { message_thread_id: THREAD.system });
@@ -5780,89 +5780,6 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
-    // ⚠️ 2026-08-18 加：Threads 發文「卡在 posting」的自動對帳。
-    // 真實案例：顧問按了「確認發布」，Worker 搶到鎖改成 posting 之後，發文
-    // 途中整個請求被中斷（那天是剛好在部署新版），catch 沒機會跑到、鎖沒解開，
-    // 這則就永遠停在 posting——之後每次按都只回「⏳ 正在發文中」，看起來就像
-    // 按了沒反應。更糟的是其中一則其實已經發到 Threads 上了，只是沒回寫 url、
-    // 也沒通知，等於「發出去了但沒人知道」。
-    // 修法：每次 cron 掃 posting 超過 3 分鐘的（正常串文 30 秒內跑完），拿該
-    // 帳號最近的貼文去比對草稿開頭：
-    //   對得上 → 補回 posted＋permalink，並補一則帶連結的通知（Jacky 要求
-    //            「有發布的一定要通知、要給連結」）。
-    //   對不上 → 解鎖回 drafted 並通知可以重按，不會自動重發（避免重複貼文）。
-    try {
-      const { results: stuck } = await env.DB.prepare(
-        `SELECT q.id, q.job_slug, q.account_id, q.draft, q.tg_message_id, j.title
-           FROM social_post_queue q JOIN jobs j ON j.slug = q.job_slug
-          WHERE q.status = 'posting'
-            AND q.posting_at IS NOT NULL
-            AND q.posting_at <= datetime('now','+8 hours','-3 minutes')
-          LIMIT 10`
-      ).all();
-      for (const row of (stuck || [])) {
-        let token = env.THREADS_ACCESS_TOKEN, userId = env.THREADS_USER_ID;
-        if (row.account_id) {
-          const acc = await env.DB.prepare(
-            `SELECT access_token, platform_user_id FROM social_accounts WHERE id = ? AND platform='threads'`
-          ).bind(row.account_id).first();
-          if (acc) { token = acc.access_token; userId = acc.platform_user_id; }
-        }
-        // 比對用：把空白換行都拿掉取前 30 字，Threads 回傳的 text 是主文全文，
-        // 開頭一定跟草稿第一段一致（草稿超過 500 字會被切成串文，但第一則的
-        // 開頭不變）。
-        const norm = (t) => String(t || '').replace(/\s+/g, '').slice(0, 30);
-        let permalink = null;
-        if (token && userId) {
-          try {
-            const r = await fetch(
-              `https://graph.threads.net/v1.0/${userId}/threads?` +
-              new URLSearchParams({ fields: 'id,text,permalink', limit: '10', access_token: token })
-            );
-            const d = await r.json();
-            const hit = (d.data || []).find((p) => norm(p.text) === norm(row.draft));
-            if (hit) permalink = hit.permalink || null;
-            if (hit && !permalink) permalink = '（已發布，但查不到連結，請到 Threads 上確認）';
-          } catch { /* 查不到就當作沒發，走解鎖那條，不會重發 */ }
-        }
-        // 有原始審核訊息就回覆它（forum 群組會自動落回同一個主題）；
-        // 沒有的話退到系統回報主題，才不會掉到 General 裡沒人看到。
-        const tgTail = row.tg_message_id
-          ? { reply_to_message_id: row.tg_message_id }
-          : { message_thread_id: THREAD.system };
-        if (permalink) {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL WHERE id=?`)
-            .bind(permalink.startsWith('http') ? permalink : null, row.id).run();
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, ...tgTail,
-              text: `✅ 補通知｜${row.title}\n\n這則其實已經發到 Threads 上了，只是當時發文流程中途被中斷，沒有回寫紀錄也沒通知。\n\n▪️ 貼文連結：\n${permalink}`,
-            }),
-          }).catch(() => {});
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, message_id: row.tg_message_id,
-              reply_markup: { inline_keyboard: [[{ text: '✅ 已發到 Threads（補登）', callback_data: 'noop' }]] },
-            }),
-          }).catch(() => {});
-        } else {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='drafted', posting_at=NULL WHERE id=?`)
-            .bind(row.id).run();
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, ...tgTail,
-              text: `⚠️ 這則發文中途斷掉了，確認沒有發出去｜${row.title}\n\n已經解鎖，可以重新按上面那顆「確認發布」。（沒有自動重發，避免重複貼文）`,
-            }),
-          }).catch(() => {});
-        }
-      }
-    } catch (e) {
-      await notify(env, `⚠️ 發文對帳失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
-    }
-
     // 2026-08-13 加：阿財初審結束後的「1-1 顧問初審確認」，改成兩則不同時機的訊息
     // （Jacky 明確要求，不要用單一個「3 天」預設值）：
     //   ① 面談結束後 5 分鐘：說明接下來會怎樣，安撫「怎麼沒下文」的焦慮

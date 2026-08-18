@@ -51,11 +51,25 @@ FORBID = [
 ]
 
 
+def _norm_spacing(s):
+    """拿掉數字與單位間可能出現的空白差異（「500 萬」vs「500萬」），
+    避免 quoted_facts 裡的原話跟報告正文用字略有出入就比對不到。"""
+    return re.sub(r'(?<=\d)\s+(?=[萬元KkOo])', '', s)
+
+
 def salary_hits(text, allowed):
-    """回傳所有疑似憑空捏造的薪資數字。allowed 是本人親口說過的事實，逐句排除。"""
-    scrubbed = text
+    """回傳所有疑似憑空捏造的薪資數字。allowed 是本人親口說過的事實，逐句排除。
+
+    ⚠️ 2026-08-12 實測發現：同一份逐字稿重跑兩次，quoted_facts 內容一字不差時
+    可以通過，但模型偶爾會在正文把同一個數字重新斷句／加空格／加「元」，
+    導致精準子字串比對不到、整份報告被誤擋。這裡對「排除詞」跟「待檢查全文」
+    都先做一次寬鬆的空白正規化，只放寬到這個程度——完全不同的數字（例如
+    quoted_facts 說 500 萬、正文寫 800 萬）還是會被擋下來，這才是把關真正
+    該擋的情況。
+    """
+    scrubbed = _norm_spacing(text)
     for a in allowed:
-        scrubbed = scrubbed.replace(a, '〔本人陳述〕')
+        scrubbed = scrubbed.replace(_norm_spacing(a), '〔本人陳述〕')
     hits = []
     for rx, why in FORBID:
         for m in rx.finditer(scrubbed):
@@ -76,46 +90,54 @@ def rich(s):
     return out.replace('&lt;br/&gt;', '<br>').replace('&lt;br /&gt;', '<br>')
 
 
+# ⚠️ 2026-08-12 改版：原本這份跟顧問內部用的 reporttpl/consultant.html／
+# client.html 用的是同一組 --gold 金棕色調色盤，Jacky 反應「跟內部的一樣，
+# 很難分辨」——這份是要寄給本人看的付費/體驗產品，混在一起會讓人以為
+# 收到的是內部文件外流。改用藍色（呼應 STEP1NE 品牌識別跟阿福自己的視覺），
+# 版面結構不變，純換色＋加阿福署名，一眼就要能認出「這是阿福的報告」。
 CSS = """
-:root{--gold:#a67c3d;--gold2:#c9a049;--ink:#23262d;--ink2:#4d5563;--ink3:#8a8d95;
- --line:#eee7db;--soft:#faf8f3;--ok:#2f8f5b;--warn:#c98a1e;--bad:#c0392b;--bg:#f4f1ea}
+:root{--brand:#2f6fed;--brand2:#5b8cff;--ink:#1c2438;--ink2:#4d5a73;--ink3:#8993a8;
+ --line:#e3e9f5;--soft:#f3f6fd;--ok:#2f8f5b;--warn:#c98a1e;--bad:#c0392b;--bg:#eef2fb}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
  font:15px/1.75 -apple-system,"Noto Sans TC",sans-serif;padding:26px 14px}
 .wrap{max-width:820px;margin:0 auto}
+.brandbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:12.5px;
+ color:var(--ink3);font-weight:700;letter-spacing:.04em}
+.brandbar .dot{width:7px;height:7px;border-radius:50%;background:var(--brand)}
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin-bottom:14px}
 h2{font-size:14px;margin:0 0 15px;letter-spacing:.06em;color:var(--ink3);font-weight:700}
-h3{font-size:14px;margin:20px 0 9px;color:var(--gold)}
-.hero{background:var(--ink);color:#fff;border-radius:18px;padding:26px;margin-bottom:14px}
-.hero .tag{font-size:11px;letter-spacing:.16em;color:var(--gold2);font-weight:700}
+h3{font-size:14px;margin:20px 0 9px;color:var(--brand)}
+.hero{background:linear-gradient(160deg,#16204a,#1c2f6b);color:#fff;border-radius:18px;padding:26px;margin-bottom:14px}
+.hero .tag{font-size:11px;letter-spacing:.16em;color:var(--brand2);font-weight:700}
 .hero h1{font-size:23px;margin:14px 0 10px;line-height:1.5}
-.hero p{margin:0;color:#c5c9d2;font-size:14.5px;line-height:1.8}
-.nums{display:flex;gap:26px;flex-wrap:wrap;border-top:1px solid #3a3f49;margin-top:18px;padding-top:15px}
-.nums div{font-size:12px;color:#a8adb8}
+.hero p{margin:0;color:#c7cfe8;font-size:14.5px;line-height:1.8}
+.nums{display:flex;gap:26px;flex-wrap:wrap;border-top:1px solid #34406e;margin-top:18px;padding-top:15px}
+.nums div{font-size:12px;color:#a9b2cf}
 .nums b{display:block;color:#fff;font-size:17px;font-weight:700;margin-top:2px}
 .big{font-size:16.5px;color:var(--ink);line-height:1.85;margin:0}
-.big b{color:var(--gold);}
+.big b{color:var(--brand);}
 .item{background:var(--soft);border-radius:11px;padding:14px 16px;margin-bottom:10px}
 /* 只有『卡片標題』那顆 b 是整行；內文裡的 <b> 要維持行內，
    不然「是<b>真的在那些市場站過攤</b>。」會被拆成三行 */
 .item>b{display:block;font-size:15px;margin-bottom:4px}
 .item p{margin:0;font-size:13.5px;color:var(--ink2);line-height:1.75}
-.item .why{color:var(--gold);font-size:12.5px;margin-top:6px;display:block}
+.item .why{color:var(--brand);font-size:12.5px;margin-top:6px;display:block}
 .fix{border-left:3px solid var(--bad);background:#fdf7f6}
 .fix b{color:#8a2b20}
-.strong{border-left:3px solid var(--ok);background:#f3f9f5}
+.strong{border-left:3px solid var(--ok);background:#f2f9f5}
 .strong b{color:#1f5c39}
 .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:9px}
 @media(max-width:640px){.ba{grid-template-columns:1fr}}
 .ba div{border-radius:10px;padding:11px 13px;font-size:13px;line-height:1.7}
-.ba .b1{background:#f2efe8;color:var(--ink3)}
-.ba .b2{background:#fdf6e9;border:1px solid #e8d5ab;color:#7a5518}
+.ba .b1{background:#eef1f8;color:var(--ink3)}
+.ba .b2{background:#eef3ff;border:1px solid #c9d8ff;color:#2a4fae}
 .ba span{display:block;font-size:11px;letter-spacing:.08em;font-weight:700;margin-bottom:5px}
-.ba .b1 span{color:#a8a49c}.ba .b2 span{color:var(--gold)}
+.ba .b1 span{color:#a2a9bd}.ba .b2 span{color:var(--brand)}
 table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
 th,td{border-bottom:1px solid var(--line);padding:9px 8px;text-align:left;vertical-align:top}
 th{color:var(--ink3);font-size:12.5px;font-weight:700}
-.q{background:var(--soft);border-left:3px solid var(--gold);border-radius:0 10px 10px 0;
+.q{background:var(--soft);border-left:3px solid var(--brand);border-radius:0 10px 10px 0;
  padding:12px 15px;margin-bottom:9px;font-size:14px}
 .q b{display:block;margin-bottom:3px}
 .q span{font-size:12.5px;color:var(--ink3)}
@@ -133,12 +155,14 @@ def render(spec):
     nums = ''.join(f'<div>{E(n.get("k"))}<b>{E(n.get("v"))}</b></div>' for n in h.get('nums', []))
     P = [f'''<!doctype html>
 <meta charset="utf-8">
-<title>履歷健檢報告{"｜" + E(spec.get("name")) if spec.get("name") else ""}</title>
+<title>阿福・AI 履歷健檢{"｜" + E(spec.get("name")) if spec.get("name") else ""}</title>
 <style>{CSS}</style>
 <div class="wrap">
 
+<div class="brandbar"><span class="dot"></span>阿福・AI 履歷健檢｜STEP1NE</div>
+
 <div class="hero">
-  <span class="tag">履歷健檢報告</span>
+  <span class="tag">阿福・AI 履歷健檢報告</span>
   <h1>{rich(h.get("headline"))}</h1>
   <p>{rich(h.get("lead"))}</p>
   {f'<div class="nums">{nums}</div>' if nums else ''}
@@ -201,7 +225,8 @@ def render(spec):
              + (f'<p class="note">{rich(nx.get("note"))}</p>' if nx.get('note') else '') + '</div>')
 
     P.append('<p class="foot">這份健檢僅依據你提供的資料產出，不構成錄用承諾或薪資保證。<br>'
-             '你的資料不會對外公開，僅供我們內部顧問查閱。</p></div>')
+             '你的資料不會對外公開，僅供我們內部顧問查閱。<br>'
+             '由阿福（STEP1NE AI 履歷健檢助理）為你整理。</p></div>')
     return '\n'.join(P)
 
 

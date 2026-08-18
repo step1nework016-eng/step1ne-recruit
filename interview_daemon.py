@@ -26,7 +26,12 @@ MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–
                         # 寧可讓第 4 個人排隊，也不要三個人一起卡住。
 CLAUDE_TIMEOUT = 240
 MAX_TURNS = 40          # 防跑不完：超過就強制收尾
-STALE_MIN = 15
+STALE_MIN = 30          # ⚠️ 2026-08-13 從 15 分鐘調高：徐先生這場實測，只要他回覆間隔
+                        # 超過 15 分鐘（打字慢、在想怎麼回答），系統就會自動觸發
+                        # wrap_up()，在對話中間插入一段「看您這邊暫時沒有回覆⋯」的
+                        # 道別訊息，跳針感很重——他明明還在認真回答，卻一直被系統
+                        # 講「謝謝您今天撥出時間」。15 分鐘對認真回答中高階問題
+                        # 的人來說太短，改成 30 分鐘。
 # 中途離開後，房間還要留多久給他回來（分鐘）。
 # 顧問常常在忙，15 分鐘就關掉等於誰都來不及反應。
 STALE_HOLD_MIN = 180          # 候選人多久沒回就當他離開了（閒置判定，跟下面的硬上限是兩件事）
@@ -100,6 +105,22 @@ REPORT_MODEL = 'claude-sonnet-5'
 
 _busy = set()           # 正在處理的 application_id，避免同一場被跑兩次
 _lock = threading.Lock()
+
+# ⚠️ 2026-08-14 加：這台機器上跟 checkup_daemon.py 共用同一個本機 claude 登入
+# 額度，額度打滿時 claude -p 不一定乾脆地失敗——有時候會回一段文字說「這段對話
+# 結尾怪怪的，我不該亂編」，不是預期的 JSON，被當成一般錯誤處理。一般錯誤的
+# 處理方式是塞一句道歉訊息給候選人，但這樣會把 last_role 從 'candidate' 翻成
+# 'assistant'，STALE_MIN 分鐘後 stale() 就會誤判候選人閒置、提早收尾產報告——
+# 額度用盡不該算在候選人頭上：不插入道歉訊息（讓 last_role 留在 'candidate'，
+# 下一輪自動重試），改用長一點的鎖節流，額度重置後自然接上，候選人不用重講一次。
+RATE_LIMIT_RETRY_SEC = 300      # 額度打滿時，同一場隔多久才重試一次
+RATE_LIMIT_NOTIFY_COOLDOWN_SEC = 1800  # 同一次額度事故只提醒 Jacky 一次，不要洗版
+_rate_limit_notified_at = 0.0
+
+
+def _is_rate_limit_error(e):
+    s = str(e).lower()
+    return 'hit your limit' in s or 'usage limit' in s
 
 
 def log(msg):
@@ -191,6 +212,95 @@ def q(v):
     return 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
 
 
+# ── token 用量記錄 ──
+# 2026-08-14 加：Jacky 要跟老闆提買 API，需要每場面談實際花多少 token／多少錢
+# 的真實數字，不能只靠估算。
+#
+# ⚠️ 做法刻意不去動 subprocess.run() 那三支呼叫本身（不改 --output-format、
+# 不改任何既有的解析邏輯）——面談是候選人正在等的即時流程，任何一行新程式碼
+# 只要猜錯格式就會讓阿財當場斷線。改成事後讀 claude CLI 自己寫的 session
+# jsonl（跟 agent_token_breakdown.py 讀的是同一批檔案，schema 已經驗證過），
+# 純粹是「多讀一份存證」，記錄失敗最多就是這一筆沒有 token 數字，
+# 不會影響訊息有沒有送出去。
+CLAUDE_PROJECTS_DIR = os.path.expanduser(
+    '~/.claude/projects/-Users-user---------step1ne-recruit')
+
+
+def _snapshot_session_files():
+    try:
+        return set(os.listdir(CLAUDE_PROJECTS_DIR))
+    except Exception:
+        return set()
+
+
+def _sum_session_usage(path, expect_prefix=None):
+    """讀一個 claude -p 呼叫產生的 session jsonl，加總 usage。
+    expect_prefix 有給的話，要求第一則 user 訊息開頭吻合，才不會在併發時
+    （最多 MAX_PARALLEL 場同時在跑）撿到別場面談剛好同時寫完的檔案。"""
+    inp = outp = cw = cr = 0
+    model = None
+    matched = expect_prefix is None
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                msg = d.get('message') or {}
+                if (not matched and d.get('type') == 'user'
+                        and isinstance(msg.get('content'), str)):
+                    matched = msg['content'][:60] == expect_prefix[:60]
+                us = msg.get('usage')
+                if not us:
+                    continue
+                model = model or msg.get('model')
+                inp += us.get('input_tokens') or 0
+                outp += us.get('output_tokens') or 0
+                cw += us.get('cache_creation_input_tokens') or 0
+                cr += us.get('cache_read_input_tokens') or 0
+    except Exception:
+        return None
+    if not matched or not (inp or outp):
+        return None
+    return {'model': model, 'input_tokens': inp, 'output_tokens': outp,
+            'cache_creation_input_tokens': cw, 'cache_read_input_tokens': cr}
+
+
+def log_token_usage(app_id, call_type, prompt, before_files):
+    """在對應的 claude -p subprocess.run() 呼叫「之後」呼叫，
+    before_files 是呼叫「之前」的 _snapshot_session_files()。
+    這支不准往外丟例外——記錄是加值功能，不是面談流程的一部分。"""
+    if not app_id:
+        return
+    try:
+        after_files = set(os.listdir(CLAUDE_PROJECTS_DIR))
+        new_files = [f for f in (after_files - before_files) if f.endswith('.jsonl')]
+        if not new_files:
+            return
+        usage = None
+        if len(new_files) == 1:
+            usage = _sum_session_usage(os.path.join(CLAUDE_PROJECTS_DIR, new_files[0]))
+        else:
+            # 罕見：剛好撞到另一場面談同時完成，用 prompt 開頭比對挑出真正是這通的檔案
+            prefix = sanitize(prompt)[:60]
+            for f in new_files:
+                usage = _sum_session_usage(os.path.join(CLAUDE_PROJECTS_DIR, f), expect_prefix=prefix)
+                if usage:
+                    break
+        if not usage:
+            return
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        d1(f"INSERT INTO token_usage "
+           f"(application_id, call_type, model, input_tokens, output_tokens, "
+           f"cache_creation_input_tokens, cache_read_input_tokens, created_at) VALUES "
+           f"({q(app_id)}, {q(call_type)}, {q(usage['model'])}, "
+           f"{usage['input_tokens']}, {usage['output_tokens']}, "
+           f"{usage['cache_creation_input_tokens']}, {usage['cache_read_input_tokens']}, {q(now)})")
+    except Exception:
+        pass
+
+
 LOCK_TTL_SEC = 90   # 比一次 claude 呼叫（240s 逾時）短沒關係——
                     # 這只防「同時搶著寫同一場」，不是防慢；過期就當作那次處理已經死掉，可以重搶
 
@@ -243,6 +353,40 @@ def notify_candidate(app_id, abandoned):
         log(f'候選人通知信：{"已寄出" if r.get("ok") else "寄送失敗"}')
     except Exception as e:
         log(f'候選人通知信失敗：{e}')   # 寄不出去不該影響報告與顧問通知
+
+
+def _admin_token():
+    for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+        if l.startswith('RECRUIT_ADMIN_TOKEN='):
+            return l.strip().split('=', 1)[1].strip().strip("'\"")
+    return None
+
+
+def save_report(app_id, content_md, content_json):
+    """把初篩報告寫進 D1——2026-08-13 改走 Worker 的 /admin/report-ingest，
+    不再用 wrangler d1 execute（連 --file= 都躲不過 D1 本身的單值大小上限，
+    徐振倫那場報告就是這樣整個沒存進去）。原生 D1 binding 走的是不同路徑，
+    跟 PDF 存檔（saveUpload）同一個道理。回傳報告 id，失敗回傳 None。
+    """
+    try:
+        tok = _admin_token()
+        if not tok:
+            log('找不到 RECRUIT_ADMIN_TOKEN，報告存不進去')
+            return None
+        req = urllib.request.Request(
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/report-ingest',
+            data=json.dumps({'application_id': app_id, 'content_md': content_md,
+                              'content_json': content_json}).encode(),
+            headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                     'user-agent': 'step1ne-interview-daemon/1.0'})
+        r = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        if not r.get('ok'):
+            log(f'報告寫入失敗：{r}')
+            return None
+        return r.get('id')
+    except Exception as e:
+        log(f'報告寫入失敗：{e}')
+        return None
 
 
 def tg(text, thread=None):
@@ -679,17 +823,61 @@ SKILL_PATH = os.path.expanduser(
     '~/工作流程技能包/recruiting-workflow/interview-conductor/SKILL.md')
 
 
-def skill(section):
+def skill(section, job=None):
     """讀技能規範。
 
     section='talk' 只取到 Phase 6 為止——「怎麼寫報告」那一大段對談時用不到，
     但它佔了整份的四分之一，每一則都送等於每一則都多等好幾秒。
     section='report' 則整份送，因為產報告時前面的護欄與判準都還要用。
+
+    ⚠️ 2026-08-13 加：「基層／派遣／正職代招（10 題）」跟「中高階（不套用九題預算）」
+    這兩章是互斥的——一場面談只會套用其中一種。兩份都照樣送等於逼阿財同時記兩套
+    彼此不適用的節奏規則。徐振倫那場（中高階＋外語雙重負載）就是在這麼長的提示詞裡，
+    外語驗證那一步被忘掉。這裡用 `job.seniority`（已經是既有的權威欄位，
+    line ~850 SEN 那段就在用，不是另外發明一套判斷）決定留哪一半，
+    減少阿財同時要顧的規則量，不改變任何規則本身的內容。
+
+    ⚠️ 2026-08-13 再加：「🚨 職缺要求外語」整章同理——原本不管職缺要不要驗外語，
+    每一場都照樣送這一整章，讓阿財自己從 must_skills 長文字裡判斷「這次要不要做」。
+    徐振倫那場就是這個判斷被漏掉的。現在改成看 `job.interview_language`
+    （顧問在 /consultant/jobs 直接設，跟 seniority 同一個做法，不用阿財自己猜）：
+    沒設就整章拿掉（面談自然不會憑空冒出語言驗證），有設就整章保留，
+    而且會在【職缺與客戶】那段明講要驗證哪個語言（見 build_prompt）。
     """
     t = open(SKILL_PATH, encoding='utf-8').read()
     if section == 'talk':
         cut = t.find('## Phase 7')
-        return t[:cut].rstrip() if cut > 0 else t
+        t = t[:cut].rstrip() if cut > 0 else t
+        sen = None
+        lang = None
+        if job:
+            sen = job.get('seniority') or ('senior' if job.get('service_line') == 'executive' else 'mid')
+            lang = (job.get('interview_language') or '').strip()
+        if sen == 'senior':
+            start = t.find('### 基層／派遣／正職代招（10 題）')
+            end = t.find('### 中高階 executive')
+            if start > 0 and end > start:
+                t = t[:start] + t[end:]
+        elif sen is not None:
+            start = t.find('## 🚨 中高階（seniority = senior）')
+            end = t.find('## Phase 0')
+            if start > 0 and end > start:
+                t = t[:start] + t[end:]
+        if job is not None and not lang:
+            start = t.find('## 🚨 職缺要求外語')
+            end = t.find('## 🚨 中高階（seniority = senior）')
+            if end <= 0:   # 中高階整章可能已經在上面被拿掉了
+                end = t.find('## Phase 0')
+            if start > 0 and end > start:
+                t = t[:start] + t[end:]
+            # Phase 1 開場那段「職缺要求外語就要先預告」是另外加的子章，
+            # 不在上面那一段範圍內——沒設語言的職缺留著它會變成叫阿財
+            # 開場預告一個根本不存在的外語驗證，一樣要拿掉。
+            start2 = t.find('### 🚨 職缺要求外語，開場就要先預告')
+            end2 = t.find('## Phase 2')
+            if start2 > 0 and end2 > start2:
+                t = t[:start2] + t[end2:]
+        return t
     return t
 
 
@@ -790,9 +978,21 @@ def build_prompt(ctx, skill_md):
         sen = job.get('seniority') or ('senior' if job.get('service_line') == 'executive' else 'mid')
         SEN = {'senior': '中高階', 'mid': '一般', 'junior': '基層／無經驗可'}
         lines.append(f'  🎯 seniority：{sen}（{SEN.get(sen, sen)}）')
+        # 🚨 外語驗證要不要做，不再讓阿財自己從 must_skills 長文字判斷——
+        #    2026-08-13 加，跟 seniority 同一個做法：顧問在後台明講，這裡直接下指令。
+        lang = (job.get('interview_language') or '').strip()
+        if lang:
+            lines.append(f'  🚨 **這個職缺要驗證{lang}——開場說明時就要預告，'
+                         f'照 SKILL.md「職缺要求外語」那一整章的步驟①–④執行，'
+                         f'收尾前務必檢查有沒有真的做過。**')
         if sen == 'senior':
-            lines.append('  🚨 **這是中高階職缺，一律走 SKILL.md 的「中高階短版」'
-                         '（10 分鐘、最多 5 題、不要測驗），不要跑標準流程。**')
+            # ⚠️ 2026-08-13 修：這裡原本寫「10 分鐘、最多 5 題」，
+            # 但 SKILL.md 那一章 2026-08-11 就已經改成「20-30 分鐘、沒有題數上限」
+            # （呂書帆、尹緯正兩場事故換來的），這裡沒跟著改，等於**同一個提示詞
+            # 裡塞了兩個互相矛盾的時長／題數指示**——SKILL.md 說不設上限，
+            # 這裡卻明講「最多 5 題」。徐振倫這場感覺被趕、缺乏深挖，這也是原因之一。
+            lines.append('  🚨 **這是中高階職缺，一律走 SKILL.md 的「中高階」那一章**'
+                         '（深挖但不重複履歷，20–30 分鐘，沒有題數上限），不要跑標準流程。**')
         for k in ('title', 'client_name', 'client_intro', 'team_size', 'interview_rounds',
                   'interview_who', 'has_test', 'onboard_by', 'must_skills',
                   'salary_min', 'salary_max', 'locations', 'employment', 'faq_notes'):
@@ -1285,7 +1485,7 @@ def _normalize_report_json(obj):
     return out
 
 
-def report_to_json(report, ctx, name=''):
+def report_to_json(report, ctx, name='', app_id=None):
     """把已經產好的純文字報告轉成結構化 JSON，回傳字串；任何失敗都回 None。
 
     ⚠️ 這個函式**不准往外丟例外**。它失敗只代表 content_json 存 NULL，
@@ -1307,12 +1507,14 @@ def report_to_json(report, ctx, name=''):
            if (ctx.get('resume_text') or '').strip() else '\n\n【履歷】無可讀的履歷檔案')
         + '\n\n【初篩報告全文】\n' + report
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
+    _before_files = _snapshot_session_files()
     try:
         r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
                             # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
                             *NO_TOOLS, '--output-format', 'text'],
                            capture_output=True, text=True, env=env_with_cf(),
                            timeout=CLAUDE_TIMEOUT)
+        log_token_usage(app_id, 'report_json', prompt, _before_files)
         obj = _extract_json(r.stdout)
         if obj is None:
             log(f'⚠️ {name} 結構化報告解析失敗，content_json 存 NULL'
@@ -1388,6 +1590,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
            '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
            if abandoned else '')
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
+    _before_files = _snapshot_session_files()
     try:
         r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
                             *NO_TOOLS, '--output-format', 'text'],
@@ -1398,16 +1601,28 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
             report = report.split('\n', 1)[-1]
             if report.rstrip().endswith('```'):
                 report = report.rstrip()[:-3].rstrip()
+    except subprocess.TimeoutExpired:
+        # ⚠️ 2026-08-18 修：實測孫悅這場真的撞到——subprocess.TimeoutExpired
+        # 的 str(e) 會把整包 cmd 陣列印出來，包含 claude -p 的整個 prompt
+        # （整份 interview-conductor 技能包＋候選人逐字稿），直接把這串當
+        # 報告內容存進資料庫，等於把內部提示詞外洩給看報告的人，報告內容
+        # 也完全不是真正的初篩結果（5 萬字，其實是失敗訊息本身）。
+        # 逾時要講清楚「逾時」，不能把失敗的原始指令內容當報告存下去。
+        report = f'（報告產生失敗：claude 逾時未回應，超過 {CLAUDE_TIMEOUT} 秒。請看下方逐字稿手動評估，或請顧問重新觸發產報告。）'
     except Exception as e:
-        report = f'（報告產生失敗：{e}）'
+        # 其他例外（例如 CalledProcessError）同樣可能把完整 cmd 塞進 str(e)，
+        # 一律只記錯誤類型，不要把例外內容整包存進報告。
+        report = f'（報告產生失敗：{type(e).__name__}。請看下方逐字稿手動評估，或請顧問重新觸發產報告。）'
+    log_token_usage(app_id, 'report', prompt, _before_files)
 
     # 額外產一份結構化 JSON 給後台視覺化／客戶版用。
     # 失敗就是 None → 存 NULL，純文字報告照存，不影響下面任何一步。
-    report_json = report_to_json(report, ctx, name)
+    report_json = report_to_json(report, ctx, name, app_id=app_id)
 
-    rid = f'r_{app_id[:8]}_{int(time.time())}'
-    d1_file(f"INSERT INTO reports (id, application_id, created_at, content_md, content_json) "
-            f"VALUES ({q(rid)}, {q(app_id)}, '{now}', {q(report)}, {q(report_json)})")
+    rid = save_report(app_id, report, report_json)
+    if not rid:
+        tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
+           f'必要時我可以把報告內容貼進這個對話讓你手動處理。')
 
     notify_candidate(app_id, abandoned)
 
@@ -1500,10 +1715,14 @@ def timeout_close(app):
 
 def handle(app):
     app_id, name = app['id'], app['name']
+    rate_limited = False
     try:
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
-        result = run_claude(build_prompt(ctx, skill('talk')))
+        talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
+        _before_files = _snapshot_session_files()
+        result = run_claude(talk_prompt)
+        log_token_usage(app_id, 'talk', talk_prompt, _before_files)
 
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
         if not msgs:
@@ -1520,17 +1739,84 @@ def handle(app):
 
     except Exception as e:
         log(f'❌ {name}（{app_id}）處理失敗：{e}')
-        # 候選人不該乾等。給一句話讓他知道發生什麼，並通知顧問接手。
-        try:
+        if _is_rate_limit_error(e):
+            rate_limited = True
+            log(f'⏳ {name}：額度打滿，安靜重試，不插道歉訊息')
+            global _rate_limit_notified_at
+            now_ts = time.time()
+            if now_ts - _rate_limit_notified_at > RATE_LIMIT_NOTIFY_COOLDOWN_SEC:
+                _rate_limit_notified_at = now_ts
+                tg(f'⏳ claude 額度用盡：{name}（面談）這場先安靜排隊重試，不用手動處理，'
+                   f'額度重置後會自動接上。', THREAD_DECIDE)
+        else:
+            # 候選人不該乾等。給一句話讓他知道發生什麼，並通知顧問接手。
+            try:
+                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
+                   f"({q(app_id)},'assistant',"
+                   f"{q('不好意思，我這邊系統出了點狀況。我們的顧問會直接與您聯繫，很抱歉耽誤您的時間。')},"
+                   f"'{now}')")
+            except Exception:
+                pass
+            tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
+               THREAD_DECIDE)
+    finally:
+        # 額度打滿：不釋放鎖，改成延長鎖到 RATE_LIMIT_RETRY_SEC 之後才能再搶——
+        # 節流用，不要每 8 秒就打一次注定失敗的 claude。一般錯誤照舊立刻放鎖。
+        if rate_limited:
+            try:
+                expires = (datetime.datetime.now()
+                           + datetime.timedelta(seconds=RATE_LIMIT_RETRY_SEC)).strftime('%Y-%m-%d %H:%M:%S')
+                d1(f"UPDATE applications SET lock_expires_at={q(expires)} WHERE id={q(app_id)}")
+            except Exception:
+                pass
+        else:
+            release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+def prewarm_candidates():
+    """核准後、還沒點進面談室的候選人：趁空檔先幫他們把開場白生成好存起來，
+    候選人真的點進來時就能秒收到第一句，不用等 daemon 下一輪輪詢＋現場生成。
+
+    條件跟 Worker 的 needAssessment 閘門一致（中高階免測驗、其他人要先交卷），
+    否則會浪費一次 token 去預熱一個候選人根本還進不了房間的開場白。
+    """
+    return d1("""
+        SELECT a.id, a.name, a.job_slug FROM applications a
+         LEFT JOIN jobs j ON j.slug = a.job_slug
+         WHERE a.status = 'ready'
+           AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+           AND a.prewarmed_opening IS NULL
+           AND (COALESCE(j.seniority, 'mid') = 'senior'
+                OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id))
+         ORDER BY a.created_at DESC LIMIT 5
+    """)
+
+
+def do_prewarm(app):
+    """幫一位還沒進房間的候選人預先生成開場白。
+
+    ⚠️ 這支絕對不能讓候選人等——失敗就算了，反正沒有預熱結果時
+    候選人進房間會照舊走現場生成那條路，不會卡住任何人。
+    """
+    app_id, name = app['id'], app['name']
+    try:
+        ctx = context_for(app_id)
+        talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
+        _before_files = _snapshot_session_files()
+        result = run_claude(talk_prompt)
+        log_token_usage(app_id, 'prewarm', talk_prompt, _before_files)
+
+        msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+        if msgs:
             now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
-               f"({q(app_id)},'assistant',"
-               f"{q('不好意思，我這邊系統出了點狀況。我們的顧問會直接與您聯繫，很抱歉耽誤您的時間。')},"
-               f"'{now}')")
-        except Exception:
-            pass
-        tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
-           THREAD_DECIDE)
+            d1(f"UPDATE applications SET prewarmed_opening={q(json.dumps(msgs, ensure_ascii=False))}, "
+               f"prewarmed_at={q(now)} WHERE id={q(app_id)} AND prewarmed_opening IS NULL")
+            log(f'{name}：開場白已預熱')
+    except Exception as e:
+        log(f'⚠️ {name}（{app_id}）預熱開場白失敗（不影響正常面談流程）：{e}')
     finally:
         release_lock(app_id)
         with _lock:
@@ -1619,10 +1905,19 @@ def tick():
         log(f'查詢保留中面談失敗：{e}')
         held = []
 
+    # 預熱排在最後——優先權最低，只在真人面談都排開了、還有空的 slot
+    # 才會被下面的迴圈撿去跑，絕對不跟真正在等阿財回話的候選人搶名額。
+    try:
+        prewarm_rows = prewarm_candidates()
+    except Exception as e:
+        log(f'查詢待預熱名單失敗：{e}')
+        prewarm_rows = []
+
     jobs = ([(a, timeout_close) for a in expired_rows]
             + [(a, handle) for a in pending(remaining)]
             + [(a, wrap_up) for a in stale(remaining)]
-            + [(a, close_paused) for a in held])
+            + [(a, close_paused) for a in held]
+            + [(a, do_prewarm) for a in prewarm_rows])
     for app, fn in jobs:
         with _lock:
             if app['id'] in _busy or len(_busy) >= MAX_PARALLEL:
