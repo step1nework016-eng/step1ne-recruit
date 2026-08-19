@@ -334,6 +334,29 @@ async function sendMail(env, to, subject, lines, cta) {
   }
 }
 
+// ── 就業服務法第 5 條紅線 ──
+// 2026-08-19 加。真實事故：兩位候選人的結案訊息裡寫著「傾向尋找男性人選」，
+// 而 close_reason 不是內部備註——它就是直接送給候選人的訊息本身
+// （見 /line 那段：顧問在後台編輯什麼，系統就原封不動送什麼）。
+//
+// ⚠️ 這裡刻意做成「硬擋」而不是「警告後可繼續」。做成可略過的警告，
+//    趕時間的人就是會按過去，那等於沒擋。寧可讓顧問多改一次字，
+//    也不要讓歧視性文字送到候選人手上。
+//
+// 擋的是「送給候選人的文字」，不是內部紀錄——客戶原始要求該記還是要記，
+// 記在內部欄位，只是不能出現在對外訊息裡。
+const LAW5_TERMS = [
+  '男性', '女性', '男生', '女生', '限男', '限女', '性別',
+  '年齡', '歲以下', '歲以上', '太年輕', '年紀',
+  '已婚', '未婚', '婚姻', '懷孕', '生育', '小孩',
+  '國籍', '外籍', '本國籍', '原住民', '族群',
+  '身心障礙', '殘障', '身障', '宗教', '政黨', '容貌', '長相', '星座', '血型',
+];
+function law5Hits(text) {
+  const t = String(text || '');
+  return LAW5_TERMS.filter((w) => t.includes(w));
+}
+
 const cors = (req) => {
   const o = req.headers.get('origin') || '';
   return {
@@ -5123,6 +5146,19 @@ export default {
         // 純粹是顧問自己看得到的內部記錄。
         const notify = b.notify !== false;
         const reason = String(b.reason || '').trim().slice(0, 500);
+        // 🚨 就服法紅線：這段文字會原封不動送給候選人，不是內部備註。
+        const hits = law5Hits(reason);
+        if (hits.length) {
+          return json(request, {
+            ok: false, error: 'law5_blocked',
+            hits,
+            message: `這段訊息會直接送給候選人，裡面出現了「${hits.join('」「')}」——`
+              + '就業服務法第 5 條禁止以性別、年齡、婚育、國籍、身心障礙、宗教、'
+              + '容貌等條件對求職者為差別待遇。\n\n'
+              + '請改成不涉及這些條件的說法（例如「這次的職務條件與您的經歷方向不同」）。\n'
+              + '⚠️ 客戶的原始要求該記還是要記，但記在顧問備註，不要寫進要送出去的訊息。',
+          }, 422);
+        }
         const stageVal = notify ? 'CLOSED_LOST' : 'CLOSED_INTERNAL';
         const app = await env.DB.prepare(
           `SELECT a.name, a.job_slug, a.job_title, j.client_name FROM applications a
@@ -5746,6 +5782,155 @@ export default {
                   edited_by = NULL, edited_at = NULL WHERE job_slug = ?`
         ).bind(slug).run();
         return json(request, { ok: true });
+      }
+
+      // 招募總覽。2026-08-19 加（Jacky：這一頁要拿來做 KPI 復盤）。
+      // 三層，由上而下回答三個問題：現在手上有多少事、漏斗卡在哪、阿財準不準。
+      // ⚠️ 第一層刻意放「等你處理」而不是漂亮的總數——儀表板要能催事，
+      //    不然它就只是好看。
+      // ── 主動開發：爬蟲把人選送進來 ──
+      // 2026-08-19 加。爬蟲原本把人存 Google Sheets，跟這套系統完全斷開——
+      // 爬到人也進不了阿財的面談流程，等於撈到了也用不到。
+      //
+      // 🚨 為什麼**不能**直接寫進 applications：
+      //    爬到的人不是應徵者。他沒有投履歷、沒有同意個資利用、也沒有表達過
+      //    任何意願。混進 applications 會有兩個後果：漏斗統計整個失真
+      //    （分母灌水），以及把「我們單方面蒐集的公開資料」跟「他主動提供
+      //    給我們的資料」混為一談——後者在個資法上是完全不同的處理基礎。
+      //    所以另開 sourced_candidates，等他回覆有意願、同意個資之後，
+      //    才由顧問轉成正式應徵者。
+      if (p === '/admin/sourced/import' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const rows = Array.isArray(b.candidates) ? b.candidates : null;
+        if (!rows) return json(request, { ok: false, error: '缺少 candidates' }, 400);
+        if (rows.length > 200) return json(request, { ok: false, error: '單次最多 200 筆' }, 400);
+
+        let added = 0, dup = 0;
+        for (const c of rows) {
+          const url = String(c.source_url || c.linkedin_url || c.github_url || '').slice(0, 500);
+          const src = String(c.source || 'unknown').slice(0, 40);
+          if (!url) continue;   // 沒有來源網址就無法去重，也無法回溯，直接跳過
+          try {
+            const r = await env.DB.prepare(
+              `INSERT INTO sourced_candidates
+                 (id, created_at, source, source_url, name, headline, company, location,
+                  email, github_url, linkedin_url, skills, bio, raw_json, job_slug,
+                  score, grade, status, task_id)
+               VALUES (?, datetime('now','+8 hours'), ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?)`
+            ).bind(
+              uid(), src, url,
+              String(c.name || '').slice(0, 80),
+              String(c.title || c.headline || '').slice(0, 200),
+              String(c.company || '').slice(0, 120),
+              String(c.location || '').slice(0, 120),
+              String(c.email || '').slice(0, 120),
+              String(c.github_url || '').slice(0, 300),
+              String(c.linkedin_url || '').slice(0, 300),
+              Array.isArray(c.skills) ? c.skills.join(', ').slice(0, 500) : String(c.skills || '').slice(0, 500),
+              String(c.bio || '').slice(0, 1500),
+              JSON.stringify(c).slice(0, 12000),
+              String(c.job_slug || '').slice(0, 80) || null,
+              Number.isFinite(Number(c.score)) ? Math.round(Number(c.score)) : null,
+              String(c.grade || '').slice(0, 4) || null,
+              String(c.task_id || '').slice(0, 80) || null
+            ).run();
+            if (r.success) added++;
+          } catch (e) {
+            // UNIQUE(source, source_url) 撞到＝這個人已經在池子裡了，不是錯誤
+            if (String(e).includes('UNIQUE')) dup++; else throw e;
+          }
+        }
+        if (added) {
+          await notify(env, `🔍 主動開發：新增 ${added} 位人選進人才池`
+            + (dup ? `（${dup} 位已經在池子裡）` : '')
+            + (b.job_slug ? `\n職缺：${b.job_slug}` : '')
+            + `\n\n這些人**還不是應徵者**——他們還沒被接觸、也還沒同意個資利用。`
+            + `\n到後台挑人：https://step1ne.com/consultant/sourced/`,
+            { message_thread_id: THREAD.intake }).catch(() => {});
+        }
+        return json(request, { ok: true, added, dup });
+      }
+
+      // 人才池列表
+      if (p === '/admin/sourced' && request.method === 'GET') {
+        const st = url.searchParams.get('status') || 'new';
+        const { results } = await env.DB.prepare(
+          `SELECT id, created_at, source, source_url, name, headline, company, location,
+                  email, github_url, linkedin_url, skills, job_slug, score, grade, status,
+                  contacted_at, converted_application_id, note
+             FROM sourced_candidates
+            WHERE (? = 'all' OR status = ?)
+            ORDER BY COALESCE(score,0) DESC, created_at DESC LIMIT 200`
+        ).bind(st, st).all();
+        const counts = await env.DB.prepare(
+          `SELECT status, COUNT(*) n FROM sourced_candidates GROUP BY status`).all();
+        return json(request, { ok: true, rows: results || [], counts: counts.results || [] });
+      }
+
+      // 更新一筆的狀態（顧問挑人、標記已接觸、標記不合適）
+      if (p === '/admin/sourced/status' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const ok = ['new', 'shortlisted', 'contacted', 'replied', 'rejected', 'converted'];
+        if (!b.id || !ok.includes(b.status)) return json(request, { ok: false, error: '參數錯誤' }, 400);
+        await env.DB.prepare(
+          `UPDATE sourced_candidates SET status=?,
+                  contacted_at = CASE WHEN ?='contacted' THEN datetime('now','+8 hours') ELSE contacted_at END,
+                  note = COALESCE(?, note)
+            WHERE id=?`
+        ).bind(b.status, b.status, b.note ? String(b.note).slice(0, 500) : null, b.id).run();
+        return json(request, { ok: true });
+      }
+
+      if (p === '/admin/overview' && request.method === 'GET') {
+        const one = async (sql, ...b) => (await env.DB.prepare(sql).bind(...b).first()) || {};
+        const all = async (sql, ...b) => ((await env.DB.prepare(sql).bind(...b).all()).results || []);
+
+        const now = await one(
+          `SELECT
+             (SELECT COUNT(*) FROM jobs WHERE COALESCE(status,'open') != 'closed') AS jobs_open,
+             (SELECT COUNT(*) FROM applications) AS cands,
+             (SELECT COUNT(*) FROM applications WHERE created_at >= datetime('now','+8 hours','-7 days')) AS new7,
+             (SELECT COUNT(*) FROM applications WHERE interview_state='done') AS done,
+             (SELECT COUNT(*) FROM applications
+               WHERE interview_state='done' AND consultant_call IS NULL) AS need_call,
+             (SELECT COUNT(*) FROM applications
+               WHERE (interview_state IS NULL OR interview_state='not_started')
+                 AND status IN ('ready','scheduled')) AS waiting,
+             (SELECT COUNT(*) FROM applications a JOIN jobs j ON j.slug=a.job_slug
+               WHERE a.interview_state='done' AND COALESCE(j.interview_language,'')!=''
+                 AND a.lang_verified_at IS NULL) AS lang_missing`);
+
+        // 漏斗：以 pipeline_events 為準（顧問實際記的），不是 applications.status
+        const funnel = await all(
+          `SELECT stage, COUNT(DISTINCT application_id) n FROM pipeline_events
+            WHERE event='pass' OR event IS NULL GROUP BY stage`);
+
+        const verdicts = await all(
+          `SELECT consultant_call AS k, COUNT(*) n FROM applications
+            WHERE consultant_call IS NOT NULL GROUP BY consultant_call`);
+
+        // 阿財判定 vs 顧問判斷——KPI 復盤的核心，目前多半還沒有資料
+        const agree = await all(
+          `SELECT a.consultant_call AS call, COUNT(*) n FROM applications a
+            WHERE a.consultant_call IS NOT NULL GROUP BY a.consultant_call`);
+
+        const byJob = await all(
+          `SELECT j.title, a.job_slug,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN a.interview_state='done' THEN 1 ELSE 0 END) AS done,
+                  SUM(CASE WHEN a.interview_state='done' AND a.consultant_call IS NULL THEN 1 ELSE 0 END) AS need_call
+             FROM applications a LEFT JOIN jobs j ON j.slug=a.job_slug
+            GROUP BY a.job_slug ORDER BY n DESC`);
+
+        const todo = await all(
+          `SELECT a.id, a.name, a.job_slug, j.title, a.interview_ended_at
+             FROM applications a LEFT JOIN jobs j ON j.slug=a.job_slug
+            WHERE a.interview_state='done' AND a.consultant_call IS NULL
+            ORDER BY a.interview_ended_at DESC LIMIT 20`);
+
+        return json(request, { ok: true, now, funnel, verdicts, agree, byJob, todo });
       }
 
       if (p === '/admin/expertise' && request.method === 'GET') {
