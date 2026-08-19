@@ -363,6 +363,43 @@ def _fit(data):
               '分數旁邊沒有原話的維度代表面談中沒有依據，不要拿來當淘汰理由。</p>')
 
 
+def _expertise(data, for_client=False):
+    """專業問答的逐題結果。
+
+    這一段是「用人單位不用自己再面談一次就能判斷」的關鍵——
+    但關鍵不在我們給了什麼評語，而在**候選人自己講的原話**。
+    主管看一句他親口說的「我那時候是把族群參數重設，因為圖層對不齊」，
+    比看任何分數都清楚這個人有沒有真的做過。
+
+    ⚠️ 兩版的差別只有一個：客戶版不搬 `note`（那是我們的觀察，屬於內部判斷），
+       其餘照搬。`depth` 保留是因為它描述的是「他講得多具體」這個事實，
+       不是我們對他專業程度的評價——而「哪一題他答不出來」正是主管要知道的。
+    """
+    rows = [f for f in (data.get('expertise_findings') or []) if f.get('topic') or f.get('asked')]
+    if not rows:
+        return ''
+    DOT = {'具體': ('#14733f', '講得具體'), '籠統': ('#8a6100', '講得籠統'), '未談到': ('#8b95a1', '沒談到')}
+    out = []
+    for f in rows:
+        color, label = DOT.get(f.get('depth') or '未談到', DOT['未談到'])
+        out.append(
+            '<div style="border-top:1px solid #e3e7ec;padding:10px 0">'
+            f'<div style="font-size:13px;font-weight:700">{e(f.get("topic"))}'
+            f'<span style="font-weight:600;font-size:11.5px;color:{color};margin-left:8px">{label}</span></div>'
+            + (f'<div style="font-size:12.5px;color:#5d6672;margin-top:2px">問：{e(f.get("asked"))}</div>'
+               if f.get('asked') else '')
+            + (f'<div style="font-size:13px;margin-top:4px">{e(f.get("answered"))}</div>'
+               if f.get('answered') else '')
+            + (f'<div style="font-size:12.5px;margin-top:4px;padding-left:10px;'
+               f'border-left:3px solid #e3e7ec;color:#333">「{e(f.get("evidence"))}」</div>'
+               if f.get('evidence') else '')
+            + (('' if for_client else
+                (f'<div style="font-size:11.5px;color:#5d6672;margin-top:4px">{e(f.get("note"))}</div>'
+                 if f.get('note') else '')))
+            + '</div>')
+    return ''.join(out)
+
+
 def _cond(hard_conditions, with_evidence):
     """硬條件逐條。客戶版不帶 evidence_source——那是我們內部怎麼查證的紀錄，
     印給客戶看只會讓他去質疑每一條的可信度。"""
@@ -490,6 +527,7 @@ def build_client_html(data, meta):
         'NUMS': _nums(meta, _current_state(data)),
         'BASICS': _basics(data, meta, for_client=True),
         'REASONS': reasons,
+        'EXPERTISE': _expertise(data, for_client=True),
         'TRACK': _track(wh),
         'JOBS': _jobs(wh, scrub=True),
         'FACTS': ''.join(facts),
@@ -506,6 +544,7 @@ def build_client_html(data, meta):
         **_branding(meta, phrase),
     }, {
         'reasons': bool(reasons),
+        'expertise': bool(data.get('expertise_findings')),
         'history': bool(wh),
         'cond': bool(cond_html),
         'asked': bool(asked),
@@ -627,6 +666,7 @@ def build_consultant_html(data, meta):
         'FILES': ''.join(files),
         'COND': _cond(data.get('hard_conditions') or [], with_evidence=True),
         'FIT': _fit(data),
+        'EXPERTISE': _expertise(data),
         'ASSESSMENT': bars,
         'ASKED': asked,
         'STYLE': e((data.get('observations') or {}).get('communication_style')),
@@ -641,6 +681,7 @@ def build_consultant_html(data, meta):
         'history': bool(wh),
         'gaps': bool(gaps),
         'fit': bool((data.get('fit_scores') or {}).get('dimensions')),
+        'expertise': bool(data.get('expertise_findings')),
         'cond': bool(data.get('hard_conditions')),
         'style': bool((data.get('observations') or {}).get('communication_style')),
         'forclient': bool(reasons or risks_html),

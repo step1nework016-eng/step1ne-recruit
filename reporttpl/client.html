@@ -134,6 +134,13 @@ ol li b{color:var(--ink)}
 
 <!--@IF:history@-->
 <div class="card">
+<!--@IF:expertise@-->
+  <h2>專業問答</h2>
+  <p class="note">以下是面談中針對這個職務的專業提問，以及他當下的回答（含原話引用）。
+  這一段是為了讓您在安排面談之前，就能先判斷他的實務程度。</p>
+  {{EXPERTISE}}
+<!--@ENDIF:expertise@-->
+
   <h2>工作經歷</h2>
   <div class="track">{{TRACK}}</div>
   <h3 style="margin-top:22px">各段實際做了什麼</h3>

@@ -1443,6 +1443,13 @@ REPORT_JSON_SPEC = r'''
     {"item": "", "verdict": "符合|不符|待確認", "detail": "",
      "evidence_source": "履歷|應徵表單|他親口說|未確認"}
   ],
+  "expertise_findings": [
+    {"topic": "考點名稱", "asked": "你實際問了什麼",
+     "answered": "他回答的重點，用他自己的說法整理，不要美化",
+     "evidence": "他的原話直接引用一句（最能代表他真實程度的那句）",
+     "depth": "具體|籠統|未談到",
+     "note": "只寫可查證的事實，例如「說得出專案規模與工具」「講不出遇過的問題」"}
+  ],
   "fit_scores": {
     "dimensions": [
       {"name": "硬條件符合度", "score": 0, "evidence": "", "note": ""},
@@ -1500,6 +1507,13 @@ REPORT_JSON_RULES = (
     '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
     '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
     '9. 不要自己算總分或等第——那是系統用固定權重算的，你只要給六個維度的分數。\n'
+    '10. `expertise_findings`：這場如果有問到職缺專業題庫的題目，**每一題都要留一筆**，\n'
+    '    包含他答不出來的（`depth` 填「未談到」）——顧問要知道哪些問了沒結果，\n'
+    '    那跟「沒問」是兩件完全不同的事。\n'
+    '11. `evidence` 一定要是候選人的原話，不是你的轉述。用人單位主管會直接看這一段來\n'
+    '    判斷這個人的專業程度，轉述過的話就失去判斷價值了。\n'
+    '12. `depth` 只描述「他講得多具體」，不是評價他專業好不好——\n'
+    '    你不是這個領域的專家，不要下那種判斷。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -1632,6 +1646,15 @@ def _normalize_report_json(obj):
     fc = obj.get('for_client') if isinstance(obj.get('for_client'), dict) else {}
     out['for_client'] = {k: [s(x) for x in arr(fc.get(k)) if s(x)]
                          for k in ('reasons', 'risks_to_disclose', 'suggested_questions')}
+
+    # 專業題的逐題結果。這一段是「用人單位不用自己面談就能判斷」的關鍵：
+    # 它給的不是我們的評價，是候選人講過的原話——主管看原話比看分數有用得多。
+    out['expertise_findings'] = [
+        {'topic': s(f.get('topic')), 'asked': s(f.get('asked')),
+         'answered': s(f.get('answered')), 'evidence': s(f.get('evidence')),
+         'depth': s(f.get('depth')) if s(f.get('depth')) in ('具體', '籠統', '未談到') else '未談到',
+         'note': s(f.get('note'))}
+        for f in arr(obj.get('expertise_findings')) if isinstance(f, dict)]
 
     # ── 六維度適配評分 ──
     # 2026-08-19 加。原本報告只有 verdict 四選一（值得轉／資訊不足／硬條件不符／
