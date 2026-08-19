@@ -5682,6 +5682,91 @@ export default {
         }
       }
 
+      // 職缺專業題庫（顧問後台看得到阿財會問什麼）。
+      // 2026-08-19 加。題庫由 build_expertise.py 事先產好，顧問原本只能從
+      // 面談逐字稿反推阿財問了什麼——看不到題庫本身，就沒辦法判斷該不該調整。
+      // 顧問改題庫。2026-08-19 加。
+      // ⚠️ 第一次編輯時把「機器原本產的版本」另存一份（original_json）。
+      // 顧問改壞了要能救回來——題庫是花了幾分鐘上網查才產出來的，
+      // 改錯一次就要整份重跑，那個成本會讓人不敢改，等於功能白做。
+      if (p === '/admin/expertise/save' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const slug = String(b.job_slug || '').trim();
+        const qs = Array.isArray(b.questions) ? b.questions : null;
+        if (!slug || !qs) return json(request, { ok: false, error: '缺少職缺或題目' }, 400);
+        if (qs.length > 40) return json(request, { ok: false, error: '題目最多 40 題' }, 400);
+
+        const cur = await env.DB.prepare(
+          `SELECT questions_json, original_json FROM job_expertise WHERE job_slug = ?`
+        ).bind(slug).first();
+        if (!cur) return json(request, { ok: false, error: '找不到這個職缺的題庫' }, 404);
+
+        // 清洗：只留規格內的欄位，字串長度設上限，空題目直接丟掉
+        const clean = qs.map((q) => ({
+          q: String(q.q || '').slice(0, 600),
+          topic: String(q.topic || '').slice(0, 80),
+          why: String(q.why || '').slice(0, 300),
+          kind: ['經驗', '情境', '技術', '外語'].includes(q.kind) ? q.kind : '經驗',
+          good_signs: (Array.isArray(q.good_signs) ? q.good_signs : [])
+            .map((x) => String(x).slice(0, 200)).filter(Boolean).slice(0, 6),
+          red_flags: (Array.isArray(q.red_flags) ? q.red_flags : [])
+            .map((x) => String(x).slice(0, 200)).filter(Boolean).slice(0, 6),
+          followup: String(q.followup || '').slice(0, 300),
+        })).filter((q) => q.q.trim());
+        if (!clean.length) return json(request, { ok: false, error: '至少要留一題' }, 400);
+
+        const who = String(b.editor || '').slice(0, 40) || '顧問';
+        await env.DB.prepare(
+          `UPDATE job_expertise
+              SET questions_json = ?,
+                  original_json = COALESCE(original_json, ?),
+                  edited_by = ?, edited_at = datetime('now','+8 hours')
+            WHERE job_slug = ?`
+        ).bind(JSON.stringify(clean), cur.questions_json, who, slug).run();
+
+        await notify(env, `✏️ ${who} 改了「${slug}」的面談題庫（現在 ${clean.length} 題）\n`
+          + `阿財下一場該職缺的面談就會用新的題目。`, { message_thread_id: THREAD.system }).catch(() => {});
+        return json(request, { ok: true, n: clean.length });
+      }
+
+      // 還原成機器原本產的版本
+      if (p === '/admin/expertise/restore' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const slug = String(b.job_slug || '').trim();
+        const row = await env.DB.prepare(
+          `SELECT original_json FROM job_expertise WHERE job_slug = ?`
+        ).bind(slug).first();
+        if (!row || !row.original_json) {
+          return json(request, { ok: false, error: '這份題庫沒有被改過，沒有可還原的版本' }, 400);
+        }
+        await env.DB.prepare(
+          `UPDATE job_expertise SET questions_json = original_json, original_json = NULL,
+                  edited_by = NULL, edited_at = NULL WHERE job_slug = ?`
+        ).bind(slug).run();
+        return json(request, { ok: true });
+      }
+
+      if (p === '/admin/expertise' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT e.job_slug, e.domain, e.topics_json, e.questions_json, e.sources_json,
+                  e.built_at, e.edited_by, e.edited_at, (e.original_json IS NOT NULL) AS can_restore,
+                  j.title,
+                  (SELECT COUNT(*) FROM applications a WHERE a.job_slug = e.job_slug) AS cands
+             FROM job_expertise e LEFT JOIN jobs j ON j.slug = e.job_slug
+            ORDER BY cands DESC, e.built_at`
+        ).all();
+        // 也回「還沒有題庫的職缺」，顧問才知道缺哪些、要不要補建
+        const { results: missing } = await env.DB.prepare(
+          `SELECT j.slug, j.title FROM jobs j
+             LEFT JOIN job_expertise e ON e.job_slug = j.slug
+            WHERE e.job_slug IS NULL AND COALESCE(j.status,'open') != 'closed'
+            ORDER BY j.title`
+        ).all();
+        return json(request, { ok: true, banks: results || [], missing: missing || [] });
+      }
+
       if (p === '/admin/social-post-queue' && request.method === 'GET') {
         // 2026-08-18 改：來源換成 social_post_queue（一個職缺多筆排隊紀錄），
         // 欄位名稱刻意跟舊版一樣，前端「一鍵發文」頁面不用改。

@@ -135,6 +135,13 @@ def format_job_requirement(job):
     add('職稱', job.get('title'))
     add('工作地點', job.get('locations'))
     add('聘僱性質', as_text(job.get('employment')))
+    # 2026-08-19 加：這個缺的貼文切角。
+    # ⚠️ 這是白名單裡唯一的自由文字欄位，所以定義要很窄：
+    #    **只寫「這則貼文要怎麼寫」，不准寫客戶名稱、廠區地名或講給顧問聽的指示**。
+    #    加它的原因：雲端維運那則貼文用「遊戲產業集團」當開頭，老闆看了覺得
+    #    像灰產——但同樣用產業開頭，「國營保險集團財務部」反而是賣點。
+    #    也就是說切角是逐案不同的，沒有通則可以寫死在 prompt 裡。
+    add('這則貼文的切角（務必照這個方向寫）', job.get('social_angle'))
     add('資歷要求', f"{job['years_min']} 年以上" if job.get('years_min') else None)
     add('必備技能', job.get('must_skills'))
     if job.get('salary_min') or job.get('salary_max'):
