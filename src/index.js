@@ -3169,7 +3169,7 @@ export default {
               permalink = linkD.permalink || null;
             } catch { /* 查連結失敗不影響已經發出去這件事 */ }
 
-            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL WHERE id=?`)
+            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
               .bind(permalink, qid).run();
             await answer('✅ 已經發到 Threads 上了', true);
             await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
@@ -5780,6 +5780,52 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
+    // ⚠️ 2026-08-19 加：發文成效回填（Jacky 問「我們在抓哪個時間點發布成效好」，
+    // 答案是原本根本沒在抓——連實際發布時間都沒存，只存了草稿產生時間）。
+    // 每則貼文在發布後的前 3 天各抓一次 views／likes／replies，之後就不再抓：
+    // Threads 的觸及幾乎都發生在前 48 小時，一直抓只是浪費配額。
+    // 抓回來的數字配上 posted_at，才能回答「幾點發、哪個帳號、哪種職缺有人看」。
+    try {
+      const { results: toMeasure } = await env.DB.prepare(
+        `SELECT q.id, q.url, q.account_id, q.posted_at
+           FROM social_post_queue q
+          WHERE q.status='posted' AND q.url IS NOT NULL
+            AND q.posted_at >= datetime('now','+8 hours','-3 days')
+            AND (q.insights_at IS NULL OR q.insights_at <= datetime('now','+8 hours','-6 hours'))
+          LIMIT 10`
+      ).all();
+      for (const row of (toMeasure || [])) {
+        let token = env.THREADS_ACCESS_TOKEN, userId = env.THREADS_USER_ID;
+        if (row.account_id) {
+          const acc = await env.DB.prepare(
+            `SELECT access_token, platform_user_id FROM social_accounts WHERE id=? AND platform='threads'`
+          ).bind(row.account_id).first();
+          if (acc) { token = acc.access_token; userId = acc.platform_user_id; }
+        }
+        if (!token || !userId) continue;
+        try {
+          // permalink 反查貼文 id——我們存的是給人看的網址，insights 要的是 id
+          const lr = await fetch(`https://graph.threads.net/v1.0/${userId}/threads?` +
+            new URLSearchParams({ fields: 'id,permalink,timestamp', limit: '25', access_token: token }));
+          const ld = await lr.json();
+          const hit = (ld.data || []).find((p) => p.permalink === row.url);
+          if (!hit) continue;
+          const ir = await fetch(`https://graph.threads.net/v1.0/${hit.id}/insights?` +
+            new URLSearchParams({ metric: 'views,likes,replies', access_token: token }));
+          const id2 = await ir.json();
+          const met = {};
+          for (const m of (id2.data || [])) {
+            met[m.name] = (m.values && m.values[0] ? m.values[0].value : (m.total_value || {}).value) || 0;
+          }
+          await env.DB.prepare(
+            `UPDATE social_post_queue SET views=?, likes=?, replies=?, insights_at=datetime('now','+8 hours') WHERE id=?`
+          ).bind(met.views || 0, met.likes || 0, met.replies || 0, row.id).run();
+        } catch { /* 單則抓不到不要影響其他則，下一輪會再試 */ }
+      }
+    } catch (e) {
+      await notify(env, `⚠️ 發文成效回填失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
+    }
+
     // ⚠️ 2026-08-18 加：Threads 發文「卡在 posting」的自動對帳。
     // 真實案例：顧問按了「確認發布」，Worker 搶到鎖改成 posting 之後，發文
     // 途中整個請求被中斷（那天是剛好在部署新版），catch 沒機會跑到、鎖沒解開，
@@ -5831,7 +5877,7 @@ export default {
           ? { reply_to_message_id: row.tg_message_id }
           : { message_thread_id: THREAD.system };
         if (permalink) {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL WHERE id=?`)
+          await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
             .bind(permalink.startsWith('http') ? permalink : null, row.id).run();
           await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
