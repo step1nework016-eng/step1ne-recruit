@@ -25,6 +25,12 @@ MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–
                         # 那會讓「所有」進行中的面談一起變慢，不只排隊的。
                         # 寧可讓第 4 個人排隊，也不要三個人一起卡住。
 CLAUDE_TIMEOUT = 240
+# ⚠️ 2026-08-19 加：報告轉 JSON 要另外給時間，不能跟對話共用 240 秒。
+# 全筱琪那場（直播主）就是這樣掛的——當天報告規格加了到職障礙、專業問答、
+# 六維度評分三個區塊，SPEC 變長、要產的 JSON 也變長，240 秒不夠，
+# 結果純文字報告有了、結構化那份是 NULL，顧問拿不到兩版 PDF。
+# 對話要快（候選人在等），產報告可以慢（沒有人在等那一秒）。
+REPORT_TIMEOUT = 600
 MAX_TURNS = 90          # 防跑不完：超過就強制收尾
                         # ⚠️ 2026-08-19 從 40 調高：加了職缺專業題庫之後，光是專業題
                         # 就可能 8–14 題，每題還要追問——40 輪會在專業段中間被硬切掉。
@@ -1825,7 +1831,7 @@ def report_to_json(report, ctx, name='', app_id=None):
                             # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
                             *NO_TOOLS, '--output-format', 'text'],
                            capture_output=True, text=True, env=env_with_cf(),
-                           timeout=CLAUDE_TIMEOUT)
+                           timeout=REPORT_TIMEOUT)
         log_token_usage(app_id, 'report_json', prompt, _before_files)
         obj = _extract_json(r.stdout)
         if obj is None:
@@ -1911,7 +1917,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     try:
         r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
                             *NO_TOOLS, '--output-format', 'text'],
-                           capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+                           capture_output=True, text=True, env=env_with_cf(), timeout=REPORT_TIMEOUT)
         report = r.stdout.strip() or '（報告產生失敗，請看逐字稿）'
         # 模型常把整份報告包在程式碼區塊裡，推到 Telegram 會多出兩行反引號
         if report.startswith('```'):
