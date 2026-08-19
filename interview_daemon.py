@@ -685,10 +685,35 @@ def active_sessions():
                  ORDER BY m.id DESC LIMIT 1) AS last_role,
                (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
                  ORDER BY m.id DESC LIMIT 1) AS last_at,
-               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n
+               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
+               a.start_notified_at, a.job_title
           FROM applications a
          WHERE a.interview_state = 'active'
     """)
+
+
+def notify_started(rows):
+    """候選人進面談室的當下推一則給顧問。
+
+    為什麼要有：原本只有「面談結束、報告好了」會推。但候選人常常不是照約定
+    時間進來（約 11:00、實際下午才點連結），顧問要嘛一直手動查、要嘛乾脆不管，
+    等報告出來才知道人來過。進場推一則，顧問就能決定要不要在旁邊看著。
+
+    只推一次，靠 applications.start_notified_at 記錄；推播失敗不寫時間，
+    下一輪會再試一次（漏推比重複推糟）。
+    """
+    for r in rows:
+        if r.get('start_notified_at') or not r.get('n'):
+            continue
+        try:
+            tg(f'🎙 {r.get("name")} 進面談室了'
+               f'\n職缺：{r.get("job_title") or r.get("job_slug")}'
+               f'\n開始時間：{r.get("interview_started_at") or "剛剛"}'
+               f'\n\n面談跑完會自動把報告推過來，不用盯著。')
+            d1(f"UPDATE applications SET start_notified_at = datetime('now','+8 hours') "
+               f"WHERE id = {q(r['id'])}")
+        except Exception as e:
+            log(f'進場通知失敗（下一輪會再試）：{e}')
 
 
 def pending(rows):
@@ -1959,6 +1984,9 @@ def tick():
     except Exception as e:
         log(f'查詢進行中面談失敗：{e}')
         return
+
+    # 進場通知放最前面：這件事跟回話、收尾都無關，而且顧問越早知道越有用。
+    notify_started(rows)
 
     # 滿一小時的優先權最高——就算候選人剛好回話了，也不要再讓阿財多聊一輪，
     # 直接強制收尾，不然「硬上限」就變成「軟上限」了
