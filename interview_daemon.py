@@ -637,7 +637,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
 
     meta = _delivery_meta(app_id, name, job_slug, abandoned)
 
-    data = None
+    data, degrade_reason = None, '這場沒有產出結構化報告（模型沒吐出合法 JSON，或產報告時逾時）'
     if report_json:
         try:
             data = json.loads(report_json)
@@ -651,9 +651,11 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
                 data = json.loads(data)
             if not isinstance(data, dict):
                 log(f'⚠️ {name} content_json 不是物件（{type(data).__name__}），改走降級路徑')
+                degrade_reason = f'報告存成了非預期的格式（{type(data).__name__}）'
                 data = None
         except Exception as ex:
             log(f'⚠️ {name} content_json 解析失敗，改走降級路徑：{ex}')
+            degrade_reason = f'報告內容解析失敗（{type(ex).__name__}）'
             data = None
 
     # ── 降級：沒有結構化報告就產不出兩版 PDF ──
@@ -661,7 +663,7 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
     # 不然顧問會以為系統掉東西。
     if data is None:
         push_report_files(app_id, name, job_slug)   # 舊路徑：純文字報告 PDF ＋ 履歷
-        tg(deliver.closing_message({}, meta, degraded=True), THREAD_POOL)
+        tg(deliver.closing_message({}, meta, degraded=True, reason=degrade_reason), THREAD_POOL)
         return
 
     # ① ② 兩版 PDF

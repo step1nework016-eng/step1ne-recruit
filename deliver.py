@@ -702,7 +702,7 @@ def client_display_name(meta):
     return anon_name(meta.get('name')) if is_anonymous(meta) else (meta.get('name') or '候選人')
 
 
-def closing_message(data, meta, degraded=False):
+def closing_message(data, meta, degraded=False, reason=''):
     """第 4 件事：簡短結語 ＋ 顧問要協助的事項，結尾固定那一句。
 
     為什麼結語要短：顧問在手機上看通知，長訊息會被 Telegram 折起來，
@@ -714,8 +714,12 @@ def closing_message(data, meta, degraded=False):
     lines = [f'{head}：{name}（{job}）']
 
     if degraded:
+        # 2026-08-19 加原因：原本只說「產生失敗」，顧問無從判斷是偶發還是壞了，
+        # 也沒辦法告訴我要查哪裡。降級有好幾種成因，講清楚是哪一種才有用。
         lines += ['', '⚠️ 結構化報告產生失敗，PDF 未附。純文字報告與履歷照常附上，'
                       '請至後台看完整內容。']
+        if reason:
+            lines.append(f'原因：{reason}')
     else:
         lines += ['', f'判定：{data.get("verdict") or "待顧問判斷"}',
                   f'定位：{data.get("one_liner") or "—"}']
