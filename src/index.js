@@ -3781,8 +3781,20 @@ export default {
       //
       // ⚠️ 只在外語驗證那一題用。中高階最忌諱冗長流程，五題都要錄會把人逼走。
       if (action === 'voice' && request.method === 'POST') {
+        // ⚠️ 2026-08-19 改：面談結束後仍然放行「補驗外語」這一種情況。
+        // 徐振倫那場因為系統故障沒驗到日文（那是這個缺唯一的硬門檻），
+        // 面談一結束連結就等於失效，補驗要重開整場面談——沒有人會這樣做，
+        // 所以就永遠沒補。開這個例外的條件很窄：這個職缺確實要驗外語、
+        // 而且從來沒驗成功過。驗過一次就關回去，不讓人無限重錄。
         if (app.interview_state === 'done') {
-          return json(request, { ok: false, error: '這場面談已經結束了' }, 409);
+          const jr = await env.DB.prepare(
+            `SELECT j.interview_language, a.lang_verified_at FROM applications a
+               LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = ?`
+          ).bind(app.id).first();
+          const needMakeup = jr && (jr.interview_language || '').trim() && !jr.lang_verified_at;
+          if (!needMakeup) {
+            return json(request, { ok: false, error: '這場面談已經結束了' }, 409);
+          }
         }
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
@@ -3824,6 +3836,14 @@ export default {
         await env.DB.prepare(
           `INSERT INTO messages (application_id, role, content, created_at) VALUES (?,?,?,?)`
         ).bind(app.id, 'candidate', marked, now).run();
+        // ⚠️ 2026-08-19 加：記下「這場的外語驗證真的做到了」。
+        // 徐振倫那場（主管特助・日文是唯一硬門檻）因為系統故障跳過驗證，
+        // 之後就再也沒補——報告只在追問事項裡寫了一句，人也就這樣送出去了。
+        // 沒有這個時間戳，系統無法分辨「驗過了」與「本來就沒驗」，
+        // 收尾時也就不可能提醒。
+        await env.DB.prepare(
+          `UPDATE applications SET lang_verified_at = datetime('now','+8 hours') WHERE id = ?`
+        ).bind(app.id).run().catch(() => {});
 
         if (app.interview_state !== 'active') {
           await env.DB.prepare(

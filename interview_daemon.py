@@ -1894,6 +1894,27 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     #    包 try/except 是刻意的：報告已經寫進 D1 了（上面那段），
     #    交付失敗頂多是顧問要自己回後台看，不可以讓 finish() 拋例外——
     #    那會讓 wrap_up()／timeout_close() 走進錯誤分支，面談狀態變得不可預期。
+    # ⚠️ 2026-08-19 加：該驗外語卻沒驗成，收尾時一定要吵。
+    # 徐振倫那場（主管特助・日文是這個缺唯一的硬門檻）因為系統故障跳過驗證，
+    # 報告只在追問事項寫了一句「建議顧問親自驗證」，然後就沒有然後了——
+    # 硬門檻沒驗的人選被當成一般人選送出去。
+    # 這種事不能靠報告裡的一行字，要在顧問的通知裡站出來擋。
+    try:
+        jl = d1(f"SELECT j.interview_language, a.lang_verified_at, a.chat_token FROM applications a "
+                f"LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = {q(app_id)}")
+        if jl and (jl[0].get('interview_language') or '').strip() and not jl[0].get('lang_verified_at'):
+            lang = jl[0]['interview_language']
+            tg(f'🚨 {name}（{job_slug}）這場的 **{lang}實測沒有完成**。\n\n'
+               f'這個職缺把 {lang} 列為面談要驗的能力，但這場沒有收到任何語音驗證紀錄'
+               f'（可能是故障、跳過，或候選人沒錄）。\n'
+               f'⚠️ 報告裡的{lang}相關描述**只有證照與自述**，沒有實測佐證，'
+               f'送客戶前請先補驗或在推薦時講清楚。\n\n'
+               f'補驗連結（候選人單獨錄一段，不用重開整場面談）：\n'
+               f'https://step1ne.com/interview/?t={jl[0].get("chat_token") or ""}',
+               THREAD_POOL)
+    except Exception as ex:
+        log(f'（外語驗證檢查失敗，不影響交付：{ex}）')
+
     try:
         deliver_after_interview(app_id, name, job_slug, report_json, abandoned)
     except Exception as ex:
