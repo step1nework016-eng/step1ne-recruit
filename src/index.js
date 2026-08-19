@@ -3098,17 +3098,19 @@ export default {
           // （例如排程自動掃到的舊職缺）退回 wrangler secret 那組（目前就是
           // Jacky 自己的帳號），行為跟改之前一樣，不會突然發不出去。
           let threadsToken = env.THREADS_ACCESS_TOKEN, threadsUserId = env.THREADS_USER_ID;
+          let platform = 'threads';   // 沒指定帳號的舊職缺一律當 Threads
           // 2026-08-18 加：串文最後那則「應徵了解窗口」原本寫死同一個 LINE 連結，
           // 四位顧問各自發文卻都導去同一個人身上，候選人的來源就分不清是誰帶來的。
           // 改成每個帳號各自的連結；沒指定帳號的舊職缺退回 Jacky 那組（跟金鑰退回邏輯一致）。
           let lineLink = 'https://lin.ee/RR4nQqm';
           if (row.account_id) {
             const acc = await env.DB.prepare(
-              `SELECT access_token, platform_user_id, line_link FROM social_accounts WHERE id = ? AND platform = 'threads' AND is_active = 1`
+              `SELECT access_token, platform_user_id, line_link, platform FROM social_accounts WHERE id = ? AND is_active = 1`
             ).bind(row.account_id).first();
             if (!acc) { await answer('❌ 指定的發文帳號找不到或已停用'); return new Response('ok'); }
             threadsToken = acc.access_token; threadsUserId = acc.platform_user_id;
             if (acc.line_link) lineLink = acc.line_link;
+            platform = acc.platform || 'threads';
           }
           if (!threadsToken || !threadsUserId) {
             await answer('⚠️ Threads 金鑰還沒設定，先標記核准，不會真的發出去。', true);
@@ -3116,6 +3118,62 @@ export default {
             return new Response('ok');
           }
           try {
+            // ── LinkedIn ──
+            // 2026-08-19 加。LinkedIn 跟 Threads 差在三件事，所以不共用同一段：
+            //   ① 單則上限 3000 字，這個長度的招募文完全放得下，不用切串文
+            //   ② 沒有「回覆自己」的串接概念，窗口連結直接接在本文最後
+            //   ③ 發文是一次呼叫，沒有 Threads 那種「先建 container 再 publish」
+            if (platform === 'linkedin') {
+              const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`;
+              const body = `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
+              const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${threadsToken}`,
+                  'content-type': 'application/json',
+                  'x-restli-protocol-version': '2.0.0',
+                },
+                body: JSON.stringify({
+                  author: `urn:li:person:${threadsUserId}`,
+                  lifecycleState: 'PUBLISHED',
+                  specificContent: {
+                    'com.linkedin.ugc.ShareContent': {
+                      shareCommentary: { text: body.slice(0, 2900) },
+                      shareMediaCategory: 'NONE',
+                    },
+                  },
+                  visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' },
+                }),
+              });
+              const pd = await pr.json().catch(() => ({}));
+              const postUrn = pd.id || pr.headers.get('x-restli-id');
+              if (!pr.ok || !postUrn) {
+                throw new Error('LinkedIn 發文失敗：' + JSON.stringify(pd).slice(0, 300));
+              }
+              const permalink = `https://www.linkedin.com/feed/update/${postUrn}`;
+              await env.DB.prepare(
+                `UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`
+              ).bind(permalink, qid).run();
+              await answer('✅ 已經發到 LinkedIn 上了', true);
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: cq.message.chat.id,
+                  ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                  reply_to_message_id: cq.message.message_id,
+                  text: `✅ ${who} 已核准，已發到 LinkedIn\n${permalink}`,
+                }),
+              }).catch(() => {});
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+                  reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，已發到 LinkedIn`, callback_data: 'noop' }]] },
+                }),
+              }).catch(() => {});
+              return new Response('ok');
+            }
+
             // 2026-08-14 改：Jacky 要的是「串文」——不是單則貼文，是主文
             // 後面接一則自己回覆自己的貼文，最後一則固定放應徵了解窗口的
             // LINE 連結。Threads 每一則都是「建立 container 拿 creation_id
@@ -3543,6 +3601,119 @@ export default {
     // ── 面談室 ──
     // token 放在網址就是權限本身：候選人不必註冊帳號（多一道就少一半完成率），
     // 但也代表這個網址等於逐字稿的鑰匙，所以 token 要夠長且不可推導。
+    // ── LinkedIn 授權（顧問各自綁自己的個人帳號）──
+    // 2026-08-19 加。LinkedIn 只開放「以個人身分發文」（w_member_social）；
+    // 用公司頁發文屬於 Community Management API，要審核而且幾乎只給合作夥伴。
+    // 對獵頭來說個人身分反而更好——人看人比人看公司頁有效。
+    //
+    // state 用 HMAC 簽時間戳，避免有人誘導顧問點到偽造的 callback、
+    // 把別人的 LinkedIn 綁進我們系統。10 分鐘內有效。
+    if (p === '/linkedin/auth' || p === '/linkedin/callback') {
+      const enc = new TextEncoder();
+      const sign = async (msg) => {
+        const key = await crypto.subtle.importKey('raw', enc.encode(env.LINKEDIN_CLIENT_SECRET || 'x'),
+          { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
+        return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+      };
+      const REDIRECT = 'https://step1ne-recruit-api.aiagentg888.workers.dev/linkedin/callback';
+
+      if (p === '/linkedin/auth') {
+        if (!env.LINKEDIN_CLIENT_ID) return new Response('LinkedIn 尚未設定', { status: 503 });
+        // 顧問要綁哪個帳號：?label=Jacky，之後發文才知道是誰的
+        const label = url.searchParams.get('label') || '未命名';
+        const ts = String(Date.now());
+        const state = `${ts}.${encodeURIComponent(label)}.${await sign(ts + label)}`;
+        const auth = 'https://www.linkedin.com/oauth/v2/authorization?' + new URLSearchParams({
+          response_type: 'code', client_id: env.LINKEDIN_CLIENT_ID, redirect_uri: REDIRECT,
+          state, scope: 'openid profile email w_member_social',
+        });
+        return Response.redirect(auth, 302);
+      }
+
+      // ── callback ──
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state') || '';
+      const err = url.searchParams.get('error_description') || url.searchParams.get('error');
+      const page = (title, body) => new Response(
+        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`
+        + `<title>${title}</title><body style="font-family:-apple-system,'PingFang TC',sans-serif;`
+        + `max-width:620px;margin:60px auto;padding:0 20px;line-height:1.8;color:#12151a">`
+        + `<h2 style="font-size:19px">${title}</h2>${body}</body>`,
+        { headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+      if (err) return page('❌ 授權沒有完成', `<p>LinkedIn 回報：${err}</p><p>回去重按一次授權連結即可。</p>`);
+      if (!code) return page('❌ 缺少授權碼', '<p>網址不完整，請重新從授權連結進來。</p>');
+
+      const [ts, labelRaw, sig] = state.split('.');
+      const label = decodeURIComponent(labelRaw || '');
+      if (!ts || !sig || sig !== await sign(ts + label)) {
+        return page('❌ 這個授權連結不是我們發出的', '<p>為了安全起見已擋下。請從後台重新取得授權連結。</p>');
+      }
+      if (Date.now() - Number(ts) > 10 * 60 * 1000) {
+        return page('⌛ 授權連結過期了', '<p>超過 10 分鐘。回去重新按一次就好。</p>');
+      }
+
+      try {
+        const tr = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+          method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code', code, redirect_uri: REDIRECT,
+            client_id: env.LINKEDIN_CLIENT_ID, client_secret: env.LINKEDIN_CLIENT_SECRET,
+          }),
+        });
+        const td = await tr.json();
+        if (!td.access_token) {
+          return page('❌ 換取權杖失敗', `<pre style="white-space:pre-wrap;font-size:12px">${
+            JSON.stringify(td).slice(0, 400)}</pre>`);
+        }
+        // 拿本人 id，發文時 author 欄位要用
+        const ur = await fetch('https://api.linkedin.com/v2/userinfo',
+          { headers: { authorization: `Bearer ${td.access_token}` } });
+        const ud = await ur.json();
+        const sub = ud.sub || '';
+        const expAt = new Date(Date.now() + (Number(td.expires_in) || 5184000) * 1000 + 8 * 3600 * 1000)
+          .toISOString().replace('T', ' ').slice(0, 19);
+
+        const exist = await env.DB.prepare(
+          `SELECT id FROM social_accounts WHERE platform='linkedin' AND platform_user_id=?`
+        ).bind(sub).first();
+        if (exist) {
+          await env.DB.prepare(
+            `UPDATE social_accounts SET access_token=?, refresh_token=?, token_expires_at=?,
+                    label=?, is_active=1 WHERE id=?`
+          ).bind(td.access_token, td.refresh_token || null, expAt,
+                 `${label} – LinkedIn`, exist.id).run();
+        } else {
+          await env.DB.prepare(
+            // created_at 是 NOT NULL 且沒有預設值——2026-08-19 第一次綁定就撞到
+            `INSERT INTO social_accounts (platform, platform_user_id, access_token, refresh_token,
+                                          token_expires_at, label, is_active, created_at)
+             VALUES ('linkedin', ?, ?, ?, ?, ?, 1, datetime('now','+8 hours'))`
+          ).bind(sub, td.access_token, td.refresh_token || null, expAt, `${label} – LinkedIn`).run();
+        }
+
+        const hasRefresh = !!td.refresh_token;
+        await notify(env, `✅ LinkedIn 已綁定：${ud.name || label}\n`
+          + `到期：${expAt.slice(0, 10)}\n`
+          + (hasRefresh
+              ? '這個 app 有拿到 refresh token，之後系統會自動續期，你不用管。'
+              : '⚠️ 這個 app 沒有 refresh token，到期前要再授權一次（我會提前提醒）。'),
+          { message_thread_id: THREAD.system });
+
+        return page('✅ LinkedIn 綁定成功', `
+          <p><b>${ud.name || label}</b> 已經可以用來發文了。</p>
+          <p>權杖到期日：<b>${expAt.slice(0, 10)}</b></p>
+          <p>${hasRefresh
+              ? '✅ <b>這個 app 有給 refresh token</b>，之後系統會自動續期，你完全不用管。'
+              : '⚠️ <b>這個 app 沒有給 refresh token</b>，到期前我會推 Telegram 提醒你重按一次授權。'}</p>
+          <p style="color:#5d6672;font-size:13px">可以關掉這個分頁了。</p>`);
+      } catch (e) {
+        return page('❌ 綁定過程出錯', `<pre style="white-space:pre-wrap;font-size:12px">${
+          String(e).slice(0, 300)}</pre>`);
+      }
+    }
+
     // ── 發文導流的轉址中繼（公開，不需驗證）──
     // 2026-08-19 加。原本貼文結尾直接放 lin.ee 連結，候選人加了 LINE 之後
     // 就完全斷線：LINE 的 webhook 不帶「他從哪個連結進來」，Insight API 也
@@ -5895,6 +6066,56 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
+    // ⚠️ 2026-08-19 加：LinkedIn 權杖自動續期。
+    // LinkedIn 的 access token 只有 60 天，過期就發不出文——而且是無聲失敗，
+    // 通常等到要發文那天才發現。這裡趕在到期前 14 天就換好。
+    //
+    // 跟 Threads 的續期是同一個目的、不同做法：Threads 那支是本機腳本
+    // （refresh_threads_token.sh，launchd 每週跑），因為它還要同步 wrangler secret；
+    // LinkedIn 的權杖只存在 D1，Worker 自己就能換，不必依賴本機有沒有開機。
+    //
+    // ⚠️ LinkedIn 續期回來不一定會給新的 refresh_token；沒給就沿用舊的，
+    //    不可以覆蓋成 null，否則下一輪就永遠續不了了。
+    try {
+      const { results: expiring } = await env.DB.prepare(
+        `SELECT id, label, refresh_token FROM social_accounts
+          WHERE platform='linkedin' AND is_active=1 AND refresh_token IS NOT NULL
+            AND token_expires_at IS NOT NULL
+            AND token_expires_at <= datetime('now','+8 hours','+14 days')`
+      ).all();
+      for (const acc of (expiring || [])) {
+        try {
+          const r = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+            method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'refresh_token', refresh_token: acc.refresh_token,
+              client_id: env.LINKEDIN_CLIENT_ID, client_secret: env.LINKEDIN_CLIENT_SECRET,
+            }),
+          });
+          const d = await r.json();
+          if (!d.access_token) throw new Error(JSON.stringify(d).slice(0, 200));
+          const expAt = new Date(Date.now() + (Number(d.expires_in) || 5184000) * 1000 + 8 * 3600 * 1000)
+            .toISOString().replace('T', ' ').slice(0, 19);
+          await env.DB.prepare(
+            `UPDATE social_accounts SET access_token=?, refresh_token=?, token_expires_at=? WHERE id=?`
+          ).bind(d.access_token, d.refresh_token || acc.refresh_token, expAt, acc.id).run();
+          await notify(env, `🔄 LinkedIn 權杖已自動續期：${acc.label}\n新的到期日 ${expAt.slice(0, 10)}`,
+            { message_thread_id: THREAD.system });
+        } catch (e) {
+          // 續期失敗要吵——refresh token 也是會過期的（一年），
+          // 到那時只能請顧問重按一次授權，不講就會靜靜地壞掉。
+          await notify(env,
+            `⚠️ LinkedIn 權杖續期失敗：${acc.label}\n${String(e).slice(0, 200)}\n\n`
+            + `請重新授權：\nhttps://step1ne-recruit-api.aiagentg888.workers.dev/linkedin/auth?label=`
+            + encodeURIComponent(String(acc.label).replace(/\s*–\s*LinkedIn$/, '')),
+            { message_thread_id: THREAD.system });
+        }
+      }
+    } catch (e) {
+      await notify(env, `⚠️ LinkedIn 續期檢查失敗：${String(e).slice(0, 200)}`,
+        { message_thread_id: THREAD.system }).catch(() => {});
+    }
+
     // ⚠️ 2026-08-19 加：發文成效回填（Jacky 問「我們在抓哪個時間點發布成效好」，
     // 答案是原本根本沒在抓——連實際發布時間都沒存，只存了草稿產生時間）。
     // 每則貼文在發布後的前 3 天各抓一次 views／likes／replies，之後就不再抓：
