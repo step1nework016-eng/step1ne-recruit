@@ -408,6 +408,28 @@ def tg(text, thread=None):
         log(f'Telegram 推播失敗：{ex}')
 
 
+def tg_buttons(text, buttons, thread=None):
+    """跟 tg() 一樣，但帶 inline keyboard。
+
+    buttons 是 [[{'text':..,'callback_data':..}, ...], ...]（一列一個 list）。
+    按下去由 Worker 的 callback handler 處理，這支不負責接。
+    """
+    try:
+        e = dict(l.strip().split('=', 1)
+                 for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
+                 if '=' in l and not l.startswith('#'))
+        body = {'chat_id': e['TG_CHAT_ID'], 'text': text,
+                'reply_markup': json.dumps({'inline_keyboard': buttons})}
+        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        if tid:
+            body['message_thread_id'] = tid
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+            data=urllib.parse.urlencode(body).encode(), timeout=20)
+    except Exception as ex:
+        log(f'Telegram 按鈕推播失敗：{ex}')
+
+
 def tg_doc(data, filename, caption='', thread=None):
     """把檔案當附件推到同一個 Telegram 群組。
 
@@ -674,7 +696,17 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
     msg = deliver.closing_message(data, meta)
     if len(made) < 2:
         msg += f'\n\n⚠️ 這次只產出 {len(made)} 份 PDF，另一份產生失敗，請至後台查看。'
-    tg(msg, THREAD_POOL)
+    # 2026-08-19 加：顧問的真實判斷回填。
+    # 這是整套 KPI 唯一需要人動手的一步——系統知道阿財判了什麼，但不知道顧問
+    # 最後同不同意。累積起來才能算出「阿財說值得轉的人，顧問真的推了幾成」，
+    # 那個數字就是對外要拿來證明「AI 沒把人看錯」的憑據。
+    # 刻意只做三顆按鈕、不問原因：多問一個欄位就會少一半的人願意按。
+    msg += '\n\n👇 讀完報告後按一下，這是系統唯一需要你動手的地方'
+    tg_buttons(msg, [
+        [{'text': '✅ 我也會推', 'callback_data': f'kpi:ag:{app_id}'},
+         {'text': '✋ 我不推', 'callback_data': f'kpi:no:{app_id}'}],
+        [{'text': '🤔 還要再看', 'callback_data': f'kpi:hold:{app_id}'}],
+    ], THREAD_POOL)
 
 
 def active_sessions():

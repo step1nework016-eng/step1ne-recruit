@@ -3018,6 +3018,39 @@ export default {
       // Threads 金鑰已經設定好了（THREADS_ACCESS_TOKEN／THREADS_USER_ID，
       // wrangler secret），「確認發布」會真的呼叫 Threads API 貼出去。
       // LinkedIn 還沒申請，approve 時如果只有 Threads 金鑰，就只發 Threads。
+      // ── 顧問對阿財判斷的回填（KPI 用）──
+      // 2026-08-19 加。系統知道阿財判了什麼，但不知道顧問最後同不同意；
+      // 沒有這一欄就永遠算不出「阿財說值得轉的人，顧問真的推了幾成」——
+      // 而那正是對外要證明「AI 沒把人看錯」時，客戶唯一會信的數字。
+      // 只記一次判斷，不問原因：多問一個欄位就會少一半的人願意按。
+      if (cq && cq.data && String(cq.data).startsWith('kpi:')) {
+        const [, verdict, appId] = String(cq.data).split(':');
+        const LABEL = { ag: '會推', no: '不推', hold: '再看看' };
+        const answer = async (text) => {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cq.id, text }),
+          }).catch(() => {});
+        };
+        if (!LABEL[verdict]) { await answer('❌ 認不得這個選項'); return new Response('ok'); }
+        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+        const r = await env.DB.prepare(
+          `UPDATE applications SET consultant_call=?, consultant_call_at=datetime('now','+8 hours'),
+                  consultant_call_by=? WHERE id=?`
+        ).bind(LABEL[verdict], who, appId).run();
+        if (!r.meta || !r.meta.changes) { await answer('❌ 找不到這筆應徵'); return new Response('ok'); }
+        await answer(`已記錄：${LABEL[verdict]}`);
+        // 按鈕換成結果，讓其他顧問看得到誰判了什麼，也避免重複按
+        await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+            reply_markup: { inline_keyboard: [[{ text: `📌 ${who} 判定：${LABEL[verdict]}`, callback_data: 'noop' }]] },
+          }),
+        }).catch(() => {});
+        return new Response('ok');
+      }
+
       if (cq && cq.data && String(cq.data).startsWith('soc_')) {
         const [action, qidRaw] = String(cq.data).split(':');
         const qid = Number(qidRaw);
@@ -5382,13 +5415,45 @@ export default {
       // 完全看不到後續進度，要嘛跑去 Telegram 找、要嘛乾等，這裡回傳目前
       // 「有經過這條流程」的職缺（排入中／草稿等審核／已發布／不發），
       // 前端定時輪詢就能看到狀態變化，不用每次都跑去問。
+      // LINE 官方帳號的整體數字，給「顧問社群 → 成效儀表板」用。
+      // 2026-08-19 加。⚠️ 這裡只有得到「總量」：LINE 的 Insight API 沒有
+      // 「哪個加入連結帶來幾個人」的端點——四位顧問的 lin.ee 連結雖然各自不同
+      // （差在 oat__id），但那個維度只有 LINE 官方後台看得到，API 不給。
+      // 所以分顧問的歸因還是得靠自家轉址，這支不要假裝做得到。
+      if (p === '/admin/line-insight' && request.method === 'GET') {
+        if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
+          return json(request, { ok: false, error: 'LINE 金鑰未設定' }, 503);
+        }
+        // LINE 的統計要隔天才結算，抓前天的最穩（抓今天多半回 status: unready）
+        const d = new Date(Date.now() - 2 * 86400000);
+        const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+        try {
+          const r = await fetch(`https://api.line.me/v2/bot/insight/followers?date=${ymd}`,
+            { headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` } });
+          const f = await r.json();
+          if (f.status !== 'ready') {
+            return json(request, { ok: true, ready: false, note: `LINE 統計尚未結算（${ymd}）` });
+          }
+          return json(request, {
+            ok: true, ready: true, date: ymd,
+            followers: f.followers, reachable: f.targetedReaches, blocks: f.blocks,
+          });
+        } catch (e) {
+          return json(request, { ok: false, error: String(e).slice(0, 120) }, 502);
+        }
+      }
+
       if (p === '/admin/social-post-queue' && request.method === 'GET') {
         // 2026-08-18 改：來源換成 social_post_queue（一個職缺多筆排隊紀錄），
         // 欄位名稱刻意跟舊版一樣，前端「一鍵發文」頁面不用改。
         const { results } = await env.DB.prepare(
           `SELECT q.job_slug AS slug, j.title, q.status AS social_post_status,
                   q.requested_at AS social_post_at, q.url AS social_post_url,
-                  sa.label AS account_label
+                  sa.label AS account_label,
+                  -- 2026-08-19 加：發文成效。顧問要判斷「這個時間發有沒有人看」，
+                  -- 原本這頁只看得到狀態，看不到結果，等於發完就沒下文。
+                  -- posted_at 是真正貼出去的時間（social_post_at 是草稿產生時間，兩者常差好幾小時）
+                  q.posted_at, q.views, q.likes, q.replies
              FROM social_post_queue q
              JOIN jobs j ON j.slug = q.job_slug
              LEFT JOIN social_accounts sa ON sa.id = q.account_id
