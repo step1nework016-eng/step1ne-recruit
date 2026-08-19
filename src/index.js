@@ -3189,7 +3189,14 @@ export default {
               lastId = await postOne(chunk, lastId);
               if (!firstId) firstId = lastId;
             }
-            await postOne(`▪️ 應徵了解窗口：\n${lineLink}`, lastId);
+            // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
+            // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
+            // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
+            // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
+            const goLink = row.account_id
+              ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`
+              : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
+            await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
 
             // 拿第一則（主文）的公開連結存起來備查——顧問要留紀錄用。
             let permalink = null;
@@ -3536,6 +3543,47 @@ export default {
     // ── 面談室 ──
     // token 放在網址就是權限本身：候選人不必註冊帳號（多一道就少一半完成率），
     // 但也代表這個網址等於逐字稿的鑰匙，所以 token 要夠長且不可推導。
+    // ── 發文導流的轉址中繼（公開，不需驗證）──
+    // 2026-08-19 加。原本貼文結尾直接放 lin.ee 連結，候選人加了 LINE 之後
+    // 就完全斷線：LINE 的 webhook 不帶「他從哪個連結進來」，Insight API 也
+    // 沒有分來源的端點，所以「哪個顧問的哪則貼文帶來這個人」永遠算不出來。
+    //
+    // 作法：貼文改放 step1ne.com/go/?c=帳號&j=職缺，那一頁打這支拿到真正的
+    // LINE 連結再轉過去，點擊就記在我們自己手上。
+    // ⚠️ 這支不可以擋人：查不到帳號、資料庫寫入失敗，都要照樣回一個可用的
+    //    LINE 連結。統計掉一筆沒關係，把候選人卡在半路才是真的損失。
+    if (p === '/go/resolve' && request.method === 'GET') {
+        const accId = Number(url.searchParams.get('c')) || null;
+        const slug = url.searchParams.get('j') || null;
+        let target = 'https://lin.ee/RR4nQqm';   // 查不到時的退路（Jacky 那組）
+        try {
+          if (accId) {
+            const acc = await env.DB.prepare(
+              `SELECT line_link FROM social_accounts WHERE id=? AND platform='threads'`
+            ).bind(accId).first();
+            if (acc && acc.line_link) target = acc.line_link;
+          }
+        } catch { /* 查不到就用退路 */ }
+        try {
+          // 對應到最近一筆該帳號＋該職缺的發文，之後才能把點擊算回某一則貼文
+          let qid = null;
+          if (accId && slug) {
+            const q = await env.DB.prepare(
+              `SELECT id FROM social_post_queue WHERE account_id=? AND job_slug=? AND status='posted'
+                ORDER BY posted_at DESC LIMIT 1`
+            ).bind(accId, slug).first();
+            qid = q ? q.id : null;
+          }
+          await env.DB.prepare(
+            `INSERT INTO link_clicks (account_id, job_slug, queue_id, clicked_at, ua, country)
+             VALUES (?, ?, ?, datetime('now','+8 hours'), ?, ?)`
+          ).bind(accId, slug, qid,
+                 (request.headers.get('user-agent') || '').slice(0, 200),
+                 request.headers.get('cf-ipcountry') || null).run();
+        } catch { /* 記不起來也要放人走 */ }
+        return json(request, { ok: true, url: target });
+      }
+
     if (p.startsWith('/chat/')) {
       const seg = p.split('/').filter(Boolean); // ['chat', token, action?]
       const token = seg[1] || '';
@@ -5453,7 +5501,9 @@ export default {
                   -- 2026-08-19 加：發文成效。顧問要判斷「這個時間發有沒有人看」，
                   -- 原本這頁只看得到狀態，看不到結果，等於發完就沒下文。
                   -- posted_at 是真正貼出去的時間（social_post_at 是草稿產生時間，兩者常差好幾小時）
-                  q.posted_at, q.views, q.likes, q.replies
+                  q.posted_at, q.views, q.likes, q.replies,
+                  -- 這則貼文帶來幾次點擊（走 /go/ 轉址頁的才算得到）
+                  (SELECT COUNT(*) FROM link_clicks lc WHERE lc.queue_id = q.id) AS clicks
              FROM social_post_queue q
              JOIN jobs j ON j.slug = q.job_slug
              LEFT JOIN social_accounts sa ON sa.id = q.account_id
