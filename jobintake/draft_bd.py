@@ -149,10 +149,32 @@ def scrub(spec):
     return hits
 
 
+class Law5Blocked(Exception):
+    """就服法保護特徵出現在要寄出去的文案裡。
+
+    用例外而不是回傳值，是因為 guard() 的呼叫端只解三元組
+    （spec, blocked, warned）——回 False 會讓上游解包失敗、
+    錯誤訊息變成看不懂的 ValueError，反而讓人以為是程式壞了。
+    """
+
+
 def guard(spec):
-    """🚨 這一關不能跳過。被擋下的公司整家移除，不是標註。"""
-    for label, word in scrub(spec):
-        log(f'  ⚠️ 就服法第 5 條保護特徵出現在{label}：「{word}」——顧問核准前請刪掉')
+    """🚨 這一關不能跳過。被擋下的公司整家移除，不是標註。
+
+    ⚠️ 2026-08-19 改：就服法那一項原本只是 log 一行「顧問核准前請刪掉」，
+    信照樣進 pending、照樣推核准按鈕——那等於沒擋。
+    2026-08-18 真實事故（候選人結案訊息寫「傾向尋找男性人選」）證明了
+    「提醒」擋不住任何東西：趕時間的人就是會按過去。
+    改成硬擋：命中就整份不進 pending，回傳 False 讓上游停下來重寫。
+    """
+    hits = scrub(spec)
+    for label, word in hits:
+        log(f'  ⛔ 就服法第 5 條保護特徵出現在{label}：「{word}」')
+    if hits:
+        log('🚨 這批不會進待核准清單，也不會出現核准按鈕。'
+            '請把上面那些字眼從文案裡拿掉再重新產生。')
+        log('   （客戶的原始要求該記還是要記，但記在內部欄位，不要寫進要寄出去的信）')
+        raise Law5Blocked([f'{label}：{word}' for label, word in hits])
     clients = G.load_clients(D.d1)
     ok, blocked, warned = G.filter_targets(spec.get('targets') or [], clients)
     log(f'客戶名單比對：{len(clients)} 家名單　→　可敲 {len(ok)}　擋下 {len(blocked)}　注意 {len(warned)}')
@@ -225,7 +247,11 @@ def main():
         json.dump(spec, open(os.path.join(workdir, 'spec.json'), 'w', encoding='utf-8'),
                   ensure_ascii=False, indent=2)
 
-    spec, blocked, warned = guard(spec)
+    try:
+        spec, blocked, warned = guard(spec)
+    except Law5Blocked as e:
+        log(f'⛔ 這批擬稿因就服法紅線整批擋下，沒有任何一封進待核准清單：{e.args[0]}')
+        return
     if not spec['targets']:
         log('⛔ 全部被客戶名單擋下，沒有可以敲的公司。')
         return
