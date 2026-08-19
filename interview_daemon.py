@@ -641,8 +641,20 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
     if report_json:
         try:
             data = json.loads(report_json)
+            # ⚠️ 2026-08-19 加：孙悦那場（08-18）存進去的是「JSON 字串的字串」——
+            # 解析一次只會得到 str，不是 dict，後面 data.get() 就全炸，
+            # 顧問收到的是「結構化報告產生失敗、PDF 未附」但資料其實好好的。
+            # 十筆報告只有那一筆這樣，根因追不出來（當下沒有留下相關 log），
+            # 所以兩端都加防線：這裡多解一次，寫入端也擋一次。
+            if isinstance(data, str):
+                log(f'⚠️ {name} content_json 多包了一層，已自動解開')
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                log(f'⚠️ {name} content_json 不是物件（{type(data).__name__}），改走降級路徑')
+                data = None
         except Exception as ex:
             log(f'⚠️ {name} content_json 解析失敗，改走降級路徑：{ex}')
+            data = None
 
     # ── 降級：沒有結構化報告就產不出兩版 PDF ──
     # 這種情況必須「還是有東西給顧問」，而且要講清楚為什麼少了 PDF，
@@ -1646,6 +1658,11 @@ def report_to_json(report, ctx, name='', app_id=None):
             return None
         data = _normalize_report_json(obj)
         blob = json.dumps(data, ensure_ascii=False)
+        # 存進去之前先驗一次：解回來一定要是物件。多包一層的字串在後台看起來
+        # 一切正常（欄位都在），只有產 PDF 那一刻才會炸掉。
+        if not isinstance(json.loads(blob), dict):
+            log(f'⚠️ {name} 結構化報告序列化異常，content_json 存 NULL')
+            return None
         hit = [w for w in _BANNED_WORDS if _accuses(blob, w)]
         if hit:
             # 不自動改寫——顧問要看到模型原本寫了什麼，才知道這份能不能信
