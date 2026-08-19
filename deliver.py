@@ -317,6 +317,52 @@ def _jobs(work_history, scrub=False):
     return ''.join(out)
 
 
+def _fit(data):
+    """六維度適配評分表（**只進顧問版**）。
+
+    為什麼要有：verdict 只有四種值，同一個「值得轉給顧問」底下三個人，
+    顧問要先打給誰只能自己重讀三份報告。這張表就是拿來排序的。
+
+    ⚠️ 三個刻意的設計，改之前先想清楚：
+      1. 沒有依據的維度顯示「未評估」而不是 0 分——把沒問到的題目當 0 分，
+         會系統性地懲罰話少的場次，那個排序是假的。
+      2. 每一維都印出證據原話。分數沒有原話撐著，顧問就沒辦法覆核，
+         那它就只是一個看起來很客觀的數字。
+      3. 標題與結尾都寫明「排序用，不是錄用建議」。這是初篩分數，
+         不是給客戶看的評價，更不是淘汰依據。
+    """
+    fs = data.get('fit_scores') or {}
+    dims = fs.get('dimensions') or []
+    if not dims:
+        return ''
+    total, grade = fs.get('total'), fs.get('grade') or ''
+    head = ('<div style="display:flex;align-items:baseline;gap:14px;margin:0 0 10px">'
+            + (f'<span style="font-size:30px;font-weight:800;color:#0b3d5c">{total}</span>'
+               f'<span style="font-size:15px;font-weight:700">等第 {e(grade)}</span>'
+               if total is not None else
+               f'<span style="font-size:16px;font-weight:700;color:#a32b21">{e(grade)}</span>')
+            + f'<span style="font-size:12px;color:#5d6672">{e(fs.get("basis") or "")}</span></div>')
+    rows = []
+    for d in dims:
+        sc = d.get('score')
+        bar = ('<span style="color:#c4ccd4">未評估</span>' if sc is None else
+               f'<b style="font-size:15px">{sc}</b><span style="color:#5d6672">/10</span>')
+        ev = e(d.get('evidence') or '')
+        rows.append(
+            '<tr>'
+            f'<td style="border-top:1px solid #e3e7ec;padding:6px 8px;vertical-align:top;white-space:nowrap">{e(d.get("name"))}'
+            f'<span style="color:#8b95a1;font-size:11px"> ×{d.get("weight")}%</span></td>'
+            f'<td style="border-top:1px solid #e3e7ec;padding:6px 8px;vertical-align:top;text-align:right;white-space:nowrap">{bar}</td>'
+            f'<td style="border-top:1px solid #e3e7ec;padding:6px 8px;vertical-align:top;">{("「"+ev+"」") if ev else ""}'
+            f'<div style="color:#5d6672;font-size:11.5px">{e(d.get("note") or "")}</div></td>'
+            '</tr>')
+    return (head + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+            + ''.join(rows) + '</table>'
+            + '<p style="font-size:11.5px;color:#5d6672;margin:8px 0 0">'
+              '這是初篩排序用的分數，不是錄用建議，也不會出現在客戶版。'
+              '分數旁邊沒有原話的維度代表面談中沒有依據，不要拿來當淘汰理由。</p>')
+
+
 def _cond(hard_conditions, with_evidence):
     """硬條件逐條。客戶版不帶 evidence_source——那是我們內部怎麼查證的紀錄，
     印給客戶看只會讓他去質疑每一條的可信度。"""
@@ -580,6 +626,7 @@ def build_consultant_html(data, meta):
         'GAPS': gaps,
         'FILES': ''.join(files),
         'COND': _cond(data.get('hard_conditions') or [], with_evidence=True),
+        'FIT': _fit(data),
         'ASSESSMENT': bars,
         'ASKED': asked,
         'STYLE': e((data.get('observations') or {}).get('communication_style')),
@@ -593,6 +640,7 @@ def build_consultant_html(data, meta):
         'values': bool(data.get('values')),
         'history': bool(wh),
         'gaps': bool(gaps),
+        'fit': bool((data.get('fit_scores') or {}).get('dimensions')),
         'cond': bool(data.get('hard_conditions')),
         'style': bool((data.get('observations') or {}).get('communication_style')),
         'forclient': bool(reasons or risks_html),

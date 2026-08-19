@@ -1311,6 +1311,16 @@ REPORT_JSON_SPEC = r'''
     {"item": "", "verdict": "符合|不符|待確認", "detail": "",
      "evidence_source": "履歷|應徵表單|他親口說|未確認"}
   ],
+  "fit_scores": {
+    "dimensions": [
+      {"name": "硬條件符合度", "score": 0, "evidence": "", "note": ""},
+      {"name": "相關經驗深度", "score": 0, "evidence": "", "note": ""},
+      {"name": "案例具體度",   "score": 0, "evidence": "", "note": ""},
+      {"name": "動機明確度",   "score": 0, "evidence": "", "note": ""},
+      {"name": "溝通清晰度",   "score": 0, "evidence": "", "note": ""},
+      {"name": "工作穩定度",   "score": 0, "evidence": "", "note": ""}
+    ]
+  },
   "observations": {
     "assessment": [{"trait": "S 穩定型", "score": 9,
                     "verified": "面談印證|未觀察到|不一致", "evidence": ""}],
@@ -1348,6 +1358,16 @@ REPORT_JSON_RULES = (
     '   **不是報告本文**。報告沒寫沒關係，直接從履歷／表單抄進來。\n'
     '   `commute_note` 要自己算：拿 basics.residence 跟職缺的 locations 比，\n'
     '   寫成「距離約 X 公里／同縣市／人已在當地」這種一句話。算不出來才填 null。\n'
+    '7. `fit_scores` 的六個維度**名稱與順序固定**，不可增刪改名。每一維：\n'
+    '   - `score` 給 0–10 的整數。**面談中沒有談到、無從判斷的，score 一律填 null**，\n'
+    '     不要用 5 分之類的中間值頂替——顧問要看得出哪幾維是真的沒資料。\n'
+    '   - `evidence` **必須是候選人的原話或履歷原文的直接引用**，不是你的轉述或總結。\n'
+    '     引不到原話就代表這一維沒有依據，`score` 就該是 null。\n'
+    '   - `note` 寫一句話說明這個分數怎麼來的，或為什麼無法評估。\n'
+    '8. ⚠️ 評分只准依據「這個人能不能做好這份工作」的證據。\n'
+    '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
+    '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
+    '9. 不要自己算總分或等第——那是系統用固定權重算的，你只要給六個維度的分數。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -1480,6 +1500,53 @@ def _normalize_report_json(obj):
     fc = obj.get('for_client') if isinstance(obj.get('for_client'), dict) else {}
     out['for_client'] = {k: [s(x) for x in arr(fc.get(k)) if s(x)]
                          for k in ('reasons', 'risks_to_disclose', 'suggested_questions')}
+
+    # ── 六維度適配評分 ──
+    # 2026-08-19 加。原本報告只有 verdict 四選一（值得轉／資訊不足／硬條件不符／
+    # 待顧問判斷），同一個 verdict 底下的人沒辦法排序——顧問手上三個「值得轉給顧問」
+    # 要先聯絡誰，只能自己重讀三份報告。
+    #
+    # ⚠️ 總分**在這裡用固定權重算**，不交給模型。模型算加權平均常出錯，
+    #    而且同一份報告重跑兩次會給出不同總分，那顧問就不能拿它排序了。
+    #    模型只負責給六個維度的分數與證據，算術是程式的事。
+    #
+    # ⚠️ score 是 null 的維度（面談沒談到）**不是 0 分**，是「不列入計算」——
+    #    把沒問到的題目當 0 分會系統性地懲罰話少的場次。作法是把該維的權重
+    #    從分母移除，並在 basis 裡標明是用幾維算的，顧問才知道這個分數多可信。
+    dims_spec = [('硬條件符合度', 30), ('相關經驗深度', 25), ('案例具體度', 15),
+                 ('動機明確度', 15), ('溝通清晰度', 10), ('工作穩定度', 5)]
+    fs = obj.get('fit_scores') if isinstance(obj.get('fit_scores'), dict) else {}
+    by_name = {s(d.get('name')): d for d in arr(fs.get('dimensions')) if isinstance(d, dict)}
+    dims, got, used_w = [], 0.0, 0
+    for name, w in dims_spec:
+        d = by_name.get(name) or {}
+        try:
+            sc = int(d.get('score'))
+            sc = sc if 0 <= sc <= 10 else None
+        except (TypeError, ValueError):
+            sc = None
+        ev = s(d.get('evidence'))
+        # 沒有原話當證據就不算分——這條跟 prompt 裡的規則是同一件事，
+        # 在程式端再擋一次，模型忘記時才不會混進沒有依據的分數。
+        if sc is not None and not ev:
+            sc = None
+        if sc is not None:
+            got += sc / 10 * w
+            used_w += w
+        dims.append({'name': name, 'weight': w, 'score': sc, 'evidence': ev,
+                     'note': s(d.get('note')) or ('面談中未涉及' if sc is None else '')})
+    if used_w >= 50:   # 至少要有一半的權重有依據，總分才有意義
+        total = round(got / used_w * 100)
+        grade = 'A' if total >= 80 else 'B' if total >= 65 else 'C' if total >= 50 else 'D'
+        # ⚠️ 只有一半權重有依據也能算出 80 分＝A，但那個 A 跟六維都問到的 A
+        # 不是同一回事。等第後面掛一句話，顧問才不會把半份資料當完整評估。
+        if used_w < 75:
+            grade += '（依據不足，僅供參考）'
+        basis = f'以 {len(dims_spec)} 維中有依據的 {sum(1 for d in dims if d["score"] is not None)} 維計算（權重 {used_w}/100）'
+    else:
+        total, grade = None, '資料不足無法評分'
+        basis = f'有依據的維度權重僅 {used_w}/100，低於 50 就不給總分，避免用半份資料排序候選人'
+    out['fit_scores'] = {'dimensions': dims, 'total': total, 'grade': grade, 'basis': basis}
 
     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
     return out
