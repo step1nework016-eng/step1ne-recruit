@@ -869,7 +869,7 @@ def _fetch_static(app_id):
     # 穩定度這類通用題，用人主管真正想知道的「他到底會不會做」完全沒碰到。
     # 職缺還沒建題庫就是沒有，面談照常進行（只是少了專業段），不擋流程。
     try:
-        ex = d1(f"SELECT domain, topics_json, questions_json FROM job_expertise "
+        ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json FROM job_expertise "
                 f"WHERE job_slug = {q(static.get('job', {}).get('slug') or static.get('job_slug'))}")
         if ex:
             static['expertise'] = {
@@ -877,6 +877,7 @@ def _fetch_static(app_id):
                 'topics': json.loads(ex[0].get('topics_json') or '[]'),
                 'questions': json.loads(ex[0].get('questions_json') or '[]'),
             }
+            static['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
     except Exception as e:
         log(f'⚠️ 專業題庫載入失敗（面談照常，只是少了專業段）：{e}')
     return static
@@ -984,6 +985,33 @@ def build_prompt(ctx, skill_md):
     lines.append('你是「阿財」，正在跟一位候選人進行即時文字面談。以下是你的作業規範：\n')
     lines.append(skill_md)
     lines.append('\n\n─────────  本場資料  ─────────\n')
+
+    # ── 到職障礙（這個職缺特有的必問項）──
+    # 2026-08-19 加。專業題庫回答「他會不會做這份工作」，這一段回答
+    # 「他到底能不能來上班」——兩件事都漏過，但漏的原因不同。
+    #
+    # 為什麼會漏：通用題庫問的動機、經歷、穩定度每個缺都一樣，所以問得到；
+    # 但「簽證換雇主要多久」「願不願意跨廠調派」「每月最低開播時數做不做得到」
+    # 是各案獨有的，題庫沒有就漏了。而它們偏偏是決定成敗的那一題——
+    # 人再好，簽證下不來就是不能到職。
+    bl = ctx.get('blockers') or []
+    if bl:
+        crit = [b for b in bl if b.get('critical')]
+        lines.append('\n【到職障礙：這幾題沒問到，這場就是白跑】')
+        lines.append('  🚨 這一段比專業題更前面。專業能力再好，這幾條過不了就是到不了職。'
+                     '**不要拖到收尾才問**，確認完硬條件就接著問。')
+        for i, b in enumerate(bl, 1):
+            mark = '🚨 ' if b.get('critical') else ''
+            lines.append(f'   {i}. {mark}{b.get("item")}')
+            lines.append(f'      問法：{b.get("ask")}')
+            if b.get('acceptable'):
+                lines.append(f'      什麼樣的回答算過關：{b["acceptable"]}')
+            if b.get('why'):
+                lines.append(f'      沒問到會：{b["why"]}')
+        if crit:
+            lines.append(f'  ⚠️ 上面標 🚨 的 {len(crit)} 條是「不過就不用談」的，'
+                         '**問到明確答案為止**；對方迴避或給不出時間點，就記下他的原話，'
+                         '不要自己幫他圓場、也不要當作問過了。')
 
     # ── 這個職缺的專業題庫 ──
     # 2026-08-19 加（Jacky 指定：「要讓阿財成為每一個職缺該領域的專家」）。
@@ -1460,6 +1488,12 @@ REPORT_JSON_SPEC = r'''
     {"item": "", "verdict": "符合|不符|待確認", "detail": "",
      "evidence_source": "履歷|應徵表單|他親口說|未確認"}
   ],
+  "blocker_findings": [
+    {"item": "到職障礙名稱（照題目給的）",
+     "answer": "他實際怎麼回答，用他的說法",
+     "status": "沒問題|有風險|還沒問到|他答不出來",
+     "evidence": "他的原話一句"}
+  ],
   "expertise_findings": [
     {"topic": "考點名稱", "asked": "你實際問了什麼",
      "answered": "他回答的重點，用他自己的說法整理，不要美化",
@@ -1669,6 +1703,14 @@ def _normalize_report_json(obj):
     fc = obj.get('for_client') if isinstance(obj.get('for_client'), dict) else {}
     out['for_client'] = {k: [s(x) for x in arr(fc.get(k)) if s(x)]
                          for k in ('reasons', 'risks_to_disclose', 'suggested_questions')}
+
+    # 到職障礙的逐條結果。這一段跟專業能力無關，是「他到底能不能來上班」——
+    # 顧問看報告時最常被燙到的就是這裡：人選很好、談完了，才發現簽證下不來。
+    out['blocker_findings'] = [
+        {'item': s(f.get('item')), 'answer': s(f.get('answer')),
+         'status': s(f.get('status')) if s(f.get('status')) in ('沒問題', '有風險', '還沒問到', '他答不出來') else '還沒問到',
+         'evidence': s(f.get('evidence'))}
+        for f in arr(obj.get('blocker_findings')) if isinstance(f, dict)]
 
     # 專業題的逐題結果。這一段是「用人單位不用自己面談就能判斷」的關鍵：
     # 它給的不是我們的評價，是候選人講過的原話——主管看原話比看分數有用得多。

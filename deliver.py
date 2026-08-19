@@ -363,6 +363,38 @@ def _fit(data):
               '分數旁邊沒有原話的維度代表面談中沒有依據，不要拿來當淘汰理由。</p>')
 
 
+def _blockers(data, for_client=False):
+    """到職障礙的逐條結果。
+
+    這一段跟專業能力無關，回答的是「他到底能不能來上班」。
+    顧問最常被燙到的就是這裡：人選很好、都談完了，才發現簽證下不來。
+
+    ⚠️ 「還沒問到」也要印出來，而且要顯眼。空白會被讀成「沒問題」，
+       但那兩件事差很多——沒問到的風險是未知，不是零。
+    """
+    rows = [f for f in (data.get('blocker_findings') or []) if f.get('item')]
+    if not rows:
+        return ''
+    C = {'沒問題': ('#14733f', '#e9f5ee'), '有風險': ('#8a6100', '#fff6e0'),
+         '還沒問到': ('#a32b21', '#fdecea'), '他答不出來': ('#a32b21', '#fdecea')}
+    out = []
+    for f in rows:
+        st = f.get('status') or '還沒問到'
+        col, bg = C.get(st, C['還沒問到'])
+        out.append(
+            f'<div style="border-top:1px solid #e3e7ec;padding:9px 0">'
+            f'<div style="font-size:13px;font-weight:700">{e(f.get("item"))}'
+            f'<span style="margin-left:8px;font-size:11.5px;font-weight:700;color:{col};'
+            f'background:{bg};padding:1px 8px;border-radius:10px">{e(st)}</span></div>'
+            + (f'<div style="font-size:12.5px;margin-top:3px">{e(f.get("answer"))}</div>'
+               if f.get('answer') else '')
+            + (f'<div style="font-size:12px;margin-top:3px;padding-left:10px;'
+               f'border-left:3px solid #e3e7ec;color:#333">「{e(f.get("evidence"))}」</div>'
+               if f.get('evidence') else '')
+            + '</div>')
+    return ''.join(out)
+
+
 def _expertise(data, for_client=False):
     """專業問答的逐題結果。
 
@@ -527,6 +559,7 @@ def build_client_html(data, meta):
         'NUMS': _nums(meta, _current_state(data)),
         'BASICS': _basics(data, meta, for_client=True),
         'REASONS': reasons,
+        'BLOCKERS': _blockers(data, for_client=True),
         'EXPERTISE': _expertise(data, for_client=True),
         'TRACK': _track(wh),
         'JOBS': _jobs(wh, scrub=True),
@@ -545,6 +578,7 @@ def build_client_html(data, meta):
     }, {
         'reasons': bool(reasons),
         'expertise': bool(data.get('expertise_findings')),
+        'blockers': bool(data.get('blocker_findings')),
         'history': bool(wh),
         'cond': bool(cond_html),
         'asked': bool(asked),
@@ -666,6 +700,7 @@ def build_consultant_html(data, meta):
         'FILES': ''.join(files),
         'COND': _cond(data.get('hard_conditions') or [], with_evidence=True),
         'FIT': _fit(data),
+        'BLOCKERS': _blockers(data),
         'EXPERTISE': _expertise(data),
         'ASSESSMENT': bars,
         'ASKED': asked,
@@ -682,6 +717,7 @@ def build_consultant_html(data, meta):
         'gaps': bool(gaps),
         'fit': bool((data.get('fit_scores') or {}).get('dimensions')),
         'expertise': bool(data.get('expertise_findings')),
+        'blockers': bool(data.get('blocker_findings')),
         'cond': bool(data.get('hard_conditions')),
         'style': bool((data.get('observations') or {}).get('communication_style')),
         'forclient': bool(reasons or risks_html),

@@ -134,6 +134,12 @@ ol li b{color:var(--ink)}
 
 <!--@IF:history@-->
 <div class="card">
+<!--@IF:blockers@-->
+  <h2>到職可行性</h2>
+  <p class="note">面談中確認過的到職相關條件與他的回答。標「還沒問到」的表示這場沒有問到，不是沒有問題。</p>
+  {{BLOCKERS}}
+<!--@ENDIF:blockers@-->
+
 <!--@IF:expertise@-->
   <h2>專業問答</h2>
   <p class="note">以下是面談中針對這個職務的專業提問，以及他當下的回答（含原話引用）。
