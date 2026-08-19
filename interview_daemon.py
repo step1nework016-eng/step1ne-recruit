@@ -274,6 +274,31 @@ def _sum_session_usage(path, expect_prefix=None):
             'cache_creation_input_tokens': cw, 'cache_read_input_tokens': cr}
 
 
+# ── 就業服務法第 5 條紅線（阿財說出口的話）──
+# 2026-08-19 加。SKILL.md 早就寫著「不准問」，報告端也擋了，但**阿財即時說出去
+# 的話沒有任何程式端檢查**——規範寫在 prompt 裡，模型守不守是機率問題，
+# 而候選人看到的是已經送出去的字。
+#
+# ⚠️ 這裡刻意**不硬擋**（跟後台結案訊息不同）。硬擋會讓對話當場中斷，
+#    候選人乾等一則永遠不會來的回覆，那個體驗比誤講一句更糟。
+#    作法是：命中就重生成一次，仍命中才用安全句替代，並且一律通知顧問。
+#
+# ⚠️ 只檢查**阿財自己講的話**。候選人主動提到自己已婚、有小孩、幾歲，
+#    那是他的自由，阿財把它記進報告也是應該的（basics 那一區就是為此存在）。
+LAW5_WORDS = [
+    '性別', '男性', '女性', '男生', '女生', '限男', '限女',
+    '幾歲', '年齡', '歲以下', '歲以上', '年紀多大',
+    '已婚', '未婚', '結婚了嗎', '懷孕', '生育', '打算生',
+    '國籍', '外籍', '哪一國人', '原住民',
+    '身心障礙', '殘障', '宗教', '政黨', '容貌', '長相', '星座', '血型',
+]
+
+
+def law5_hits(text):
+    t = str(text or '')
+    return [w for w in LAW5_WORDS if w in t]
+
+
 def log_token_usage(app_id, call_type, prompt, before_files):
     """在對應的 claude -p subprocess.run() 呼叫「之後」呼叫，
     before_files 是呼叫「之前」的 _snapshot_session_files()。
@@ -2040,6 +2065,28 @@ def handle(app):
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
         if not msgs:
             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
+
+        # 就服法紅線：阿財說出口的話送出去之前擋一次。
+        hits = sorted({w for m in msgs for w in law5_hits(m)})
+        if hits:
+            log(f'⚠️ {name}：阿財這輪出現保護特徵字眼 {hits}，重生成一次')
+            retry = run_claude(
+                talk_prompt +
+                f'\n\n⚠️ 你剛剛那則回覆裡出現了「{"、".join(hits)}」。'
+                '就業服務法第 5 條禁止以性別、年齡、婚姻、生育、國籍、身心障礙、'
+                '宗教、容貌等條件對求職者為差別待遇——**不要問、不要提、也不要轉述'
+                '用人單位的這類偏好**。請重寫這一輪，改問跟工作本身有關的事。')
+            r2 = [m for m in (retry.get('messages') or []) if str(m).strip()][:3]
+            if r2 and not any(law5_hits(m) for m in r2):
+                msgs, result = r2, retry
+                log(f'{name}：重生成後已無問題')
+            else:
+                msgs = ['了解，那我們接著談工作內容的部分。']
+                log(f'⚠️ {name}：重生成仍命中，改用安全句')
+            tg(f'⚠️ 阿財差點對 {name} 講到保護特徵：{"、".join(hits)}\n'
+               f'已攔下並改寫，候選人沒有看到。\n'
+               f'職缺：{app.get("job_slug")}　·　這通常代表職缺資料裡混進了用人單位的歧視性偏好，'
+               f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in msgs)
