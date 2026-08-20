@@ -134,6 +134,11 @@ ol li b{color:var(--ink)}
 
 <!--@IF:history@-->
 <div class="card">
+<!--@IF:social@-->
+  <h2>候選人提供的社群連結</h2>
+  {{SOCIAL}}
+<!--@ENDIF:social@-->
+
 <!--@IF:blockers@-->
   <h2>到職可行性</h2>
   <p class="note">面談中確認過的到職相關條件與他的回答。標「還沒問到」的表示這場沒有問到，不是沒有問題。</p>

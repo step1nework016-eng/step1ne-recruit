@@ -3122,16 +3122,18 @@ export default {
           // Jacky 自己的帳號），行為跟改之前一樣，不會突然發不出去。
           let threadsToken = env.THREADS_ACCESS_TOKEN, threadsUserId = env.THREADS_USER_ID;
           let platform = 'threads';   // 沒指定帳號的舊職缺一律當 Threads
+          let accLabel = '';
           // 2026-08-18 加：串文最後那則「應徵了解窗口」原本寫死同一個 LINE 連結，
           // 四位顧問各自發文卻都導去同一個人身上，候選人的來源就分不清是誰帶來的。
           // 改成每個帳號各自的連結；沒指定帳號的舊職缺退回 Jacky 那組（跟金鑰退回邏輯一致）。
           let lineLink = 'https://lin.ee/RR4nQqm';
           if (row.account_id) {
             const acc = await env.DB.prepare(
-              `SELECT access_token, platform_user_id, line_link, platform FROM social_accounts WHERE id = ? AND is_active = 1`
+              `SELECT access_token, platform_user_id, line_link, platform, label FROM social_accounts WHERE id = ? AND is_active = 1`
             ).bind(row.account_id).first();
             if (!acc) { await answer('❌ 指定的發文帳號找不到或已停用'); return new Response('ok'); }
             threadsToken = acc.access_token; threadsUserId = acc.platform_user_id;
+            accLabel = acc.label || '';
             if (acc.line_link) lineLink = acc.line_link;
             platform = acc.platform || 'threads';
           }
@@ -3313,7 +3315,17 @@ export default {
             // 失敗要解鎖，不然這篇就卡在 posting 狀態，之後永遠按不動、也重發不了。
             await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
             await answer('❌ 發文失敗：' + String(e).slice(0, 150), true);
-            await notify(env, `⚠️ Threads 發文失敗：${row.title}\n${String(e).slice(0, 300)}`,
+            // ⚠️ 2026-08-19 改：原本寫死「Threads 發文失敗」，也沒帶是哪一則、哪個帳號。
+            // 加了 LinkedIn 之後這則通知會誤導——顧問看到「Threads 失敗」卻是
+            // LinkedIn 那則掛掉，會往錯的方向查。而且沒有 queue id 就無法回頭比對。
+            const transient = /is_transient|"code":\s*2|rate limit|try again/i.test(String(e));
+            await notify(env,
+              `⚠️ ${platform === 'linkedin' ? 'LinkedIn' : 'Threads'} 發文失敗`
+              + `\n職缺：${row.title}`
+              + `\n帳號：${accLabel || '（未指定）'}　·　排隊編號 #${qid}`
+              + (transient ? '\n\n🔄 對方系統回報這是**暫時性錯誤**，通常直接重按一次就會成功。'
+                           : '\n\n這不是暫時性錯誤，重按大概還是會失敗，可能要看金鑰或內容。')
+              + `\n\n${String(e).slice(0, 300)}`,
               { message_thread_id: THREAD.system });
           }
         } else if (action === 'soc_skip') {
@@ -3468,6 +3480,27 @@ export default {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email)) {
         return json(request, { ok: false, error: 'Email 格式看起來不正確' }, 400);
       }
+      // 2026-08-20 加：直播主這類職缺要看本人的社群經營狀況，光看履歷看不出來。
+      // ⚠️ 哪些職缺要問由 jobs.need_social 決定，不寫死在前端——
+      //    以後社群小編、影音編輯要收作品連結時，顧問在後台設一下就好。
+      // ⚠️ 至少一個就好，不要求每個平台都填：有些人只經營一個平台但經營得很好，
+      //    強迫填五格只會逼他亂填。
+      const socialJob = await env.DB.prepare(
+        `SELECT need_social FROM jobs WHERE slug = ?`).bind(b.job_slug).first();
+      let socialLinks = null;
+      if (socialJob && socialJob.need_social) {
+        const raw = (b.social_links && typeof b.social_links === 'object') ? b.social_links : {};
+        const clean = {};
+        for (const k of ['instagram', 'tiktok', 'facebook', 'threads', 'youtube', 'other']) {
+          const v = String(raw[k] || '').trim().slice(0, 300);
+          if (v) clean[k] = v;
+        }
+        if (!Object.keys(clean).length) {
+          return json(request, { ok: false, error: 'social_required',
+            message: '這個職缺需要看您的社群經營狀況，請至少填寫一個平台的連結' }, 400);
+        }
+        socialLinks = JSON.stringify(clean);
+      }
       // 沒有明確同意就不能存個資，這是法律要求不是流程設計
       if (!b.consent) {
         return json(request, { ok: false, error: '需要勾選同意個資使用說明' }, 400);
@@ -3547,8 +3580,8 @@ export default {
           expected_salary, available_date, location_ok,
           resume_file_id, resume_url, note,
           utm_source, utm_medium, utm_campaign, referrer, status, consent_at,
-          disc_d, disc_i, disc_s, disc_c, disc_primary)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?,?,?,?,?)`
+          disc_d, disc_i, disc_s, disc_c, disc_primary, social_links)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?,?,?,?,?, ?)`
       ).bind(
         id, now, b.job_slug, b.job_title || null, b.name, b.email, b.phone || null,
         b.expected_salary || null, b.available_date || null, b.location_ok || null,
@@ -3557,7 +3590,7 @@ export default {
         b.referrer || null, now,
         discOk ? b.disc_d : null, discOk ? b.disc_i : null,
         discOk ? b.disc_s : null, discOk ? b.disc_c : null,
-        discOk ? (b.disc_primary || null) : null
+        discOk ? (b.disc_primary || null) : null, socialLinks
       ).run();
 
       // 新的那筆已經安全寫進去了，這時才把舊的標記掉。
@@ -3735,6 +3768,164 @@ export default {
         return page('❌ 綁定過程出錯', `<pre style="white-space:pre-wrap;font-size:12px">${
           String(e).slice(0, 300)}</pre>`);
       }
+    }
+
+    // 哪些職缺要收社群連結（公開，給應徵表單用）。
+    // 表單的職缺清單來自靜態的 /apply/jobs.json，不會即時反映後台設定，
+    // 所以另外開這支——顧問在後台把某個職缺設成要收作品連結時，
+    // 表單當下就會多出那個區塊，不用等靜態檔重新產生。
+    if (p === '/jobs-social' && request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        `SELECT slug FROM jobs WHERE need_social = 1 AND COALESCE(status,'open') != 'closed'`
+      ).all();
+      return json(request, { ok: true, slugs: (results || []).map((r) => r.slug) });
+    }
+
+    // ── AI 職缺配對（公開，不需驗證）──
+    // 2026-08-19 加。訴求是「這個缺不適合？讓我們幫你配」——
+    // 候選人看到某個職缺不合適時，不要讓他直接關掉，而是留下他、由我們配對其他機會。
+    //
+    // ⚠️ 配對用**規則**不用模型。三個理由：
+    //   ① 候選人在等，模型要幾秒到幾十秒，那個延遲會讓人關掉
+    //   ② 模型會編造不存在的職缺或條件，規則不會
+    //   ③ 這個結果會直接影響他要不要投履歷，講錯比講得不漂亮嚴重得多
+    // 模型只負責把配對結果寫成人話（而且失敗時有規則版的說明可以退回）。
+    if (p === '/match' && request.method === 'POST') {
+      let b;
+      try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+      const text = String(b.text || '').slice(0, 3000).trim();
+      if (text.length < 8) {
+        return json(request, { ok: false, error: '請多說一點，例如您的經歷、想找什麼樣的工作、期望待遇' }, 400);
+      }
+
+      const { results: jobs } = await env.DB.prepare(
+        `SELECT slug, title, locations, must_skills, years_min, salary_min, salary_max,
+                salary_note, employment, service_line, seniority, client_name, client_named,
+                confidential_client
+           FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','draft')`
+      ).all();
+
+      // 斷詞：中文沒有空格，用 2–4 字的滑動視窗抓詞，再跟職缺文字比對。
+      // 這比要求候選人填結構化欄位務實——他就是想用講的。
+      const norm = (t) => String(t || '').toLowerCase().replace(/[\s,，、。；;()（）／/|]+/g, ' ');
+      const grams = (t) => {
+        const out = new Set();
+        const clean = norm(t).replace(/\s+/g, '');
+        for (let n = 2; n <= 4; n++) {
+          for (let i = 0; i + n <= clean.length; i++) out.add(clean.slice(i, i + n));
+        }
+        // 英文與數字單獨抓（Revit、AWS、104 這類）
+        for (const w of norm(t).split(' ')) if (w.length >= 2 && /[a-z0-9]/.test(w)) out.add(w);
+        return out;
+      };
+      const cand = grams(text);
+
+      // 地點：只認台灣常見的縣市與區，避免把「台北的客戶」誤判成他想在台北工作
+      const AREAS = ['台北', '臺北', '新北', '桃園', '台中', '臺中', '台南', '臺南', '高雄',
+                     '基隆', '新竹', '苗栗', '彰化', '南投', '雲林', '嘉義', '屏東', '宜蘭',
+                     '花蓮', '台東', '臺東', '澎湖', '金門', '內湖', '南港', '松山', '信義',
+                     '中和', '板橋', '銅鑼', '竹北', '日本', '東京', '白馬', '海外', '遠端', '在家'];
+      const wantAreas = AREAS.filter((a) => text.includes(a));
+      const wantMoney = (() => {
+        const m = text.match(/(\d{2,3})\s*[kK萬]|月薪\s*(\d{4,6})|(\d{4,6})\s*元/);
+        if (!m) return null;
+        if (m[1]) return Number(m[1]) * (text.includes('萬') ? 10000 : 1000);
+        return Number(m[2] || m[3]);
+      })();
+      const yrs = (() => {
+        const m = text.match(/(\d{1,2})\s*年(以上|經驗|資歷)?/);
+        return m ? Number(m[1]) : null;
+      })();
+
+      const scored = jobs.map((j) => {
+        const hay = [j.title, j.must_skills, j.locations, j.salary_note].join(' ');
+        const jg = grams(hay);
+        let hits = [];
+        for (const g of cand) if (g.length >= 2 && jg.has(g)) hits.push(g);
+        // 長詞優先：命中「Revit」比命中「工程」有意義得多
+        hits = [...new Set(hits)].sort((a, b) => b.length - a.length);
+        const skillScore = Math.min(50, hits.slice(0, 12).reduce((s, h) => s + h.length * 2, 0));
+
+        const locHit = wantAreas.some((a) => String(j.locations || '').includes(a));
+        const locScore = wantAreas.length ? (locHit ? 25 : -15) : 0;
+
+        let payScore = 0, payNote = '';
+        if (wantMoney && j.salary_max) {
+          if (wantMoney <= j.salary_max) payScore = 15;
+          else { payScore = -20; payNote = `這個缺上限約 ${Math.round(j.salary_max / 1000)}K，低於您說的期望`; }
+        }
+        let yrScore = 0, yrNote = '';
+        if (yrs !== null && j.years_min) {
+          if (yrs >= j.years_min) yrScore = 10;
+          else { yrScore = -25; yrNote = `這個缺要 ${j.years_min} 年以上，您提到 ${yrs} 年`; }
+        }
+        return { j, score: skillScore + locScore + payScore + yrScore,
+                 hits: hits.slice(0, 6), locHit, payNote, yrNote };
+      }).filter((x) => x.score > 8).sort((a, b) => b.score - a.score).slice(0, 4);
+
+      const out = scored.map((x) => {
+        const j = x.j;
+        const why = [];
+        if (x.hits.length) why.push(`您提到的「${x.hits.slice(0, 3).join('」「')}」跟這個職缺的需求對得上`);
+        if (x.locHit) why.push('工作地點符合您說的區域');
+        if (!x.yrNote && j.years_min) why.push(`年資門檻 ${j.years_min} 年，您的經歷有機會`);
+        const gap = [x.payNote, x.yrNote].filter(Boolean);
+        return {
+          slug: j.slug, title: j.title, locations: j.locations,
+          employment: j.employment, salary_note: j.salary_note,
+          // 保密客戶不揭露名稱——這條規則在配對結果一樣要守
+          company: (j.confidential_client || !j.client_named) ? null : j.client_name,
+          why, gap,
+          url: `https://step1ne.com/jobs/${j.slug}/?utm_source=match&utm_medium=ai&utm_campaign=job_match`,
+        };
+      });
+
+      // 規則結果先回給候選人看（快），同時排進佇列讓本機的引擎做真正的判斷。
+      // ⚠️ 為什麼要兩段：規則配得對但講不出人話（實測理由會寫成「您提到的『望月收』
+      // 跟這個職缺對得上」），而模型講得好但要十幾秒。候選人盯著轉圈圈會走，
+      // 所以先給他看得懂的東西，好了再自動換成更好的版本。
+      const mid = uid();
+      try {
+        await env.DB.prepare(
+          `INSERT INTO match_requests (id, created_at, input_text, shortlist_json, status, ua)
+           VALUES (?, datetime('now','+8 hours'), ?, ?, 'pending', ?)`
+        ).bind(mid, text, JSON.stringify(out.map((o) => o.slug)),
+               (request.headers.get('user-agent') || '').slice(0, 200)).run();
+      } catch { /* 排不進佇列也要讓他看到規則結果，不能整個失敗 */ }
+
+      return json(request, {
+        ok: true, id: mid, matched: out.length, jobs: out, stage: 'preliminary',
+        note: out.length ? null
+          : '目前站上的職缺跟您的方向沒有很吻合。留給我們您的聯絡方式，有新的機會我們會直接通知您。',
+      });
+    }
+
+    // 輪詢 AI 版結果
+    if (p.startsWith('/match/') && request.method === 'GET') {
+      const mid = p.slice('/match/'.length);
+      if (!mid || mid.length < 8) return json(request, { ok: false, error: 'bad id' }, 400);
+      const r = await env.DB.prepare(
+        `SELECT status, result_json FROM match_requests WHERE id = ?`).bind(mid).first();
+      if (!r) return json(request, { ok: false, error: 'not found' }, 404);
+      if (r.status !== 'done') return json(request, { ok: true, stage: r.status });
+      let parsed = null;
+      try { parsed = JSON.parse(r.result_json); } catch { /* 壞掉就當沒有，前端維持規則版 */ }
+      return json(request, { ok: true, stage: 'done', result: parsed });
+    }
+
+    // 候選人留聯絡方式（配不到職缺時的退路）
+    if (p === '/match/contact' && request.method === 'POST') {
+      let b;
+      try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+      const mid = String(b.id || '').slice(0, 60);
+      const contact = String(b.contact || '').slice(0, 200).trim();
+      if (!mid || !contact) return json(request, { ok: false, error: '缺少資料' }, 400);
+      await env.DB.prepare(`UPDATE match_requests SET contact=? WHERE id=?`).bind(contact, mid).run();
+      await notify(env, `📮 有人用職缺配對留了聯絡方式\n${contact}\n\n他的描述：\n`
+        + String((await env.DB.prepare(`SELECT input_text FROM match_requests WHERE id=?`)
+            .bind(mid).first() || {}).input_text || '').slice(0, 300),
+        { message_thread_id: THREAD.intake }).catch(() => {});
+      return json(request, { ok: true });
     }
 
     // ── 發文導流的轉址中繼（公開，不需驗證）──

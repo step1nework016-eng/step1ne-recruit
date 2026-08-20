@@ -450,6 +450,39 @@ def _cond(hard_conditions, with_evidence):
 
 # ─────────────────────────────────────────────────────────────
 
+def _social(meta):
+    """候選人在應徵表單提供的社群連結。
+
+    ⚠️ 這一段是**給人點開來看的**，不是我們的評價。
+       阿財看不到這些連結的內容（沒有瀏覽器、平台也擋外部抓取），
+       所以報告裡不會有任何「他的社群經營得如何」的判斷——
+       那要顧問或用人主管自己點進去看。
+
+    對直播主這類職缺，社群就是最主要的判斷依據，收了卻沒放進報告等於白收。
+    """
+    raw = meta.get('social_links')
+    if not raw:
+        return ''
+    try:
+        d = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return ''
+    if not d:
+        return ''
+    NAME = {'instagram': 'Instagram', 'tiktok': 'TikTok', 'facebook': 'Facebook',
+            'threads': 'Threads', 'youtube': 'YouTube', 'other': '其他平台'}
+    rows = ''.join(
+        f'<div style="padding:5px 0;font-size:13px">{e(NAME.get(k, k))}　'
+        f'<a href="{e(v)}" target="_blank" rel="noopener" '
+        f'style="color:#0b3d5c;word-break:break-all">{e(v)}</a></div>'
+        for k, v in d.items() if v)
+    if not rows:
+        return ''
+    return (rows + '<div style="font-size:11.5px;color:#5d6672;margin-top:6px">'
+            '這是候選人自己提供的連結，內容請直接點開查看——'
+            '面談中沒有對社群內容做任何評價。</div>')
+
+
 def _basics(data, meta, for_client=False):
     """基本資料列（居住地、年齡、學歷、語言、證照…）。
 
@@ -559,6 +592,7 @@ def build_client_html(data, meta):
         'NUMS': _nums(meta, _current_state(data)),
         'BASICS': _basics(data, meta, for_client=True),
         'REASONS': reasons,
+        'SOCIAL': _social(meta),
         'BLOCKERS': _blockers(data, for_client=True),
         'EXPERTISE': _expertise(data, for_client=True),
         'TRACK': _track(wh),
@@ -579,6 +613,7 @@ def build_client_html(data, meta):
         'reasons': bool(reasons),
         'expertise': bool(data.get('expertise_findings')),
         'blockers': bool(data.get('blocker_findings')),
+        'social': bool(meta.get('social_links')),
         'history': bool(wh),
         'cond': bool(cond_html),
         'asked': bool(asked),
@@ -700,6 +735,7 @@ def build_consultant_html(data, meta):
         'FILES': ''.join(files),
         'COND': _cond(data.get('hard_conditions') or [], with_evidence=True),
         'FIT': _fit(data),
+        'SOCIAL': _social(meta),
         'BLOCKERS': _blockers(data),
         'EXPERTISE': _expertise(data),
         'ASSESSMENT': bars,
@@ -718,6 +754,7 @@ def build_consultant_html(data, meta):
         'fit': bool((data.get('fit_scores') or {}).get('dimensions')),
         'expertise': bool(data.get('expertise_findings')),
         'blockers': bool(data.get('blocker_findings')),
+        'social': bool(meta.get('social_links')),
         'cond': bool(data.get('hard_conditions')),
         'style': bool((data.get('observations') or {}).get('communication_style')),
         'forclient': bool(reasons or risks_html),

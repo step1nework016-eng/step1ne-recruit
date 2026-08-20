@@ -595,7 +595,7 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
     meta = {'name': name, 'job_slug': job_slug, 'abandoned': bool(abandoned),
             'resume': {'kind': 'none'}, 'portfolio_urls': [], 'system_record': {}}
     rows = d1(
-        f"SELECT a.expected_salary, a.available_date, a.location_ok, a.note, "
+        f"SELECT a.expected_salary, a.available_date, a.location_ok, a.note, a.social_links, "
         f"a.resume_url, a.resume_url_note, a.resume_file_id, "
         f"a.disc_d, a.disc_i, a.disc_s, a.disc_c, "
         f"a.interview_started_at, a.interview_ended_at, "
@@ -607,6 +607,9 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
     r = rows[0]
     meta.update({
         'job_title': r.get('job_title') or job_slug,
+        # 應徵表單填的社群連結。報告只放連結本身、不做任何評價——
+        # 阿財看不到內容，要顧問或用人主管自己點開看。
+        'social_links': r.get('social_links'),
         # ⚠️ 這兩個是客戶隱私與法遵開關，不要給預設值。
         # deliver.is_anonymous() 對 NULL 一律從嚴當匿名處理。
         'client_named': r.get('client_named'),
@@ -1025,7 +1028,12 @@ def build_prompt(ctx, skill_md):
     # 但「簽證換雇主要多久」「願不願意跨廠調派」「每月最低開播時數做不做得到」
     # 是各案獨有的，題庫沒有就漏了。而它們偏偏是決定成敗的那一題——
     # 人再好，簽證下不來就是不能到職。
-    bl = ctx.get('blockers') or []
+    # ⚠️ 2026-08-19 加：只問「該問候選人」的。
+    # 直播主那場的教訓：清單裡混進了「跨境金流／外幣帳戶對接」，阿財拿去問候選人，
+    # 結果她反問「台灣人要怎麼申請大陸銀行帳號」——我們答不出來。
+    # 問一個自己答不出來的問題，只會讓候選人覺得我們沒搞清楚就在招人。
+    # 判準是「他知不知道答案」，不是「重不重要」。
+    bl = [b for b in (ctx.get('blockers') or []) if b.get('ask_who') != '用人單位']
     if bl:
         crit = [b for b in bl if b.get('critical')]
         lines.append('\n【到職障礙：這幾題沒問到，這場就是白跑】')
@@ -1233,6 +1241,34 @@ def build_prompt(ctx, skill_md):
             lines.append(f'  （顧問備註，不要對候選人講）：{job["notes"]}')
     else:
         lines.append('  （這個職缺在 jobs 表裡沒有資料，公司相關問題一律說會由顧問說明）')
+
+    # 2026-08-20 加：候選人在應徵表單填的社群連結。
+    # ⚠️ 阿財**看不到這些連結的內容**——它沒有瀏覽器，平台也擋外部抓取。
+    #    所以規則是「知道他有給，但不准假裝看過」。
+    #    Jacky 的原則：人選提供的東西都要問，但**要先看過再問**。
+    #    看不到就不能問「你 IG 都發什麼」——那是我們自己該先做的功課，
+    #    問出口只會讓候選人覺得我們連他給的連結都沒點開。
+    #    改成問「看連結看不出來、只有他知道」的事（頻率、規劃、遇過什麼狀況）。
+    social = ctx.get('application', {}).get('social_links')
+    if social:
+        try:
+            sd = json.loads(social) if isinstance(social, str) else social
+        except Exception:
+            sd = None
+        if sd:
+            NAME = {'instagram': 'Instagram', 'tiktok': 'TikTok', 'facebook': 'Facebook',
+                    'threads': 'Threads', 'youtube': 'YouTube', 'other': '其他平台'}
+            lines.append('\n【他在應徵表單提供的社群連結】')
+            for k, v in sd.items():
+                lines.append(f'  {NAME.get(k, k)}：{v}')
+            lines.append('  🚨 你**沒有看過**這些連結的內容，顧問會自己點開看。')
+            lines.append('  ⚠️ 所以**不准問**「你 IG 平常都發什麼」「你的內容風格是什麼」'
+                         '這種點開就知道的問題——那是我們該自己做的功課，'
+                         '問出口等於告訴他我們連他給的連結都沒看。')
+            lines.append('  ✅ 要問的是**看連結看不出來、只有他本人知道的事**，例如：'
+                         '目前一週固定經營幾天、花多少時間、'
+                         '有沒有接過合作或業配、後續想往哪個方向做、'
+                         '曾經遇過最難處理的狀況是什麼。')
 
     lines.append('\n【履歷】')
     if ctx.get('resume_readable'):
