@@ -1354,7 +1354,14 @@ async function deriveApplicationProgress(env, appId) {
   if (app.manual_stage === 'backup') {
     message = '這個職缺目前用人單位優先安排了其他人選面談，您的資料仍保留在候選名單中，'
       + '如果後續有調整會盡快通知您。';
-  } else if (placement && stageUp === 'CLOSED_LOST') {
+  } else if (placement && (stageUp === 'CLOSED_LOST' || stageUp === 'CLOSED')) {
+    // 2026-08-24 加：'CLOSED' 是 placement_tracker.py 自己的結案字串（跟這裡
+    // 原本認的 'CLOSED_LOST' 是不同來源、不同時期寫的兩套詞彙）。之前這裡沒認，
+    // 候選人已經被業主婉拒了，卻還在收到「還在審閱中」的訊息——湯豐銘那筆
+    // 已經跟 Jacky 當面確認過，'CLOSED' 在這個案子裡真的就是婉拒，不是誤判。
+    // 只加這一個值，'CLOSED' 以外 placement_tracker.py 的其他結案字串
+    // （REJECTED_BY_CLIENT／WITHDRAWN_BY_CANDIDATE／ON_HOLD／PLACED）語意不同，
+    // 沒有一併確認過就不要跟著猜。
     // 已婉拒／結案——委婉但誠實，不用「淘汰」這種字眼
     // （用詞分寸參考顧問版／客戶版報告的既有規則：不確定的不編、但也不用傷人的說法）
     // ⚠️ 2026-08-14 改：close_reason 原本只是塞進固定模板中間的一句話片段，
