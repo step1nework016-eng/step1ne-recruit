@@ -1293,6 +1293,19 @@ function pendingReviewMessage(daysSince, hasAppointment, hasHandledNote) {
       escalated: true,
     };
   }
+  // 2026-08-24 修：hasHandledNote 代表顧問已經有跟進紀錄——最常見就是已經把
+  // 資料送給用人單位了。原本這裡不分青紅皂白都講「接下來會協助送審」，
+  // 會讓已經送出去好幾週的人選一直以為自己還沒被送審，是假訊息。
+  // 這裡只根據「有沒有跟進紀錄」判斷，不去猜 placements.stage 實際代表什麼
+  // （那個欄位目前有好幾套互不相通的字串，貿然照字面判斷「已結案」風險更高，
+  // candidate-facing copy 這塊寧可保守，不確定的不要猜）。
+  if (hasHandledNote) {
+    return {
+      text: '您的資料已經送到用人單位那邊了，目前在等候對方回覆是否安排進一步面試。'
+        + '有進度會盡快通知您；如果等候的時間比較久，也歡迎直接訊息詢問顧問目前的狀況。',
+      escalated: false,
+    };
+  }
   return {
     text: '1-2 天內會審閱完成，若有任何需要確認的地方會主動通知您；有任何問題也歡迎直接訊息告知。\n\n'
       + '如果確認符合條件，接下來會協助送審給用人單位，確認是否安排進一步面談。',
@@ -1389,7 +1402,29 @@ async function deriveApplicationProgress(env, appId) {
         // pendingReviewMessage()，不管是候選人自己來查、還是系統主動推，講的都是同一句話。
         const hasAppt = (appts || []).length > 0;
         const daysSince = daysSinceTaipei(app.interview_ended_at || app.interview_started_at || app.created_at);
-        const prm = pendingReviewMessage(daysSince, hasAppt, !!(app.handled_note && app.handled_note.trim()));
+        // 2026-08-24 修：判斷「已經送出去了」不能只看 handled_note 有沒有人手動打字——
+        // placement_tracker.py 是另一支程式，會自己把 placements.stage 往前推
+        // （SUBMITTED → AWAITING_CLIENT_FEEDBACK → INTERVIEW_REQUESTED → …），
+        // 不會順便去補一句 handled_note。只認 handled_note 的話，以後只要是
+        // placement_tracker.py 自己推進度、沒有顧問手動留言的案子，還是會卡回
+        // 「1-2天內審閱中」這句舊話，同一個問題會在張博州、呂皓宇之後的人選身上
+        // 重複發生。這裡改成兩個訊號只要有一個成立就算「已經送出去了」。
+        // 用允許清單、不用「排除已知的結案字樣」——placement_tracker.py 自己
+        // 定義的結案字串（REJECTED_BY_CLIENT／WITHDRAWN_BY_CANDIDATE／ON_HOLD／
+        // CLOSED／PLACED，見 placement_config.json 的 stages_terminal_no_aging）
+        // 一旦有新增或改名，排除法會漏接、把已經被拒的人講成「還在等回覆」，
+        // 比原本那句舊話更糟。只認「明確還在進行中」的這幾個值才算數。
+        const placementStage = String((placement && placement.stage) || '').toUpperCase();
+        const IN_PROGRESS_WITH_CLIENT = new Set([
+          'AWAITING_CLIENT_FEEDBACK', 'INTERVIEW_REQUESTED', 'INTERVIEW_SCHEDULED',
+          'CLIENT_DECISION_PENDING', 'INTERVIEWING', 'OFFER_PENDING',
+        ]);
+        const hasClientStageSignal = IN_PROGRESS_WITH_CLIENT.has(placementStage);
+        const prm = pendingReviewMessage(
+          daysSince,
+          hasAppt,
+          !!(app.handled_note && app.handled_note.trim()) || hasClientStageSignal,
+        );
         message = prm.text;
         showNudgeButton = prm.escalated;
         break;
@@ -2311,6 +2346,49 @@ export default {
               `聯絡人：${lead.contactName || '未提供'}　電話：${lead.phone || '未提供'}　` +
               `來源頁：${lead.referrer || '未提供'}`,
               now
+            ).run();
+          }
+
+          // ── 同步到 jobs 表（顧問後台／阿財共用的那份 JD） ──
+          // 顧問確認過（approved／exported）才寫入，狀態固定 draft，
+          // 不會自動變成官網公開頁面（公開清單排除 status='draft'）。
+          // 之後顧問要對外刊登，走 step1ne-job-posting 技能的禁刊過濾流程，
+          // 不是這裡自動做的事。
+          if (b.status === 'approved' || b.status === 'exported') {
+            const f = (k) => (b.fields && b.fields[k] && b.fields[k].value) || null;
+            const jobSlug = `assess-${caseId}`;
+            const modeLabel = { dispatch: '人力派遣', executive_search: '中高階獵才', rpo_volume: '正職代招' };
+            const employment = modeLabel[
+              (b.review && b.review.consultantVersion && b.review.consultantVersion.primary)
+              || (b.assessment && b.assessment.primary) || ''
+            ] || null;
+            const notesParts = [];
+            if (f('hiring_reason')) notesParts.push(`用人原因：${f('hiring_reason')}`);
+            if (f('expected_duration')) notesParts.push(`預計使用期間：${f('expected_duration')}`);
+            if (f('post_project_arrangement')) notesParts.push(`結束後安排：${f('post_project_arrangement')}`);
+            if (f('job_duties')) notesParts.push(`工作內容：${f('job_duties')}`);
+            notesParts.push(`（此筆由招募形式評估工具同步，案件編號 ${caseId}，顧問確認前請勿對外刊登）`);
+            await env.DB.prepare(
+              `INSERT INTO jobs
+                 (slug, title, updated_at, client_name, years_min, must_skills,
+                  locations, employment, onboard_by, notes, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?, 'draft')
+               ON CONFLICT(slug) DO UPDATE SET
+                 title       = excluded.title,
+                 updated_at  = excluded.updated_at,
+                 client_name = excluded.client_name,
+                 years_min   = excluded.years_min,
+                 must_skills = excluded.must_skills,
+                 locations   = excluded.locations,
+                 employment  = excluded.employment,
+                 onboard_by  = excluded.onboard_by,
+                 notes       = excluded.notes`
+            ).bind(
+              jobSlug, f('job_title') || String(b.title || '未命名案件'), now,
+              f('company_name'),
+              (() => { const n = parseInt(f('experience_years'), 10); return Number.isFinite(n) ? n : null; })(),
+              f('required_skills'), f('work_location'), employment,
+              f('start_date'), notesParts.join('\n')
             ).run();
           }
 
