@@ -2483,6 +2483,86 @@ export default {
       return json(request, { ok: false, error: 'not found' }, 404);
     }
 
+    // ── 用人需求表 One-Page 企業客戶入口 ──
+    //
+    // 一家企業客戶可能對到多個 jobs，「專屬長期網址」綁在公司層級（client_companies），
+    // 不是綁在單一職缺。認證方式比照 applications.chat_token：portal_token 是唯一憑證，
+    // 拿到連結就能填，不設過期——要收回存取權就在後台重新產生 token。
+    //
+    // PORTAL_FIELDS 是白名單：只有這些欄位會被回傳／允許被企業客戶寫入。
+    // 刻意排除 client_screen_conditions／notes／faq_notes 這幾個顧問內部限定欄位——
+    // 不能因為做了對外入口就把顧問內部備註洩漏出去。
+    const PORTAL_FIELDS = [
+      'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
+      'salary_min', 'salary_max', 'salary_unit', 'locations', 'employment', 'onboard_by',
+      'team_size', 'interview_rounds', 'interview_who', 'has_test',
+      'client_contact_name', 'client_contact_phone', 'headcount', 'work_mode',
+      'work_hours', 'leave_policy', 'employment_period', 'overtime_policy',
+      'hiring_reason', 'urgency', 'main_duties', 'reports_to', 'leads_team',
+      'education_level', 'required_conditions', 'language_requirement',
+      'nice_to_have_skills', 'preferred_background', 'personality_traits',
+      'salary_tier_table', 'salary_structure_note', 'benefits_detail',
+      'dispatch_to_permanent_policy', 'off_limits_note',
+      'dispatch_client', 'department', 'work_environment_ratio', 'attendance_method',
+      'interview_process', 'dispatch_range', 'contract_terms_note', 'overtime_detail',
+      'onboarding_prep_note',
+    ];
+
+    if (p === '/portal' || p.startsWith('/portal/')) {
+      const sub = p.slice('/portal'.length) || '/';
+      const parts = sub.split('/').filter(Boolean); // [token] 或 [token, 'jobs', slug]
+      const token = parts[0] || '';
+      if (!token) return json(request, { ok: false, error: '缺少存取連結' }, 400);
+
+      const company = await env.DB.prepare(
+        `SELECT id, display_name, contact_email FROM client_companies WHERE portal_token = ?`
+      ).bind(token).first();
+      if (!company) return json(request, { ok: false, error: '連結無效，請聯繫顧問重新發送' }, 404);
+
+      // GET /portal/:token — 回傳公司資訊＋這家公司底下所有職缺（只挑白名單欄位）
+      if (parts.length === 1 && request.method === 'GET') {
+        const cols = ['slug', ...PORTAL_FIELDS].join(', ');
+        const { results } = await env.DB.prepare(
+          `SELECT ${cols} FROM jobs WHERE company_id = ? ORDER BY slug`
+        ).bind(company.id).all();
+        return json(request, {
+          ok: true,
+          company: { displayName: company.display_name, contactEmail: company.contact_email },
+          jobs: results || [],
+          fields: PORTAL_FIELDS,
+        });
+      }
+
+      // PUT /portal/:token/jobs/:slug — 只准更新白名單欄位，且該職缺必須真的屬於這個 token 對應的公司
+      if (parts.length === 3 && parts[1] === 'jobs' && request.method === 'PUT') {
+        const slug = parts[2];
+        const owned = await env.DB.prepare(
+          `SELECT slug FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+
+        const sets = [];
+        const bind = [];
+        for (const key of PORTAL_FIELDS) {
+          if (!(key in b)) continue;
+          sets.push(`${key} = ?`);
+          bind.push(b[key] === '' ? null : b[key]);
+        }
+        if (!sets.length) return json(request, { ok: false, error: '沒有要更新的欄位' }, 400);
+        const now = nowTaipei();
+        sets.push('updated_at = ?', 'requirement_form_updated_at = ?');
+        bind.push(now, now, slug);
+
+        await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`).bind(...bind).run();
+        return json(request, { ok: true, slug, updated_at: now });
+      }
+
+      return json(request, { ok: false, error: 'not found' }, 404);
+    }
+
     // ── AI 履歷健檢：收件（公開）──
     //
     // 🚨 這條路跟應徵（/apply）完全分開，寫的是 checkups 系列的表，
@@ -4777,6 +4857,53 @@ export default {
       const auth = request.headers.get('authorization') || '';
       if (!env.ADMIN_TOKEN || !safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`)) {
         return json(request, { ok: false, error: 'unauthorized' }, 401);
+      }
+
+      // 用人需求表 One-Page 入口：顧問建立公司入口／重發連結。
+      // 這裡只負責產生 token 並回傳完整網址——顧問自己複製去寄信，
+      // 這次刻意不做自動寄信（對外寄信是不可逆動作，不交給自動化）。
+      if (p === '/admin/portal/companies' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const displayName = String(b.displayName || '').trim();
+        if (!displayName) return json(request, { ok: false, error: '缺少公司名稱' }, 400);
+        const id = String(b.id || '').trim() || `co_${uid().slice(0, 8)}`;
+        const portalToken = [...crypto.getRandomValues(new Uint8Array(24))]
+          .map((x) => x.toString(16).padStart(2, '0')).join('');
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT INTO client_companies (id, display_name, contact_email, portal_token, created_at, updated_at)
+           VALUES (?,?,?,?,?,?)`
+        ).bind(id, displayName, b.contactEmail || null, portalToken, now, now).run();
+        return json(request, { ok: true, id, portalToken, portalUrl: `https://step1ne.com/portal/?t=${portalToken}` });
+      }
+
+      // 重新產生 token（收回舊連結的存取權）。
+      if (p === '/admin/portal/companies/regen-token' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const id = String(b.id || '').trim();
+        if (!id) return json(request, { ok: false, error: '缺少公司編號' }, 400);
+        const portalToken = [...crypto.getRandomValues(new Uint8Array(24))]
+          .map((x) => x.toString(16).padStart(2, '0')).join('');
+        const now = nowTaipei();
+        const r = await env.DB.prepare(
+          `UPDATE client_companies SET portal_token = ?, updated_at = ? WHERE id = ?`
+        ).bind(portalToken, now, id).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這家公司' }, 404);
+        return json(request, { ok: true, id, portalToken, portalUrl: `https://step1ne.com/portal/?t=${portalToken}` });
+      }
+
+      // 把某個既有職缺掛上公司入口（company_id），這樣它才會出現在對應的 portal 裡。
+      if (p === '/admin/portal/link-job' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const slug = String(b.slug || '').trim();
+        const companyId = String(b.companyId || '').trim();
+        if (!slug || !companyId) return json(request, { ok: false, error: '缺少 slug 或 companyId' }, 400);
+        const r = await env.DB.prepare(`UPDATE jobs SET company_id = ? WHERE slug = ?`).bind(companyId, slug).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        return json(request, { ok: true, slug, companyId });
       }
 
       // LINE「查詢面試進度」的配對紀錄清單。Jacky 明確要求：這件事顧問要看得到，
