@@ -4862,6 +4862,29 @@ export default {
       // 用人需求表 One-Page 入口：顧問建立公司入口／重發連結。
       // 這裡只負責產生 token 並回傳完整網址——顧問自己複製去寄信，
       // 這次刻意不做自動寄信（對外寄信是不可逆動作，不交給自動化）。
+      // 客戶資訊清單：顧問後台「客戶資訊」分頁用，每家公司＋掛在底下的職缺數。
+      if (p === '/admin/portal/companies' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT c.id, c.display_name, c.contact_email, c.portal_token, c.created_at,
+                  (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count
+             FROM client_companies c ORDER BY c.display_name`
+        ).all();
+        return json(request, { ok: true, companies: results || [] });
+      }
+
+      // 單一公司詳情：公司資訊＋底下所有職缺（含未掛公司的可選清單，方便顧問手動掛新職缺）。
+      if (p.startsWith('/admin/portal/companies/') && request.method === 'GET') {
+        const id = p.slice('/admin/portal/companies/'.length);
+        const company = await env.DB.prepare(
+          `SELECT id, display_name, contact_email, portal_token, created_at FROM client_companies WHERE id = ?`
+        ).bind(id).first();
+        if (!company) return json(request, { ok: false, error: '找不到這家公司' }, 404);
+        const { results: jobs } = await env.DB.prepare(
+          `SELECT slug, title, status, updated_at FROM jobs WHERE company_id = ? ORDER BY slug`
+        ).bind(id).all();
+        return json(request, { ok: true, company, jobs: jobs || [] });
+      }
+
       if (p === '/admin/portal/companies' && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
