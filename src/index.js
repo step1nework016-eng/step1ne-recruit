@@ -572,6 +572,59 @@ async function sendBdMail(env, to, subject, body, cvFileId) {
   }
 }
 
+// 用人需求表補件邀請信——寄給企業客戶窗口，跟 sendBdMail 一樣是能直接回信的
+// 商務信，不是 sendMail() 那套候選人專用、掛系統頁尾／LINE的格式。
+async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
+  if (!env.RESEND_API_KEY || !to) return false;
+  const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const greeting = contactName ? `${contactName} 您好，` : '您好，';
+  const subject = `【STEP1NE】${companyName}的用人需求表，麻煩協助補齊`;
+  const bodyText =
+    `${greeting}\n\n` +
+    `這是貴司目前開出職缺的用人需求表連結，我們已經先把已知的資訊填上，麻煩協助補齊剩餘欄位，` +
+    `這樣候選人媒合與面談安排都能更準確、更有效率。\n\n` +
+    `連結：${portalUrl}\n\n` +
+    `這個連結會持續有效，之後如果有新職缺或既有內容要調整，都可以直接回到這個連結處理。\n\n` +
+    `若有任何問題，歡迎直接回覆這封信與我們聯繫。`;
+  const html =
+    `<div style="background:#f4f1ea;padding:26px 14px;">` +
+    `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;line-height:1.9;color:#23262d;` +
+    `max-width:540px;margin:0 auto;background:#ffffff;border-radius:14px;padding:30px 28px;">` +
+    `<p style="margin:0 0 22px;"><img src="https://step1ne.com/assets/step1ne-logo.png" ` +
+    `alt="Step1ne 德仁管理顧問" width="132" style="height:auto;border:0;display:block;"></p>` +
+    `<p style="margin:0 0 14px;font-size:15px;">${esc(greeting)}</p>` +
+    `<p style="margin:0 0 14px;font-size:15px;">這是貴司目前開出職缺的用人需求表連結，我們已經先把已知的資訊填上，` +
+    `麻煩協助補齊剩餘欄位，這樣候選人媒合與面談安排都能更準確、更有效率。</p>` +
+    `<p style="margin:26px 0;"><a href="${portalUrl}" style="display:inline-block;background:#a67c3d;` +
+    `color:#ffffff;font-weight:700;font-size:15px;text-decoration:none;padding:14px 30px;` +
+    `border-radius:999px;">前往用人需求表</a></p>` +
+    `<p style="margin:0 0 14px;font-size:13px;color:#8a8d95;">按鈕打不開的話，複製這個網址：<br>` +
+    `<span style="color:#a67c3d;word-break:break-all;">${portalUrl}</span></p>` +
+    `<p style="margin:0 0 14px;font-size:15px;">這個連結會持續有效，之後如果有新職缺或既有內容要調整，` +
+    `都可以直接回到這個連結處理。</p>` +
+    `<p style="margin:26px 0 0;font-size:15px;">若有任何問題，歡迎直接回覆這封信與我們聯繫。</p>` +
+    `<hr style="border:0;border-top:1px solid #eee7db;margin:24px 0;">` +
+    `<p style="margin:0;font-size:12px;color:#9a9da5;line-height:1.9;">` +
+    `<b style="color:#6b6e77;">德仁管理顧問有限公司</b>（Step1ne）<br>` +
+    `統一編號：85046127<br>就業服務許可證：北市就服字第 0363 號<br>` +
+    `地址：臺北市內湖區康寧路三段 54 之 7 號 3 樓</p></div></div>`;
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        from: 'Jacky Chen <official@step1ne.com>',
+        to: [to], subject, text: bodyText, html,
+        reply_to: env.BD_REPLY_TO || 'official@step1ne.com',
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function notify(env, text, extra) {
   if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return;
   try {
@@ -2492,8 +2545,14 @@ export default {
     // PORTAL_FIELDS 是白名單：只有這些欄位會被回傳／允許被企業客戶寫入。
     // 刻意排除 client_screen_conditions／notes／faq_notes 這幾個顧問內部限定欄位——
     // 不能因為做了對外入口就把顧問內部備註洩漏出去。
+    // 2026-08-25 修：原本把 client_screen_conditions／faq_notes／salary_note／client_name
+    // 也擋掉了，理由是「內部欄位」——但這幾個其實是企業客戶自己講的職缺內容
+    // （他們的用人條件、FAQ、薪資說明、公司名稱），是要拿來對焦用的，不是我們的東西，
+    // 不該擋。真正該擋的只有 notes（顧問寫給顧問自己看的內部工作筆記，跟職缺內容無關）
+    // 跟 scoring_notes（阿財的評分方法論，是 STEP1NE 自己的招募know-how，不是他們的職缺資料）。
     const PORTAL_FIELDS = [
-      'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
+      'client_name', 'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
+      'client_screen_conditions', 'faq_notes', 'salary_note',
       'salary_min', 'salary_max', 'salary_unit', 'locations', 'employment', 'onboard_by',
       'team_size', 'interview_rounds', 'interview_who', 'has_test',
       'client_contact_name', 'client_contact_phone', 'headcount', 'work_mode',
@@ -2521,7 +2580,7 @@ export default {
 
       // GET /portal/:token — 回傳公司資訊＋這家公司底下所有職缺（只挑白名單欄位）
       if (parts.length === 1 && request.method === 'GET') {
-        const cols = ['slug', ...PORTAL_FIELDS].join(', ');
+        const cols = ['slug', 'status', ...PORTAL_FIELDS].join(', ');
         const { results } = await env.DB.prepare(
           `SELECT ${cols} FROM jobs WHERE company_id = ? ORDER BY slug`
         ).bind(company.id).all();
@@ -2537,9 +2596,12 @@ export default {
       if (parts.length === 3 && parts[1] === 'jobs' && request.method === 'PUT') {
         const slug = parts[2];
         const owned = await env.DB.prepare(
-          `SELECT slug FROM jobs WHERE slug = ? AND company_id = ?`
+          `SELECT slug, title, status FROM jobs WHERE slug = ? AND company_id = ?`
         ).bind(slug, company.id).first();
         if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        if (owned.status === 'pending_review') {
+          return json(request, { ok: false, error: '這個職缺還在等顧問審核，審核通過前無法修改' }, 400);
+        }
 
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
@@ -2557,7 +2619,51 @@ export default {
         bind.push(now, now, slug);
 
         await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`).bind(...bind).run();
+
+        // 顧問要知道企業客戶自己動手改過用人需求表，不然這件事只有客戶知道。
+        // 純告知、不用顧問馬上處理，所以進「履歷進件」這個資訊性主題，不佔用決策主題。
+        const changedFields = sets.filter((s) => s !== 'updated_at = ?' && s !== 'requirement_form_updated_at = ?')
+          .map((s) => s.split(' =')[0]);
+        notify(env,
+          `📝 ${company.display_name} 剛透過用人需求表自行更新了「${owned.title || slug}」\n` +
+          `改了 ${changedFields.length} 個欄位：${changedFields.join('、')}`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+
         return json(request, { ok: true, slug, updated_at: now });
+      }
+
+      // POST /portal/:token/jobs — 企業客戶自己新增職缺。
+      // 這裡建的職缺一律 status='pending_review'，不會出現在任何公開清單、
+      // 不會被排進社群發文，要顧問在「客戶資訊」分頁核准後才會變成 draft，
+      // 進入既有的正常職缺審核流程（禁刊過濾器、內容改寫）才能真的對外刊登——
+      // 這裡只負責「企業客戶說他們要開這個缺」，不負責讓它上線。
+      if (parts.length === 1 && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const title = String(b.title || '').trim();
+        if (!title) return json(request, { ok: false, error: '請填職缺名稱' }, 400);
+
+        const slug = `pending-${company.id}-${[...crypto.getRandomValues(new Uint8Array(4))]
+          .map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+        const now = nowTaipei();
+
+        const sets = ['slug', 'title', 'status', 'company_id', 'updated_at'];
+        const bind = [slug, title, 'pending_review', company.id, now];
+        for (const key of PORTAL_FIELDS) {
+          if (key === 'title' || !(key in b)) continue;
+          sets.push(key);
+          bind.push(b[key] === '' ? null : b[key]);
+        }
+        await env.DB.prepare(
+          `INSERT INTO jobs (${sets.join(', ')}) VALUES (${sets.map(() => '?').join(',')})`
+        ).bind(...bind).run();
+
+        notify(env,
+          `🆕 ${company.display_name} 透過用人需求表新增了一個職缺「${title}」，等待審核\n` +
+          `到「客戶資訊」分頁核准或拒絕：https://step1ne.com/consultant/client-info/`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+
+        return json(request, { ok: true, slug });
       }
 
       return json(request, { ok: false, error: 'not found' }, 404);
@@ -4280,7 +4386,7 @@ export default {
     // 表單當下就會多出那個區塊，不用等靜態檔重新產生。
     if (p === '/jobs-social' && request.method === 'GET') {
       const { results } = await env.DB.prepare(
-        `SELECT slug FROM jobs WHERE need_social = 1 AND COALESCE(status,'open') != 'closed'`
+        `SELECT slug FROM jobs WHERE need_social = 1 AND COALESCE(status,'open') NOT IN ('closed','pending_review')`
       ).all();
       return json(request, { ok: true, slugs: (results || []).map((r) => r.slug) });
     }
@@ -4306,7 +4412,7 @@ export default {
         `SELECT slug, title, locations, must_skills, years_min, salary_min, salary_max,
                 salary_note, employment, service_line, seniority, client_name, client_named,
                 confidential_client
-           FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','draft')`
+           FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','draft','pending_review')`
       ).all();
 
       // 斷詞：中文沒有空格，用 2–4 字的滑動視窗抓詞，再跟職缺文字比對。
@@ -4865,8 +4971,9 @@ export default {
       // 客戶資訊清單：顧問後台「客戶資訊」分頁用，每家公司＋掛在底下的職缺數。
       if (p === '/admin/portal/companies' && request.method === 'GET') {
         const { results } = await env.DB.prepare(
-          `SELECT c.id, c.display_name, c.contact_email, c.portal_token, c.created_at,
-                  (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count
+          `SELECT c.id, c.display_name, c.contact_email, c.contact_name, c.portal_token, c.created_at, c.last_emailed_at,
+                  (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count,
+                  (SELECT COUNT(*) FROM jobs WHERE company_id = c.id AND status = 'pending_review') AS pending_count
              FROM client_companies c ORDER BY c.display_name`
         ).all();
         return json(request, { ok: true, companies: results || [] });
@@ -4876,7 +4983,8 @@ export default {
       if (p.startsWith('/admin/portal/companies/') && request.method === 'GET') {
         const id = p.slice('/admin/portal/companies/'.length);
         const company = await env.DB.prepare(
-          `SELECT id, display_name, contact_email, portal_token, created_at FROM client_companies WHERE id = ?`
+          `SELECT id, display_name, contact_email, contact_name, portal_token, created_at, last_emailed_at
+             FROM client_companies WHERE id = ?`
         ).bind(id).first();
         if (!company) return json(request, { ok: false, error: '找不到這家公司' }, 404);
         const { results: jobs } = await env.DB.prepare(
@@ -4915,6 +5023,64 @@ export default {
         ).bind(portalToken, now, id).run();
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這家公司' }, 404);
         return json(request, { ok: true, id, portalToken, portalUrl: `https://step1ne.com/portal/?t=${portalToken}` });
+      }
+
+      // 編輯公司的聯絡信箱／稱呼。
+      if (p === '/admin/portal/companies/update' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const id = String(b.id || '').trim();
+        if (!id) return json(request, { ok: false, error: '缺少公司編號' }, 400);
+        const now = nowTaipei();
+        const r = await env.DB.prepare(
+          `UPDATE client_companies SET contact_email = ?, contact_name = ?, updated_at = ? WHERE id = ?`
+        ).bind(b.contactEmail || null, b.contactName || null, now, id).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這家公司' }, 404);
+        return json(request, { ok: true, id });
+      }
+
+      // 一鍵寄送補件連結給企業客戶窗口。
+      if (p === '/admin/portal/companies/send-email' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const id = String(b.id || '').trim();
+        if (!id) return json(request, { ok: false, error: '缺少公司編號' }, 400);
+        const company = await env.DB.prepare(
+          `SELECT id, display_name, contact_email, contact_name, portal_token FROM client_companies WHERE id = ?`
+        ).bind(id).first();
+        if (!company) return json(request, { ok: false, error: '找不到這家公司' }, 404);
+        if (!company.contact_email) return json(request, { ok: false, error: '這家公司還沒填聯絡信箱' }, 400);
+        const portalUrl = `https://step1ne.com/portal/?t=${company.portal_token}`;
+        const sent = await sendPortalMail(env, company.contact_email, company.contact_name, company.display_name, portalUrl);
+        if (!sent) return json(request, { ok: false, error: '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' }, 500);
+        const now = nowTaipei();
+        await env.DB.prepare(`UPDATE client_companies SET last_emailed_at = ? WHERE id = ?`).bind(now, id).run();
+        return json(request, { ok: true, sentAt: now });
+      }
+
+      // 企業客戶送出「等審核」的新職缺清單，顧問核准／拒絕。
+      if (p === '/admin/portal/pending-jobs/approve' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const slug = String(b.slug || '').trim();
+        if (!slug) return json(request, { ok: false, error: '缺少 slug' }, 400);
+        // 核准後回到 draft——這只是「這家公司真的要開這個缺」被確認了，
+        // 不代表可以直接對外刊登：正式上架仍要走既有的職缺審核流程
+        // （禁刊過濾器、內容改寫），不在這裡跳過。
+        const r = await env.DB.prepare(
+          `UPDATE jobs SET status = 'draft', updated_at = ? WHERE slug = ? AND status = 'pending_review'`
+        ).bind(nowTaipei(), slug).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆待審核職缺' }, 404);
+        return json(request, { ok: true, slug });
+      }
+      if (p === '/admin/portal/pending-jobs/reject' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const slug = String(b.slug || '').trim();
+        if (!slug) return json(request, { ok: false, error: '缺少 slug' }, 400);
+        const r = await env.DB.prepare(`DELETE FROM jobs WHERE slug = ? AND status = 'pending_review'`).bind(slug).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆待審核職缺' }, 404);
+        return json(request, { ok: true, slug });
       }
 
       // 把某個既有職缺掛上公司入口（company_id），這樣它才會出現在對應的 portal 裡。
@@ -6799,7 +6965,7 @@ export default {
 
         const now = await one(
           `SELECT
-             (SELECT COUNT(*) FROM jobs WHERE COALESCE(status,'open') != 'closed') AS jobs_open,
+             (SELECT COUNT(*) FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','pending_review')) AS jobs_open,
              (SELECT COUNT(*) FROM applications) AS cands,
              (SELECT COUNT(*) FROM applications WHERE created_at >= datetime('now','+8 hours','-7 days')) AS new7,
              (SELECT COUNT(*) FROM applications WHERE interview_state='done') AS done,
