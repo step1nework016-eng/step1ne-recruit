@@ -38,7 +38,16 @@
  *   GET  /health         公開
  */
 
-const ORIGINS = ['https://step1ne.com', 'https://www.step1ne.com'];
+// 2026-08-24 加後兩個：招募形式評估工具住在自己的子網域＋自己的 Pages 專案
+// （step1ne-enterprise），跟主網域不同源，不加進來瀏覽器會直接把回應擋掉。
+// 自訂網域的 DNS 在另一個 Cloudflare 帳號底下，還沒接起來之前 .pages.dev
+// 那個位址就是正式入口，兩個都要留著。
+const ORIGINS = [
+  'https://step1ne.com',
+  'https://www.step1ne.com',
+  'https://enterprise.step1ne.com',
+  'https://step1ne-enterprise.pages.dev',
+];
 
 // ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
 // 判準是「顧問要不要動手」。原本什麼都往 2855 塞，變成大雜燴，重要的被洗掉。
@@ -54,7 +63,21 @@ const THREAD = {
   pool: 304,      // #4 履歷池：面談報告與 PDF（資料，不是決策）
   system: 1360,   // 系統回報：排程結果、寄送失敗、刪除紀錄
   report: 3161,   // 顧問人選回報區：顧問用人話回報進度，總指揮翻成漏斗狀態
+  sourced: 3477,  // 🔍 主動開發人才池：爬蟲／履歷解析撈到的人
+                  // 2026-08-20 從 intake 分出來——那個主題是「有人來應徵了」，
+                  // 是要有人去回應的事；主動撈到的人還沒被接觸、也沒表達意願，
+                  // 混在一起會讓真正要回應的應徵通知被淹掉。
 };
+// 顧問標記「不合適」時要選的原因。**固定選項，不開放自由輸入**——
+// 因為這份資料的用途是「累積起來看出該調什麼」，不是給人抒發。
+// 每一個原因對應到一個不同的調整動作，這是它們被這樣切分的理由：
+//   地點不行   → 搜尋要加地區限制
+//   資歷差太多 → 調分數門檻
+//   職類不對   → 改搜尋詞（這條最嚴重，代表整批都白撈）
+//   找不到聯絡方式 → 換來源
+//   已有工作／沒意願 → 這是正常耗損，不需要調整策略
+const REJECT_REASONS = ['地點不行', '資歷差太多', '職類根本不對',
+                        '找不到聯絡方式', '已有工作或沒意願', '其他'];
 const CHECKUP_THREAD = THREAD.intake;
 const INTAKE_THREAD = THREAD.intake;
 
@@ -352,6 +375,22 @@ const LAW5_TERMS = [
   '國籍', '外籍', '本國籍', '原住民', '族群',
   '身心障礙', '殘障', '身障', '宗教', '政黨', '容貌', '長相', '星座', '血型',
 ];
+// ── 佔位符（草稿沒填完就發出去）──
+// 2026-08-20 加。真實事故：VIP 接待那則貼文以「🔥【徵】［案件亮點待補］」發出去，
+// 而且不是第一次——回頭掃描發現直播主(8/17)、財會派遣(8/18)、VIP 接待(8/19)
+// 三則都帶著「待補」字樣公開發布了。
+//
+// 為什麼審核沒擋住：草稿是三十行的長文，審核的人看的是「內容對不對」，
+// 中間夾一個方括號很容易滑過去——這種錯誤靠人眼盯不住，要用程式擋。
+//
+// ⚠️ 只擋明確的佔位符字樣，不擋英文中括號——貼文裡出現 [] 的正常用法不算少，
+//    誤擋會讓顧問發不出去、然後開始想辦法繞過檢查，那比不擋更糟。
+const PLACEHOLDER_WORDS = ['待補', '待確認', '待填', '待補充', '請補', 'TBD', 'XXX', 'xxx'];
+function placeholderHits(text) {
+  const t = String(text || '');
+  return PLACEHOLDER_WORDS.filter((w) => t.includes(w));
+}
+
 function law5Hits(text) {
   const t = String(text || '');
   return LAW5_TERMS.filter((w) => t.includes(w));
@@ -361,7 +400,9 @@ const cors = (req) => {
   const o = req.headers.get('origin') || '';
   return {
     'access-control-allow-origin': ORIGINS.includes(o) ? o : ORIGINS[0],
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    // PUT／DELETE 是 2026-08-24 為評估工具的 /assessment/cases/:id 加的。
+    // 純粹放行動詞，既有路由一個都沒改。
+    'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
     'access-control-allow-headers': 'content-type,authorization',
   };
 };
@@ -2097,6 +2138,266 @@ export default {
       return json(request, { ok: true, closed: (results || []).map((r) => r.slug) });
     }
 
+    // ── 招募形式評估工具（enterprise.step1ne.com）──
+    //
+    // 前端是一個獨立的 Cloudflare Pages 專案（step1ne-enterprise），純靜態、
+    // 沒有自己的 Function、沒有自己的 D1 binding，資料一律走這幾支。
+    //
+    // 為什麼掛在這個 Worker 而不是讓那個 Pages 專案自己綁 D1：
+    // 同一個 D1 已經被面談系統、人選配對、主動開發共用，多一個地方持有 binding
+    // 只會讓「誰改了資料」查不清楚。寫入口統一在這裡，稽核才有意義。
+    //
+    // 資料表全部是 hm_ 前綴（hm_cases／hm_todos／hm_audit_logs），
+    // 跟 applications／assessments／jobs 那些既有表完全不重疊。
+    if (p === '/assessment' || p.startsWith('/assessment/')) {
+      const sub = p.slice('/assessment'.length) || '/';
+      const auth = request.headers.get('authorization') || '';
+      const isConsultant = !!env.ADMIN_TOKEN && safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`);
+
+      // 前端啟動時打這支決定資料要存正式後端還是退回瀏覽器本機。
+      // 表沒建起來就誠實回 d1:false，讓前端顯示 localStorage——不假裝有後端。
+      if (sub === '/health' && request.method === 'GET') {
+        let ready = false;
+        try {
+          const row = await env.DB.prepare(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name='hm_cases'`
+          ).first();
+          ready = !!row;
+        } catch { ready = false; }
+        return json(request, { ok: true, d1: ready });
+      }
+
+      // 案件清單。
+      //
+      // 🚨 案件內容含客戶公司名、薪資帶、聯絡人 Email——不能開成「打一下就
+      //    全部撈走」的公開 API。所以分兩條：
+      //    顧問（帶 ADMIN_TOKEN）拿得到全部；沒有權杖的人只能用 ?ids= 指名，
+      //    而 id 是前端自己建案時記在本機的，別人猜不到。
+      if (sub === '/cases' && request.method === 'GET') {
+        const idsParam = (url.searchParams.get('ids') || '').split(',')
+          .map((s) => s.trim()).filter(Boolean).slice(0, 200);
+
+        if (!isConsultant && !idsParam.length) {
+          return json(request, { ok: false, error: '請帶顧問權杖，或用 ?ids= 指名要哪幾筆案件' }, 401);
+        }
+
+        let rows;
+        if (isConsultant && !idsParam.length) {
+          const r = await env.DB.prepare(
+            `SELECT payload FROM hm_cases ORDER BY updated_at DESC LIMIT 500`
+          ).all();
+          rows = r.results || [];
+        } else {
+          const ph = idsParam.map(() => '?').join(',');
+          const r = await env.DB.prepare(
+            `SELECT payload FROM hm_cases WHERE id IN (${ph}) ORDER BY updated_at DESC`
+          ).bind(...idsParam).all();
+          rows = r.results || [];
+        }
+        const cases = [];
+        for (const r of rows) {
+          try { cases.push(JSON.parse(r.payload)); } catch { /* 壞掉的那一筆跳過，不讓整份清單掛掉 */ }
+        }
+        return json(request, { ok: true, cases });
+      }
+
+      if (sub.startsWith('/cases/')) {
+        const caseId = decodeURIComponent(sub.slice('/cases/'.length));
+        if (!caseId || caseId.includes('/')) {
+          return json(request, { ok: false, error: '案件編號格式不正確' }, 400);
+        }
+
+        if (request.method === 'GET') {
+          const row = await env.DB.prepare(`SELECT payload FROM hm_cases WHERE id = ?`)
+            .bind(caseId).first();
+          if (!row) return json(request, { ok: false, error: '找不到這件案子' }, 404);
+          let parsed;
+          try { parsed = JSON.parse(row.payload); }
+          catch { return json(request, { ok: false, error: '案件資料損毀，無法解析' }, 500); }
+          return json(request, { ok: true, case: parsed });
+        }
+
+        if (request.method === 'PUT') {
+          let b;
+          try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+          if (!b || b.id !== caseId) {
+            return json(request, { ok: false, error: '網址與內容的案件編號不一致' }, 400);
+          }
+          const payload = JSON.stringify(b);
+          // 案件會夾帶來源文件的全文，不設上限的話一筆就能把 D1 撐爆。
+          if (payload.length > 4_000_000) {
+            return json(request, { ok: false, error: '案件資料超過 4MB，請減少匯入的來源文件' }, 413);
+          }
+
+          const lead = b.lead || {};
+          const now = nowTaipei();
+          await env.DB.prepare(
+            `INSERT INTO hm_cases
+               (id, organization_id, title, status, audience, primary_mode,
+                lead_email, lead_contact_name, lead_phone,
+                utm_source, utm_medium, utm_campaign, referrer, lead_origin,
+                payload, created_at, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET
+               organization_id = excluded.organization_id,
+               title           = excluded.title,
+               status          = excluded.status,
+               audience        = excluded.audience,
+               primary_mode    = excluded.primary_mode,
+               lead_email      = excluded.lead_email,
+               lead_contact_name = excluded.lead_contact_name,
+               lead_phone      = excluded.lead_phone,
+               utm_source      = excluded.utm_source,
+               utm_medium      = excluded.utm_medium,
+               utm_campaign    = excluded.utm_campaign,
+               referrer        = excluded.referrer,
+               lead_origin     = excluded.lead_origin,
+               payload         = excluded.payload,
+               updated_at      = excluded.updated_at`
+          ).bind(
+            caseId, b.organizationId || null, String(b.title || '未命名案件'),
+            String(b.status || 'draft'), String(b.audience || 'internal'),
+            (b.review && b.review.consultantVersion && b.review.consultantVersion.primary)
+              || (b.assessment && b.assessment.primary) || null,
+            lead.email || null, lead.contactName || null, lead.phone || null,
+            lead.utmSource || null, lead.utmMedium || null, lead.utmCampaign || null,
+            lead.referrer || null, lead.origin || 'consultant',
+            payload, b.createdAt || now, b.updatedAt || now
+          ).run();
+
+          // 稽核軌跡攤平存一份，不解 JSON 也查得到誰改了什麼。
+          // id 是前端產的，重存同一件案子不會重複寫入。
+          for (const log of Array.isArray(b.auditLogs) ? b.auditLogs.slice(-200) : []) {
+            if (!log || !log.id) continue;
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO hm_audit_logs
+                 (id, case_id, action, actor, before_json, after_json, created_at)
+               VALUES (?,?,?,?,?,?,?)`
+            ).bind(
+              String(log.id), caseId, String(log.action || ''), String(log.actor || ''),
+              log.before === undefined ? null : JSON.stringify(log.before),
+              log.after === undefined ? null : JSON.stringify(log.after),
+              log.createdAt || now
+            ).run();
+          }
+
+          // 顧問覆核後產生的待辦。
+          for (const t of Array.isArray(b.todos) ? b.todos.slice(0, 100) : []) {
+            if (!t || !t.id) continue;
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO hm_todos
+                 (id, case_id, kind, title, detail, owner, status, created_at)
+               VALUES (?,?, 'case', ?,?,?,?,?)`
+            ).bind(
+              String(t.id), caseId, String(t.title || ''), String(t.detail || ''),
+              String(t.owner || '顧問'), String(t.status || 'open'), t.createdAt || now
+            ).run();
+          }
+
+          // ── CRM 歸因 ──
+          // 主網域（step1ne.com）的留 Email 入口頁把人導進這個工具時，
+          // 網址會帶 ?email=…&utm_source=…。留下來的 Email 如果只是躺在案件裡，
+          // 不會有人去跟——所以自動開一條 CRM 建檔待辦。
+          // id 用 crm_<案件編號> 是固定的，同一件案子重存幾次都只會有一條。
+          if (lead.email && (lead.origin === 'inbound' || lead.utmSource)) {
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO hm_todos
+                 (id, case_id, kind, title, detail, owner, status, created_at)
+               VALUES (?,?, 'crm_intake', ?,?, '顧問', 'open', ?)`
+            ).bind(
+              `crm_${caseId}`, caseId,
+              `CRM 建檔：${lead.email}`,
+              `從${lead.utmSource ? ` ${lead.utmSource} ` : '外部連結'}進來的評估案件「${String(b.title || '未命名案件')}」。` +
+              `聯絡人：${lead.contactName || '未提供'}　電話：${lead.phone || '未提供'}　` +
+              `來源頁：${lead.referrer || '未提供'}`,
+              now
+            ).run();
+          }
+
+          return json(request, { ok: true, id: caseId, updated_at: b.updatedAt || now });
+        }
+
+        if (request.method === 'DELETE') {
+          const r = await env.DB.prepare(`DELETE FROM hm_cases WHERE id = ?`).bind(caseId).run();
+          if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這件案子' }, 404);
+          return json(request, { ok: true, id: caseId });
+        }
+      }
+
+      // 職缺網址代抓。瀏覽器直接抓會被對方站台的 CORS 擋，所以由 Worker 代勞。
+      //
+      // ⚠️ 104 等平台的職缺內容是前端渲染的，純 HTML 常常拿不到內文。
+      //    拿不到就明說拿不到、請顧問改貼文字——絕不編一段內容出來。
+      if (sub === '/fetch-url' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        let target;
+        try { target = new URL(String(b.url || '')); }
+        catch { return json(request, { ok: false, error: '網址格式不正確' }, 400); }
+        if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+          return json(request, { ok: false, error: '只接受 http/https 網址' }, 400);
+        }
+        // 擋 SSRF：私有網段、localhost、雲端 metadata 端點一律拒絕。
+        const h = target.hostname.toLowerCase();
+        const blocked =
+          h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') ||
+          h === '169.254.169.254' || h === 'metadata.google.internal' ||
+          /^(127|10)\./.test(h) || /^192\.168\./.test(h) ||
+          /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+          h === '0.0.0.0' || h === '::1' || h === '[::1]';
+        if (blocked) return json(request, { ok: false, error: '不允許讀取內部網路位址' }, 400);
+
+        try {
+          const res = await fetch(target.toString(), {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; STEP1NE-HiringModeBot/1.0)',
+              Accept: 'text/html,application/xhtml+xml',
+            },
+            redirect: 'follow',
+            cf: { cacheTtl: 300 },
+          });
+          if (!res.ok) return json(request, { ok: true, error: `來源網站回應 ${res.status}` });
+          const ct = res.headers.get('content-type') || '';
+          if (!ct.includes('text/html') && !ct.includes('text/plain')) {
+            return json(request, { ok: true, error: `來源不是網頁內容（${ct}）` });
+          }
+          const text = (await res.text())
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi, '\n')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+            .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n')
+            .trim()
+            .slice(0, 60000);
+          if (text.length < 200) {
+            return json(request, { ok: true,
+              error: '這個職缺頁的內容是由前端動態載入的，代抓拿不到內文。請改用「貼上文字」把職缺內容貼進來。' });
+          }
+          return json(request, { ok: true, text, host: target.hostname });
+        } catch (err) {
+          return json(request, { ok: true, error: `讀取失敗：${err instanceof Error ? err.message : String(err)}` });
+        }
+      }
+
+      // 顧問待辦清單（含自動產生的 CRM 建檔）。只給顧問看。
+      if (sub === '/todos' && request.method === 'GET') {
+        if (!isConsultant) return json(request, { ok: false, error: 'unauthorized' }, 401);
+        const { results } = await env.DB.prepare(
+          `SELECT t.id, t.case_id, t.kind, t.title, t.detail, t.owner, t.status, t.created_at,
+                  c.title AS case_title, c.lead_email
+             FROM hm_todos t LEFT JOIN hm_cases c ON c.id = t.case_id
+            WHERE t.status != 'done'
+            ORDER BY t.created_at DESC LIMIT 300`
+        ).all();
+        return json(request, { ok: true, todos: results || [] });
+      }
+
+      return json(request, { ok: false, error: 'not found' }, 404);
+    }
+
     // ── AI 履歷健檢：收件（公開）──
     //
     // 🚨 這條路跟應徵（/apply）完全分開，寫的是 checkups 系列的表，
@@ -3098,6 +3399,24 @@ export default {
         if (action === 'soc_approve') {
           if (!row.draft) { await answer('❌ 這則沒有草稿內容，沒辦法發文'); return new Response('ok'); }
 
+          // 🚨 草稿沒填完就不准發。這是公開貼文，發出去才發現要自己去刪。
+          const ph = placeholderHits(row.draft);
+          if (ph.length) {
+            await answer(`❌ 這則草稿裡還有「${ph.join('」「')}」，沒填完不能發`, true);
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id,
+                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                reply_to_message_id: cq.message.message_id,
+                text: `🚨 這則沒有發出去——草稿裡還有「${ph.join('」「')}」\n\n`
+                  + `這通常代表職缺資料缺了東西，模型就用佔位符先頂著。\n`
+                  + `請先把該職缺的欄位補齊，再按「🔄 重新產一次」。`,
+              }),
+            }).catch(() => {});
+            return new Response('ok');
+          }
+
           // ⚠️ 2026-08-17 修：真實案例抓到同一則職缺連續發兩篇一模一樣的文——
           // 這支發文流程每則貼文都要 sleep(5000) 等 container 就緒，一次審核
           // 常常要跑 10~20 秒才回得了 Telegram，Telegram 覺得太久沒回應就會
@@ -3137,6 +3456,26 @@ export default {
             if (acc.line_link) lineLink = acc.line_link;
             platform = acc.platform || 'threads';
           }
+          // ── LINE 社群：不自動發，產好稿交給人手動貼 ──
+          // 2026-08-21 Jacky 要求。LINE 社群沒有可以自動發文的 API
+          //（官方帳號的推播 API 是推給好友，不是發到社群），
+          // 所以這個管道的價值不在自動化，是在「版型固定、內容產好」——
+          // 顧問收到就直接複製貼上，不用每次自己重寫一遍。
+          // 按核准只代表「這篇可以用了」，不代表已經發出去。
+          if (platform === 'line_community') {
+            await env.DB.prepare(
+              `UPDATE social_post_queue SET status='ready_manual', posted_at=datetime('now','+8 hours') WHERE id=?`
+            ).bind(qid).run();
+            await answer('✅ 已產好，複製下面那則貼到 LINE 社群');
+            await notify(env,
+              `📋 LINE 社群貼文已產好（${accLabel || '手動'}）\n` +
+              `職缺：${row.job_slug}\n\n` +
+              `⚠️ 這一則不會自動發出去，請自己複製貼到社群：\n` +
+              `━━━━━━━━━━━━\n${row.draft}\n━━━━━━━━━━━━`,
+              { message_thread_id: THREAD.decide }).catch(() => {});
+            return new Response('ok');
+          }
+
           if (!threadsToken || !threadsUserId) {
             await answer('⚠️ Threads 金鑰還沒設定，先標記核准，不會真的發出去。', true);
             await env.DB.prepare(`UPDATE social_post_queue SET status='approved' WHERE id=?`).bind(qid).run();
@@ -4823,6 +5162,28 @@ export default {
         return json(request, { ok: true, rows: results || [] });
       }
 
+      // 刪掉一張收件單。
+      // 2026-08-21 Jacky 要求：清單裡會留下沒填完就中斷的空白單（例如
+      // 8/19 那張「（無標題）總指揮擬 JD 中」），沒有辦法清掉，越積越多，
+      // 顧問每次進來都要先分辨哪些是真的要處理的。
+      //
+      // ⚠️ 已經發布成職缺的不給刪：那張收件單是那個職缺的來源紀錄，
+      //    刪掉之後就查不到「這個職缺當初是誰、依據什麼開的」。
+      //    要下架職缺是另一件事（改職缺狀態），不是刪收件單。
+      if (p.startsWith('/admin/job-draft/') && p.endsWith('/delete') && request.method === 'POST') {
+        const iid = decodeURIComponent(p.slice('/admin/job-draft/'.length, -'/delete'.length));
+        const row = await env.DB.prepare(
+          `SELECT id, status, published_slug FROM job_intakes WHERE id = ?`).bind(iid).first();
+        if (!row) return json(request, { ok: false, error: '找不到這張收件單' }, 404);
+        if (row.published_slug) {
+          return json(request, { ok: false,
+            error: `這張收件單已經發布成職缺（${row.published_slug}），不能刪——刪掉就查不到這個職缺當初是依據什麼開的。要下架請去職缺管理改狀態。` }, 400);
+        }
+        await env.DB.prepare(`DELETE FROM job_intake_files WHERE intake_id = ?`).bind(iid).run().catch(() => {});
+        await env.DB.prepare(`DELETE FROM job_intakes WHERE id = ?`).bind(iid).run();
+        return json(request, { ok: true });
+      }
+
       // 顧問後台下載履歷：跟 /export/resume/<id> 邏輯一樣（切塊重組），
       // 差別只在認證方式——這支給瀏覽器點按鈕用，走 ADMIN_TOKEN 不是 SYNC_TOKEN。
       // 沒有這支之前，履歷檔案存了但顧問後台完全叫不出來，等於白存。
@@ -5173,6 +5534,7 @@ export default {
 
         const url = `https://step1ne.com/appointment/?t=${token}`;
         const stageLabel = STAGE_LABEL_APPT[stage] || '第一階段';
+        let sent = 0, pushErr = null;
 
         // 推播給人選（如果他綁過 LINE）——跟查進度那條線共用同一個 line_bindings 表。
         // 2026-08-13 從純文字連結升級成 Carousel：每個時段一張卡，點按鈕
@@ -5212,10 +5574,28 @@ export default {
                   ] },
               } };
             for (const row of hits) await linePushMessages(env, row.line_user_id, [intro, flex]);
+            sent = hits.length;
           }
-        } catch { /* 推播失敗不影響安排本身已經存好 */ }
+        } catch (e) { pushErr = String(e).slice(0, 160); }
 
-        return json(request, { ok: true, id, token, url });
+        // ⚠️ 2026-08-21 真實事故：顧問在後台幫孙悦排了第一階段面談，畫面顯示成功，
+        //    但她沒有綁 LINE——卡片靜默地沒有送出，顧問以為發了、人選什麼都沒收到，
+        //    兩邊都在等。（顧問還以為沒按成功，兩分鐘內又按了一次。）
+        //    所以這裡改成把「到底有沒有送出去」誠實回報，前端會直接顯示，
+        //    沒送出時要顧問自己把連結傳給人選。
+        if (!sent) {
+          await notify(env,
+            `⚠️ 面談邀約沒有送到人選手上\n\n` +
+            `${app.name}　${app.job_title || app.job_slug || ''}　${stageLabel}\n` +
+            (pushErr ? `原因：LINE 推播失敗（${pushErr}）\n` : `原因：這位人選還沒有綁定 LINE\n`) +
+            `\n時段已經存好了，但**要請你自己把這個連結傳給他**：\n${url}`,
+            { message_thread_id: THREAD.decide }).catch(() => {});
+        }
+
+        return json(request, { ok: true, id, token, url,
+          // 前端拿這兩個欄位決定要不要跳「請自己傳連結」的提示
+          notified: sent > 0,
+          notify_reason: sent > 0 ? null : (pushErr ? 'push_failed' : 'no_line_binding') });
       }
 
       // 2026-08-13 加：自動帶入用——同一間公司（同 job_slug）、同一階段上次填過的
@@ -6038,25 +6418,63 @@ export default {
             + (b.job_slug ? `\n職缺：${b.job_slug}` : '')
             + `\n\n這些人**還不是應徵者**——他們還沒被接觸、也還沒同意個資利用。`
             + `\n到後台挑人：https://step1ne.com/consultant/sourced/`,
-            { message_thread_id: THREAD.intake }).catch(() => {});
+            { message_thread_id: THREAD.sourced }).catch(() => {});
         }
         return json(request, { ok: true, added, dup });
       }
 
       // 人才池列表
       if (p === '/admin/sourced' && request.method === 'GET') {
+        // 2026-08-21 加搜尋與分類。舊人才庫匯進來之後池子有 3,456 人，
+        // 原本只有一條照分數排的長列表、最多 200 筆——顧問要找「會 Android 的」
+        // 只能一頁一頁翻，那等於沒有人才庫。
         const st = url.searchParams.get('status') || 'new';
+        const q = (url.searchParams.get('q') || '').trim().slice(0, 60);
+        const cat = (url.searchParams.get('cat') || '').trim().slice(0, 20);
+        const src = (url.searchParams.get('source') || '').trim().slice(0, 20);
+        const has = (url.searchParams.get('has') || '').trim();   // email / linkedin / github
+        const page = Math.max(0, parseInt(url.searchParams.get('page') || '0', 10) || 0);
+        const SIZE = 60;
+
+        const where = [`(? = 'all' OR status = ?)`];
+        const bind = [st, st];
+        if (q) {
+          // 姓名、職稱、公司、技能、簡介一起找——顧問記得的可能是任何一個。
+          where.push(`(name LIKE ? OR headline LIKE ? OR company LIKE ? OR skills LIKE ? OR bio LIKE ?)`);
+          const like = '%' + q + '%';
+          bind.push(like, like, like, like, like);
+        }
+        if (cat) { where.push(`category = ?`); bind.push(cat); }
+        if (src) { where.push(`source = ?`); bind.push(src); }
+        if (has === 'email') where.push(`COALESCE(email,'') <> ''`);
+        if (has === 'linkedin') where.push(`COALESCE(linkedin_url,'') <> ''`);
+        if (has === 'github') where.push(`COALESCE(github_url,'') <> ''`);
+        const W = where.join(' AND ');
+
         const { results } = await env.DB.prepare(
           `SELECT id, created_at, source, source_url, name, headline, company, location,
-                  email, github_url, linkedin_url, skills, job_slug, score, grade, status,
-                  contacted_at, converted_application_id, note
+                  email, github_url, linkedin_url, skills, job_slug, status, category, cat_src,
+                  contacted_at, converted_application_id, note, reject_reason
              FROM sourced_candidates
-            WHERE (? = 'all' OR status = ?)
-            ORDER BY COALESCE(score,0) DESC, created_at DESC LIMIT 200`
-        ).bind(st, st).all();
+            WHERE ${W}
+            ORDER BY (COALESCE(email,'') <> '') DESC, (COALESCE(headline,'') <> '') DESC,
+                     created_at DESC
+            LIMIT ${SIZE} OFFSET ${page * SIZE}`
+        ).bind(...bind).all();
+        const tot = await env.DB.prepare(
+          `SELECT COUNT(*) n FROM sourced_candidates WHERE ${W}`).bind(...bind).first();
         const counts = await env.DB.prepare(
           `SELECT status, COUNT(*) n FROM sourced_candidates GROUP BY status`).all();
-        return json(request, { ok: true, rows: results || [], counts: counts.results || [] });
+        // 分類清單也要跟著目前的篩選條件走，不然數字對不上會讓人以為壞了
+        const cats = await env.DB.prepare(
+          `SELECT COALESCE(category,'未分類') k, COUNT(*) n FROM sourced_candidates
+            WHERE (? = 'all' OR status = ?) GROUP BY k ORDER BY n DESC`).bind(st, st).all();
+        const srcs = await env.DB.prepare(
+          `SELECT source k, COUNT(*) n FROM sourced_candidates
+            WHERE (? = 'all' OR status = ?) GROUP BY k ORDER BY n DESC`).bind(st, st).all();
+        return json(request, { ok: true, rows: results || [],
+          counts: counts.results || [], cats: cats.results || [], srcs: srcs.results || [],
+          total: (tot && tot.n) || 0, page, size: SIZE });
       }
 
       // 更新一筆的狀態（顧問挑人、標記已接觸、標記不合適）
@@ -6065,13 +6483,79 @@ export default {
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         const ok = ['new', 'shortlisted', 'contacted', 'replied', 'rejected', 'converted'];
         if (!b.id || !ok.includes(b.status)) return json(request, { ok: false, error: '參數錯誤' }, 400);
+        // 「不合適」一定要說為什麼——不然這個按鈕就只是把人藏起來，學不到東西。
+        // 用固定選項而不是自由輸入：自由文字每個人寫法不同，
+        // 「地點太遠」「通勤問題」「在南部」是同一件事，統計起來卻是三種，
+        // 那樣累積再多也歸納不出該調什麼。
+        if (b.status === 'rejected' && !REJECT_REASONS.includes(String(b.reason || ''))) {
+          return json(request, { ok: false, error: '請選一個不合適的原因',
+                                 reasons: REJECT_REASONS }, 400);
+        }
         await env.DB.prepare(
           `UPDATE sourced_candidates SET status=?,
                   contacted_at = CASE WHEN ?='contacted' THEN datetime('now','+8 hours') ELSE contacted_at END,
-                  note = COALESCE(?, note)
+                  note = COALESCE(?, note),
+                  reject_reason = CASE WHEN ?='rejected' THEN ? ELSE reject_reason END
             WHERE id=?`
-        ).bind(b.status, b.status, b.note ? String(b.note).slice(0, 500) : null, b.id).run();
+        ).bind(b.status, b.status, b.note ? String(b.note).slice(0, 500) : null,
+               b.status, b.status === 'rejected' ? String(b.reason) : null, b.id).run();
         return json(request, { ok: true });
+      }
+
+      // ── 阿財準不準：待補填清單 ──
+      // 為什麼要有這支（2026-08-21）：原本顧問只能在報告推到 Telegram 的當下、
+      // 按訊息附的那三個按鈕（會推／不推／再看看）。訊息被後面的蓋掉就沒有第二次機會——
+      // 結果是 25 份報告只有 1 位被回填，而儀表板拿那 1 筆算出「100% 準確」。
+      // 一個樣本的百分比不是統計，是誤導；拿去跟客戶說「AI 沒把人看錯」會出事。
+      if (p === '/admin/kpi/pending' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT a.id, a.name, a.job_slug, j.title AS job_title,
+                  a.consultant_call, a.consultant_call_by, a.consultant_call_at,
+                  r.created_at AS report_at, r.consultant_decision,
+                  CAST((julianday('now','+8 hours') - julianday(r.created_at)) AS INT) AS days
+             FROM applications a
+             JOIN reports r ON r.id = (SELECT r2.id FROM reports r2
+                                        WHERE r2.application_id = a.id
+                                        ORDER BY r2.created_at DESC LIMIT 1)
+             LEFT JOIN jobs j ON j.slug = a.job_slug
+            WHERE a.superseded_by IS NULL
+            ORDER BY (a.consultant_call IS NOT NULL), r.created_at DESC`
+        ).all();
+        const rows = results || [];
+        const done = rows.filter((x) => x.consultant_call);
+        const agree = done.filter((x) => x.consultant_call === '會推').length;
+        return json(request, { ok: true, rows,
+          stats: { total: rows.length, done: done.length, pending: rows.length - done.length,
+                   agree,
+                   // 樣本太少就不給百分比——與其給一個看起來很漂亮的數字，
+                   // 不如老實說「還不能算」。
+                   rate: done.length >= 5 ? Math.round((agree / done.length) * 100) : null } });
+      }
+
+      // 補填一筆
+      if (p === '/admin/kpi/set' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const OK = ['會推', '不推', '再看看'];
+        if (!b.id || !OK.includes(String(b.verdict || ''))) {
+          return json(request, { ok: false, error: '參數錯誤', verdicts: OK }, 400);
+        }
+        const r = await env.DB.prepare(
+          `UPDATE applications SET consultant_call=?, consultant_call_at=datetime('now','+8 hours'),
+                  consultant_call_by=? WHERE id=?`
+        ).bind(String(b.verdict), String(b.by || '顧問').slice(0, 40), b.id).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆' }, 404);
+        return json(request, { ok: true });
+      }
+
+      // 不合適的原因統計——給策略調整那支 agent 讀的
+      if (p === '/admin/sourced/rejects' && request.method === 'GET') {
+        const rows = (await env.DB.prepare(
+          `SELECT job_slug, reject_reason, COUNT(*) n
+             FROM sourced_candidates
+            WHERE status='rejected' AND reject_reason IS NOT NULL
+            GROUP BY job_slug, reject_reason ORDER BY n DESC`).all()).results || [];
+        return json(request, { ok: true, reasons: REJECT_REASONS, rows });
       }
 
       if (p === '/admin/overview' && request.method === 'GET') {

@@ -1,0 +1,294 @@
+[09:00:00] ① 逐一稽核＋修文案（同一個職缺一次做完，不分開跑）
+backend-engineer-game bim-engineer business-operations-manager cloud-ops-engineer finance-controller-overseas fnb-brand-cs-zhonghe frontend-engineer-game game-phone-cs-zhonghe group-it-head mobile-game-cs-neihu ops-support-engineer-fintech payment-cs-night-zhonghe product-assistant-fintech receptionist-neihu vip-hospitality-attendant executive-assistant-japan-taiwan clinic-nurse-neihu brand-social-video-editor-neihu headhunter-consultant live-streamer-home hakuba-resort-property-manager finance-accounting-insurance-dispatch
+[09:00:15] backend-engineer-game：稽核中…
+[09:02:23] ✅ backend-engineer-game：建議修改／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+[09:02:35] backend-engineer-game：修文案中…
+[09:04:30] ✅ backend-engineer-game：產出 4 處修正、0 件要人決定
+[09:04:33]    套用：成功 4 處
+✏️ 後端開發工程師　已改 4 處並上線
+
+https://step1ne.com/jobs/backend-engineer-game/
+[09:04:41] bim-engineer：稽核中…
+[09:06:54] ✅ bim-engineer：要修文案／吸引力 2 點、敏感寫法 1 點、必須擋下 2 點
+[09:07:08] bim-engineer：修文案中…
+[09:08:23] ✅ bim-engineer：產出 3 處修正、1 件要人決定
+[09:08:25]    套用：成功 3 處
+✏️ BIM 工程師（無經驗可・正職）　已改 3 處並上線
+
+🙋 1 件要你決定：
+・這個職缺的任用流程裡，用人單位到底有沒有安排面試？還是全程只憑履歷評估決定錄取？麻煩確認正確版本，我好統一頁面文字。
+
+https://step1ne.com/jobs/bim-engineer/
+[09:08:32] business-operations-manager：稽核中…
+[09:10:13] ✅ business-operations-manager：要修文案／吸引力 2 點、敏感寫法 0 點、必須擋下 1 點
+[09:10:26] business-operations-manager：修文案中…
+[09:11:36] ✅ business-operations-manager：產出 2 處修正、2 件要人決定
+[09:11:39]    套用：成功 2 處
+✏️ 營運發展主管 Business Operations Manager　已改 2 處並上線
+
+🙋 2 件要你決定：
+・這個職缺目前是否仍可以在頁面上具名「美德醫療（美德相邦集團）」？如果可以，要不要順便在加分條件補一句「此職缺所屬集團本業即為醫療器材製造」；
+・要不要把「為什麼選擇這個機會」整段搬到條件清單前面？這段 HTML 較大，麻煩人工搬動以避免標籤配對出錯。
+
+https://step1ne.com/jobs/business-operations-manager/
+[09:11:47] cloud-ops-engineer：稽核中…
+[09:14:11] ✅ cloud-ops-engineer：建議修改／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+[09:14:23] cloud-ops-engineer：修文案中…
+[09:16:56] ✅ cloud-ops-engineer：產出 2 處修正、1 件要人決定
+[09:16:59]    套用：成功 2 處
+✏️ 雲端維運工程師　已改 2 處並上線
+
+🙋 1 件要你決定：
+・請確認是否要把「為什麼選擇這個機會」整個 <section> 搬到「職缺條件一覽」之前？若同意，請直接在頁面原始碼手動搬移該區塊（我不會自動
+
+https://step1ne.com/jobs/cloud-ops-engineer/
+[09:17:08] finance-controller-overseas：稽核中…
+[09:20:10] ✅ finance-controller-overseas：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 2 點
+[09:20:23] finance-controller-overseas：修文案中…
+[09:22:26] ✅ finance-controller-overseas：產出 1 處修正、3 件要人決定
+[09:22:28]    套用：成功 1 處
+✏️ 財務主管 Finance Controller（柬埔寨長期外派）　已改 1 處並上線
+
+🙋 3 件要你決定：
+・這個職缺的年薪正確範圍到底是多少？資料庫跟頁面文字要以哪一個為準，我才能同步修正兩邊。
+・美德相邦集團是否真的有紡織、成衣相關事業？如果沒有，這條加分條件要刪掉還是換成其他產業背景？
+・這個職缺現在還可以公開具名「美德醫療／美德相邦集團」嗎？如果可以，要具名到什麼程度（集團名、公司全名，或只提產業別）？
+
+https://step1ne.com/jobs/finance-controller-overseas/
+[09:22:37] fnb-brand-cs-zhonghe：稽核中…
+[09:24:50] ✅ fnb-brand-cs-zhonghe：要修文案／吸引力 3 點、敏感寫法 2 點、必須擋下 2 點
+[09:25:02] fnb-brand-cs-zhonghe：修文案中…
+[09:26:15] ✅ fnb-brand-cs-zhonghe：產出 4 處修正、0 件要人決定
+[09:26:17]    套用：成功 4 處
+✏️ 餐飲品牌客服　已改 4 處並上線
+
+https://step1ne.com/jobs/fnb-brand-cs-zhonghe/
+[09:26:25] frontend-engineer-game：稽核中…
+[09:28:20] ✅ frontend-engineer-game：要修文案／吸引力 3 點、敏感寫法 2 點、必須擋下 1 點
+[09:28:33] frontend-engineer-game：修文案中…
+[09:30:04] ✅ frontend-engineer-game：產出 3 處修正、1 件要人決定
+[09:30:07]    套用：成功 3 處
+✏️ 前端開發工程師　已改 3 處並上線
+
+🙋 1 件要你決定：
+・要不要請網頁維護者把「為什麼選擇這個機會」區塊搬到簡介之後、條件清單之前，並把必要條件清單裡的順序也調整成互動效果優先？
+
+https://step1ne.com/jobs/frontend-engineer-game/
+[09:30:22] game-phone-cs-zhonghe：稽核中…
+[09:33:13] ✅ game-phone-cs-zhonghe：要修文案／吸引力 2 點、敏感寫法 3 點、必須擋下 2 點
+[09:33:24] game-phone-cs-zhonghe：修文案中…
+[09:34:21] ✅ game-phone-cs-zhonghe：產出 4 處修正、1 件要人決定
+[09:34:24]    套用：成功 3 處、失敗 1 處
+[09:34:24]      ✗ db:salary_min：這個欄位不開放自動改（只開放 10 個對外文案欄位）
+✏️ 遊戲電話客服（早班／晚班）　已改 3 處並上線
+⚠️ 1 處沒改成功
+
+🙋 1 件要你決定：
+・這一輪只改文字、不搬動區塊順序，區塊順序要不要調整請人工確認後手動搬移，避免搬動大段 HTML 把標籤配對弄壞
+
+https://step1ne.com/jobs/game-phone-cs-zhonghe/
+[09:34:32] group-it-head：稽核中…
+[09:35:52] ✅ group-it-head：建議修改／吸引力 2 點、敏感寫法 0 點、必須擋下 0 點
+[09:36:05] group-it-head：修文案中…
+[09:36:47] ✅ group-it-head：產出 1 處修正、1 件要人決定
+[09:36:50]    套用：成功 1 處
+[09:37:11] （TG 發送失敗，修正版已存進資料庫）：The read operation timed out
+✏️ 集團資訊主管 Group IT Head　已改 1 處並上線
+
+🙋 1 件要你決定：
+・這次要不要把「為什麼選擇這個機會」整段搬到頁面前段？這是版面結構調整，搬動大段 HTML 有弄壞標籤配對的風險，需要人工動手改，不在這次自動
+
+https://step1ne.com/jobs/group-it-head/
+[09:37:18] mobile-game-cs-neihu：稽核中…
+[09:39:42] ✅ mobile-game-cs-neihu：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 1 點
+[09:39:54] mobile-game-cs-neihu：修文案中…
+[09:41:12] ✅ mobile-game-cs-neihu：產出 2 處修正、2 件要人決定
+[09:41:15]    套用：成功 2 處
+✏️ 遊戲客服（早班／中班）　已改 2 處並上線
+
+🙋 2 件要你決定：
+・1年電話服務經驗對這個職缺到底是『加分』還是『必要門檻』？如果只是加分，我會把資料庫 years_min 改成0並保留頁面現有寫法；如果是硬
+・要不要把『為什麼選擇這個機會』整段搬到『職缺條件一覽』之前？這牽涉大段 HTML 搬動，容易搬壞標籤配對，需要人工確認後再調整版面，這一輪先
+
+https://step1ne.com/jobs/mobile-game-cs-neihu/
+[09:41:23] ops-support-engineer-fintech：稽核中…
+[09:43:41] ✅ ops-support-engineer-fintech：建議修改／吸引力 2 點、敏感寫法 2 點、必須擋下 0 點
+[09:43:54] ops-support-engineer-fintech：修文案中…
+[09:45:18] ✅ ops-support-engineer-fintech：產出 2 處修正、1 件要人決定
+[09:45:20]    套用：成功 2 處
+✏️ 維運工程師　已改 2 處並上線
+
+🙋 1 件要你決定：
+・這個缺的客戶名稱「遊戲橘子集團」現在到底可不可以直接寫在職缺頁上？如果可以，要不要補上去；如果不行，麻煩把資料庫的 client_named
+
+https://step1ne.com/jobs/ops-support-engineer-fintech/
+[09:45:26] payment-cs-night-zhonghe：稽核中…
+[09:47:37] ✅ payment-cs-night-zhonghe：要修文案／吸引力 4 點、敏感寫法 1 點、必須擋下 1 點
+[09:47:45] payment-cs-night-zhonghe：修文案中…
+[09:49:06] ✅ payment-cs-night-zhonghe：產出 2 處修正、4 件要人決定
+[09:49:08]    套用：成功 2 處
+✏️ 金流客服　已改 2 處並上線
+
+🙋 4 件要你決定：
+・這個職缺目前可以具名寫「遊戲橘子集團」嗎？如果可以，要不要把品牌名放進標題與開頭簡介？
+・大夜班值班津貼實際金額或試算方式（例如每日／每月多少、怎麼算）可以提供嗎？有的話要補進頁面和 FAQ
+・這個職缺有沒有深夜通勤補助、宿舍或其他配套？有的話要補一句說明或加進 FAQ；沒有的話就不用加
+・…還有 1 件
+
+https://step1ne.com/jobs/payment-cs-night-zhonghe/
+[09:49:16] product-assistant-fintech：稽核中…
+[09:52:19] ✅ product-assistant-fintech：建議修改／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+[09:52:31] product-assistant-fintech：修文案中…
+[09:53:39] ✅ product-assistant-fintech：產出 2 處修正、2 件要人決定
+[09:53:42]    套用：成功 2 處
+✏️ 產品助理　已改 2 處並上線
+
+🙋 2 件要你決定：
+・這一版要不要把『為什麼選擇這個機會』整個 <section> 搬到『應徵條件』前面？搬動大段 HTML 有弄壞標籤配對的風險，麻煩請工程站確
+・『工作內容』裡的『產品支援』和『文件與流程』兩個 <h3>+<ul> 區塊要不要對調順序？同樣是搬動 HTML 區塊，這輪沒有動，麻煩請工程
+
+https://step1ne.com/jobs/product-assistant-fintech/
+[09:53:50] receptionist-neihu：稽核中…
+[09:55:53] ✅ receptionist-neihu：建議修改／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+[09:56:06] receptionist-neihu：修文案中…
+[09:57:29] ✅ receptionist-neihu：產出 6 處修正、1 件要人決定
+[09:57:32]    套用：成功 6 處
+✏️ 總機接待　已改 6 處並上線
+
+🙋 1 件要你決定：
+・要不要請工程或設計把「為什麼選擇這個機會」裡「薪資高於一般總機行情」「不需輪夜班」這兩張卡片，實際搬到條件一覽表之前？
+
+https://step1ne.com/jobs/receptionist-neihu/
+[09:57:42] vip-hospitality-attendant：稽核中…
+[10:00:51] ✅ vip-hospitality-attendant：建議修改／吸引力 3 點、敏感寫法 1 點、必須擋下 0 點
+[10:01:00] vip-hospitality-attendant：修文案中…
+[10:02:24] ✅ vip-hospitality-attendant：產出 2 處修正、0 件要人決定
+[10:02:26]    套用：成功 2 處
+✏️ VIP貴賓接待服務員（日班）　已改 2 處並上線
+
+https://step1ne.com/jobs/vip-hospitality-attendant/
+[10:02:34] executive-assistant-japan-taiwan：稽核中…
+[10:05:41] ✅ executive-assistant-japan-taiwan：要修文案／吸引力 4 點、敏感寫法 3 點、必須擋下 2 點
+[10:05:53] executive-assistant-japan-taiwan：修文案中…
+[10:07:45] ✅ executive-assistant-japan-taiwan：產出 6 處修正、0 件要人決定
+[10:07:48]    套用：成功 6 處
+✏️ 主管特助（日本常駐）　已改 6 處並上線
+
+https://step1ne.com/jobs/executive-assistant-japan-taiwan/
+[10:07:56] clinic-nurse-neihu：稽核中…
+[10:10:26] ✅ clinic-nurse-neihu：要修文案／吸引力 2 點、敏感寫法 0 點、必須擋下 1 點
+[10:10:39] clinic-nurse-neihu：修文案中…
+[10:11:46] ✅ clinic-nurse-neihu：產出 1 處修正、2 件要人決定
+[10:11:48]    套用：成功 1 處
+✏️ 復健科診所護理師　已改 1 處並上線
+
+🙋 2 件要你決定：
+・內湖恆新復健科診所目前是否真的同步在招兼職護理師？如果有，麻煩在資料庫補上 PART_TIME 或另建一筆兼職職缺記錄；如果沒有，麻煩把頁面
+・要不要把「為什麼選擇這個機會」整個 HTML 區塊搬到職缺頁最前面（規格條件一覽之前）？請人工確認搬動後標籤配對與排版正常。
+
+https://step1ne.com/jobs/clinic-nurse-neihu/
+[10:11:56] brand-social-video-editor-neihu：稽核中…
+[10:14:19] ✅ brand-social-video-editor-neihu：建議修改／吸引力 2 點、敏感寫法 1 點、必須擋下 0 點
+[10:14:31] brand-social-video-editor-neihu：修文案中…
+[10:15:27] ✅ brand-social-video-editor-neihu：產出 2 處修正、0 件要人決定
+[10:15:29]    套用：成功 2 處
+✏️ 品牌社群影音編輯　已改 2 處並上線
+
+https://step1ne.com/jobs/brand-social-video-editor-neihu/
+[10:15:37] headhunter-consultant：稽核中…
+[10:15:40] ❌ headhunter-consultant：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:15:53] headhunter-consultant：修文案中…
+[10:15:56] headhunter-consultant：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:16:03] live-streamer-home：稽核中…
+[10:16:07] ❌ live-streamer-home：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:16:19] live-streamer-home：修文案中…
+[10:16:22] live-streamer-home：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:16:29] hakuba-resort-property-manager：稽核中…
+[10:16:33] ❌ hakuba-resort-property-manager：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:16:45] hakuba-resort-property-manager：修文案中…
+[10:16:49] hakuba-resort-property-manager：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:16:56] finance-accounting-insurance-dispatch：稽核中…
+[10:16:59] ❌ finance-accounting-insurance-dispatch：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:17:11] finance-accounting-insurance-dispatch：稽核沒抓到要改的東西
+[10:17:11] ③ 等頁面部署完成
+[10:18:41] ④ 只驗證剛才改過的那幾個（不要全部重跑，那會多花一小時）
+[10:18:46] 　驗證 backend-engineer-game
+[10:18:51] backend-engineer-game：稽核中…
+[10:18:58] ❌ backend-engineer-game：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:18:58] 　驗證 bim-engineer
+[10:19:05] bim-engineer：稽核中…
+[10:19:09] ❌ bim-engineer：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:19:09] 　驗證 brand-social-video-editor-neihu
+[10:19:16] brand-social-video-editor-neihu：稽核中…
+[10:19:19] ❌ brand-social-video-editor-neihu：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:19:19] 　驗證 business-operations-manager
+[10:19:26] business-operations-manager：稽核中…
+[10:19:30] ❌ business-operations-manager：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:19:30] 　驗證 clinic-nurse-neihu
+[10:19:36] clinic-nurse-neihu：稽核中…
+[10:19:40] ❌ clinic-nurse-neihu：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:19:40] 　驗證 cloud-ops-engineer
+[10:19:47] cloud-ops-engineer：稽核中…
+[10:19:50] ❌ cloud-ops-engineer：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:19:50] 　驗證 executive-assistant-japan-taiwan
+[10:19:57] executive-assistant-japan-taiwan：稽核中…
+[10:20:01] ❌ executive-assistant-japan-taiwan：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:01] 　驗證 finance-controller-overseas
+[10:20:08] finance-controller-overseas：稽核中…
+[10:20:11] ❌ finance-controller-overseas：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:11] 　驗證 fnb-brand-cs-zhonghe
+[10:20:19] fnb-brand-cs-zhonghe：稽核中…
+[10:20:22] ❌ fnb-brand-cs-zhonghe：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:22] 　驗證 frontend-engineer-game
+[10:20:29] frontend-engineer-game：稽核中…
+[10:20:32] ❌ frontend-engineer-game：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:32] 　驗證 game-phone-cs-zhonghe
+[10:20:39] game-phone-cs-zhonghe：稽核中…
+[10:20:43] ❌ game-phone-cs-zhonghe：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:43] 　驗證 group-it-head
+[10:20:50] group-it-head：稽核中…
+[10:20:53] ❌ group-it-head：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:20:53] 　驗證 mobile-game-cs-neihu
+[10:21:00] mobile-game-cs-neihu：稽核中…
+[10:21:04] ❌ mobile-game-cs-neihu：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:04] 　驗證 ops-support-engineer-fintech
+[10:21:10] ops-support-engineer-fintech：稽核中…
+[10:21:14] ❌ ops-support-engineer-fintech：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:14] 　驗證 payment-cs-night-zhonghe
+[10:21:21] payment-cs-night-zhonghe：稽核中…
+[10:21:24] ❌ payment-cs-night-zhonghe：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:24] 　驗證 product-assistant-fintech
+[10:21:31] product-assistant-fintech：稽核中…
+[10:21:35] ❌ product-assistant-fintech：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:35] 　驗證 receptionist-neihu
+[10:21:42] receptionist-neihu：稽核中…
+[10:21:45] ❌ receptionist-neihu：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:45] 　驗證 vip-hospitality-attendant
+[10:21:53] vip-hospitality-attendant：稽核中…
+[10:21:56] ❌ vip-hospitality-attendant：沒有產出。回覆開頭：You've hit your session limit · resets 1:50pm (Asia/Taipei)
+
+[10:21:56] 完成，紀錄在 /Users/user/工作流程技能包/step1ne-recruit/logs/job_copy_loop-2026-08-24.log

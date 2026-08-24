@@ -1,0 +1,18 @@
+=== live-streamer-home ===
+[15:10:42] live-streamer-home：稽核中…
+[15:14:29] ✅ live-streamer-home：建議修改／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+・要不要把「為什麼選擇這個機會」整段搬到開頭 hook 之後？如果要，麻煩請熟悉頁面 HTML 的人手動搬動，這次沒有自動調整版面順序。
+
+https://step1ne.com/jobs/live-streamer-home/
+=== mobile-game-cs-neihu ===
+[15:17:45] mobile-game-cs-neihu：稽核中…
+[15:20:45] ✅ mobile-game-cs-neihu：要修文案／吸引力 3 點、敏感寫法 2 點、必須擋下 1 點
+・years_min=1 是真的篩人門檻，還是只是內部參考不影響對外承諾？如果是真門檻，文案『沒有相關經驗也沒關係』要拿掉；如果只是參考，麻煩
+
+https://step1ne.com/jobs/mobile-game-cs-neihu/
+=== ops-support-engineer-fintech ===
+[15:22:22] ops-support-engineer-fintech：稽核中…
+[15:25:22] ✅ ops-support-engineer-fintech：建議修改／吸引力 3 點、敏感寫法 1 點、必須擋下 0 點
+・標籤與條件表的欄位順序要不要依建議調整？如果要調整，請工程或版型端手動處理，避免自動比對套用時弄壞 HTML 標籤配對。
+
+https://step1ne.com/jobs/ops-support-engineer-fintech/

@@ -18,7 +18,7 @@ LinkedIn 還沒申請，之後金鑰到位後一樣是加在 Worker 那個 callb
     python3 social_post_agent.py <slug>    # 只處理指定職缺（測試用）
     python3 social_post_agent.py --repost <slug>   # 職缺內容改過，重新產一次草稿
 """
-import ast, json, os, subprocess, sys, datetime, urllib.request
+import ast, json, os, re, subprocess, sys, datetime, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
@@ -87,6 +87,34 @@ def skill(account_id=None):
     return open(SKILL_PATH, encoding='utf-8').read()
 
 
+SITE = 'https://step1ne.com'
+
+
+def public_page_text(slug):
+    """抓公開職缺頁的實際文字，當作產稿素材。
+
+    ⚠️ 2026-08-19 事故的真正原因就在這裡：jobs 資料表**沒有「工作內容」欄位**
+       （欄位清單裡真的沒有 description），工作內容只長在網站職缺頁上。
+       所以白名單餵給模型的東西是「職稱＋地點＋薪資＋必備技能」，
+       模型看不到這個缺實際在做什麼，只好整篇寫「［待補］」發出去。
+
+    為什麼引用公開頁是安全的：那一份就是我們自己對外刊出的文案，
+    已經過保密與就服法把關；不像 notes／talking_points 混著內部指示。
+    抓不到頁面就回空字串，讓流程照舊——素材少總比拿錯素材好。
+    """
+    try:
+        req = urllib.request.Request(f'{SITE}/jobs/{slug}/',
+                                     headers={'user-agent': 'step1ne-social/1.0'})
+        html = urllib.request.urlopen(req, timeout=20).read().decode('utf-8', 'replace')
+    except Exception as e:
+        log(f'（抓不到公開職缺頁，只用資料庫欄位產稿：{e}）')
+        return ''
+    body = re.sub(r'<script.*?</script>|<style.*?</style>', ' ', html, flags=re.S)
+    body = re.sub(r'<[^>]+>', ' ', body)
+    body = re.sub(r'\s+', ' ', body).strip()
+    return body[:5000]
+
+
 def format_job_requirement(job):
     """把 jobs 資料表的欄位轉成技能包要的「用人需求」文字塊。
 
@@ -150,6 +178,10 @@ def format_job_requirement(job):
         add('薪資', f"{unit} {lo}–{hi}" if lo and hi else f"{unit} {lo or hi}")
     add('薪資備註', job.get('salary_note'))
     add('團隊規模', job.get('team_size'))
+    page = public_page_text(job.get('slug') or '')
+    if page:
+        lines.append('\n【公開職缺頁上已經寫出來的內容——這是我們自己對外刊的文字，'
+                     '可以直接引用、改寫，工作內容與福利請以這裡為準】\n' + page)
     return '\n'.join(lines) if lines else '（這個職缺目前結構化資料很少，請顧問補充後再產文案，或直接手動撰寫）'
 
 
@@ -213,6 +245,14 @@ WRAP_INSTRUCTION = (
     f'{POST_END}\n'
     f'標記本身跟文案之間不要有多餘的說明文字。文案內文只用純文字，'
     f'不要用 Markdown（不加 #、*、**、`、---）——這是純文字社群貼文，'
+    f'\n\n🚨 **文案裡不准出現任何佔位符**。\n'
+    f'不准寫「待補」「待確認」「［…］」「TBD」「XXX」這類字樣——\n'
+    f'2026-08-19 真實事故：一則 VIP 接待的貼文以「🔥【徵】［案件亮點待補］」開頭\n'
+    f'公開發布，整篇工作內容、福利、公司特色全是「［待補］」，等於告訴候選人\n'
+    f'我們對這個職缺一無所知。回頭掃描發現三則已發布的貼文都帶著「待補」字樣。\n'
+    f'**資料不足的段落請整段不要寫**，寧可短，不要有洞。\n'
+    f'如果連職稱與地點以外幾乎什麼都沒有，就在標記外面說明「資料不足以產出貼文」，\n'
+    f'不要硬生一篇出來——那種稿發出去比不發更傷。\n'
     f'Markdown 符號不會被平台轉成粗體或標題，只會照字面被貼出去、變成亂碼。'
 )
 

@@ -1,0 +1,46 @@
+{
+  "_comment": "Submission→Placement 追蹤引擎的可調參數。改這裡不用改程式碼。",
+
+  "aging_thresholds_days": {
+    "_comment": "從 stage_since 算到今天的天數。門檻本身要能調，寫死在程式碼裡下次要改又要改程式。",
+    "NORMAL_MAX": 2,
+    "FOLLOW_UP_DUE_MAX": 4,
+    "OVERDUE_MAX": 7
+  },
+
+  "stages_that_age": [
+    "SUBMITTED",
+    "AWAITING_CLIENT_FEEDBACK",
+    "INTERVIEW_REQUESTED",
+    "INTERVIEW_SCHEDULED",
+    "CLIENT_DECISION_PENDING",
+    "OFFER"
+  ],
+
+  "stages_terminal_no_aging": [
+    "REJECTED_BY_CLIENT",
+    "WITHDRAWN_BY_CANDIDATE",
+    "ON_HOLD",
+    "CLOSED",
+    "PLACED"
+  ],
+
+  "notification_types_allowed": [
+    "CRITICAL_STALE",
+    "INTERVIEW_REQUIRED",
+    "OFFER_RECEIVED",
+    "OWNER_DECISION_REQUIRED",
+    "PLACEMENT_CONFIRMED",
+    "DATA_SOURCE_FAILURE"
+  ],
+
+  "notification_routing": {
+    "_comment": "面試通知確認(2855)＝需要人動手；系統回報(1360)＝紀錄/系統狀態，不需要立刻動手",
+    "CRITICAL_STALE": 2855,
+    "INTERVIEW_REQUIRED": 2855,
+    "OFFER_RECEIVED": 2855,
+    "OWNER_DECISION_REQUIRED": 2855,
+    "PLACEMENT_CONFIRMED": 1360,
+    "DATA_SOURCE_FAILURE": 1360
+  }
+}
