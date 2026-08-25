@@ -2265,6 +2265,76 @@ export default {
         return json(request, { ok: true, d1: ready });
       }
 
+      // 招募形式快速評估工具（2026-08-25 簡化重做後）的提交紀錄。
+      //
+      // 這是全新客戶自己填的表單，不帶顧問權杖——公開可寫，但只存四個欄位
+      // ＋三題答案＋判斷結果，沒有任何客戶機密（跟 /cases 那批含公司名/薪資/
+      // Email 的舊案件不是同一等級的敏感資料，但一樣不開成可公開讀取）。
+      if (sub === '/submit' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+
+        const need = ['companyName', 'industry', 'jobTitle', 'salaryText', 'duration', 'employer', 'talentType', 'mode', 'modeLabel'];
+        for (const k of need) {
+          if (!String(b[k] || '').trim()) {
+            return json(request, { ok: false, error: `缺少欄位：${k}` }, 400);
+          }
+        }
+        const id = `asm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT INTO assessment_submissions
+             (id, company_name, industry, job_title, salary_text,
+              duration, employer, talent_type, mode, mode_label, status, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?, 'new', ?)`
+        ).bind(
+          id,
+          String(b.companyName).slice(0, 200), String(b.industry).slice(0, 100),
+          String(b.jobTitle).slice(0, 200), String(b.salaryText).slice(0, 100),
+          String(b.duration).slice(0, 40), String(b.employer).slice(0, 40),
+          String(b.talentType).slice(0, 40), String(b.mode).slice(0, 40),
+          String(b.modeLabel).slice(0, 40), now
+        ).run();
+
+        // Telegram 通知顧問——不擋回應，通知失敗也不影響前端拿到結果。
+        // 放 intake（#3履歷進件）：跟「有新應徵」同一類，是需要有人去跟進的新訊號。
+        await notify(env,
+          `📋 新的招募形式評估提交\n` +
+          `公司：${b.companyName}\n產業：${b.industry}\n` +
+          `職稱：${b.jobTitle}　薪資：${b.salaryText}\n` +
+          `建議形式：${b.modeLabel}\n` +
+          `後台查看：https://step1ne.com/consultant/hiring-assessments/`,
+          { message_thread_id: THREAD.intake }
+        ).catch(() => {});
+
+        return json(request, { ok: true, id });
+      }
+
+      // 顧問後台看這批提交。跟 /cases 一樣的權杖規則：只有帶 ADMIN_TOKEN 的人拿得到清單。
+      if (sub === '/submissions' && request.method === 'GET') {
+        if (!isConsultant) return json(request, { ok: false, error: '需要顧問權杖' }, 401);
+        const r = await env.DB.prepare(
+          `SELECT * FROM assessment_submissions ORDER BY created_at DESC LIMIT 500`
+        ).all();
+        return json(request, { ok: true, submissions: r.results || [] });
+      }
+
+      if (sub.startsWith('/submissions/') && request.method === 'PATCH') {
+        if (!isConsultant) return json(request, { ok: false, error: '需要顧問權杖' }, 401);
+        const subId = decodeURIComponent(sub.slice('/submissions/'.length));
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const status = String(b.status || '').trim();
+        if (!['new', 'contacted', 'closed'].includes(status)) {
+          return json(request, { ok: false, error: 'status 必須是 new / contacted / closed' }, 400);
+        }
+        const r = await env.DB.prepare(
+          `UPDATE assessment_submissions SET status = ? WHERE id = ?`
+        ).bind(status, subId).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆提交' }, 404);
+        return json(request, { ok: true });
+      }
+
       // 案件清單。
       //
       // 🚨 案件內容含客戶公司名、薪資帶、聯絡人 Email——不能開成「打一下就
