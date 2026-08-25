@@ -2265,6 +2265,43 @@ export default {
         return json(request, { ok: true, d1: ready });
       }
 
+      // 企業客戶在 step1ne.com 首頁／委託招募頁留信箱，系統自動寄一封信
+      // 附評估工具連結（帶 UTM）。2026-08-25 加：之前只有「點了直接跳轉」
+      // 這條路，沒有「留信箱、之後收信才點進去」這條——這支補上後者，
+      // 讓沒有立刻填表意願、但願意留信箱的人也進得了名單。
+      if (sub === '/lead-email' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const email = String(b.email || '').trim();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+          return json(request, { ok: false, error: 'Email 格式看起來不正確' }, 400);
+        }
+        const companyName = String(b.companyName || '').trim().slice(0, 200);
+        const source = String(b.source || '').trim().slice(0, 60) || 'unknown';
+
+        const link = 'https://enterprise.step1ne.com/?utm_source=step1ne&utm_medium=email&utm_campaign=hiring_mode_lead';
+        const sent = await sendMail(env, email,
+          '您的「招募形式快速評估工具」連結',
+          [
+            `您好${companyName ? `，${companyName}` : ''}：`,
+            '感謝您對 STEP1NE 招募服務的關注。點擊下方按鈕，1 分鐘內完成評估，立即取得建議的招募形式，並可另存或列印 PDF。',
+          ],
+          { url: link, text: '前往招募形式評估工具' }
+        );
+        if (!sent) return json(request, { ok: false, error: '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' }, 500);
+
+        // 通知顧問——這是主動留信箱的商機線索，跟阿財新應徵通知放同一個主題，
+        // 判準一樣：都是「有人需要有人去跟進」的訊號。
+        await notify(env,
+          `📧 新的招募形式評估留信箱\nEmail：${email}\n` +
+          `${companyName ? `公司：${companyName}\n` : ''}來源：${source}\n` +
+          `已自動寄出評估工具連結，等對方填完會出現在「招募形式評估」後台。`,
+          { message_thread_id: THREAD.intake }
+        ).catch(() => {});
+
+        return json(request, { ok: true });
+      }
+
       // 招募形式快速評估工具（2026-08-25 簡化重做後）的提交紀錄。
       //
       // 這是全新客戶自己填的表單，不帶顧問權杖——公開可寫，但只存四個欄位
