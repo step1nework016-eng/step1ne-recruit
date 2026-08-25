@@ -585,7 +585,7 @@ async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
     `這樣候選人媒合與面談安排都能更準確、更有效率。\n\n` +
     `連結：${portalUrl}\n\n` +
     `這個連結會持續有效，之後如果有新職缺或既有內容要調整，都可以直接回到這個連結處理。\n\n` +
-    `若有任何問題，歡迎直接回覆這封信與我們聯繫。`;
+    `若有任何問題，歡迎直接回覆這封信，或加 LINE 與我們聯繫：${LINE_URL}`;
   const html =
     `<div style="background:#f4f1ea;padding:26px 14px;">` +
     `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;line-height:1.9;color:#23262d;` +
@@ -602,7 +602,10 @@ async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
     `<span style="color:#a67c3d;word-break:break-all;">${portalUrl}</span></p>` +
     `<p style="margin:0 0 14px;font-size:15px;">這個連結會持續有效，之後如果有新職缺或既有內容要調整，` +
     `都可以直接回到這個連結處理。</p>` +
-    `<p style="margin:26px 0 0;font-size:15px;">若有任何問題，歡迎直接回覆這封信與我們聯繫。</p>` +
+    `<p style="margin:26px 0 0;font-size:15px;">若有任何問題，歡迎直接回覆這封信，或加 LINE 與我們聯繫：</p>` +
+    `<p style="margin:12px 0 0;"><a href="${LINE_URL}" style="display:inline-block;background:#06c755;` +
+    `color:#ffffff;font-weight:700;font-size:14px;text-decoration:none;padding:12px 26px;` +
+    `border-radius:999px;">加入 LINE 官方帳號</a></p>` +
     `<hr style="border:0;border-top:1px solid #eee7db;margin:24px 0;">` +
     `<p style="margin:0;font-size:12px;color:#9a9da5;line-height:1.9;">` +
     `<b style="color:#6b6e77;">德仁管理顧問有限公司</b>（Step1ne）<br>` +
