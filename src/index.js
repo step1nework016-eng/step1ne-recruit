@@ -2702,7 +2702,41 @@ export default {
         });
       }
 
-      // PUT /portal/:token/jobs/:slug — 只准更新白名單欄位，且該職缺必須真的屬於這個 token 對應的公司
+      // POST /portal/:token/jobs/:slug/submit — 客戶填完，正式送出審核。
+      // 這一步之前（client_draft）客戶可以自己隨便存、隨便改，顧問後台完全看不到；
+      // 按下這顆才鎖住、才出現在顧問的待審核清單。核心欄位沒填齊不准送——
+      // 不然顧問審的還是一堆空欄位，等於沒改善。
+      if (parts.length === 4 && parts[1] === 'jobs' && parts[3] === 'submit' && request.method === 'POST') {
+        const slug = parts[2];
+        const owned = await env.DB.prepare(
+          `SELECT slug, title, status, salary_min, main_duties, locations FROM jobs
+             WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        if (owned.status !== 'client_draft') {
+          return json(request, { ok: false, error: '這個職缺目前不是可送審的狀態' }, 400);
+        }
+        const missing = [];
+        if (!String(owned.title || '').trim()) missing.push('職缺名稱');
+        if (!owned.salary_min) missing.push('薪資');
+        if (!String(owned.main_duties || '').trim()) missing.push('工作內容');
+        if (!String(owned.locations || '').trim()) missing.push('工作地點');
+        if (missing.length) {
+          return json(request, { ok: false, error: `還缺這些欄位才能送審：${missing.join('、')}` }, 400);
+        }
+        const now = nowTaipei();
+        await env.DB.prepare(`UPDATE jobs SET status='pending_review', updated_at=? WHERE slug=?`)
+          .bind(now, slug).run();
+        notify(env,
+          `🆕 ${company.display_name} 送出用人需求表審核：「${owned.title || slug}」\n` +
+          `到「客戶資訊」分頁看完整內容、核准或拒絕：https://step1ne.com/consultant/client-info/`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, slug, status: 'pending_review' });
+      }
+
+      // PUT /portal/:token/jobs/:slug — 只准更新白名單欄位，且該職缺必須真的屬於這個 token 對應的公司。
+      // client_draft 隨時可改；pending_review 已送審鎖住，改不了（要嘛等顧問核准/拒絕，
+      // 拒絕之後會退回 client_draft，見下面 /admin/portal/pending-jobs/reject）。
       if (parts.length === 3 && parts[1] === 'jobs' && request.method === 'PUT') {
         const slug = parts[2];
         const owned = await env.DB.prepare(
@@ -2743,10 +2777,14 @@ export default {
       }
 
       // POST /portal/:token/jobs — 企業客戶自己新增職缺。
-      // 這裡建的職缺一律 status='pending_review'，不會出現在任何公開清單、
-      // 不會被排進社群發文，要顧問在「客戶資訊」分頁核准後才會變成 draft，
-      // 進入既有的正常職缺審核流程（禁刊過濾器、內容改寫）才能真的對外刊登——
-      // 這裡只負責「企業客戶說他們要開這個缺」，不負責讓它上線。
+      // 2026-08-25 改：不再一建立就丟進 pending_review 只填得了標題——
+      // 建的是 status='client_draft'，客戶可以自己把 51 個欄位填完（或用
+      // 「一鍵匯入」帶入），填完按「送出審核」（見上面 /submit）才變
+      // pending_review、才通知顧問。這裡建立當下不通知，不然顧問會被
+      // 一堆「客戶開了新缺」但內容是空的訊息洗版。
+      // status 依然不會出現在任何公開清單、不會被排進社群發文的自動排程——
+      // 顧問核准後變 draft，還是要走既有的正常職缺審核流程（禁刊過濾器、
+      // 內容改寫）才能真的對外刊登。
       if (parts.length === 1 && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
@@ -2758,7 +2796,7 @@ export default {
         const now = nowTaipei();
 
         const sets = ['slug', 'title', 'status', 'company_id', 'updated_at'];
-        const bind = [slug, title, 'pending_review', company.id, now];
+        const bind = [slug, title, 'client_draft', company.id, now];
         for (const key of PORTAL_FIELDS) {
           if (key === 'title' || !(key in b)) continue;
           sets.push(key);
@@ -2768,12 +2806,135 @@ export default {
           `INSERT INTO jobs (${sets.join(', ')}) VALUES (${sets.map(() => '?').join(',')})`
         ).bind(...bind).run();
 
-        notify(env,
-          `🆕 ${company.display_name} 透過用人需求表新增了一個職缺「${title}」，等待審核\n` +
-          `到「客戶資訊」分頁核准或拒絕：https://step1ne.com/consultant/client-info/`,
-          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, slug, status: 'client_draft' });
+      }
 
-        return json(request, { ok: true, slug });
+      // ── 一鍵匯入：客戶丟檔案／連結／貼文字，本機排程解析成 51 個欄位 ──
+      //
+      // Worker 只負責收件跟存檔（跟 job_intakes 同一套哲學）：真正的解析
+      // 交給本機 portal_import_tick.py 呼叫 Claude Code CLI 做，因為
+      // Worker runtime 沒有能力可靠解析任意格式的 JD 文件，硬做只會做出
+      // 一套讀中文 PDF/掃描檔會壞掉的東西（2026-07-30 已經在履歷解析踩過
+      // 這個坑，見上面 saveResume() 的註解）。
+      //
+      // POST /portal/:token/jobs/:slug/import
+      //   body: { sourceType: 'file'|'url'|'text', files?: [{b64,name,mime}], url?, text? }
+      if (parts.length === 4 && parts[1] === 'jobs' && parts[3] === 'import' && request.method === 'POST') {
+        const slug = parts[2];
+        const owned = await env.DB.prepare(
+          `SELECT slug, status FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        if (owned.status !== 'client_draft') {
+          return json(request, { ok: false, error: '這個職缺目前不能匯入（已送審或已核准）' }, 400);
+        }
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const sourceType = String(b.sourceType || '');
+        if (!['file', 'url', 'text'].includes(sourceType)) {
+          return json(request, { ok: false, error: 'sourceType 必須是 file/url/text' }, 400);
+        }
+        const now = nowTaipei();
+        const importId = uid();
+        let sourceRef = null;
+        let fileRows = [];
+
+        if (sourceType === 'file') {
+          const files = Array.isArray(b.files) ? b.files.slice(0, 5) : [];
+          if (!files.length) return json(request, { ok: false, error: '請至少上傳一個檔案' }, 400);
+          for (const f of files) {
+            const saved = await saveUpload(env, f, now);
+            if (!saved) continue;
+            if (saved.tooBig) {
+              return json(request, { ok: false,
+                error: `「${saved.name}」超過 8MB，請改貼雲端連結（Google Drive／Dropbox）或分成多個檔案` }, 413);
+            }
+            fileRows.push(saved.fileId);
+          }
+          if (!fileRows.length) return json(request, { ok: false, error: '檔案存檔失敗' }, 500);
+          sourceRef = fileRows.join(',');
+        } else if (sourceType === 'url') {
+          const url = String(b.url || '').trim();
+          if (!url) return json(request, { ok: false, error: '請貼連結' }, 400);
+          sourceRef = url;
+        } else {
+          const text = String(b.text || '').trim();
+          if (!text) return json(request, { ok: false, error: '請貼文字內容' }, 400);
+          sourceRef = text;
+        }
+
+        await env.DB.prepare(
+          `INSERT INTO portal_imports (id, job_slug, company_id, source_type, source_ref, status, created_at, updated_at)
+           VALUES (?,?,?,?,?, 'pending', ?, ?)`
+        ).bind(importId, slug, company.id, sourceType, sourceRef, now, now).run();
+
+        if (fileRows.length) {
+          const stmts = fileRows.map((fid) => env.DB.prepare(
+            `INSERT INTO portal_import_files (import_id, file_id, created_at) VALUES (?,?,?)`
+          ).bind(importId, fid, now));
+          await env.DB.batch(stmts);
+        }
+
+        notify(env,
+          `📥 ${company.display_name} 對「${slug}」用了一鍵匯入（${sourceType}），等本機排程解析`,
+          { message_thread_id: THREAD.system }).catch(() => {});
+
+        return json(request, { ok: true, importId, status: 'pending' });
+      }
+
+      // GET /portal/:token/imports/:importId — 前端輪詢解析進度
+      if (parts.length === 3 && parts[1] === 'imports' && request.method === 'GET') {
+        const importId = parts[2];
+        const row = await env.DB.prepare(
+          `SELECT id, job_slug, status, parsed_json, error_note FROM portal_imports
+             WHERE id = ? AND company_id = ?`
+        ).bind(importId, company.id).first();
+        if (!row) return json(request, { ok: false, error: '找不到這筆匯入紀錄' }, 404);
+        let parsed = null;
+        try { parsed = row.parsed_json ? JSON.parse(row.parsed_json) : null; } catch { parsed = null; }
+        return json(request, { ok: true, status: row.status, parsed, errorNote: row.error_note });
+      }
+
+      // POST /portal/:token/imports/:importId/apply — 客戶確認匯入結果，正式寫回職缺欄位
+      // 不是解析完就自動存檔：解析結果先讓客戶在表單上看到反白的「匯入建議」，
+      // 客戶按確認（可能中途已經手動改過幾欄）才真的落地，避免匯錯字段沒人發現。
+      if (parts.length === 4 && parts[1] === 'imports' && parts[3] === 'apply' && request.method === 'POST') {
+        const importId = parts[2];
+        const imp = await env.DB.prepare(
+          `SELECT id, job_slug, status, parsed_json FROM portal_imports WHERE id = ? AND company_id = ?`
+        ).bind(importId, company.id).first();
+        if (!imp) return json(request, { ok: false, error: '找不到這筆匯入紀錄' }, 404);
+        if (imp.status !== 'parsed') return json(request, { ok: false, error: '這筆匯入還沒解析完成' }, 400);
+        const owned = await env.DB.prepare(
+          `SELECT slug, status FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(imp.job_slug, company.id).first();
+        if (!owned || owned.status !== 'client_draft') {
+          return json(request, { ok: false, error: '這個職缺目前不能套用匯入結果' }, 400);
+        }
+        let fields;
+        try { fields = JSON.parse(imp.parsed_json || '{}'); } catch { fields = {}; }
+        // 允許客戶在確認畫面改過的版本蓋掉原始解析結果（body 可選）
+        let b = {};
+        try { b = await request.json(); } catch { b = {}; }
+        if (b.fields && typeof b.fields === 'object') fields = b.fields;
+
+        const sets = [];
+        const bind = [];
+        for (const key of PORTAL_FIELDS) {
+          if (key === 'title' && !fields[key]) continue; // 不用空值蓋掉已有標題
+          if (!(key in fields)) continue;
+          sets.push(`${key} = ?`);
+          bind.push(fields[key] === '' ? null : fields[key]);
+        }
+        const now = nowTaipei();
+        if (sets.length) {
+          sets.push('updated_at = ?', 'requirement_form_updated_at = ?');
+          bind.push(now, now, imp.job_slug);
+          await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`).bind(...bind).run();
+        }
+        await env.DB.prepare(`UPDATE portal_imports SET status='applied', updated_at=? WHERE id=?`)
+          .bind(now, importId).run();
+        return json(request, { ok: true, slug: imp.job_slug });
       }
 
       return json(request, { ok: false, error: 'not found' }, 404);
@@ -5097,8 +5258,12 @@ export default {
              FROM client_companies WHERE id = ?`
         ).bind(id).first();
         if (!company) return json(request, { ok: false, error: '找不到這家公司' }, 404);
+        // 2026-08-25 改：以前只撈 slug/title/status/updated_at，顧問在「客戶資訊」
+        // 分頁完全看不到客戶填了什麼，核准/拒絕等於盲按。現在把 51 個欄位一起帶回去，
+        // 給預覽頁用（不是把整包丟畫面上，是讓前端能組出好讀的預覽卡）。
+        const cols = ['slug', 'title', 'status', 'updated_at', ...PORTAL_FIELDS.filter((f) => f !== 'title')].join(', ');
         const { results: jobs } = await env.DB.prepare(
-          `SELECT slug, title, status, updated_at FROM jobs WHERE company_id = ? ORDER BY slug`
+          `SELECT ${cols} FROM jobs WHERE company_id = ? ORDER BY slug`
         ).bind(id).all();
         return json(request, { ok: true, company, jobs: jobs || [] });
       }
@@ -5183,12 +5348,17 @@ export default {
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆待審核職缺' }, 404);
         return json(request, { ok: true, slug });
       }
+      // 2026-08-25 改：不再直接 DELETE。現在客戶送審前已經把 51 個欄位填完
+      // （不只是標題），拒絕就整筆刪掉等於逼客戶重打一次——退回 client_draft
+      // 讓客戶自己回去改、改完可以再送一次審核。
       if (p === '/admin/portal/pending-jobs/reject' && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         const slug = String(b.slug || '').trim();
         if (!slug) return json(request, { ok: false, error: '缺少 slug' }, 400);
-        const r = await env.DB.prepare(`DELETE FROM jobs WHERE slug = ? AND status = 'pending_review'`).bind(slug).run();
+        const r = await env.DB.prepare(
+          `UPDATE jobs SET status = 'client_draft', updated_at = ? WHERE slug = ? AND status = 'pending_review'`
+        ).bind(nowTaipei(), slug).run();
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆待審核職缺' }, 404);
         return json(request, { ok: true, slug });
       }
@@ -7014,15 +7184,33 @@ export default {
       }
 
       // ── 阿財準不準：待補填清單 ──
-      // 為什麼要有這支（2026-08-21）：原本顧問只能在報告推到 Telegram 的當下、
-      // 按訊息附的那三個按鈕（會推／不推／再看看）。訊息被後面的蓋掉就沒有第二次機會——
-      // 結果是 25 份報告只有 1 位被回填，而儀表板拿那 1 筆算出「100% 準確」。
-      // 一個樣本的百分比不是統計，是誤導；拿去跟客戶說「AI 沒把人看錯」會出事。
+      // 2026-08-21 原本這裡有一個獨立的 applications.consultant_call 欄位，
+      // 要顧問在這頁「另外」按一次會推／不推／再看看。
+      //
+      // 2026-08-25 改掉：那個按鈕跟顧問在「初篩報告」頁本來就會按的
+      // 推薦給客戶／需補問／婉拒（寫進 reports.consultant_decision，
+      // /admin/decide-report 那支）是同一件事問兩次。已經結案或已經標
+      // 不推薦的案子，事後在這頁又冒出來要你重新按一次「會推嗎」，
+      // 答案跟真正發生的事對不上——這頁的準確率因此在量錯的東西。
+      //
+      // 現在直接讀 reports.consultant_decision 當唯一真相：
+      //   forwarded（推薦給客戶）→ 會推
+      //   need_more（需補問）    → 再看看
+      //   rejected（婉拒）       → 不推
+      // 「還沒回填」＝ consultant_decision 還是 NULL，這頁的按鈕現在
+      // 直接呼叫跟報告頁一樣的 /admin/decide-report，寫進同一個欄位，
+      // 不會再有兩邊各自一份、彼此對不上的資料。
       if (p === '/admin/kpi/pending' && request.method === 'GET') {
+        // ⚠️ reports.recommend 這個欄位從沒被寫入過（schema 留著但
+        //    interview_daemon.py 從來沒 SET 過），阿財自己的判斷其實是
+        //    存在 content_json.verdict 裡（值得轉給顧問／資訊不足建議補問／
+        //    硬條件不符／待顧問判斷，定義在 interview_daemon.py 的 _VERDICTS）。
+        //    用 json_extract 直接拿，不要再假裝 recommend 有資料。
         const { results } = await env.DB.prepare(
           `SELECT a.id, a.name, a.job_slug, j.title AS job_title,
-                  a.consultant_call, a.consultant_call_by, a.consultant_call_at,
-                  r.created_at AS report_at, r.consultant_decision,
+                  r.id AS report_id, r.created_at AS report_at,
+                  json_extract(r.content_json, '$.verdict') AS ai_verdict,
+                  r.consultant_decision,
                   CAST((julianday('now','+8 hours') - julianday(r.created_at)) AS INT) AS days
              FROM applications a
              JOIN reports r ON r.id = (SELECT r2.id FROM reports r2
@@ -7030,32 +7218,41 @@ export default {
                                         ORDER BY r2.created_at DESC LIMIT 1)
              LEFT JOIN jobs j ON j.slug = a.job_slug
             WHERE a.superseded_by IS NULL
-            ORDER BY (a.consultant_call IS NOT NULL), r.created_at DESC`
+            ORDER BY (r.consultant_decision IS NOT NULL), r.created_at DESC`
         ).all();
-        const rows = results || [];
-        const done = rows.filter((x) => x.consultant_call);
-        const agree = done.filter((x) => x.consultant_call === '會推').length;
+        const DECISION_TO_VERDICT = { forwarded: '會推', need_more: '再看看', rejected: '不推' };
+        const rows = (results || []).map((x) => ({
+          ...x, verdict: DECISION_TO_VERDICT[x.consultant_decision] || null,
+        }));
+        const done = rows.filter((x) => x.verdict);
+        // 準不準比的是「阿財說值得面談」跟「顧問最後真的推薦給客戶」對不對得起來——
+        // 不是顧問點了幾次「會推」。這才是頁面標題「阿財判值得轉、你實際會推」
+        // 實際在講的東西，之前的算法沒有真的比對阿財的判斷，算出來的數字沒有意義。
+        const agree = done.filter((x) => x.ai_verdict === '值得轉給顧問' && x.verdict === '會推').length;
+        const aiWorthInterview = done.filter((x) => x.ai_verdict === '值得轉給顧問').length;
         return json(request, { ok: true, rows,
           stats: { total: rows.length, done: done.length, pending: rows.length - done.length,
-                   agree,
+                   agree, aiWorthInterview,
                    // 樣本太少就不給百分比——與其給一個看起來很漂亮的數字，
-                   // 不如老實說「還不能算」。
-                   rate: done.length >= 5 ? Math.round((agree / done.length) * 100) : null } });
+                   // 不如老實說「還不能算」。分母是「阿財說值得面談」的那些，
+                   // 不是全部已回填的，這樣才是在問「阿財說可以的，顧問真的推了幾成」。
+                   rate: aiWorthInterview >= 5 ? Math.round((agree / aiWorthInterview) * 100) : null } });
       }
 
-      // 補填一筆
+      // 補填一筆——直接沿用報告頁的處置邏輯，不要另開一份資料。
       if (p === '/admin/kpi/set' && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const OK = ['會推', '不推', '再看看'];
-        if (!b.id || !OK.includes(String(b.verdict || ''))) {
-          return json(request, { ok: false, error: '參數錯誤', verdicts: OK }, 400);
+        const VERDICT_TO_DECISION = { '會推': 'forwarded', '再看看': 'need_more', '不推': 'rejected' };
+        const decision = VERDICT_TO_DECISION[String(b.verdict || '')];
+        if (!b.reportId || !decision) {
+          return json(request, { ok: false, error: '參數錯誤', verdicts: Object.keys(VERDICT_TO_DECISION) }, 400);
         }
+        const now = nowTaipei();
         const r = await env.DB.prepare(
-          `UPDATE applications SET consultant_call=?, consultant_call_at=datetime('now','+8 hours'),
-                  consultant_call_by=? WHERE id=?`
-        ).bind(String(b.verdict), String(b.by || '顧問').slice(0, 40), b.id).run();
-        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆' }, 404);
+          `UPDATE reports SET consultant_decision=?, decided_at=? WHERE id=?`
+        ).bind(decision, now, b.reportId).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這份報告' }, 404);
         return json(request, { ok: true });
       }
 
