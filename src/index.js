@@ -6833,6 +6833,17 @@ export default {
         return json(request, { ok: true, stage, slug, candidates: results || [] });
       }
 
+      // 職缺完整內容——給顧問「預覽模式」用（2026-08-25 加）。
+      // 電洽人選時要能一邊看一邊講，不是只看得到職缺名稱跟核准/拒絕兩顆按鈕。
+      // 回傳的是資料庫真實欄位，還沒過禁刊過濾器/AI 改寫——這是給顧問內部看的，
+      // 不是拿去對外貼的版本。
+      if (p.startsWith('/admin/jobs/') && p.endsWith('/full') && request.method === 'GET') {
+        const slug = decodeURIComponent(p.slice('/admin/jobs/'.length, -'/full'.length));
+        const job = await env.DB.prepare(`SELECT * FROM jobs WHERE slug = ?`).bind(slug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        return json(request, { ok: true, job });
+      }
+
       // 更新分類。⚠️ 客戶對象一改，三個連動欄位要一起改，
       // 不能讓顧問一個一個設——漏設一個就是隱私外洩。
       if (p.startsWith('/admin/jobs/') && request.method === 'POST') {

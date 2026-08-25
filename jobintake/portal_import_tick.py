@@ -79,6 +79,100 @@ FIELD_LABELS = {
 # 猜錯格式不是合法 JSON，反而讓客戶看到的表單壞掉，寧可留給客戶自己手動填。
 
 
+# ── 混合解析：規則比對優先，AI 只補規則抓不到的 ──
+#
+# 2026-08-25 加。原本整份文件不管長什麼樣都丟給 AI，但如果客戶給的本來就是
+# 「標籤：值」這種整齊格式（照著我們的用人需求表範本填、或工整的 Email），
+# 純規則比對就能抓到、免費、幾乎即時，不需要每次都燒一次模型呼叫。
+# AI 只在規則抓不到、或文件本身是自由散文時才出場——省下的不是很多錢
+# （反正是訂閱額度不是按次計費），是省時間：規則比對是毫秒級，AI 呼叫要
+# 20 秒以上。
+#
+# 別名表：客戶不會照抄我們的欄位名稱，常見的口語講法要收進來，
+# 收得越完整，規則比對能扛住的比例越高。
+LABEL_ALIASES = {
+    'title': ['職缺名稱', '職稱', '徵才職稱', '應徵職稱', '招募職稱'],
+    'client_name': ['公司名稱', '公司', '徵才公司', '用人單位'],
+    'locations': ['工作地點', '上班地點', '地點', '地址'],
+    'headcount': ['需求人數', '徵才人數', '招募人數', '人數'],
+    'salary_min': ['薪資下限', '薪資', '薪水', '待遇'],
+    'salary_max': ['薪資上限'],
+    'work_hours': ['上班時間', '工作時間', '班別', '上班時段'],
+    'leave_policy': ['休假方式', '休假', '休假制度'],
+    'employment_period': ['工作期間', '任用期間'],
+    'overtime_policy': ['加班情形', '加班'],
+    'main_duties': ['主要工作職責', '工作內容', '職務內容', '工作說明'],
+    'education_level': ['學歷要求', '學歷'],
+    'years_min': ['最低年資要求', '年資要求', '經驗要求', '工作經驗'],
+    'must_skills': ['必要技能', '必備技能'],
+    'required_conditions': ['必備條件', '應徵條件', '資格條件'],
+    'language_requirement': ['語言能力', '語言要求'],
+    'nice_to_have_skills': ['加分技能', '加分條件', '加分技能／經驗'],
+    'onboard_by': ['希望到職日', '到職日', '可上班日'],
+    'employment': ['聘僱型態', '僱用型態', '工作性質'],
+    'client_contact_name': ['聯絡窗口', '聯絡人'],
+    'client_contact_phone': ['聯絡電話', '電話'],
+}
+# 反查表：中文標籤（含別名）→ 欄位 key，最長的排前面，避免「薪資」誤吃到「薪資上限」的內容。
+_LABEL_TO_KEY = {}
+for _k, _v in FIELD_LABELS.items():
+    _LABEL_TO_KEY[_v.split('（')[0].strip()] = _k
+for _k, _aliases in LABEL_ALIASES.items():
+    for _a in _aliases:
+        _LABEL_TO_KEY[_a] = _k
+_LABEL_PATTERN = sorted(_LABEL_TO_KEY.keys(), key=len, reverse=True)
+
+_NUMERIC_KEYS = {'salary_min', 'salary_max', 'years_min', 'headcount'}
+
+
+def _clean_numeric(text):
+    """「月薪4萬起」「3年以上」這種要拆出純數字，中文數字單位先不處理——
+    抓得到阿拉伯數字才收，抓不到就放棄這個欄位，比塞一個看起來合理但錯的數字安全。"""
+    m = re.search(r'[\d,]+', text)
+    if not m:
+        return None
+    try:
+        return int(m.group(0).replace(',', ''))
+    except ValueError:
+        return None
+
+
+def rule_extract(text):
+    """逐行找「標籤：值」或「標籤:值」的樣式，比對得到就收。
+
+    回傳 (fields, coverage)：coverage 是「有內容的行裡面，成功比對到標籤的比例」，
+    用來判斷這份文件是不是整齊的結構化格式——比例夠高就不用勞煩 AI 了。
+    """
+    fields = {}
+    lines = [l.strip() for l in re.split(r'[\n\r]+', text) if l.strip()]
+    matched = 0
+    for line in lines:
+        m = re.match(r'^([一-鿿\w／/ ]{2,20})[：:]\s*(.+)$', line)
+        if not m:
+            continue
+        label, val = m.group(1).strip(), m.group(2).strip()
+        key = _LABEL_TO_KEY.get(label)
+        if not key:
+            # 標籤前面可能夾了項目符號或編號（例如「1. 工作地點：台北」），
+            # 再從候選標籤清單裡找看看這行「結尾」是不是某個已知標籤。
+            for cand in _LABEL_PATTERN:
+                if label.endswith(cand):
+                    key = _LABEL_TO_KEY[cand]
+                    break
+        if not key or not val:
+            continue
+        if key in _NUMERIC_KEYS:
+            n = _clean_numeric(val)
+            if n is None:
+                continue
+            val = n
+        if key not in fields:  # 同一份文件同個欄位出現兩次，保留第一個
+            fields[key] = val
+        matched += 1
+    coverage = matched / len(lines) if lines else 0
+    return fields, coverage
+
+
 def load_pending():
     return D.d1("SELECT id, job_slug, company_id, source_type, source_ref FROM portal_imports "
                 "WHERE status='pending' ORDER BY created_at LIMIT 5")
@@ -165,8 +259,15 @@ def gather_text_from_url(url):
     return text[:60000], None
 
 
-def build_prompt(raw_text):
-    field_lines = '\n'.join(f'- {k}：{v}' for k, v in FIELD_LABELS.items())
+def build_prompt(raw_text, already_found=None):
+    # 已經被規則比對抓到的欄位不用再讓 AI 重找一次——省 token、也避免 AI
+    # 對同一個欄位給出跟規則比對不一樣的答案造成混淆（規則比對的一律優先採用）。
+    remaining = {k: v for k, v in FIELD_LABELS.items() if not (already_found and k in already_found)}
+    field_lines = '\n'.join(f'- {k}：{v}' for k, v in remaining.items())
+    found_note = ''
+    if already_found:
+        found_note = ('\n（以下欄位已經確定不用你找了，不要在輸出裡重複：'
+                       + '、'.join(already_found.keys()) + '）\n')
     return f'''你是在幫台灣一家獵頭公司（Step1ne）把企業客戶提供的職缺需求文件，
 對應進一份固定格式的「用人需求表」。以下是原始文件內容（可能是 JD、Email、Excel 表格、
 或客戶隨手打的文字，格式不一定工整）：
@@ -174,7 +275,7 @@ def build_prompt(raw_text):
 ---
 {raw_text}
 ---
-
+{found_note}
 請把上面的內容對應到下面這些欄位。只輸出你有把握、原文有明確依據的欄位，
 原文沒提到的欄位**不要輸出、不要瞎猜、不要用「不拘」「面議」這類詞硬填**——
 留白比錯誤的資訊更安全，顧問跟客戶會自己補。
@@ -239,25 +340,44 @@ def process_one(row):
         mark(import_id, 'failed', error_note=err or '抽不到內容')
         return
 
-    ok, out = run_claude(build_prompt(text))
-    if not ok:
-        log(f'❌ {import_id} Claude 呼叫失敗：{out[:200]}')
-        mark(import_id, 'failed', error_note='AI 解析失敗，請改手動填寫或重新匯入')
+    # 先跑規則比對——免費、毫秒級。文件如果本來就是整齊的「標籤：值」格式
+    # （coverage 高），這一步可能就把該有的欄位都抓完了，完全不用叫 AI。
+    rule_fields, coverage = rule_extract(text)
+    log(f'規則比對命中 {len(rule_fields)} 個欄位（覆蓋率 {coverage:.0%}）')
+
+    STRUCTURED_THRESHOLD = 0.7  # 七成以上的行都對得上已知標籤，視為結構化文件
+    if coverage >= STRUCTURED_THRESHOLD and rule_fields:
+        log(f'✅ {import_id} 規則比對已足夠，跳過 AI 呼叫')
+        mark(import_id, 'parsed', parsed_json=rule_fields)
         return
 
-    fields = extract_json(out)
-    if not isinstance(fields, dict):
+    ok, out = run_claude(build_prompt(text, rule_fields))
+    if not ok:
+        log(f'❌ {import_id} Claude 呼叫失敗：{out[:200]}')
+        if rule_fields:  # AI 掛了，規則抓到的還是能給客戶用，不要整筆丟掉
+            mark(import_id, 'parsed', parsed_json=rule_fields)
+        else:
+            mark(import_id, 'failed', error_note='AI 解析失敗，請改手動填寫或重新匯入')
+        return
+
+    ai_fields = extract_json(out)
+    if not isinstance(ai_fields, dict):
         log(f'❌ {import_id} 解析不出 JSON：{out[:200]}')
-        mark(import_id, 'failed', error_note='AI 沒有回傳有效格式，請改手動填寫或重新匯入')
+        if rule_fields:
+            mark(import_id, 'parsed', parsed_json=rule_fields)
+        else:
+            mark(import_id, 'failed', error_note='AI 沒有回傳有效格式，請改手動填寫或重新匯入')
         return
 
     # 只留白名單內、且值非空的欄位——就算 AI 不聽話多吐了不該有的欄位也擋住。
-    fields = {k: v for k, v in fields.items() if k in FIELD_LABELS and v not in (None, '')}
+    ai_fields = {k: v for k, v in ai_fields.items() if k in FIELD_LABELS and v not in (None, '')}
+    # 規則比對到的優先——那是精確比對，AI 是補漏，不該覆蓋掉已經確定的答案。
+    fields = {**ai_fields, **rule_fields}
     if not fields:
         mark(import_id, 'failed', error_note='文件裡沒有找到看得懂的職缺資訊，請改手動填寫')
         return
 
-    log(f'✅ {import_id} 解析出 {len(fields)} 個欄位')
+    log(f'✅ {import_id} 解析出 {len(fields)} 個欄位（規則 {len(rule_fields)}／AI 補 {len(fields) - len(rule_fields)}）')
     mark(import_id, 'parsed', parsed_json=fields)
 
 
