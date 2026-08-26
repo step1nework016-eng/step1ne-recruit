@@ -191,6 +191,32 @@ def audit_client_names(text):
     return [x for x in client_name_terms() if _term_pattern(x).search(t)]
 
 
+# 標記「以下只給顧問看」的寫法。salary_note 這一欄實務上被當成
+# 「顧問對人選的完整口徑說明」在用，裡面同時裝著可以講的話跟絕對不能講的
+# 數字（例如 BIM 那筆：對外一律面議，但備註裡完整寫著 40,833–50,167 與
+# 分級表）。整段餵給模型＝那些數字一定會被寫進貼文。
+_INTERNAL_MARKS = ('⚠️', '內部限閱', '限閱', '不得對外', '顧問內部參考',
+                   '不得寫入', '不得對候選人', '絕對不對候選人')
+
+
+def public_part(text):
+    """把自由文字欄位裡「只給顧問看」的段落切掉，只留可以對外講的部分。
+
+    規則刻意保守：看到任何一個內部標記就從那裡整段截斷，寧可少講也不要漏。
+    這一欄本來就不是設計給機器讀的，用關鍵字判斷一定有誤差，
+    而誤差的兩個方向代價差很多——少講只是貼文不夠豐富，多講是把客戶不准
+    對外的數字公開貼出去，撤不回來。
+    """
+    if not text:
+        return text
+    out = []
+    for line in str(text).split('\n'):
+        if any(m in line for m in _INTERNAL_MARKS):
+            break                      # 從這一行起全部不要
+        out.append(line)
+    return '\n'.join(out).strip() or None
+
+
 def format_job_requirement(job):
     """把 jobs 資料表的欄位轉成技能包要的「用人需求」文字塊。
 
@@ -252,7 +278,7 @@ def format_job_requirement(job):
         unit = job.get('salary_unit') or '月薪'
         lo, hi = job.get('salary_min'), job.get('salary_max')
         add('薪資', f"{unit} {lo}–{hi}" if lo and hi else f"{unit} {lo or hi}")
-    add('薪資備註', job.get('salary_note'))
+    add('薪資備註', public_part(job.get('salary_note')))
     add('團隊規模', job.get('team_size'))
     # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
     #    路徑——公開頁是 client_named=1、網站上本來就具名的，社群不行。
@@ -263,7 +289,10 @@ def format_job_requirement(job):
                      '⚠️ 裡面標成〔客戶名稱・社群不揭露〕的地方是客戶公司名，'
                      '社群貼文一律不准寫出來，也不要試圖從其他線索推回去，'
                      '改用產業或職務性質描述（例：高科技廠房工程專案、進口車品牌總代理）】\n' + page)
-    return '\n'.join(lines) if lines else '（這個職缺目前結構化資料很少，請顧問補充後再產文案，或直接手動撰寫）'
+    # ⚠️ 最後整段再遮一次客戶名。原本只遮 public_page_text 的輸出，
+    # 但結構化欄位裡也會出現客戶名（實例：backend-engineer-game 的薪資備註
+    # 寫著「客戶端（遊戲橘子集團）沒有提供薪資範圍」），那條路完全沒守。
+    return mask_client_names('\n'.join(lines)) if lines else '（這個職缺目前結構化資料很少，請顧問補充後再產文案，或直接手動撰寫）'
 
 
 def run_claude(prompt):
