@@ -7666,6 +7666,7 @@ export default {
         // talent-intelligence-sourcing-v15-manual，40字）就被砍斷，
         // 跟資料庫存的完整值比對永遠不相等，篩選結果永遠是 0 筆。
         const src = (url.searchParams.get('source') || '').trim().slice(0, 80);
+        const job = (url.searchParams.get('job') || '').trim().slice(0, 80);
         const has = (url.searchParams.get('has') || '').trim();   // email / linkedin / github
         const page = Math.max(0, parseInt(url.searchParams.get('page') || '0', 10) || 0);
         const SIZE = 60;
@@ -7679,6 +7680,11 @@ export default {
           bind.push(like, like, like, like, like);
         }
         if (cat) { where.push(`category = ?`); bind.push(cat); }
+        // 2026-08-26 加 job 篩選：池子有 3,400+ 人，為某個職缺主動找回來的人
+        // 一進池子就被淹掉，顧問沒辦法只看「這個缺的人選」。job_slug 本來就
+        // 有存也有回傳，只是不能拿來篩，等於存了沒用。
+        // 值就是 jobs.slug，例如 ?job=engineering-design-engineer-hsinchu
+        if (job) { where.push(`job_slug = ?`); bind.push(job); }
         if (src) { where.push(`source = ?`); bind.push(src); }
         if (has === 'email') where.push(`COALESCE(email,'') <> ''`);
         if (has === 'linkedin') where.push(`COALESCE(linkedin_url,'') <> ''`);
@@ -7700,6 +7706,13 @@ export default {
           `SELECT COUNT(*) n FROM sourced_candidates WHERE ${W}`).bind(...bind).first();
         const counts = await env.DB.prepare(
           `SELECT status, COUNT(*) n FROM sourced_candidates GROUP BY status`).all();
+        // 給前端做職缺下拉選單用：只列真的有人選的職缺，附上職缺標題
+        const jobsAgg = await env.DB.prepare(
+          `SELECT sc.job_slug AS slug, COUNT(*) n,
+                  (SELECT title FROM jobs j WHERE j.slug = sc.job_slug) AS title
+             FROM sourced_candidates sc
+            WHERE COALESCE(sc.job_slug,'') <> ''
+            GROUP BY sc.job_slug ORDER BY n DESC`).all();
         // 分類清單也要跟著目前的篩選條件走，不然數字對不上會讓人以為壞了
         const cats = await env.DB.prepare(
           `SELECT COALESCE(category,'未分類') k, COUNT(*) n FROM sourced_candidates
@@ -7709,6 +7722,7 @@ export default {
             WHERE (? = 'all' OR status = ?) GROUP BY k ORDER BY n DESC`).bind(st, st).all();
         return json(request, { ok: true, rows: results || [],
           counts: counts.results || [], cats: cats.results || [], srcs: srcs.results || [],
+          jobs: jobsAgg.results || [],
           total: (tot && tot.n) || 0, page, size: SIZE });
       }
 

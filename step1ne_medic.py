@@ -239,13 +239,59 @@ def check_site_drift(dry):
               '確認這個職缺到底還在不在招募，把狀態改對或把頁面下架')
 
 
+# 這幾家公司的員工一律不得列為候選人。理由不是「不合適」，是商業關係——
+# 他們是我方案子的要派單位或客戶的客戶，去挖他們的人等於在自己的客戶身上動手。
+#
+# ⚠️ 為什麼放在修復員而不是爬蟲裡：爬蟲不只一支（talent_sourcing_agent.py、
+#    舊的 sourcing_engine.py、以後還會有），而且正在被別的工作階段同時修改。
+#    在每一支裡各加一次過濾，遲早有一支漏掉——而漏掉的代價是顧問真的去
+#    接觸了不該接觸的人，那是撤不回來的。放在這裡是最後一道網：不管誰撈進來的，
+#    半小時內一定會被攔下。爬蟲端的過濾還是該做，這裡不取代它。
+BLOCKED_EMPLOYERS = [
+    # (比對關鍵字, 為什麼)
+    ('帆宣', 'bim-engineer-tongluo 案的要派單位，2026-08-26 顧問裁示一律不得接觸'),
+    ('Marketech', '同上（帆宣系統科技英文名）'),
+    ('台灣美光', '律准科技的終端客戶，去敲等於跟自己的客戶搶人'),
+    ('美光科技', '同上'),
+]
+
+
+def check_blocked_employers(dry):
+    """封鎖公司的員工被撈進人才池 → 自動標為不合適並註明原因。
+
+    自動修，不只通知——這是可逆的（改一個 status 欄位），而且留在池子裡
+    每多一天，就多一次被顧問撈出來接觸的機會。
+    """
+    for kw, why in BLOCKED_EMPLOYERS:
+        rows = D.d1(
+            "SELECT id, name, company FROM sourced_candidates "
+            f"WHERE company LIKE {D.q('%' + kw + '%')} AND status <> 'rejected'"
+        ) or []
+        if not rows:
+            continue
+        names = '、'.join((r.get('name') or '?') for r in rows[:5])
+        more = f'…等 {len(rows)} 人' if len(rows) > 5 else ''
+        if dry:
+            log(f'（--dry）會排除：{kw} 的 {names}{more}')
+            continue
+        D.d1(
+            "UPDATE sourced_candidates SET status='rejected', reject_reason='其他', "
+            f"note = COALESCE(note || ' / ', '') || {D.q('封鎖公司自動排除：' + why)} "
+            f"WHERE company LIKE {D.q('%' + kw + '%')} AND status <> 'rejected'"
+        )
+        FIXED.append((f'人才池撈到封鎖公司「{kw}」的人：{names}{more}',
+                      f'已自動標為不合適並註明原因（{why}）。'
+                      f'⚠️ 同時代表某一支爬蟲沒有過濾這家，請補在來源端。'))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry', action='store_true', help='只檢查不修')
     a = ap.parse_args()
 
     for fn in (check_daemons, check_stuck_intakes, check_stuck_locks,
-               check_schedules, check_unreadable_resumes, check_site_drift):
+               check_schedules, check_unreadable_resumes, check_site_drift,
+               check_blocked_employers):
         try:
             fn(a.dry)
         except Exception as e:

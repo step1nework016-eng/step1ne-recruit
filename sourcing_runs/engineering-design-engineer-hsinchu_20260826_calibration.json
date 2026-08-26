@@ -1,0 +1,124 @@
+{
+  "job_slug": "engineering-design-engineer-hsinchu",
+  "run_date": "2026-08-26",
+  "stage": "ROUTE_CALIBRATION_5_SAMPLES",
+  "route": "ENG_CONSTRUCTION",
+  "secondary_route": null,
+  "seniority": "mid",
+  "employment_mode": "permanent / onsite (依專案地點，外縣市提供宿舍)",
+  "evidence_mode": "role + project + certification",
+  "overlays": [
+    "SHIFT_OR_ATTENDANCE(現場視勘)",
+    "LICENSE_REQUIRED(普通重機車駕照)",
+    "PORTFOLIO_REQUIRED(AutoCAD/Revit 圖說)"
+  ],
+  "archetype_lock": {
+    "positive": [
+      "高科技廠房（半導體/面板/光電）機電、廠務、無塵室、系統工程之 CAD/Revit 繪圖設計工程師",
+      "機電/空調/水電/消防 設計公司或技師事務所之設計繪圖工程師（非負責人）",
+      "工程顧問公司機電、機械、管線部門之工程師／正工程師（個人貢獻者）"
+    ],
+    "negative": [
+      "經理、副理、協理、部門主管、處長",
+      "教授、講師、技師事務所負責人",
+      "建築師",
+      "在學學生",
+      "純土建結構/景觀設計",
+      "Autodesk 生態圈資深講師"
+    ],
+    "maturity": "3–8 年在職個人貢獻者",
+    "visibility_ceiling": "不得為長期公開授課/官方 webinar 講者級人物",
+    "required_evidence": "現職公司 + 個人貢獻者職稱 + 系統工程/繪圖設計相關證據 + 可到竹北或可接受宿舍派駐",
+    "blocked_sources": [
+      "Autodesk 官方 webinar 講者頁／經銷商技術顧問／BIM 顧問公司講者頁（僅供 referral 與 graph expansion）",
+      "任何需登入的 LinkedIn/Cake 內頁",
+      "外洩資料庫"
+    ],
+    "status": "ARCHETYPE_LOCKED"
+  },
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "match_count": 2,
+  "uncertain_count": 3,
+  "mismatch_count": 0,
+  "sources_attempted": [
+    {
+      "source": "台灣世曦《中華技術》季刊 144/145/151 期 all.pdf（作者掛名區）",
+      "url": "https://www.ceci.com.tw/page/book/BookCET.aspx",
+      "status": "USABLE_BUT_DOMAIN_MISMATCH",
+      "note": "署名格式「公司／部門／職稱／姓名」完全可用，抽出 35 筆掛名；但 2024–2026 期別主題為捷運、交控、AI、橋梁，電機部／空資部作者實作訊號指向高速公路交控與空間資訊，與高科技廠房機電無交集（重演上一輪 false-positive 型態 (b) 工具訊號錯位）。"
+    },
+    {
+      "source": "財團法人中興工程顧問社《中興工程》季刊",
+      "url": "https://www.sinotech.org.tw/PublicInfo/JournalList/",
+      "status": "NO_PUBLIC_ISSUE_INDEX",
+      "note": "線上期別清單回「第0期」，無可解析之篇目與作者掛名。"
+    },
+    {
+      "source": "三聯科技《三聯技術》季刊",
+      "url": "http://web.sanlien.com.tw/ad/san_tech.nsf/foundationview",
+      "status": "LOGIN_REQUIRED",
+      "note": "單篇 PDF 公開且確認署名格式為「公司／姓名」，但期刊索引頁要求帳號密碼；依硬性規則不登入。"
+    },
+    {
+      "source": "國家圖書館 期刊篇目資訊網（無塵室 篇名查詢）",
+      "url": "https://tpl.ncl.edu.tw/NclService/JournalContent",
+      "status": "STALE",
+      "note": "命中《潔淨科技》17、《冷凍與空調》14、《中華水電冷凍空調》12 筆，但出版年分布最新僅到 2023（4 筆），不符近兩年證據新鮮度；篇目明細為 JS 載入無法解析。"
+    },
+    {
+      "source": "台灣冷凍空調學會 工程論文獎／個人貢獻獎公告",
+      "url": "https://www.hvac-net.org.tw/h/NewsInfo?key=jgk4d&cont=419676",
+      "status": "NO_NAMES",
+      "note": "僅公告徵件辦法，不公開得獎人姓名。"
+    },
+    {
+      "source": "中華民國冷凍空調技師公會《冷凍空調技師》季刊",
+      "url": "https://www.hvacpe-roc.org.tw/products_detail/27.htm",
+      "status": "HTTP_500"
+    },
+    {
+      "source": "中國工程師學會 優秀青年工程師榮譽榜",
+      "url": "https://www.cie.org.tw/p/412-1000-136.php",
+      "status": "HTTP_301_NOT_RESOLVED"
+    },
+    {
+      "source": "Credly（Autodesk 認證徽章持有人）",
+      "url": "https://www.credly.com/",
+      "status": "NOT_INDEXED",
+      "note": "Bing 對 credly.com 之 site: 查詢零命中，無法取得台灣 Autodesk 認證持有人名單。"
+    },
+    {
+      "source": "LinkedIn 公開頁搜尋引擎摘要（company-first X-ray）",
+      "url": "https://tw.linkedin.com/",
+      "status": "PARTIAL_YIELD",
+      "note": "唯一產出在職高科技廠房機電個人貢獻者的通路；摘要帶公司＋職稱＋城市，不帶年資與任職日期。屬輔助來源，不計入 70% 非招募來源配額。"
+    }
+  ],
+  "search_engine_state": {
+    "bing": "WORKING_BUT_THIN — 唯一可用引擎；zh-TW 索引極稀疏，多數 site: 查詢零命中，非命中時會退化成單字字典結果。",
+    "yahoo_tw": "DEGRADED_SINCE_LAST_RUN — 結果改為 JS 載入，curl 取回頁面無任何 result 區塊（上一輪尚可用約 20 次）。",
+    "google": "JS_ONLY — 無 result 節點可解析。",
+    "duckduckgo(html/lite)": "HTTP_202_ANTIBOT",
+    "searx.be": "ANTIBOT_CAPTCHA — 依硬性規則不繞驗證碼。",
+    "tw.linkedin.com 個人頁": "HTTP_999 / 註冊牆（沿用上一輪已知限制，未重複撞）"
+  },
+  "false_positive_patterns": [
+    "(b-repeat) 工具訊號錯位：技術期刊作者掛名區格式可用，但可取得的刊物（中華技術）主題為捷運／交控／AI，機電部門作者的實作證據指向公共運輸而非高科技廠房系統。",
+    "(d-new) 通路只給職稱不給能力：唯一能穩定產出在職高科技廠房機電個人貢獻者的 LinkedIn 摘要，只有公司＋職稱＋城市，無 AutoCAD/Revit 圖說證據、無年資，過不了 Qualified Gate 第2項（hands-on）與第6項（年資／薪資帶）。",
+    "(e-new) 單一公司集中：本輪 5 位中 3 位同屬漢唐集成，來自同一次查詢，屬單點來源風險，不足以證明路由可規模化。"
+  ],
+  "dedup": {
+    "ledger_baseline_names": 55,
+    "new_unique_raw_lead": 5,
+    "cross_source_duplicate": 0,
+    "note": "以既有 bim-engineer / bim-engineer-tongluo / ehs-engineer-yunlin 三職缺歷史 run 檔建立 Ledger 基線（含台灣世曦 16 位、漢唐 陳家均、聖暉 2 位等）。本輪 5 位均不在基線內。另註：中華技術 144 期抽出的 楊家豪、余詩敏、黃資庭、李毓仁 已在 Ledger，判 CROSS_SOURCE_DUPLICATE，未計入產出。"
+  },
+  "source_mix": "SOURCE_MIX_PARTIAL — 5 位中 4 位發現自 LinkedIn 公開摘要（輔助來源），僅 1 位來自非招募來源（技術期刊）。未達 70% 非招募來源門檻，如實記錄。",
+  "next_actions": [
+    "本輪不得擴張至 30 人池、不得深查 Email/電話（校準未通過）。",
+    "改道建議一：把來源家族從『技術期刊』換成『高科技廠房機電統包商的公司優先來源』——漢唐集成、聖暉、亞翔、洋基、中鼎的官方專案頁、專利發明人（TIPO/Google Patents，申請人=公司、發明人=在職工程師）與 CSR/永續報告的具名工程團隊。",
+    "改道建議二：把能力證據標準從『可查證的 AutoCAD/Revit 作品』下修為『現職於高科技廠房系統工程公司 + 個人貢獻者職稱』，年資與繪圖能力改列接觸時必問（本職缺 JD 的 3 年與進階繪圖能力在公開被動生態中幾乎無人留證）。此為顧問裁示事項。",
+    "改道建議三：若維持嚴格證據標準，本職缺應與 BIM 案同樣改以主動投遞管道為主（竹北在地校源、104/1111），被動搜尋降為補充——需顧問裁示是否放寬 70% 非招募來源門檻。",
+    "待顧問確認：律准科技與已關閉的 bim-engineer（TW-LUJUN-01）為同一 client_name；Ledger 內 50 位在職 BIM/機電工程師是否可直接評估至本職缺（他們的條件與本職缺 3 年+、AutoCAD/Revit、竹北 高度吻合），或仍受跨案不得搬移原則限制。"
+  ]
+}

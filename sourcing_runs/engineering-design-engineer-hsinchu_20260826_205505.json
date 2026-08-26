@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [
+    {
+      "name": "ChengYu Yang（楊姓，公開摘要僅顯示英文拼寫）",
+      "headline": "漢唐集成股份有限公司 繪圖工程師",
+      "company": "漢唐集成股份有限公司（United Integrated Services，2404；半導體／光電高科技廠房無塵室與機電系統統包）",
+      "location": "台南市（南科生活圈；JD 載明外縣市同仁提供宿舍，跨區可行性待本人確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/chengyu-yang-75700921a",
+      "source_url": "https://tw.linkedin.com/in/chengyu-yang-75700921a",
+      "fit_score": 71,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項一致（公開搜尋引擎摘要，未登入、未開啟註冊牆內頁）：①現職公司＝漢唐集成股份有限公司 ②職稱＝繪圖工程師 ③地點＝Tainan City。判 MATCH 的理由是職稱與 JD 主要職責第1項『高科技廠各系統工程電腦繪圖』字面對應——這是本輪唯一一位公開證據直接指向『繪圖』本職的人選；且僱主本身即為高科技廠房無塵室與各系統機電統包商，產業訊號與 JD 完全同一生態。職級為個人貢獻者『工程師』，非經理副理以上，符合 seniority=mid 的鎖定條件，未觸及排除類型。★待確認（不得推定）：年資是否達 3 年、是否具進階 AutoCAD 與 Revit 能力（摘要未載）、專科以上學歷、普通重機車駕照、由台南調至竹北或依專案地點派駐的實際意願與宿舍安排。★技術限制如實記錄：tw.linkedin.com 個人頁回 HTTP 999／未登入導向註冊牆，依硬性規則不登入、不繞過，故僅引用搜尋引擎摘要，摘要不帶任職起訖日期。全程未查 Email／電話（校準階段規定），未依就業服務法第5條保護項目篩選或排序。"
+    },
+    {
+      "name": "呂學全",
+      "headline": "漢唐集成股份有限公司 工程師",
+      "company": "漢唐集成股份有限公司（高科技廠房無塵室／機電系統統包）",
+      "location": "新竹市（距竹北市約 15 分鐘車程，地緣最佳）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E5%AD%B8%E5%85%A8-%E5%91%82-80799a11a",
+      "source_url": "https://tw.linkedin.com/in/%E5%AD%B8%E5%85%A8-%E5%91%82-80799a11a",
+      "fit_score": 58,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項一致（搜尋引擎摘要）：①現職公司＝漢唐集成股份有限公司 ②職稱＝工程師（個人貢獻者，非經理副理以上，通過職級閘門）③地點＝新竹市，直接解掉 JD 的竹北到班與通勤條件，是本輪地緣最佳的一位。產業面完全落在『高科技廠各系統工程』的同一生態。★判 UNCERTAIN 不計 MATCH 的原因：摘要只有公司與職稱，沒有任何 AutoCAD／Revit 圖說、模型、專案或工作樣本證據，過不了 Qualified Gate 第2項 hands-on capability；『工程師』在漢唐可能是施工、系統、專案或設計繪圖任一種，公開資料無法分辨，不得以僱主產業反推個人繪圖能力。年資與現職薪資皆無公開資料，依規定不得以『太資深招不動』或『薪資錯配』判 MISMATCH，一律標待確認。★待確認：實際職務內容是設計繪圖或施工／系統、年資、AutoCAD 與 Revit 熟練度、學歷、機車駕照、現場視勘與專案調派接受度。未查 Email／電話；未使用就服法第5條保護項目。"
+    },
+    {
+      "name": "黃鴻翔",
+      "headline": "漢唐集成 資深工程師",
+      "company": "漢唐集成股份有限公司",
+      "location": "台灣（公開摘要未細分縣市，待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E9%B4%BB%E7%BF%94-%E9%BB%83-7a9308136",
+      "source_url": "https://tw.linkedin.com/in/%E9%B4%BB%E7%BF%94-%E9%BB%83-7a9308136",
+      "fit_score": 55,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點兩項一致（搜尋引擎摘要）：①現職公司＝漢唐集成 ②職稱＝資深工程師。職稱層級與本職缺『資深工程設計工程師』對應——是資深個人貢獻者而非管理職，正好落在本輪特別提醒要抓、且不可與經理副理混淆的那一格，未觸及排除類型（經理／副理／協理／主管／教授／事務所負責人）。產業同屬高科技廠房系統工程。★判 UNCERTAIN 不計 MATCH 的原因：(1) 錨點只有兩項且第二項就是職稱本身，地點欄僅顯示『台灣』，無法確認可否到竹北或接受宿舍派駐；(2) 無任何繪圖工具或圖說證據；(3)『資深』兩字不得反推年資達 3 年以上，公開資料無任職起訖日期。★注意：不得因『資深工程師』就預設薪資高於 40,000 起薪帶而判不可招募——無現職薪資資料，Capability 與 Recruitability 分開記錄，此項標待確認。★待確認：現居地與通勤意願、實際年資、AutoCAD／Revit 能力、學歷、駕照。未查 Email／電話。"
+    },
+    {
+      "name": "吳克擎",
+      "headline": "機電工程師｜機電工程",
+      "company": "方俊工程有限公司",
+      "location": "Hsinchu City（新竹市，竹北通勤圈）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E5%85%8B%E6%93%8E-%E5%90%B3-35413a291",
+      "source_url": "https://tw.linkedin.com/in/%E5%85%8B%E6%93%8E-%E5%90%B3-35413a291",
+      "fit_score": 49,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點四項一致（搜尋引擎摘要）：①職稱＝機電工程師 ②專業領域＝機電工程 ③現職公司＝方俊工程有限公司 ④教育背景＝元培科技大學 ⑤地點＝Hsinchu City。四項錨點是本輪最完整的一位，身分解析通過、無同名衝突風險，且學歷欄可佐證『專科以上』的方向（實際學位待確認）。地點在新竹市，符合 JD 的竹北到班。★判 UNCERTAIN／列 ADJACENT 的原因：方俊工程為一般機電工程公司，公開資料無法證明其業務落在半導體或高科技廠房系統工程，產業訊號與 JD 的『高科技廠各系統工程』只有相鄰關係而非同一生態；同時無任何 AutoCAD／Revit 或圖說證據、無年資資料。這正是本輪要避免的『能力方向看似相近但工具與產業訊號錯位』型態，故不硬算 MATCH。★待確認：方俊工程是否承接科技廠房案、本人是否負責設計繪圖、年資、繪圖工具、學歷層級、機車駕照。未查 Email／電話；未依就服法第5條項目評分。"
+    },
+    {
+      "name": "張平興",
+      "headline": "台灣世曦工程顧問股份有限公司 機械部 工程師；《中華技術》145 期〈運用 AI 預測模型優化空調能耗〉共同作者",
+      "company": "台灣世曦工程顧問股份有限公司 機械部",
+      "location": "台北市（世曦總部；至竹北需搬遷或派駐，待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.ceci.com.tw/WebBook/CET/145/all.pdf",
+      "fit_score": 49,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "唯一來自非招募來源的一位，也是本輪證據強度最高的一位。身分錨點四項同時取得自同一份公開 PDF 的作者掛名區（署名格式「公司／部門／職稱／姓名」，第 145 期 2025 年 1 月出版，p.88）：①公司＝台灣世曦工程顧問股份有限公司 ②部門＝機械部 ③職稱＝工程師（個人貢獻者，同篇另有經理陳聖堯與資深協理施亮輝，可反向確認他是團隊中最基層的一位，通過職級閘門）④著作＝〈運用 AI 預測模型優化空調能耗〉，內容為大型建築 HVAC 系統能耗建模與節能控制，屬可查證的機電系統工程實作證據，且落在近兩年證據新鮮度內。★判 UNCERTAIN 不計 MATCH 的原因：(1) 該文為公共工程／大型建築空調範疇，並非高科技廠無塵室或廠務系統，產業生態與 JD 不同——這與上一輪已記錄的 false-positive 型態(b)『工具訊號錯位』同源，本輪如實標記而非硬算；(2) 證據為 HVAC 分析建模，不是 AutoCAD／Revit 電腦繪圖，JD 的硬性技能無佐證；(3) 地點在台北，竹北到班需搬遷，宿舍條件可否適用待確認。★不得預設：無年資與現職薪資資料，不以『工程顧問公司薪資高於 40,000 起薪帶』判 MISMATCH，Capability 與 Recruitability 分開記錄。★已完成去重：同期刊抽出的楊家豪、余詩敏、黃資庭、李毓仁已在既有 Candidate Memory Ledger，判 CROSS_SOURCE_DUPLICATE，未計入本輪產出；張平興不在基線內，為 NEW_UNIQUE_RAW_LEAD。未查 Email／電話。"
+    }
+  ],
+  "run_summary": "Archetype Lock 已完成並鎖定（正向：高科技廠房機電／廠務／無塵室／系統工程的 CAD-Revit 繪圖設計個人貢獻者，3–8 年；排除：經理副理協理主管、教授、技師事務所負責人、建築師、在學生、Autodesk 生態圈資深講師）。Job Strategy Router 判 Primary=ENG_CONSTRUCTION、無 Secondary、SENIORITY=mid、EMPLOYMENT_MODE=permanent/onsite、EVIDENCE_MODE=role+project+certification、Overlays=SHIFT_OR_ATTENDANCE（現場視勘）／LICENSE_REQUIRED（普通重機車駕照）／PORTFOLIO_REQUIRED。結果為 ROUTE_CALIBRATION_FAILED：5 位具名樣本中僅 2 位可判 MATCH（ChengYu Yang 職稱直接等於繪圖本職；張平興有近兩年可查證機電系統實作著作），未達 4/5，故不啟動 30 人擴張、不進行 Email／電話深查。依上一輪教訓改押『機電／廠務／無塵室／系統廠房技術刊物』：台灣世曦《中華技術》144／145／151 期 all.pdf 全數下載成功，作者掛名區「公司／部門／職稱／姓名」格式完全可用，抽出 35 筆掛名，但 2024–2026 期別主題集中在捷運、交控、AI、橋梁，電機部與空資部作者的實作訊號指向高速公路交控與空間資訊，與高科技廠房機電無交集——這是上一輪 false-positive 型態(b)『工具訊號錯位』在新來源上重演。其餘刊物逐一查證後封閉：《中興工程》線上期別清單回「第0期」無篇目可解析；《三聯技術》單篇 PDF 公開且署名格式可用但索引頁要求帳號密碼（依硬性規則不登入）；國圖期刊篇目查『無塵室』命中《潔淨科技》17 筆等，但出版年最新僅到 2023，不符近兩年新鮮度；台灣冷凍空調學會獎項公告不列得獎人姓名；冷凍空調技師公會刊物頁 HTTP 500；中國工程師學會優秀青年工程師榮譽榜 HTTP 301 未解析；Credly（Autodesk 認證持有人）零索引。搜尋基礎設施較上一輪再劣化：Yahoo 奇摩已改 JS 載入、curl 取回頁面無任何結果區塊（上一輪尚可用約 20 次），Google 亦僅 JS，DuckDuckGo html/lite 回 HTTP 202 反機器人，searx.be 觸發 CAPTCHA（不繞過），僅 Bing 可用且 zh-TW 索引極稀疏。唯一穩定產出在職高科技廠房機電個人貢獻者的通路是 company-first LinkedIn 公開摘要，但摘要只帶公司＋職稱＋城市，不帶年資與任職日期，過不了 Qualified Gate 第2項 hands-on 與第6項年資——這是本輪新記錄的 false-positive 型態(d)『通路只給職稱不給能力』；另有型態(e)『單一公司集中』：5 位中 3 位同屬漢唐集成、來自同一次查詢。tw.linkedin.com 個人頁的 HTTP 999／註冊牆與 Username X-ray 無效兩項已知限制未重複撞。來源組合如實標記 SOURCE_MIX_PARTIAL：5 位中僅 1 位（張平興）來自非招募來源，未達 70% 門檻。去重以既有三個職缺的歷史 run 檔建立 55 筆 Ledger 基線，本輪 5 位皆為 NEW_UNIQUE_RAW_LEAD，另有 4 位期刊掛名者（楊家豪、余詩敏、黃資庭、李毓仁）判 CROSS_SOURCE_DUPLICATE 未計入產出。全程未登入任何帳號、未繞驗證碼與付費牆、未猜任何 Email、未使用外洩資料庫、未依就服法第5條保護項目篩選或排序，Email／電話全部留 null。完整來源清單、失敗狀態與改道建議已寫入 sourcing_runs/engineering-design-engineer-hsinchu_20260826_calibration.json。建議改道三選一（需顧問裁示）：(1) 來源家族改為高科技廠房統包商的公司優先來源——漢唐、聖暉、亞翔、洋基、中鼎的官方專案頁、專利發明人（申請人=公司、發明人=在職工程師）與永續報告具名工程團隊；(2) 把能力證據標準由『可查證 AutoCAD／Revit 作品』下修為『現職於高科技廠房系統工程公司＋個人貢獻者職稱』，年資與繪圖能力改列接觸時必問；(3) 維持嚴格證據標準則本職缺比照 BIM 案改以主動投遞管道為主、被動搜尋降為補充，並放寬 70% 非招募來源門檻。另有一項待裁示：律准科技與已關閉的 bim-engineer（TW-LUJUN-01）client_name 相同，Ledger 內 50 位在職 BIM／機電工程師的條件與本職缺 3 年以上、AutoCAD／Revit、竹北高度吻合，是否可直接評估至本職缺，或仍受跨案不得搬移原則限制。"
+}
