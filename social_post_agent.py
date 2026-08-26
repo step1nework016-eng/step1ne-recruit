@@ -115,6 +115,82 @@ def public_page_text(slug):
     return body[:5000]
 
 
+_CLIENT_NAMES_CACHE = None
+
+
+def client_name_terms():
+    """所有不該出現在社群貼文裡的客戶識別字：正式名、別名、以及職缺自己
+    記的 client_name。
+
+    ⚠️ 2026-08-26 加。在這之前這支只擋了「不要把 jobs.client_name 這個欄位
+    餵進 prompt」，但真正的漏洞在 public_page_text()——它把**整個公開職缺頁**
+    的文字倒進 prompt，而那些頁面是 client_named=1、網站上本來就具名的，
+    「律准專注於高科技廠房…」「海德生貿易是 Indian Motorcycle 台灣總代理」
+    整段都在裡面。模型當然照抄。網站可以具名跟社群可以具名是兩件事，
+    這條規則從頭到尾只在「欄位」那一層守，頁面文字那條路完全沒守。
+    """
+    global _CLIENT_NAMES_CACHE
+    if _CLIENT_NAMES_CACHE is not None:
+        return _CLIENT_NAMES_CACHE
+    terms = set()
+    try:
+        for r in d1("SELECT display_name, aliases FROM client_companies") or []:
+            for v in [r.get('display_name')] + str(r.get('aliases') or '').split('\n'):
+                v = (v or '').strip()
+                if len(v) >= 2:
+                    terms.add(v)
+                    # 「律准科技股份有限公司」要連「律准」都擋，不然去掉後綴就漏了
+                    base = re.sub(r'(股份有限公司|有限公司|集團|公司|科技|國際開發)$', '', v).strip()
+                    if len(base) >= 2:
+                        terms.add(base)
+        for r in d1("SELECT DISTINCT client_name FROM jobs WHERE client_name IS NOT NULL") or []:
+            v = (r.get('client_name') or '').strip()
+            # 只取真正像公司名的短字串；「苗栗銅鑼建廠專案廠區用人單位」那種
+            # 本來就是遮蔽後的說法，拿去比對只會誤殺
+            if 2 <= len(v) <= 20 and '（' not in v:
+                terms.add(v)
+    except Exception as e:
+        log(f'⚠️ 讀不到客戶名單，這次無法做客戶名稱稽核：{e}')
+        return []
+    # ⚠️ 三個字以內的純英文別名一律不用（例：帆宣的別名「MIC」）。
+    # 那種字在正常文案裡本來就會出現——影音編輯的稿子寫「MIC 收音」會被
+    # 當成洩漏客戶名擋下來，擋久了顧問就不看警告了，那才是真正的風險。
+    # 這些客戶都還有中文名在名單裡（帆宣、帆宣系統…），不會因此漏掉。
+    dropped = sorted(t for t in terms if re.fullmatch(r'[A-Za-z0-9]{1,3}', t))
+    if dropped:
+        log(f'（別名太短、容易誤判，不列入客戶名稱稽核：{"、".join(dropped)}）')
+    terms -= set(dropped)
+    _CLIENT_NAMES_CACHE = sorted(terms, key=len, reverse=True)
+    return _CLIENT_NAMES_CACHE
+
+
+def _term_pattern(t):
+    """英文短字（MIC、Micron…）要加單字邊界，不然「MIC 收音」「microphone」
+    這種正常內容會被誤判成客戶名稱——影音編輯的稿子就很可能出現。
+    中文沒有單字邊界的概念，直接比對；誤判的代價只是重產一次＋人工看一眼，
+    比漏掉一次把客戶名字公開貼出去輕得多。"""
+    if re.fullmatch(r'[A-Za-z0-9 .&-]+', t):
+        return re.compile(r'(?<![A-Za-z0-9])' + re.escape(t) + r'(?![A-Za-z0-9])', re.I)
+    return re.compile(re.escape(t))
+
+
+def mask_client_names(text):
+    """把公開頁文字裡的客戶識別字換掉再餵給模型。
+    模型看不到名字，就寫不出名字——這比事後叫它「不要寫」可靠。"""
+    if not text:
+        return text
+    for t in client_name_terms():
+        text = _term_pattern(t).sub('〔客戶名稱・社群不揭露〕', text)
+    return text
+
+
+def audit_client_names(text):
+    """產出來的稿子再掃一次。輸入遮蔽是主要防線，這是第二道——
+    模型可能從別的欄位拼出名字，或我們的名單漏了某個寫法。"""
+    t = text or ''
+    return [x for x in client_name_terms() if _term_pattern(x).search(t)]
+
+
 def format_job_requirement(job):
     """把 jobs 資料表的欄位轉成技能包要的「用人需求」文字塊。
 
@@ -178,10 +254,15 @@ def format_job_requirement(job):
         add('薪資', f"{unit} {lo}–{hi}" if lo and hi else f"{unit} {lo or hi}")
     add('薪資備註', job.get('salary_note'))
     add('團隊規模', job.get('team_size'))
-    page = public_page_text(job.get('slug') or '')
+    # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
+    #    路徑——公開頁是 client_named=1、網站上本來就具名的，社群不行。
+    page = mask_client_names(public_page_text(job.get('slug') or ''))
     if page:
         lines.append('\n【公開職缺頁上已經寫出來的內容——這是我們自己對外刊的文字，'
-                     '可以直接引用、改寫，工作內容與福利請以這裡為準】\n' + page)
+                     '可以直接引用、改寫，工作內容與福利請以這裡為準。'
+                     '⚠️ 裡面標成〔客戶名稱・社群不揭露〕的地方是客戶公司名，'
+                     '社群貼文一律不准寫出來，也不要試圖從其他線索推回去，'
+                     '改用產業或職務性質描述（例：高科技廠房工程專案、進口車品牌總代理）】\n' + page)
     return '\n'.join(lines) if lines else '（這個職缺目前結構化資料很少，請顧問補充後再產文案，或直接手動撰寫）'
 
 
@@ -303,6 +384,35 @@ def process_job(queue_row, job, repost=False):
         raw, post = generate_draft(job, account_id)
         if not raw or not post:
             log(f'❌ {title}：claude 沒有回東西')
+            return
+
+        # ── 客戶名稱稽核（第二道防線）──
+        # 輸入端已經遮蔽過，這裡再掃一次產出。漏一次的代價是客戶名字被公開
+        # 貼到社群，撤不回來——寧可重產一次也不要送出去。
+        # 重產一次還是漏，就不自動送審，改成明著警告顧問，讓人來決定。
+        hits = audit_client_names(post)
+        if hits:
+            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，重產一次')
+            raw2, post2 = generate_draft(job, account_id)
+            hits2 = audit_client_names(post2 or '')
+            if post2 and not hits2:
+                raw, post, hits = raw2, post2, []
+            else:
+                hits = hits2 or hits
+                if post2:
+                    raw, post = raw2, post2
+        if hits:
+            log(f'🚫 {title}：重產後仍有客戶名稱 {hits}，不自動送審')
+            d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
+            tg_with_buttons(
+                f'🚫 <b>{title}</b> 的社群草稿出現客戶公司名稱，已擋下來沒有送審。\n'
+                f'命中：{"、".join(hits)}\n\n'
+                f'社群一律不提客戶名稱（網站頁面可以具名是另一回事）。'
+                f'下面這份要用的話請自己改掉再發：\n\n{post}',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
             return
 
         # draft 只存乾淨的文案（會被拿去真的發布）；完整原文（含合規檢查／

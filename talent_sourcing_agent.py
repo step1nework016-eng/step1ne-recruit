@@ -237,6 +237,13 @@ def save_candidates(job_slug, candidates, dry):
         # 第二個人開始就整批 INSERT 失敗（實測 2026-08-26 16:46 只存進 3/20 位）。
         # 這裡給每筆網址補上人名 fragment：瀏覽器會忽略 #，網址照樣能點，
         # 但每個人各佔一列，UNIQUE 的原意（同一個人同一個來源不重複收）也還在。
+        # 2026-08-26：grade 原本被塞了 recruitability_class，跟舊資料的 A/B/C/D 混在
+        # 同一欄，導致這一欄篩不出任何東西（篩 A 只撈得到舊資料，篩招募分類只撈得到新資料）。
+        # 規範第六步明訂 Fit Score / Recruitability Class / Contactability 三者分開，
+        # 現在 grade 只放等第、招募分類寫進 recruitability_class 欄。
+        # 等第門檻同 full-prompt-v3.4.md：A 80-100、B 60-79、C 40-59、D 39 以下。
+        fit = int(c.get('fit_score') or 0)
+        grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
         src_url = (c.get('source_url') or '').strip() or None
         if src_url and '#' not in src_url:
             src_url = f'{src_url}#{name}'
@@ -244,12 +251,13 @@ def save_candidates(job_slug, candidates, dry):
           D.d1(
             f"INSERT INTO sourced_candidates "
             f"(id, created_at, source, source_url, name, headline, company, location, "
-            f"email, linkedin_url, bio, raw_json, job_slug, score, grade, status, note) "
+            f"email, linkedin_url, bio, raw_json, job_slug, score, grade, "
+            f"recruitability_class, status, note) "
             f"VALUES ({D.q(cid)}, datetime('now','+8 hours'), 'AI獵頭顧問專員', "
             f"{D.q(src_url)}, {D.q(name)}, {D.q(c.get('headline'))}, {D.q(company)}, "
             f"{D.q(c.get('location'))}, {D.q(c.get('email'))}, {D.q(c.get('linkedin_url'))}, "
             f"{D.q(c.get('evidence'))}, {D.q(json.dumps(c, ensure_ascii=False))}, {D.q(job_slug)}, "
-            f"{int(c.get('fit_score') or 0)}, {D.q(c.get('recruitability_class'))}, 'new', {D.q(note)})"
+            f"{fit}, {D.q(grade)}, {D.q(c.get('recruitability_class'))}, 'new', {D.q(note)})"
         )
         except Exception as e:
             log(f'⚠️  {name}（{company}）寫入失敗，跳過不影響其他人：{str(e)[:160]}')
