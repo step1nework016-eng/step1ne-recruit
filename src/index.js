@@ -7225,6 +7225,7 @@ export default {
         )`;
         const byApp = await env.DB.prepare(
           `SELECT application_id,
+                  GROUP_CONCAT(DISTINCT call_type) AS call_types,
                   SUM(input_tokens) AS input_tokens,
                   SUM(output_tokens) AS output_tokens,
                   SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
@@ -7250,10 +7251,13 @@ export default {
             GROUP BY call_type`
         ).all();
 
-        // 最近幾場，帶名字/職缺——後台一目瞭然用，不用另外點進去查。
+        // 最近花在哪。分三組（阿財面談／阿福健檢／其他工作事項）——
+        // 這三件事的成本要分開看：面談是每個候選人的變動成本、健檢是另一條
+        // 產品線、其他是一次性的維護工，混在一起算平均沒有意義。
+        // 取 60 筆而不是 10 筆，因為分完組之後每一組才有東西可看。
         const recentIds = apps
           .sort((a, b) => String(b.last_at || '').localeCompare(String(a.last_at || '')))
-          .slice(0, 10)
+          .slice(0, 60)
           .map((a) => a.application_id);
         let recent = [];
         if (recentIds.length) {
@@ -7285,8 +7289,14 @@ export default {
           recent = recentIds.map((id) => {
             const a = apps.find((x) => x.application_id === id);
             const nm = label(id);
+            // 分組看 call_type，不看鍵長什麼樣——call_type 是寫入端明確標的，
+            // 鍵的格式歷來換過好幾種，拿鍵來猜會錯。
+            const cts = String(a.call_types || '').split(',');
+            const grp = cts.some((c) => c.startsWith('checkup_')) ? 'checkup'
+              : (cts.some((c) => ['talk', 'report', 'report_json', 'prewarm'].includes(c)) ? 'interview' : 'ops');
             return {
               application_id: id, name: nm.name, is_candidate: nm.is_candidate,
+              group: grp, call_types: cts.filter(Boolean),
               job_title: nm.job_title,
               cost_usd: a.cost_usd || 0,
               input_tokens: a.input_tokens || 0, output_tokens: a.output_tokens || 0,

@@ -222,11 +222,94 @@ def sanitize(t):
     return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
 
 
-def run_claude(prompt, model):
+# ── 花費記錄 ──
+# ⚠️ 2026-08-26 加。在這之前阿福這條線**完全沒有記過任何 token 花費**——
+# 後台「Token 用量」看到的金額只有阿財那邊，阿福談了幾十場、產了幾份報告
+# 的錢一毛都沒進帳，等於整頁的成本是低估的，看了會做出錯的判斷。
+# 邏輯照抄 interview_daemon.py 的 log_token_usage()（同一台機器、同一個
+# claude CLI、同一個 session jsonl 目錄），差別只在 call_type 前面加
+# checkup_ 前綴，後台才分得出這筆是阿福還是阿財。
+CLAUDE_PROJECTS_DIR = os.path.expanduser(
+    '~/.claude/projects/-Users-user---------step1ne-recruit')
+
+
+def _snapshot_session_files():
+    try:
+        return set(os.listdir(CLAUDE_PROJECTS_DIR))
+    except Exception:
+        return set()
+
+
+def _sum_session_usage(path, expect_prefix=None):
+    inp = outp = cw = cr = 0
+    model = None
+    matched = expect_prefix is None
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                msg = d.get('message') or {}
+                if (not matched and d.get('type') == 'user'
+                        and isinstance(msg.get('content'), str)):
+                    matched = msg['content'][:60] == expect_prefix[:60]
+                us = msg.get('usage')
+                if not us:
+                    continue
+                model = model or msg.get('model')
+                inp += us.get('input_tokens') or 0
+                outp += us.get('output_tokens') or 0
+                cw += us.get('cache_creation_input_tokens') or 0
+                cr += us.get('cache_read_input_tokens') or 0
+    except Exception:
+        return None
+    if not matched or not (inp or outp):
+        return None
+    return {'model': model, 'input_tokens': inp, 'output_tokens': outp,
+            'cache_creation_input_tokens': cw, 'cache_read_input_tokens': cr}
+
+
+def log_token_usage(checkup_id, call_type, prompt, before_files):
+    """這支不准往外丟例外——記錄是加值功能，健檢流程不能因為記帳失敗而中斷。"""
+    if not checkup_id:
+        return
+    try:
+        after_files = set(os.listdir(CLAUDE_PROJECTS_DIR))
+        new_files = [f for f in (after_files - before_files) if f.endswith('.jsonl')]
+        if not new_files:
+            return
+        usage = None
+        if len(new_files) == 1:
+            usage = _sum_session_usage(os.path.join(CLAUDE_PROJECTS_DIR, new_files[0]))
+        else:
+            prefix = sanitize(prompt)[:60]
+            for f in new_files:
+                usage = _sum_session_usage(os.path.join(CLAUDE_PROJECTS_DIR, f), expect_prefix=prefix)
+                if usage:
+                    break
+        if not usage:
+            return
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        d1(f"INSERT INTO token_usage "
+           f"(application_id, call_type, model, input_tokens, output_tokens, "
+           f"cache_creation_input_tokens, cache_read_input_tokens, created_at) VALUES "
+           f"({q(checkup_id)}, {q(call_type)}, {q(usage['model'])}, "
+           f"{usage['input_tokens']}, {usage['output_tokens']}, "
+           f"{usage['cache_creation_input_tokens']}, {usage['cache_read_input_tokens']}, {q(now)})")
+    except Exception:
+        pass
+
+
+def run_claude(prompt, model, checkup_id=None, call_type=None):
+    before = _snapshot_session_files() if checkup_id else None
     r = subprocess.run(
         ['claude', '-p', sanitize(prompt), '--model', model,
          *NO_TOOLS, '--output-format', 'text'],
         capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+    if checkup_id:
+        log_token_usage(checkup_id, call_type or 'checkup_talk', prompt, before)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
     return r.stdout.strip()
@@ -445,7 +528,8 @@ def finish(cid, name, ctx, abandoned=False):
         for m in msgs if m['content'] != SENTINEL)
 
     try:
-        raw = run_claude(build_report_prompt(ctx, transcript, abandoned), REPORT_MODEL)
+        raw = run_claude(build_report_prompt(ctx, transcript, abandoned), REPORT_MODEL,
+                         checkup_id=cid, call_type='checkup_report')
         spec = extract_json(raw)
     except Exception as e:
         spec = None
@@ -667,7 +751,8 @@ def handle(c):
         ctx = fetch_checkup(cid)
         conv = ctx.get('messages') or []
         n = len([m for m in conv if m.get('content') != SENTINEL])
-        raw = run_claude(build_talk_prompt(ctx), TALK_MODEL)
+        raw = run_claude(build_talk_prompt(ctx), TALK_MODEL,
+                         checkup_id=cid, call_type='checkup_talk')
         result = extract_json(raw)
         if not result:
             raise RuntimeError(f'回覆裡沒有 JSON：{raw[:200]}')

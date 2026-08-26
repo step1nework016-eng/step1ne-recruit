@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "CALIBRATION_PASSED_4_OF_5",
+  "candidates": [
+    {
+      "name": "許晏嘉",
+      "headline": "2024 學生BIM軟體應用競賽 第三名《圖紙上談BIM》隊員；營建工程系 BIM/Revit 實作出身",
+      "company": "朝陽科技大學 理工學院 營建工程系所（在校/畢業去向待確認，非在職公司）",
+      "location": "臺中市霧峰區（就學地）；距苗栗銅鑼約 40–50 公里，屬中部通勤圈",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?page_id=15299",
+      "fit_score": 60,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1) 學校＋系所＝朝陽科技大學理工學院營建工程系所；(2) 專案＝2024 學生BIM軟體應用競賽參賽隊《圖紙上談BIM》第三名；(3) 指導老師＝王琨淇；(4) 同隊成員＝洪偉翔、林澤崴、張柏彥。走 G1-B 應屆／新鮮人路徑：具 BIM 建模軟體實作與競賽得獎的可驗證成果，符合 JD『無經驗可、公司培訓、AutoCAD／Revit 加分、科系不設限（營建屬相關科系）』。職級為尚未就業之新鮮人層級，通過 G3，無教授／主管／講師等封鎖特徵。地點屬中部，租屋補助 5,000 元下的可招募性優於北部人選。待確認（G2/G5）：是否已畢業（不得推定）、目前去向、機車駕照、無塵室 2 成工時接受度、赴桃園楊梅受訓 1 週、1 個月內到職、保密條款。"
+    },
+    {
+      "name": "左芷瑄",
+      "headline": "2024 學生BIM軟體應用競賽 第二名《笑到BIM Great-GB》隊員；土木工程與環境資源管理系",
+      "company": "明新科技大學 土木工程與環境資源管理系（在校/畢業去向待確認，非在職公司）",
+      "location": "新竹縣新豐鄉（就學地）；與苗栗銅鑼同屬竹苗生活圈",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?page_id=15299",
+      "fit_score": 60,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1) 學校＋系所＝明新科技大學土木工程與環境資源管理系；(2) 專案＝2024 學生BIM軟體應用競賽《笑到BIM Great-GB》第二名；(3) 指導老師＝阮玉梅；(4) 同隊成員＝林俊徉、郭宛琳、黃姿穎。同校同指導老師的另一隊成員 Salsadilla Rizky Tabuchi 已在 Ledger 中、現為 BIM Modeler（繽紛科技／前 RSEA、頂尖國際），證明此來源會產出本職缺要的在職個人貢獻者層級人選，屬有效人才畫像。走 G1-B 路徑；職級為新鮮人層級，通過 G3。竹苗在地，G4 可招募性佳。待確認：是否已畢業、目前去向、機車駕照、無塵室環境、楊梅受訓、到職日、保密條款。"
+    },
+    {
+      "name": "張柏彥",
+      "headline": "2024 學生BIM軟體應用競賽 第三名《圖紙上談BIM》隊員；營建工程系 BIM/Revit 實作出身",
+      "company": "朝陽科技大學 理工學院 營建工程系所（在校/畢業去向待確認，非在職公司）",
+      "location": "臺中市霧峰區（就學地）；中部通勤圈",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?page_id=15299",
+      "fit_score": 58,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1) 學校＋系所＝朝陽科技大學營建工程系所；(2) 專案＝2024 學生BIM軟體應用競賽《圖紙上談BIM》第三名；(3) 指導老師＝王琨淇；(4) 同隊成員＝許晏嘉、洪偉翔、林澤崴。與職缺 main_duties（BIM 模型建置與修正、圖面檢討、AutoCAD／Revit）直接對應，屬 G1-B 可驗證實作證據。無任何 G3 封鎖特徵（非教授／負責人／經理／講師／資深技師）。地點在台中，跨區搬遷幅度小。待確認：畢業狀態、目前去向、機車駕照、無塵室、楊梅受訓、到職日、保密條款。"
+    },
+    {
+      "name": "游翔皓",
+      "headline": "2024 學生BIM軟體應用競賽 佳作《勢在BIM行》隊員；營建工程系 BIM 建模實作",
+      "company": "朝陽科技大學 理工學院 營建工程系所（在校/畢業去向待確認，非在職公司）",
+      "location": "臺中市霧峰區（就學地）；中部通勤圈",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?page_id=15299",
+      "fit_score": 57,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1) 學校＋系所＝朝陽科技大學營建工程系所；(2) 專案＝2024 學生BIM軟體應用競賽《勢在BIM行》佳作；(3) 指導老師＝王琨淇；(4) 同隊成員＝林珮芸、咸翔恩、李岱恩。佳作層級的實作深度略低於前三名，但仍為 G1-B 認可的競賽實作證據，且完全吻合 JD『無經驗可・公司培訓』的可訓練新鮮人定位，薪資帶 40,833–50,167 對此層級無錯配風險。待確認：畢業狀態、目前去向、機車駕照、無塵室、楊梅受訓、到職日、保密條款。"
+    },
+    {
+      "name": "張宸翰",
+      "headline": "2024 學生BIM軟體應用競賽 第一名《Taiwan BIM Guys》隊員；土木工程所碩士層級 BIM 實作",
+      "company": "國立陽明交通大學 土木工程所（在校/畢業去向待確認，非在職公司）",
+      "location": "新竹市／新竹縣（就學地）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?page_id=15299",
+      "fit_score": 64,
+      "recruitability_class": "LONG_TERM_POOL",
+      "evidence": "身分錨點四項一致：(1) 學校＋系所＝國立陽明交通大學土木工程所；(2) 專案＝2024 學生BIM軟體應用競賽《Taiwan BIM Guys》第一名；(3) 指導老師＝高明秀；(4) 同隊成員＝黃律銘、沈書立、鄭劭光。判定為本輪唯一 MISMATCH（成熟度／薪資錯配，非能力不足）：能力上限最高，但同隊的黃律銘已在 Candidate Memory Ledger 中、現任中鼎 CTCI BIM Engineer / Application Developer，顯示此隊人選的實際流向是大型顧問／統包商的 BIM＋開發職，薪資與職涯期待高於本職缺 40,833–50,167 的入門建模帶；依 job-route-calibration-v1「太成熟／不太可能接受即為 MISMATCH」規則不計入 MATCH，改列長期人才池與 referral 節點（可經他擴張同隊與同實驗室的其他成員）。已對黃律銘執行 CROSS_SOURCE_DUPLICATE，未重建。"
+    }
+  ],
+  "run_summary": "【Archetype Lock】依 job_gates/bim-engineer.md（2026-08-26 Jacky 拍板）直接鎖定，未另行推導、未再問問題：正向＝可訓練的入門 BIM 建模個人貢獻者（在職 junior IC 或已畢業新鮮人）；排除＝教授／負責人／經理副理以上／講師顧問／資深技師／Autodesk 生態圈講者池／2023 年含以前資歷停滯者／18 位歷史淘汰名單；證據＝G1-A 在職路徑或 G1-B 應屆實作路徑；ARCHETYPE_LOCKED = true。【Router】Primary = ENG_CONSTRUCTION，無 Secondary（未見 API／Dynamo／開發類能力證據，不觸發 SOFTWARE_DATA）；SENIORITY = entry；EMPLOYMENT_MODE = permanent + onsite；EVIDENCE_MODE = project/portfolio + role；OVERLAYS = SHIFT_OR_ATTENDANCE（全實體到班、無塵室 2 成工時）、無宿舍僅 5,000 元租屋補助造成的地點重力。【增量規則】依 daily-agent-loop-v1 對照 50 位 Ledger 後才落地，未從空白重搜。【實際跑過的來源】(1) CICHE／土水學會 學生BIM軟體應用競賽 歷屆優勝名單（2024 年度，G1 部分解封後可用）——本輪唯一產出來源，取得 24 位具名學生；(2) 台灣世曦 CET 工程技術季刊：152/153/154/155 期 HTTP 404，151 期為現存最新，此來源標記 ROUTE_PATH_EXHAUSTED，須待新刊才重啟；(3) 中興工程季刊索引頁 404；(4) SCEM 2026（2026-07-02）得獎論文——作者為 NTU／NTUST 在學研究生＋教授（林祐正、曾仁杰、謝尚賢、鄭明淵），G2 在學＋G3 教授雙重不通過，未採用；(5) 2026 學生3D BIM競賽（決賽 09/09 尚未舉行，入圍頁只有隊名無個人姓名，且參賽者為在學生，G2 不通過）；(6) 第56屆全國技能競賽「數位建設BIM」職類（2026-08 公布，陳品菲金牌／陳冠霖銅牌／王玲敏佳作，皆為大甲高工建築科學生）——學歷不符 G2「大學以上」，全數不採用；(7) 台灣BIM聯盟認證考試頁無公開合格名單；(8) 朝陽科大機構典藏為 JS 動態站、無法取得論文清單；朝陽營建系與明新土環系榮譽榜 2025–2026 無具名 BIM 項目。【去重結果】2024 競賽名單中比對出 2 位 CROSS_SOURCE_DUPLICATE：黃律銘（＝Ledger 中鼎 CTCI BIM Engineer）、Salsadilla Rizky Tabuchi（＝Ledger 繽紛科技 BIM Modeler），依規則跳過、未寫入 candidates；這 2 筆同時反向驗證了此來源會產出與 Ledger 同層級的有效人選，是本輪判定路由正確的主要依據。【未升級的 RAW_LEAD】Willfred Chou（台賓科技 Taiwan BIM Technology，2023/10 起在職，台北）、Brian Tseng（同公司）、林寬（tw.linkedin.com/in/k1lin，headline 為 BIM 工程師）——三人皆缺職稱或日期錨點，無法通過 G1-A 與 G3，僅記 RAW_LEAD，未進 candidates。【技術阻礙】tw.linkedin.com/in 個人頁直接存取回 HTTP 999（未登入、未繞過，僅引用公開搜尋摘要）；tw.search.yahoo.com 約 20 次查詢後開始回空結果，符合既有紀錄；US 索引的 Web Search 對繁中在地內容命中率低。【必須提請 Jacky 裁示的一項規則衝突】2024 學生BIM軟體應用競賽的公告日為 2024-08-16、決賽日 2024-08-09，比 G1 共同底線「2024-08-26 起」早 10 天；本輪依 G1 封鎖來源 A 的較具體條文「僅限 2024-08 之後的年度」採用該年度名單，若您要嚴格套用 2024-08-26 這條日期線，本輪 5 位應全數降為 RAW_LEAD、結果改判 ROUTE_CALIBRATION_FAILED。【結論】5 位具名樣本全為 NEW_UNIQUE_RAW_LEAD，4 位 MATCH（許晏嘉、左芷瑄、張柏彥、游翔皓，皆 CONTACT_AFTER_CONFIRMATION）、1 位 MISMATCH（張宸翰，成熟度／薪資錯配，改列 LONG_TERM_POOL 兼 referral 節點），達 CALIBRATION_PASSED_4_OF_5。本輪未查 Email／電話（校準階段禁止深查），故全部填 null。下一步建議：以 4 位 MATCH 的畢業狀態與目前去向為第一優先確認項，並從 Ledger 的 中鼎／台灣世曦／豐譽／晨禎／聖暉／頂尖國際 做同事與同專案擴張，同時等 2026 學生3D BIM競賽 09/09 決賽名單公布後開新一輪 B 路徑來源。"
+}
