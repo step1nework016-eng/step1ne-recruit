@@ -8070,6 +8070,7 @@ export default {
         const PL_OFFR = `('OFFER','OFFER_ACCEPTED','HIRED','PLACED','OFFER_PENDING','ONBOARDING')`;
         const { results } = await env.DB.prepare(
           `SELECT a.id, a.name, a.job_slug, j.title AS job_title, a.manual_stage,
+                  a.no_interview_at,
                   r.id AS report_id, r.created_at AS report_at,
                   json_extract(r.content_json, '$.verdict') AS ai_verdict,
                   r.consultant_decision,
@@ -8108,12 +8109,18 @@ export default {
         const aiWorth = rows.filter((x) => x.ai_verdict === '值得轉給顧問');
         const gotInterview = aiWorth.filter((x) => x.reached_interview).length;
         const gotOffer = aiWorth.filter((x) => x.reached_offer).length;
+        // ⚠️ 分母改成「已經有答案的」＝進了面試 ＋ 明確標沒面試。
+        // 用「阿財說值得轉的全部」當分母的話，還在等客戶回覆的人會被算成失敗，
+        // 比率永遠偏低，而且每多推一個人就往下掉一次——那個數字不能拿來判斷任何事。
+        const noInterview = aiWorth.filter((x) => x.no_interview_at && !x.reached_interview).length;
+        const settled = gotInterview + noInterview;
+        const unknown = aiWorth.length - settled;
         return json(request, { ok: true, rows,
           stats: { total: rows.length, done: done.length, pending: rows.length - done.length,
                    agree, aiWorthInterview,
-                   gotInterview, gotOffer,
-                   interviewRate: aiWorthInterview >= 5 ? Math.round((gotInterview / aiWorthInterview) * 100) : null,
-                   offerRate: aiWorthInterview >= 5 ? Math.round((gotOffer / aiWorthInterview) * 100) : null,
+                   gotInterview, gotOffer, noInterview, settled, unknown,
+                   interviewRate: settled >= 5 ? Math.round((gotInterview / settled) * 100) : null,
+                   offerRate: settled >= 5 ? Math.round((gotOffer / settled) * 100) : null,
                    // 樣本太少就不給百分比——與其給一個看起來很漂亮的數字，
                    // 不如老實說「還不能算」。分母是「阿財說值得面談」的那些，
                    // 不是全部已回填的，這樣才是在問「阿財說可以的，顧問真的推了幾成」。
@@ -8144,13 +8151,44 @@ export default {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         const MS = { interview: 'stage1', offer: 'offer' };
-        const stage = MS[String(b.milestone || '')];
+        const kind = String(b.milestone || '');
+        const stage = MS[kind];
         const appId = String(b.applicationId || '').trim();
-        if (!appId || !stage) return json(request, { ok: false, error: '參數錯誤' }, 400);
+        if (!appId || (!stage && kind !== 'no_interview')) {
+          return json(request, { ok: false, error: '參數錯誤' }, 400);
+        }
 
         const app = await env.DB.prepare(
-          `SELECT id, manual_stage FROM applications WHERE id = ?`).bind(appId).first();
+          `SELECT id, manual_stage, no_interview_at FROM applications WHERE id = ?`).bind(appId).first();
         if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+
+        // 「沒面試」＝顧問明確說「客戶最後沒有要約他」。這跟「還沒回填」是兩件事，
+        // 沒有這一筆就分不出來，準確率的分母會一直混著還在等結果的人。
+        // 它不是進度條上的一關（進度條只往前走），所以另外用一個時間戳記錄。
+        if (kind === 'no_interview') {
+          if (b.undo) {
+            await env.DB.prepare(
+              `UPDATE applications SET no_interview_at=NULL, no_interview_by=NULL WHERE id=?`
+            ).bind(appId).run();
+            return json(request, { ok: true, undone: true });
+          }
+          // 已經走到面試以後的階段，就不該再標「沒面試」——兩邊會互相矛盾。
+          const cur = STAGE_INDEX[app.manual_stage];
+          if (cur !== undefined && cur >= STAGE_INDEX.stage1) {
+            return json(request, { ok: false,
+              error: '這位人選的進度已經在面試之後了，不能標「沒面試」。要改的話先取消上面的里程碑。' }, 400);
+          }
+          await env.DB.prepare(
+            `UPDATE applications SET no_interview_at=?, no_interview_by=? WHERE id=?`
+          ).bind(nowTaipei(), 'consultant:kpi', appId).run();
+          return json(request, { ok: true, marked: 'no_interview' });
+        }
+
+        // 標了有進面試／有錄取，就把「沒面試」清掉——不然同一個人兩邊都成立。
+        if (!b.undo && app.no_interview_at) {
+          await env.DB.prepare(
+            `UPDATE applications SET no_interview_at=NULL, no_interview_by=NULL WHERE id=?`).bind(appId).run();
+        }
 
         // 取消：把手動指定清掉，讓進度條退回系統自己算出來的位置。
         // 不是往回設一個更早的階段——那會變成「顧問手動把人往回拖」，

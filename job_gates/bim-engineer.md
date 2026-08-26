@@ -70,3 +70,51 @@ tw.linkedin.com 個人頁回 HTTP 999，未登入以瀏覽器開啟會被導向�
 不得登入、不得繞過。搜尋引擎摘要只帶公司職稱、不帶日期。
 DuckDuckGo 觸發 CAPTCHA、Mojeek/Ecosia/Brave 回 403/429、
 Yahoo 中文 X-ray 約 20 次查詢後遭節流。
+
+## 聯絡查找已驗證的死路（2026-08-26，勿重跑等價查詢）
+
+三種獨立方法對這個人才池的 Email 產出率都是 0%：
+
+1. **官網＋期刊作者區**（waterfall 1-2）：世曦與中興的官方聯絡頁只有總機與表單；
+   下載 6 份期刊 PDF 全文檢索，作者掛名區只列職稱，全刊 0 個個人信箱。
+2. **姓名＋公司＋職稱查 Cake／GitHub／個人網站**（waterfall 3-5）：18 位查無本人公開頁。
+3. **Username X-ray**（waterfall 5，2026-08-26 新試）：30 位中僅 2 位有斬獲，皆為社群非 Email。
+
+### Username X-ray 的結構性限制（可推廣到其他職缺）
+
+LinkedIn slug 分兩類，決定這條路有沒有用：
+- **自訂 vanity username**（如 shihwei-ku、salsadillart、grover-pan）：跨平台重用機率高，值得查。本輪 8 位。
+- **系統自動產生 slug**：拉丁姓名＋hash 尚可去 hash 取核心字串；
+  **中文字＋hash（如「千瑜-黃-3464201b9」）本質上沒有可跨平台重用的 token，X-ray 完全無效。**
+  本輪 7 位屬此類，建議直接改走中文姓名＋公司的作者頁／專案頁路徑。
+
+### 唯一尚未驗證的路徑
+
+**LinkedIn Contact Info（需登入，只能人工開）。** 32 位有 LinkedIn 入口者，
+其 Contact Info 可能含 Email 與個人網站，但自動化讀不到（HTTP 999／註冊牆）。
+「有 LinkedIn 卻沒 Email」這個結論在人工開啟前不算被證實。
+
+### 已驗證的社群第二管道
+
+- salsadilla rizky tabuchi：IG @salsadillart（BIM 教學社群 @ruang_literasibim 品牌大使）
+- Isyfi Qulubana：IG @qulubanaisyfi（bio 含 BIM Modeller／PPNS／MUST 三錨點）
+
+### 一律不採用
+
+ZoomInfo、RocketReach 等遮罩 Email 頁面，依硬性規則不使用。
+
+## 代辦（2026-08-26 Jacky 提出）
+
+**應屆生走學校路線，不要花力氣在網路上找個人聯絡方式。**
+
+理由：B 路徑（競賽出身的應屆生）本來就查不到個人 Email，
+但他們的**系所與指導老師是公開且明確的**，由真人直接聯繫比自動化查找快得多。
+
+已知窗口：
+- 朝陽科技大學 營建工程系｜指導老師 王琨淇（許晏嘉、張柏彥、游翔皓、林珮芸皆其學生）
+- 明新科技大學 土木工程與環境資源管理系｜指導老師 阮玉梅（左芷瑄、林俊徉同隊）
+- 國立屏東科技大學 土木工程系｜指導老師 韋家振
+- 國立陽明交通大學 土木工程所｜指導老師 高明秀
+
+作法：不對這批人跑聯絡查找（會是 0 產出），直接把系所與指導老師整理給顧問，
+由顧問聯繫系辦或老師詢問畢業生去向。系所信箱通常在官網公開。
