@@ -5663,6 +5663,7 @@ export default {
         const forJob = (url.searchParams.get('for_job') || '').trim();
         const { results } = await env.DB.prepare(
           `SELECT c.id, c.display_name, c.contact_email, c.contact_name, c.portal_token, c.created_at, c.last_emailed_at,
+                  c.relation, c.relation_note, c.via_client, c.aliases,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id AND status = 'pending_review') AS pending_count
              FROM client_companies c ORDER BY c.display_name`
@@ -5691,7 +5692,8 @@ export default {
       if (p.startsWith('/admin/portal/companies/') && request.method === 'GET') {
         const id = p.slice('/admin/portal/companies/'.length);
         const company = await env.DB.prepare(
-          `SELECT id, display_name, contact_email, contact_name, portal_token, created_at, last_emailed_at
+          `SELECT id, display_name, contact_email, contact_name, portal_token, created_at, last_emailed_at,
+                  relation, relation_note, via_client, aliases
              FROM client_companies WHERE id = ?`
         ).bind(id).first();
         if (!company) return json(request, { ok: false, error: '找不到這家公司' }, 404);
@@ -5752,9 +5754,24 @@ export default {
         const id = String(b.id || '').trim();
         if (!id) return json(request, { ok: false, error: '缺少公司編號' }, 400);
         const now = nowTaipei();
+        // 2026-08-26 加 relation／別名／原因：這幾欄原本只有「客戶名單」那一頁
+        // 能改，但那一頁跟這一頁讀寫的是同一張 client_companies——同一家公司
+        // 分兩個地方維護，改了一邊另一邊不知道。合併到這一頁之後，那一頁
+        // 只剩導向，不再各自維護一份。
+        const REL = ['signed', 'negotiating', 'end_client', 'past', 'prospect', 'blocked', 'private'];
+        const rel = REL.includes(String(b.relation || '')) ? String(b.relation) : null;
         const r = await env.DB.prepare(
-          `UPDATE client_companies SET contact_email = ?, contact_name = ?, updated_at = ? WHERE id = ?`
-        ).bind(b.contactEmail || null, b.contactName || null, now, id).run();
+          `UPDATE client_companies SET contact_email = ?, contact_name = ?,
+                  relation = COALESCE(?, relation),
+                  relation_note = CASE WHEN ? IS NULL THEN relation_note ELSE ? END,
+                  via_client = CASE WHEN ? IS NULL THEN via_client ELSE ? END,
+                  aliases = CASE WHEN ? IS NULL THEN aliases ELSE ? END,
+                  updated_at = ? WHERE id = ?`
+        ).bind(b.contactEmail || null, b.contactName || null, rel,
+               b.relationNote === undefined ? null : (b.relationNote || ''), b.relationNote || null,
+               b.viaClient === undefined ? null : (b.viaClient || ''), b.viaClient || null,
+               b.aliases === undefined ? null : (b.aliases || ''), b.aliases || null,
+               now, id).run();
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這家公司' }, 404);
         return json(request, { ok: true, id });
       }
@@ -7245,12 +7262,32 @@ export default {
             `SELECT id, name, job_title, job_slug FROM applications WHERE id IN (${placeholders})`
           ).bind(...recentIds).all();
           const nameById = Object.fromEntries((names.results || []).map((r) => [r.id, r]));
+          // ⚠️ 2026-08-26 修：application_id 這一欄從一開始就被當成通用的
+          // 「這筆花費屬於誰」鍵在用，除了真的候選人 UUID，還塞了
+          // fix_copy:<職缺>、job:<職缺>、match:<職缺>、resume:<檔>…等等。
+          // 原本一律 JOIN applications，對不上就印「（已刪除）」——
+          // 畫面上滿滿的「已刪除」，看起來像資料被砍光，其實那些本來就
+          // 不是候選人，一個人都沒被刪。改成照鍵的前綴講出它到底是什麼。
+          const KIND = { fix_copy: '職缺文案修正', job: '建職缺題庫', match: '職缺配對',
+                         resume: '履歷解析', sourcing_feedback: '主動開發回饋' };
+          const label = (id) => {
+            const nm = nameById[id];
+            if (nm) return { name: nm.name, job_title: nm.job_title || nm.job_slug || '', is_candidate: true };
+            const i = String(id).indexOf(':');
+            if (i > 0) {
+              const pre = String(id).slice(0, i), rest = String(id).slice(i + 1);
+              return { name: KIND[pre] || pre, job_title: rest, is_candidate: false };
+            }
+            if (String(id).startsWith('zzz-selftest')) return { name: '系統自我檢測', job_title: '', is_candidate: false };
+            // 剩下的才是真的對不上任何人選的 UUID（面談紀錄被清掉了）
+            return { name: '已刪除的面談', job_title: '', is_candidate: false };
+          };
           recent = recentIds.map((id) => {
             const a = apps.find((x) => x.application_id === id);
-            const nm = nameById[id] || {};
+            const nm = label(id);
             return {
-              application_id: id, name: nm.name || '（已刪除）',
-              job_title: nm.job_title || nm.job_slug || '',
+              application_id: id, name: nm.name, is_candidate: nm.is_candidate,
+              job_title: nm.job_title,
               cost_usd: a.cost_usd || 0,
               input_tokens: a.input_tokens || 0, output_tokens: a.output_tokens || 0,
               last_at: a.last_at,
