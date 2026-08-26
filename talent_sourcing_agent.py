@@ -457,18 +457,26 @@ def main():
     if not ok:
         sys.exit(f'❌ claude -p 執行失敗：{out[-1000:]}')
 
+    # 2026-08-26：原本解析失敗就直接 sys.exit，而且只印最後 2000 字，
+    # 原始輸出沒存檔——實測 engineering-design-engineer-hsinchu 那輪找到 20 位人選，
+    # 因為 JSON 解析失敗整批蒸發，20 分鐘的搜尋結果救不回來。
+    # 改成先無條件把原始輸出寫檔，再解析；失敗時至少人還在檔案裡，可以手動撈。
+    run_dir = os.path.join(HERE, 'sourcing_runs')
+    os.makedirs(run_dir, exist_ok=True)
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    raw_path = os.path.join(run_dir, f'{a.job}_{stamp}_raw.txt')
+    with open(raw_path, 'w') as f:
+        f.write(out)
     parsed = extract_json(out)
     if not parsed:
-        sys.exit(f'❌ 沒有解析出有效 JSON，原始輸出（截斷）：\n{out[-2000:]}')
+        sys.exit(f'❌ 沒有解析出有效 JSON。原始輸出已保留在：{raw_path}\n'
+                 f'（{len(out)} 字元，可手動撈出 candidates 再用 save_candidates 寫入）\n'
+                 f'末段：\n{out[-1500:]}')
 
     # 2026-08-25 加：之前只印姓名/公司/分類到終端機，佐證（evidence）、來源網址、
     # fit_score 這些 Jacky 要親自判斷「這個人選對不對」的關鍵資訊完全沒留下來，
     # 等於顧問只能相信 agent 自己講的結論，沒辦法自己核對。每次跑完整包原始輸出
     # 跟解析後的 JSON 都存成檔案，跟這次搜尋過程一起留底。
-    run_dir = os.path.join(HERE, 'sourcing_runs')
-    os.makedirs(run_dir, exist_ok=True)
-    stamp = time.strftime('%Y%m%d_%H%M%S')
-    raw_path = os.path.join(run_dir, f'{a.job}_{stamp}_raw.txt')
     json_path = os.path.join(run_dir, f'{a.job}_{stamp}.json')
     with open(raw_path, 'w', encoding='utf-8') as f:
         f.write(out)

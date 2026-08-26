@@ -8165,6 +8165,72 @@ export default {
         return json(request, { ok: true });
       }
 
+      // ── 人才池批次指派負責顧問 ──
+      // 2026-08-26 加。池子 3,500 人、一頁 60 筆，一個一個下拉指派是不可能的事。
+      // 兩種模式：
+      //   ids   ＝ 勾選哪幾位就指派哪幾位（精準）
+      //   filter＝ 把「目前篩選條件下的全部」一次指派（例如「這個職缺的 55 人全給 Phoebe」）
+      // filter 模式的 WHERE 條件必須跟 /admin/sourced 列表**完全一致**，
+      // 不然畫面上說 55 人、實際改到 3,500 人——這種錯改回來要一筆一筆比對。
+      if (p === '/admin/sourced/assign-owner' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+
+        const ow = b.owner ? String(b.owner) : null;   // null ＝ 取消指派
+        if (ow) {
+          const c = await env.DB.prepare(
+            `SELECT 1 FROM consultants WHERE id=? AND is_active=1`).bind(ow).first();
+          if (!c) return json(request, { ok: false, error: '找不到這位顧問（或已停用）' }, 400);
+        }
+
+        // ① 勾選模式
+        if (Array.isArray(b.ids) && b.ids.length) {
+          if (b.ids.length > 500) return json(request, { ok: false, error: '一次最多 500 位' }, 400);
+          const ph = b.ids.map(() => '?').join(',');
+          const r = await env.DB.prepare(
+            `UPDATE sourced_candidates SET owner=? WHERE id IN (${ph})`
+          ).bind(ow, ...b.ids.map(String)).run();
+          return json(request, { ok: true, changed: (r.meta && r.meta.changes) || 0 });
+        }
+
+        // ② 條件模式——WHERE 與列表端逐字同步
+        const f = b.filter || {};
+        const st = String(f.status || 'new');
+        const q = String(f.q || '').trim().slice(0, 60);
+        const cat = String(f.cat || '').trim().slice(0, 20);
+        const src = String(f.source || '').trim().slice(0, 80);
+        const job = String(f.job || '').trim().slice(0, 80);
+        const has = String(f.has || '').trim();
+        const where = [`(? = 'all' OR status = ?)`];
+        const bind = [st, st];
+        if (q) {
+          where.push(`(name LIKE ? OR headline LIKE ? OR company LIKE ? OR skills LIKE ? OR bio LIKE ?)`);
+          const like = '%' + q + '%';
+          bind.push(like, like, like, like, like);
+        }
+        if (cat) { where.push(`category = ?`); bind.push(cat); }
+        if (job) { where.push(`job_slug = ?`); bind.push(job); }
+        if (src) { where.push(`source = ?`); bind.push(src); }
+        if (has === 'email') where.push(`COALESCE(email,'') <> ''`);
+        if (has === 'linkedin') where.push(`COALESCE(linkedin_url,'') <> ''`);
+        if (has === 'github') where.push(`COALESCE(github_url,'') <> ''`);
+        const W = where.join(' AND ');
+
+        // 先算會動到幾筆回給前端確認。expect 有帶的話要對得上才執行——
+        // 顧問看到的數字跟實際改的數字不一致時，寧可整批不做。
+        const cnt = await env.DB.prepare(
+          `SELECT COUNT(*) n FROM sourced_candidates WHERE ${W}`).bind(...bind).first();
+        const n = (cnt && cnt.n) || 0;
+        if (b.dry) return json(request, { ok: true, would_change: n });
+        if (b.expect !== undefined && Number(b.expect) !== n) {
+          return json(request, { ok: false,
+            error: `畫面上是 ${b.expect} 位，實際符合條件的是 ${n} 位，可能有人同時在改。請重新整理後再試。` }, 409);
+        }
+        const r = await env.DB.prepare(
+          `UPDATE sourced_candidates SET owner=? WHERE ${W}`).bind(ow, ...bind).run();
+        return json(request, { ok: true, changed: (r.meta && r.meta.changes) || 0 });
+      }
+
       // ── 阿財準不準：待補填清單 ──
       // 2026-08-21 原本這裡有一個獨立的 applications.consultant_call 欄位，
       // 要顧問在這頁「另外」按一次會推／不推／再看看。
