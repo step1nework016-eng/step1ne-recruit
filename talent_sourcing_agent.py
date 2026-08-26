@@ -56,6 +56,18 @@ def load_job(slug):
     return rows[0] if rows else None
 
 
+def load_job_gate(slug):
+    """2026-08-26 加：職缺專屬閘門。原本每個職缺的硬條件與封鎖來源只能靠
+    每次手動貼 --learnings，跑完就散掉，下一輪又從頭犯同樣的錯。改成放在
+    job_gates/<slug>.md，有就自動帶進 prompt，沒有就照原流程跑——
+    對每個職缺都適用，不是 BIM 專用。"""
+    path = os.path.join(HERE, 'job_gates', f'{slug}.md')
+    if not os.path.exists(path):
+        return ''
+    with open(path) as f:
+        return f.read().strip()
+
+
 def load_existing_pool(slug):
     """2026-08-26 加：daily-agent-loop-v1.md 要求每次跑都要載入 Candidate Memory
     Ledger，且明訂『must not restart from a blank search』。原本 build_prompt 沒把
@@ -86,9 +98,17 @@ def format_ledger(rows):
     return ('\n'.join(lines), len(rows))
 
 
-def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_n=0):
+def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_n=0, gate_text=''):
     jd_text = '\n'.join(f'{k}: {v}' for k, v in job.items() if v not in (None, ''))
     learnings_block = ''
+    gate_block = ''
+    if gate_text:
+        gate_block = f'''
+【職缺專屬閘門｜優先於你自行推導的任何 Archetype】
+以下是這個職缺累積下來的硬條件、封鎖來源與淘汰名單，由顧問拍板，必須照做：
+
+{gate_text}
+'''
     ledger_block = ''
     if ledger_n:
         ledger_block = f"""
@@ -133,7 +153,7 @@ def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_
 讀完後，針對以下這個真實職缺執行流程：
 
 {jd_text}
-{ledger_block}{learnings_block}
+{gate_block}{ledger_block}{learnings_block}
 {scope}
 
 硬性規則（不可違反，違反就等於這次任務失敗）：
@@ -403,7 +423,10 @@ def main():
     ledger_text, ledger_n = format_ledger(pool)
     if ledger_n:
         log(f'已載入 Candidate Memory Ledger：後台既有 {ledger_n} 位，本輪只算新身分')
-    prompt = build_prompt(job, a.sample_only, a.learnings, ledger_text, ledger_n)
+    gate_text = load_job_gate(a.job)
+    if gate_text:
+        log(f'已載入職缺專屬閘門：job_gates/{a.job}.md（{len(gate_text)} 字）')
+    prompt = build_prompt(job, a.sample_only, a.learnings, ledger_text, ledger_n, gate_text)
 
     ok, out = run_claude(prompt)
     if not ok:

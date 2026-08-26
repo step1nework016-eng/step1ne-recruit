@@ -7851,6 +7851,33 @@ export default {
         return json(request, { ok: true, owner: owner || 'all', tabs, counts, stale, thresholds: STALE });
       }
 
+      // ── 下載存在 D1 裡的檔案（履歷等） ──
+      // 2026-08-26 加。在這之前後台只有「把履歷當附件推到 Telegram」這一條路，
+      // 網頁上沒有任何地方能直接把檔案取出來——顧問在後台看到「有履歷」卻打不開。
+      // ⚠️ 這支必須走 Authorization header（跟其他 /admin/* 一樣），不能用網址帶
+      // 權杖。履歷是個資，權杖進網址就會留在瀏覽器紀錄、分頁標題、referer 裡。
+      // 所以前端不能直接 <a href> 過來，要用 fetch 帶 header 取回再轉 blob 下載。
+      if (p.startsWith('/admin/file/') && request.method === 'GET') {
+        const fid = decodeURIComponent(p.slice('/admin/file/'.length));
+        const f = await env.DB.prepare(
+          `SELECT filename, mime, content_b64, chunks FROM files WHERE id = ?`).bind(fid).first();
+        if (!f) return json(request, { ok: false, error: '找不到這個檔案' }, 404);
+        let b64 = f.content_b64 || '';
+        if (!b64 && f.chunks) {
+          const { results } = await env.DB.prepare(
+            `SELECT b64 FROM file_chunks WHERE file_id = ? ORDER BY idx ASC`).bind(fid).all();
+          b64 = (results || []).map((r) => r.b64).join('');
+        }
+        if (!b64) return json(request, { ok: false, error: '檔案內容是空的' }, 404);
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        return new Response(bin, { headers: {
+          'content-type': f.mime || 'application/octet-stream',
+          // filename* 用 RFC5987 編碼，中文檔名才不會在下載時變亂碼或被截掉
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(f.filename || 'resume.pdf')}`,
+          'cache-control': 'private, no-store',
+        } });
+      }
+
       // ── pipeline 卡片點開後要看到的全部東西 ──
       // 2026-08-26 加。在這之前顧問在 pipeline 上只看得到姓名跟卡幾天，
       // 要知道這人是誰得跳去「初篩報告」頁再找一次——換頁就等於中斷，
