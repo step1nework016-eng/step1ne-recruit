@@ -8112,13 +8112,24 @@ export default {
         // ⚠️ 分母改成「已經有答案的」＝進了面試 ＋ 明確標沒面試。
         // 用「阿財說值得轉的全部」當分母的話，還在等客戶回覆的人會被算成失敗，
         // 比率永遠偏低，而且每多推一個人就往下掉一次——那個數字不能拿來判斷任何事。
-        const noInterview = aiWorth.filter((x) => x.no_interview_at && !x.reached_interview).length;
+        // 顧問標「不推」的，本來就不會有面試了——不用再叫人手動按一次
+        // 「沒面試」。這兩件事的失敗原因不一樣（不推＝阿財看錯人，
+        // 推了客戶沒約＝阿財跟顧問都看錯，或客戶條件跟講的不一樣），
+        // 所以分開統計；但對「有沒有進到面試」這個問題來說，兩者都是否。
+        const isNoIntv = (x) => !x.reached_interview
+          && (x.consultant_decision === 'rejected' || !!x.no_interview_at);
+        const noInterview = aiWorth.filter(isNoIntv).length;
+        const rejectedByUs = aiWorth.filter((x) => !x.reached_interview
+          && x.consultant_decision === 'rejected').length;
+        const clientNoShow = aiWorth.filter((x) => !x.reached_interview
+          && x.consultant_decision !== 'rejected' && !!x.no_interview_at).length;
         const settled = gotInterview + noInterview;
         const unknown = aiWorth.length - settled;
         return json(request, { ok: true, rows,
           stats: { total: rows.length, done: done.length, pending: rows.length - done.length,
                    agree, aiWorthInterview,
                    gotInterview, gotOffer, noInterview, settled, unknown,
+                   rejectedByUs, clientNoShow,
                    interviewRate: settled >= 5 ? Math.round((gotInterview / settled) * 100) : null,
                    offerRate: settled >= 5 ? Math.round((gotOffer / settled) * 100) : null,
                    // 樣本太少就不給百分比——與其給一個看起來很漂亮的數字，
