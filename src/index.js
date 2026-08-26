@@ -7747,12 +7747,16 @@ export default {
         const ownerSql = isUn ? ` AND owner IS NULL` : (isFiltered ? ` AND owner = ?` : '');
         const bind = (isFiltered && !isUn) ? [owner] : [];
 
-        // ① 要我接觸：找到人了、還沒發出第一封信
+        // ① 要我接觸：**已經被挑出來**、還沒發出第一封信
+        // ⚠️ 2026-08-26 修：原本連 status='new' 也算進來，那是爬蟲剛倒進去、
+        // 還沒有任何人看過的人才池存貨（3,505 筆）。把它當成「今天要我接觸的」
+        // 會讓這個數字永遠是三千多，顧問一眼就知道這頁在唬爛、直接不看。
+        // 存貨要挑人請去「人才池」頁；這一關只放已經挑出來、等著發信的。
         const toContact = (await env.DB.prepare(
           `SELECT id, name, headline, company, job_slug, grade, score, email,
                   created_at AS since, status, owner, source
              FROM sourced_candidates
-            WHERE status IN ('new','shortlisted')${ownerSql}
+            WHERE status = 'shortlisted'${ownerSql}
             ORDER BY COALESCE(score,0) DESC, created_at ASC LIMIT 200`
         ).bind(...bind).all()).results || [];
 
@@ -7845,6 +7849,98 @@ export default {
           stale[k] = tabs[k].filter((r) => r.stale).length;
         }
         return json(request, { ok: true, owner: owner || 'all', tabs, counts, stale, thresholds: STALE });
+      }
+
+      // ── pipeline 卡片點開後要看到的全部東西 ──
+      // 2026-08-26 加。在這之前顧問在 pipeline 上只看得到姓名跟卡幾天，
+      // 要知道這人是誰得跳去「初篩報告」頁再找一次——換頁就等於中斷，
+      // 而這頁的用途就是「一件一件掃過去」。所以這裡一次把該知道的都給：
+      // 聯絡方式、履歷、初篩報告全文、推給了哪幾家、每一家談到哪一關。
+      if (p === '/admin/pipeline/detail' && request.method === 'GET') {
+        const kind = (url.searchParams.get('kind') || '').trim();
+        const id = (url.searchParams.get('id') || '').trim();
+        if (!id) return json(request, { ok: false, error: '缺 id' }, 400);
+
+        if (kind === 'sourced') {
+          const row = await env.DB.prepare(
+            `SELECT s.*, (SELECT display_name FROM consultants c WHERE c.id = s.owner) AS owner_name
+               FROM sourced_candidates s WHERE s.id = ?`).bind(id).first();
+          if (!row) return json(request, { ok: false, error: '找不到' }, 404);
+          return json(request, { ok: true, kind, sourced: row });
+        }
+
+        // application / placement 都收斂成「一位人選的完整檔案」。
+        // placement 的 id 是數字，先換成 application_id 再走同一條路。
+        let appId = id;
+        if (kind === 'placement') {
+          const pr = await env.DB.prepare(
+            `SELECT application_id FROM placements WHERE id = ?`).bind(id).first();
+          if (!pr || !pr.application_id) {
+            // 顧問自己找的人可能沒有 application（阿財沒談過），只有送件紀錄。
+            const only = await env.DB.prepare(`SELECT * FROM placements WHERE id = ?`).bind(id).first();
+            if (!only) return json(request, { ok: false, error: '找不到' }, 404);
+            return json(request, { ok: true, kind, application: null, report: null,
+                                   placements: [only], forwards: [] });
+          }
+          appId = pr.application_id;
+        }
+
+        const app = await env.DB.prepare(
+          `SELECT a.id, a.created_at, a.name, a.email, a.phone, a.job_slug, a.job_title,
+                  a.expected_salary, a.available_date, a.location_ok, a.note,
+                  a.resume_url, a.resume_file_id, a.resume_url_text, a.social_links,
+                  a.status, a.interview_state, a.interview_mode,
+                  a.interview_started_at, a.interview_ended_at,
+                  a.disc_d, a.disc_i, a.disc_s, a.disc_c, a.disc_primary,
+                  a.owner, a.utm_source, a.utm_campaign,
+                  (SELECT display_name FROM consultants c WHERE c.id = a.owner) AS owner_name,
+                  j.title AS job_full_title
+             FROM applications a
+             LEFT JOIN jobs j ON j.slug = a.job_slug
+            WHERE a.id = ?`).bind(appId).first();
+        if (!app) return json(request, { ok: false, error: '找不到' }, 404);
+
+        // 初篩報告全文。顧問點卡片最想看的就是這個——不給就等於還是要跳頁。
+        const report = await env.DB.prepare(
+          `SELECT id, created_at, content_md, content_json, consultant_decision, decided_at
+             FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+        ).bind(appId).first();
+
+        const { results: forwards } = await env.DB.prepare(
+          `SELECT cf.id, cf.company_id, cf.forwarded_at, cf.forwarded_by, cf.note,
+                  cf.manual_stage, cf.manual_stage_at, cf.client_interview_labels,
+                  cc.display_name AS company_name
+             FROM candidate_forwards cf
+             LEFT JOIN client_companies cc ON cc.id = cf.company_id
+            WHERE cf.application_id = ? ORDER BY cf.forwarded_at ASC`).bind(appId).all();
+
+        const { results: placements } = await env.DB.prepare(
+          `SELECT id, job_slug, job_title, client_name, stage, stage_since,
+                  onboard_date, note, close_reason_internal, owner, updated_at
+             FROM placements WHERE application_id = ? ORDER BY id ASC`).bind(appId).all();
+
+        // 每一家客戶各自的進度條。跟客戶入口、候選人 LINE 走同一顆
+        // resolveStage()，三邊看到的絕不會兜不起來。
+        const { results: appts } = await env.DB.prepare(
+          `SELECT stage, status, confirmed_slot FROM interview_appointments
+            WHERE application_id = ? ORDER BY stage ASC, created_at ASC`).bind(appId).all();
+        const stages = [];
+        for (const f of (forwards || [])) {
+          let lbs = {};
+          try { lbs = JSON.parse(f.client_interview_labels || '{}'); } catch { lbs = {}; }
+          const pm = (placements || []).find((x) => x.job_slug === app.job_slug) || (placements || [])[0] || null;
+          const info = resolveStage({ ...app, manual_stage: f.manual_stage },
+                                    { consultant_decision: report ? report.consultant_decision : null },
+                                    appts || [], pm, lbs);
+          const cur = info.effective_index >= 0 ? info.steps[info.effective_index] : null;
+          stages.push({ company_id: f.company_id, company_name: f.company_name,
+                        forwarded_at: f.forwarded_at,
+                        key: cur ? cur.key : null, label: cur ? cur.lb : null,
+                        manual_active: info.manual_active, steps: info.steps });
+        }
+
+        return json(request, { ok: true, kind, application: app, report: report || null,
+                               forwards: forwards || [], placements: placements || [], stages });
       }
 
       // ── 指定負責顧問 ──
