@@ -7712,51 +7712,6 @@ export default {
           total: (tot && tot.n) || 0, page, size: SIZE });
       }
 
-      // 校園徵才／一般外聯寄信（2026-08-26 加）
-      //
-      // 為什麼要多這一支：Resend 金鑰只放在 Worker 的 secret，本機不留一份，
-      // 所以顧問要用 step1ne.com 網域對外寄信，只能繞過來由 Worker 代發。
-      // Gmail 連接器那條路寄件人會顯示個人 gmail，跟 Step1ne 品牌對不上。
-      //
-      // 寄件人固定 jackychen@step1ne.com——Resend 驗證的是網域不是單一地址，
-      // 所以不必另外設定。但 reply_to 預設同一個地址，
-      // 若該信箱在 GoDaddy 那邊沒開通，回信會掉，呼叫時要自己帶 replyTo。
-      if (p === '/admin/send-outreach' && request.method === 'POST') {
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const to = String(b.to || '').trim();
-        const subject = String(b.subject || '').trim();
-        const body = String(b.body || '');
-        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
-          return json(request, { ok: false, error: '收件者 Email 格式不正確' }, 400);
-        }
-        if (!subject || !body) return json(request, { ok: false, error: 'subject 與 body 都要有' }, 400);
-        if (!env.RESEND_API_KEY) return json(request, { ok: false, error: 'RESEND_API_KEY 沒設' }, 500);
-        const escOut = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-        const html = b.html ? String(b.html)
-          : `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;font-size:15px;`
-            + `line-height:1.9;color:#23262d;max-width:620px;white-space:pre-wrap;">`
-            + escOut(body) + `</div>`;
-        try {
-          const r = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
-            body: JSON.stringify({
-              from: 'Jacky Chen <jackychen@step1ne.com>',
-              to: [to], subject, text: body, html,
-              reply_to: String(b.replyTo || 'jackychen@step1ne.com'),
-            }),
-            signal: AbortSignal.timeout(20000),
-          });
-          const detail = await r.text();
-          if (!r.ok) return json(request, { ok: false, error: 'Resend 回錯誤', detail: detail.slice(0, 400) }, 502);
-          await notify(env, `📧 已寄出外聯信\n收件：${to}\n主旨：${subject}`);
-          return json(request, { ok: true, detail: detail.slice(0, 200) });
-        } catch (e) {
-          return json(request, { ok: false, error: String(e).slice(0, 200) }, 500);
-        }
-      }
-
       // 更新一筆的狀態（顧問挑人、標記已接觸、標記不合適）
       if (p === '/admin/sourced/status' && request.method === 'POST') {
         let b;
@@ -8060,77 +8015,6 @@ export default {
 
         return json(request, { ok: true, kind, application: app, report: report || null,
                                forwards: forwards || [], placements: placements || [], stages });
-      }
-
-      // ── 接觸紀錄 ──
-      // 2026-08-26 接起來。outreach 這張表建好之後從來沒有任何程式寫過它、
-      // 也沒有頁面讀過它——「今天寄了 10 個系所」這種事只能存在訊息裡，
-      // 兩週後沒人記得寄過誰、誰回了、回覆率多少。
-      //
-      // ⚠️ 這裡跟 bd_outreach 是兩件不同的事，不要合併：
-      //   bd_outreach ＝ 把某位人選推銷給企業（找客戶）
-      //   outreach    ＝ 為了某個職缺去接觸誰（找人選的管道，含學校系所）
-      // 方向相反，統計意義也不同。
-      if (p === '/admin/outreach' && request.method === 'GET') {
-        const job = (url.searchParams.get('job') || '').trim();
-        const type = (url.searchParams.get('type') || '').trim();
-        const w = [], b = [];
-        if (job) { w.push('job_slug = ?'); b.push(job); }
-        if (type) { w.push('target_type = ?'); b.push(type); }
-        const where = w.length ? ' WHERE ' + w.join(' AND ') : '';
-        const { results } = await env.DB.prepare(
-          `SELECT o.*, j.title AS job_title,
-                  (SELECT display_name FROM consultants c WHERE c.id = o.owner) AS owner_name
-             FROM outreach o LEFT JOIN jobs j ON j.slug = o.job_slug
-             ${where.replace('WHERE', 'WHERE')}
-            ORDER BY o.sent_at DESC, o.id DESC LIMIT 500`
-        ).bind(...b).all();
-        const rows = results || [];
-        // 回覆率的分母只算「發出去且已經等夠久」的。剛寄出的當天就算進分母，
-        // 數字會被稀釋成沒有意義的低值。
-        const replied = rows.filter((r) => r.outcome === 'replied' || r.outcome === 'meeting').length;
-        const closed = rows.filter((r) => r.outcome !== 'sent').length;
-        return json(request, { ok: true, rows,
-          stats: { total: rows.length, replied, closed, waiting: rows.length - closed,
-                   // ⚠️ 樣本不到 100 封不給回覆率——這是 Jacky 定的門檻，
-                   // 10 封的 0% 跟 10 封的 20% 都不能拿來下任何結論。
-                   reply_rate: rows.length >= 100 ? Math.round((replied / rows.length) * 100) : null } });
-      }
-
-      if (p === '/admin/outreach' && request.method === 'POST') {
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const TYPES = ['school', 'candidate', 'client', 'intro'];
-        const tt = TYPES.includes(String(b.target_type || '')) ? String(b.target_type) : null;
-        if (!tt || !b.target_name) return json(request, { ok: false, error: '缺 target_type 或 target_name' }, 400);
-        const now = nowTaipei();
-        const r = await env.DB.prepare(
-          `INSERT INTO outreach (target_type,target_name,company,job_slug,channel,sent_at,outcome,
-                                 contact_email,ext_id,region,subject,sent_by,owner,note,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        ).bind(tt, String(b.target_name).slice(0, 120), b.company || null, b.job_slug || null,
-               b.channel || 'email', b.sent_at || now, b.outcome || 'sent',
-               b.contact_email || null, b.ext_id || null, b.region || null,
-               b.subject || null, b.sent_by || null, b.owner || null,
-               b.note || null, now).run();
-        return json(request, { ok: true, id: r.meta && r.meta.last_row_id });
-      }
-
-      if (p === '/admin/outreach/outcome' && request.method === 'POST') {
-        let b;
-        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const OK = ['sent', 'replied', 'no_reply', 'declined', 'meeting'];
-        if (!b.id || !OK.includes(String(b.outcome || ''))) {
-          return json(request, { ok: false, error: '參數錯誤', outcomes: OK }, 400);
-        }
-        await env.DB.prepare(
-          `UPDATE outreach SET outcome=?,
-                  replied_at = CASE WHEN ? IN ('replied','meeting') THEN COALESCE(replied_at, ?) ELSE replied_at END,
-                  note = COALESCE(?, note)
-            WHERE id=?`
-        ).bind(String(b.outcome), String(b.outcome), nowTaipei(),
-               b.note ? String(b.note).slice(0, 500) : null, b.id).run();
-        return json(request, { ok: true });
       }
 
       // ── 指定負責顧問 ──
