@@ -55,7 +55,7 @@ def build_body(j):
         f'<div style="{BOX}"><div style="font-family:\'Space Mono\',monospace;color:#a67c3d;'
         f'font-size:13px;margin-bottom:6px;">{i:02d}</div>'
         f'<div style="font-weight:700;">{s}</div></div>'
-        for i, s in enumerate(j.get('steps', ['填寫應徵表單', '顧問保密初談', '安排面試、談定條件']), 1))
+        for i, s in enumerate(j.get('steps', ['跟 AI 阿財初步面談', '顧問保密初談', '安排面試、談定條件']), 1))
 
     faq = ''.join(
         f'<details style="border:1px solid #e6dfd1;border-radius:14px;background:#fff;overflow:hidden;">'
@@ -86,7 +86,7 @@ line-height:1.3;margin:0 0 16px;color:#1c1f26;">{E(j.get('title'))}<span class="
 <h2>立即應徵</h2>
 <p style="color:#55585f;font-size:15px;margin:0 0 22px;">線上填寫約 2 分鐘，Step1ne 顧問會盡快與你聯繫。</p>
 <a href="{apply_url}" style="display:inline-flex;align-items:center;gap:10px;background:#a67c3d;
-color:#fff;font-weight:700;font-size:16px;padding:15px 34px;border-radius:999px;">填寫應徵表單</a>
+color:#fff;font-weight:700;font-size:16px;padding:15px 34px;border-radius:999px;">立即跟 AI 阿財面談</a>
 <span style="margin-left:14px;"><a href="https://lin.ee/XcSWPzM" target="_blank" rel="noopener"
 style="color:#a67c3d;font-weight:600;">或用 LINE 直接洽詢 →</a></span>
 {sec('常見問題', f'<div style="display:flex;flex-direction:column;gap:12px;">{faq}</div>' if faq else '')}

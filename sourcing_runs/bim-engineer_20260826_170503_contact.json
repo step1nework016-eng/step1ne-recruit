@@ -1,0 +1,225 @@
+{
+  "contacts": [
+    {
+      "id": "bd5130bd-c3fa-420e-8323-210257b9f2c0",
+      "name": "李毓仁",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：實際下載發現來源 PDF 並全文抽取文字（ceci.com.tw/WebBook/CET/151/all.pdf），確認『正工程師 李毓仁』出現於作者掛名區，該區只列職稱，無 Email／電話；全刊唯一信箱是組織信箱 pr@ceci.com.tw。Waterfall 1：ceci.com.tw 官方聯絡頁只有總機 (02)8797-3567、傳真 (02)8797-3568 與線上表單，無任何具名同仁信箱。Waterfall 3-5：以「李毓仁＋世曦／BIM／工程師」查 Cake、LinkedIn、個人網站與 GitHub 均無可通過身分錨點的本人公開頁。未依 CECI 內部信箱格式推導任何 Email。",
+      "contact_source_url": null
+    },
+    {
+      "id": "e3415449-8227-471a-8c4d-d584ee093f8a",
+      "name": "馮興亞",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：下載並全文檢索 ceci.com.tw/WebBook/CET/144/all.pdf，確認作者列『台灣世曦工程顧問股份有限公司／捷運工程部／工程師／馮興亞 (Feng, Hsing-Ya)』，同人亦見於 CET/145 作者列；兩期全刊皆 0 個 Email、0 個個人電話。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單。Waterfall 3-5：Cake／LinkedIn／GitHub 以姓名＋捷運＋世曦交叉查無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "cc3369bf-3dac-4d91-8d1d-68767ff2d260",
+      "name": "林志全",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：下載並全文檢索 ceci.com.tw/WebBook/CET/146/all.pdf，確認『正工程師 林志全』與許瑋真、李怡瑤同列於社會住宅 ICT／BIM 專文作者區，僅有職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1：ceci.com.tw 聯絡頁僅組織總機 (02)8797-3567 與表單。Waterfall 3-5：以「林志全＋台灣世曦＋BIM整合中心＋正工程師」查 Cake、LinkedIn、個人網站、GitHub 均無可驗證本人頁面。",
+      "contact_source_url": null
+    },
+    {
+      "id": "4d3ba7d5-b821-41f1-9c16-7754fed36cff",
+      "name": "許瑋真",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/146/all.pdf 全文抽取確認『正工程師 許瑋真』於作者區，僅列職稱；該期全刊無任何 Email 或個人電話。Waterfall 1：CECI 官方聯絡頁只有組織層級管道。Waterfall 3-5：以「許瑋真＋世曦／BIM／工程師」查 Cake、LinkedIn、個人網站、GitHub 無本人公開頁；搜尋只回傳公司 ISO 19650 新聞稿等組織層級內容。",
+      "contact_source_url": null
+    },
+    {
+      "id": "5a68c9a0-abf9-4458-b82e-710e5278f556",
+      "name": "李怡瑤",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/146/all.pdf 全文抽取確認『正工程師 李怡瑤』於作者區，僅列職稱；該期全刊 0 個 Email、0 個個人電話。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單。Waterfall 3-5：以「李怡瑤＋世曦／BIM／工程師」查 Cake、LinkedIn、個人網站、GitHub 均無可通過身分錨點的本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "6077914d-9777-448a-872f-fe85a55ebe07",
+      "name": "楊家豪",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/144/all.pdf 全文抽取確認兩篇作者列均載『台灣世曦工程顧問股份有限公司／捷運部／正工程師／楊家豪 (Yang, Chia-Hao)』，僅職稱無聯絡資訊；全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織管道。Waterfall 3-5：Cake／LinkedIn／GitHub 查無本人公開頁；公開搜尋另出現世曦主管『楊家興』屬不同人，已標記為同名干擾未採用。",
+      "contact_source_url": null
+    },
+    {
+      "id": "184313ee-15df-4a8d-af26-941977b25bbe",
+      "name": "張展豪",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：下載並全文檢索 sinotech.org.tw/modules/PublicInfo/Journal/pdf/170/170.pdf，確認作者區『張展豪 Chan-Hao Chang1』（上標1＝中興工程顧問社），作者區無 Email／電話。該期確實有 6 個信箱，但經逐一比對上下文，分別屬於許國恩(kuoenh@)、吳紗糸(wushami@)、葛文忠(wcko@)、叢書訂購陳小姐(louise@) 及組織投稿／行政信箱(admdpt@、adm-dpt@、dptrc-ctr@)，均非本人；雖可見該社信箱有規則可循，仍依規定不做格式推導。Waterfall 3-5：查 Cake、LinkedIn、GitHub、ResearchGate 與其成大碩士論文與 airitilibrary 期刊頁（DocID=10155856-N202301170013-00009，共同作者馮重偉、周政頡），該期刊頁明確未顯示任何作者 Email 或單位聯絡資料。",
+      "contact_source_url": null
+    },
+    {
+      "id": "770221e2-9afd-4cdf-a48e-b4467e411026",
+      "name": "余詩敏",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/144/all.pdf 全文抽取確認兩篇作者列均載『台灣世曦工程顧問股份有限公司／捷運部／正工程師／余詩敏 (Yu, Shih-Min)』，僅職稱無聯絡資訊；全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單。Waterfall 3-5：Cake、LinkedIn、個人網站、GitHub 以姓名＋世曦＋捷運部交叉查詢均無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "59fb0331-237b-4d0b-8f76-c9cc2aa0dfc3",
+      "name": "黃碩儒",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/145/all.pdf 全文抽取確認作者列『台灣世曦工程顧問股份有限公司／捷運工程部／計畫工程師／黃碩儒 (Huang, Shuo-Ju)』，僅職稱無聯絡資訊；該期全刊 0 個 Email、0 個個人電話。Waterfall 1：CECI 官方聯絡頁僅組織管道。Waterfall 3-5：以「黃碩儒＋台灣世曦＋計畫工程師＋捷運」查 Cake、LinkedIn、GitHub、個人網站均無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "e69cd481-84ca-4878-bb7f-c44ea406f5fd",
+      "name": "黃資庭",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/144/all.pdf 全文抽取確認作者列『台灣世曦工程顧問股份有限公司／水環部／工程師／黃資庭 (Huang, Tzu-Tin)』，僅職稱無聯絡資訊；全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單。Waterfall 3-5：Cake、LinkedIn、GitHub、個人網站以姓名＋世曦＋水環部交叉查詢均無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "9bc5e601-96b6-45d4-bdf4-1bb9eef4b3e1",
+      "name": "邱哲誼",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/149/all.pdf 全文抽取確認『工程師 邱哲誼』與黃希達、陳柏融同列作者區，僅職稱無聯絡資訊；該期全刊唯一電話為 CECI 總機 (02)8797-3567 與 (02)8732-5567，0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織管道。Waterfall 3-5：以姓名＋世曦＋營建工程部＋樂善安居社宅查 Cake、LinkedIn、GitHub、個人網站均無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "7f45dcac-898e-4209-8b5e-50a009eb22f8",
+      "name": "陳柏融",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/149/all.pdf 全文抽取確認『工程師 陳柏融』於作者區，僅職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織管道。Waterfall 3-5：查無本人公開頁；公開搜尋另出現兩位同名者（職棒球員陳柏融／陳子胤、以及一位前端 React 技術書作者），與世曦營建工程部無任何一致錨點，依規定標記為同名干擾，未採用其任何聯絡資料。",
+      "contact_source_url": null
+    },
+    {
+      "id": "d73a5924-10da-47cc-a305-b84090bb771d",
+      "name": "黃希達",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/149/all.pdf 全文抽取確認『計畫工程師 黃希達』於作者區，僅職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單。Waterfall 3-5：Cake、LinkedIn、GitHub、個人網站查無本人公開頁；搜尋另見營建工程部主管『黃寶翰』為不同人，未採用。",
+      "contact_source_url": null
+    },
+    {
+      "id": "ad931451-a461-4a88-9013-52382d2972b7",
+      "name": "許睿叡",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：sinotech.org.tw/.../170/170.pdf 全文抽取確認作者區『許睿㕢 Ruei-Shiue Shiu1』（目錄作「許睿叡」，同一人異體字，上標1＝中興工程顧問社），並見於該文參考文獻多篇 2021-2022 共同著作，作者區無 Email／電話。該期出現的 kuoenh@sinotech.org.tw 屬另一位『許國恩 組長』，同姓不同人，已排除且未做任何格式推導。Waterfall 3-5：以中文名兩種寫法及 Ruei-Shiue Shiu 查 Cake、LinkedIn、GitHub、個人網站均無可通過身分錨點的本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "e7b47ad8-2b0b-4ced-97e8-ba7a7333a7de",
+      "name": "杜承翰",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/146/all.pdf 全文抽取確認『工程師 杜承翰』列於高雄機場智慧永續綠色航廈專文作者區（同列副理王德琳），僅職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1-2 延伸：另查高雄國際機場新航廈官方資訊公開網 kianewterminal.kia.gov.tw 無個別工程師聯絡資料。Waterfall 3-5：Cake、LinkedIn、GitHub、個人網站查無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "faf674e3-b77c-4c6d-a072-958efe7d88ac",
+      "name": "吳中期",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：sinotech.org.tw/.../170/170.pdf 全文抽取確認作者區『吳中期 Chung-Chi Wu1』（上標1＝中興工程顧問社），並見於 2023 研討會與 2022 中興工程季刊第154期共同著作，作者區無 Email／電話。該期 wushami@sinotech.org.tw 屬另一位『吳紗糸 實驗室主任』，同姓不同人，已排除。Waterfall 3-5：查 Cake、LinkedIn、GitHub 無本人公開頁；公開搜尋出現數個同名 Facebook 帳號，均無公司／專案／技能等第二錨點，依規定標記同名未驗證，未採用。",
+      "contact_source_url": null
+    },
+    {
+      "id": "44f8d8d8-0bae-4ca6-ab26-c3d706fd33d7",
+      "name": "馮伯軒",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/146/all.pdf 全文抽取確認『工程師 馮伯軒』與吳孟潔同列作者區（同列主任林明坤），僅職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織總機與表單，無嘉南工程處個別同仁信箱。Waterfall 3-5：Cake、LinkedIn、GitHub、個人網站查無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "5bbbe899-e8f3-44c2-86d1-9cf80def9d78",
+      "name": "吳孟潔",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "other_channel": null,
+      "contact_route": "ORG_REFERRAL_QUEUE",
+      "evidence": "Waterfall 2：ceci.com.tw/WebBook/CET/146/all.pdf 全文抽取確認『工程師 吳孟潔』於作者區，僅職稱無聯絡資訊；該期全刊 0 個 Email。Waterfall 1：CECI 官方聯絡頁僅組織管道，未公開嘉南工程處分機或個別信箱。Waterfall 3-5：Cake、LinkedIn、GitHub、個人網站以姓名＋世曦＋嘉南工程處交叉查詢均無本人公開頁。",
+      "contact_source_url": null
+    },
+    {
+      "id": "9a4f9a6d-ae32-47c3-af33-6291c968f8c0",
+      "name": "鄭銘傑",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E9%8A%98%E5%82%91-%E9%84%AD-9b3672123",
+      "other_channel": null,
+      "contact_route": "LINKEDIN_MANUAL_QUEUE",
+      "evidence": "Waterfall 4：既有 LinkedIn 已通過身分錨點驗證，公開搜尋標題明確顯示為『鄭銘傑 - 工程師 - 聖暉』，與候選人現職一致；但直接讀取該頁遭 LinkedIn 反爬蟲擋下（HTTP 999），未登入、未繞驗證，因此 Contact Info／About／Featured 無法取得，需人工開啟。同名衝突已記錄：另有 linkedin.com/in/銘傑-鄭-15aa3a22b 為 CKmates 銓鍇國際專案工程師，非本人。Waterfall 3：搜尋到疑似 Cake 履歷 cake.me/resumes/zxc0935823101（搜尋結果標題為「鄭銘傑」），實際開啟顯示『您需要權限，請向這份履歷的擁有者索取加密連結』，屬非公開頁，未嘗試取得加密連結，亦不採計；該網址帳號字串雖含類似手機號的數字，屬帳號名稱而非本人公開之聯絡欄位，依規定不得推定為電話。Waterfall 1-2：acter.com.tw 官網無個別工程師信箱。",
+      "contact_source_url": "https://tw.linkedin.com/in/%E9%8A%98%E5%82%91-%E9%84%AD-9b3672123"
+    },
+    {
+      "id": "62eee91a-69af-494b-b05f-233322d94990",
+      "name": "洪晨倍",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E6%99%A8%E5%80%8D-%E6%B4%AA-b057b020b",
+      "other_channel": null,
+      "contact_route": "LINKEDIN_MANUAL_QUEUE",
+      "evidence": "Waterfall 4：既有 LinkedIn 已通過身分錨點驗證，公開搜尋結果標題明確為『洪晨倍 - 工程師 - 青見營造 | LinkedIn』，公司與職稱雙錨點一致；但直接讀取該頁遭 LinkedIn 反爬蟲擋下（HTTP 999），未登入、未繞驗證，Contact Info／About／Featured 無法取得，需人工開啟。Waterfall 1-2：查青見營造公開資料（統編 69704362，桃園市桃園區藝文一街32號，代表人鍾詩平），官方公開資訊無個別工程師信箱或分機。Waterfall 3、5：Cake、GitHub、個人網站查無本人公開頁。",
+      "contact_source_url": "https://tw.linkedin.com/in/%E6%99%A8%E5%80%8D-%E6%B4%AA-b057b020b"
+    }
+  ],
+  "run_summary": "本輪只做既有候選人聯絡查找，未搜尋新人選，未回頭調整任何人的 Fit。20 位全部逐一跑完 Email-first waterfall 第1至第6步。實際打通的來源：(1) 官方網域與官網——ceci.com.tw 聯絡頁、acter.com.tw、sinotech.org.tw、青見營造公開登記資料，全部只有組織層級管道；(2) 公開 PDF 作者資訊區——這是本輪最紮實的一段，6 份發現來源 PDF（CET 144/145/146/149/151 與中興工程季刊170）因超過線上抓取上限，改為實際下載共約 4.4 億位元組並用 pdftotext 全文抽取後逐字比對，20 位中有 18 位在原始 PDF 作者區獲得公司＋部門＋職稱的身分再確認；(3) Cake／CakeResume；(4) LinkedIn 公開頁；(5) 個人網站／GitHub／作品集；另加查 airitilibrary 期刊頁、成大論文、Autodesk University 講者頁、高雄機場新航廈官方資訊網、世曦工會公開文件等延伸路徑。結果：Email-ready 0 位、雙管道 0 位、本人電話 0 支——本輪自動化 Email 外聯產能為零，等同 AUTO_OUTREACH_TARGET_MISSED（預設日標 3-5 個新驗證 Email 全數未達）。分流：LINKEDIN_MANUAL_QUEUE 2 位（鄭銘傑、洪晨倍，LinkedIn 入口已用公開搜尋結果的職稱＋公司雙錨點驗證為本人，但頁面被 LinkedIn 反爬蟲以 HTTP 999 擋下，我沒有登入也沒有繞過，Contact Info 需顧問人工開啟）；ORG_REFERRAL_QUEUE 18 位（僅存在雇主層級入口：CECI 總機 (02)8797-3567 與 pr@ceci.com.tw、中興顧問社 (02)8791-9198 與 sinotech@sinotech.org.tw／adm-dpt@sinotech.org.tw，這些都不是本人管道，不可用於自動外聯）。三個必須點名的缺口與風險：第一，CECI 五期季刊全刊只出現 1 個信箱且是組織信箱 pr@，代表這條來源的 AUTO_CONTACT_POTENTIAL 應直接降為 LOW——它對 Fit 與身分驗證極有價值，但已累積遠超過 10 位 Qualified 且 Verified Email 為 0，建議改開官方團隊頁、研討會講者頁、公協會會員名冊等更具聯絡密度的錨點。第二，中興工程季刊170 確實含 6 個信箱，但逐一比對上下文後全部歸屬他人（許國恩、吳紗糸、葛文忠、叢書訂購陳小姐）或組織信箱；該社信箱雖明顯有可循的英文拼音規則，我依硬性規則沒有替張展豪、許睿叡、吳中期做任何格式推導。第三，鄭銘傑的 Cake 履歷是權限鎖定頁（顯示需向擁有者索取加密連結），我沒有嘗試取得連結；其 Cake 帳號字串內含類似手機號的數字，屬帳號名稱而非本人公開的聯絡欄位，已明確不採計為電話。另記錄兩筆同名干擾未採用：陳柏融（職棒球員與前端技術書作者）、吳中期（數個無第二錨點的 Facebook 帳號），以及 LinkedIn 上另一位任職 CKmates 的同名鄭銘傑。下一步建議：這 18 位屬於資訊揭露極保守的大型工程顧問公司員工，公開網路幾乎不可能有本人信箱，應改走 Referral 與人工 LinkedIn InMail，而非繼續在同類公開來源重複等價查詢（已標記 CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH，僅在出現新公司、新專案、新活動、新網域或新帳號時才重啟）。"
+}

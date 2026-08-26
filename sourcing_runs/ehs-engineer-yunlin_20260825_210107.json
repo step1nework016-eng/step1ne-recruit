@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [
+    {
+      "name": "賴柏璂",
+      "headline": "營造業職業安全衛生人員（114年度推行職業安全衛生優良人員．功績獎）",
+      "company": "建國工程股份有限公司",
+      "location": "臺北市（初審單位：臺北市政府）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.osha.gov.tw/media/m2nfh2dp/114%E5%B9%B4%E5%BA%A6%E6%8E%A8%E8%A1%8C%E8%81%B7%E6%A5%AD%E5%AE%89%E5%85%A8%E8%A1%9B%E7%94%9F%E5%84%AA%E8%89%AF%E5%96%AE%E4%BD%8D%E5%8F%8A%E4%BA%BA%E5%93%A1%E6%B1%BA%E5%AF%A9%E7%B5%90%E6%9E%9C.pdf",
+      "fit_score": 72,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點：(1)公司＝建國工程股份有限公司；(2)角色＝勞動部114年度優良人員「職業安全衛生」類功績獎得獎人；(3)地區主管機關＝臺北市政府；(4)年度＝114年。能力面最貼近JD：大型營造廠的工地職安衛實務，涵蓋施工作業危害辨識、承攬商管理、工地巡查，與JD第3~5項主要職責同構。但校準判定為MISMATCH：屬國家級表揚層級、任職大型營造集團、駐點台北，與JD月薪40,000~50,000元、需配合派駐桃竹苗／台中／雲林虎尾的條件明顯錯配，成熟度與知名度超過Archetype Lock上限，不得列為Direct Target。"
+    },
+    {
+      "name": "張瀚介",
+      "headline": "石化廠職業安全衛生人員（111年度推行職業安全衛生優良人員．功績獎）",
+      "company": "台灣化學纖維股份有限公司 PABS廠",
+      "location": "雲林縣（初審單位：雲林縣政府）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.osha.gov.tw/media/ea0dlvoa/111%E5%B9%B4%E6%8E%A8%E8%A1%8C%E8%81%B7%E6%A5%AD%E5%AE%89%E5%85%A8%E8%A1%9B%E7%94%9F%E5%84%AA%E8%89%AF%E4%BA%BA%E5%93%A1%E5%BE%97%E7%8D%8E%E5%90%8D%E5%96%AE.pdf",
+      "fit_score": 66,
+      "recruitability_class": "LONG_TERM_POOL",
+      "evidence": "身分錨點：(1)公司／廠區＝台灣化學纖維股份有限公司PABS廠；(2)地點＝雲林縣，與JD雲林虎尾在地通勤條件相符；(3)角色＝111年度優良人員功績獎（職安衛）；(4)年度＝111年。地點與職安衛專業相符，但工作型態為石化廠內駐廠職安（製程安全、廠內承攬），非JD要求的工程專案現場派駐；且任職台塑集團體系，薪資與穩定度高於JD帶寬，屬成熟度／可招募性MISMATCH，僅能列長期人才池與在地人脈節點。"
+    },
+    {
+      "name": "顏翊凱",
+      "headline": "環保／技術服務廠區職業安全衛生人員（114年度優良人員．功績獎）",
+      "company": "信鼎技術服務股份有限公司 烏日廠",
+      "location": "臺中市（初審單位：臺中市政府）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.osha.gov.tw/media/m2nfh2dp/114%E5%B9%B4%E5%BA%A6%E6%8E%A8%E8%A1%8C%E8%81%B7%E6%A5%AD%E5%AE%89%E5%85%A8%E8%A1%9B%E7%94%9F%E5%84%AA%E8%89%AF%E5%96%AE%E4%BD%8D%E5%8F%8A%E4%BA%BA%E5%93%A1%E6%B1%BA%E5%AF%A9%E7%B5%90%E6%9E%9C.pdf",
+      "fit_score": 60,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點：(1)公司／廠區＝信鼎技術服務股份有限公司烏日廠；(2)地點＝臺中市，落在JD調派範圍（桃竹苗／台中／雲林）內；(3)角色＝114年度優良人員「職業安全衛生」功績獎；(4)年度＝114年。具駐廠職安衛與承攬作業管理證據，調派地點可行性高。判定為UNCERTAIN偏MISMATCH：焚化／技術服務駐廠職安的日常產出以廠內設施安全為主，缺JD所需的營造工地施工作業單、入廠許可、每日工具箱會議等工地型公開證據；且為國家級表揚層級，接受40K~50K工地派駐職缺的可能性低。"
+    },
+    {
+      "name": "陳尚宏",
+      "headline": "廠區職業安全衛生人員（114年度優良人員．功績獎）",
+      "company": "信鼎技術服務股份有限公司（溪州垃圾資源回收廠）",
+      "location": "彰化縣（初審單位：彰化縣政府）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.osha.gov.tw/media/m2nfh2dp/114%E5%B9%B4%E5%BA%A6%E6%8E%A8%E8%A1%8C%E8%81%B7%E6%A5%AD%E5%AE%89%E5%85%A8%E8%A1%9B%E7%94%9F%E5%84%AA%E8%89%AF%E5%96%AE%E4%BD%8D%E5%8F%8A%E4%BA%BA%E5%93%A1%E6%B1%BA%E5%AF%A9%E7%B5%90%E6%9E%9C.pdf",
+      "fit_score": 57,
+      "recruitability_class": "LONG_TERM_POOL",
+      "evidence": "身分錨點：(1)公司／廠區＝信鼎技術服務股份有限公司溪州垃圾資源回收廠；(2)地點＝彰化縣溪州，鄰接雲林，通勤／派駐可行性合理；(3)角色＝114年度優良人員（職業安全衛生）功績獎；(4)年度＝114年。職安衛專業與現場承攬管理相關，地理位置貼近虎尾。但同樣為駐廠型而非工程專案派駐型職安，且屬得獎表揚層級、任職穩定的環保技術服務體系，與JD薪資帶與派駐條件錯配，判定MISMATCH，保留為長期池與轉介節點。"
+    },
+    {
+      "name": "李孟翰",
+      "headline": "公部門清潔隊職業安全衛生人員（114年度優良人員．功績獎）",
+      "company": "雲林縣口湖鄉公所清潔隊",
+      "location": "雲林縣口湖鄉（初審單位：雲林縣政府）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.osha.gov.tw/media/m2nfh2dp/114%E5%B9%B4%E5%BA%A6%E6%8E%A8%E8%A1%8C%E8%81%B7%E6%A5%AD%E5%AE%89%E5%85%A8%E8%A1%9B%E7%94%9F%E5%84%AA%E8%89%AF%E5%96%AE%E4%BD%8D%E5%8F%8A%E4%BA%BA%E5%93%A1%E6%B1%BA%E5%AF%A9%E7%B5%90%E6%9E%9C.pdf",
+      "fit_score": 45,
+      "recruitability_class": "REFERRAL_ONLY",
+      "evidence": "身分錨點：(1)服務單位＝雲林縣口湖鄉公所清潔隊；(2)地點＝雲林縣，與JD虎尾同縣；(3)角色＝114年度優良人員「職業安全衛生」功績獎；(4)年度＝114年。具職安衛管理實務與在地性，但作業場域為公部門清潔隊而非營造／廠務工程工地，缺JD核心的施工作業單、入廠許可、承攬商施工巡查證據；公職身分轉任民間工程承攬商可能性低。判定MISMATCH，僅列為雲林在地職安人脈轉介來源。"
+    }
+  ],
+  "run_summary": "流程：先完成Talent DNA→Archetype Lock→Job Strategy Router→5人校準（本輪未做Email/電話深查，符合校準階段規範）。Archetype Lock（依JD無歧義內容鎖定）：正向＝營造／廠務／系統廠房工程承攬商的現場職安衛工程師或管理員，3年以上、專科以上不拘科系、可長期派駐桃竹苗／台中／雲林虎尾工地、日常產出為工具箱會議、施工作業單與入廠許可、工地巡查與承攬商管理，薪資帶40K~50K／月、成熟度上限為中階實務工作者（非主管級、非得獎表揚級、非顧問公司負責人）；加分＝營造業甲種職安衛業務主管、職安衛管理乙級技術士。Route＝ENG_CONSTRUCTION（Primary），CERTIFIED_PROFESSIONAL為次要疊加（證照導向），Overlays＝SHIFT_OR_ATTENDANCE（跨縣市派駐）、LICENSE_REQUIRED（加分非硬性）、SCARCE_HIGH_TOUCH。實際查詢的公開來源（全部免登入、未繞過任何驗證機制）：勞動部／職安署『推行職業安全衛生優良單位及人員』111與114年度得獎名單PDF、109年優良工程金安獎暨五星獎得獎名單PDF、106年協助中小企業推動工安績優人員名單PDF、職安署中區職安中心114年營造工地施工安全衛生管理研習會公告與時程表PDF、臺灣博碩士論文系統與朝陽科大機構典藏之營造職安論文、ISHA／CSHM訓練資訊頁、以及LinkedIn公開搜尋結果頁（僅作輔助識別，未登入、未計入非招募來源配額）。實際產出5位具名樣本，全部具姓名＋2項以上一致錨點（服務單位、縣市、角色、年度）與可追溯Source URL。判定ROUTE_CALIBRATION_FAILED：MATCH數為0~1，未達4/5。系統性false-positive型態＝『得獎名冊偏差』——公開網路上唯一能穩定產出具名台灣職安衛人員的來源族群（國家級／縣市級表揚名單、金安獎、協會與活動名冊）結構性地只暴露大型企業與公部門的在職資深／主管級職安人員（台化、中油、友達、日月光、信鼎、建國工程、榮工），其成熟度、薪資帶與任職穩定度全數超出Archetype Lock上限，能力符合但可招募性不符，依規範不得計為MATCH。停在此處的原因：JD要的中階工地派駐職安工程師在合法公開網路幾乎不留具名痕跡，其可辨識資料多位於需登入的104／1111／Cake履歷庫、LinkedIn完整檔案、職安署『安全衛生履歷智能雲』與FB封閉社團，均受本次硬性規則禁止；另DuckDuckGo在查詢途中出現CAPTCHA，已直接放棄該路徑未嘗試繞過。全程未猜測任何Email格式（5位contact欄位一律null）、未使用外洩資料庫、未以年齡／性別／婚姻／國籍／身心障礙／宗教等就服法第5條保護項目作為篩選或排序依據。建議下一步（需人工授權）：修訂Archetype Lock的來源策略而非更換Route——改以『專案文件優先』重跑校準，鎖定雲林虎尾／中科／竹科系統廠房與機電工程之施工計畫書與安全衛生管理計畫附錄所載職安衛管理人員、律准科技同業（帆宣、漢唐、聖暉、亞翔、鴻呈等）之專案團隊與前員工，並由顧問以合法管道補齊需登入平台的人選；未通過4/5校準前，不得進行30人擴張或聯絡資料深查。"
+}

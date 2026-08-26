@@ -898,6 +898,34 @@ def _fetch_static(app_id):
         except Exception:
             pass
 
+    # 2026-08-26 加（Jacky 交辦：讓阿財有「記性」）：這位候選人如果之前用過
+    # 阿福的履歷健檢，阿財應該要知道，就像真人顧問記得「這個人之前聊過」一樣，
+    # 不用每次都從零開始。用 email／電話比對 checkups 表——兩個系統原本完全
+    # 不知道對方存在，現在讓阿財單向讀阿福那邊已經問到的東西（不逆向：
+    # 阿福不需要知道候選人後來去面談了，那是阿福產品本身的事，範圍不擴大）。
+    # 只在 checkups 真的問完（status 到 reported/delivered/closed，代表資料
+    # 是可信的）才算數，還在對談中途的不採用——半成品資料比沒有更容易誤導。
+    try:
+        email = (static.get('application') or {}).get('email')
+        phone = (static.get('application') or {}).get('phone')
+        ck = None
+        if email:
+            r = d1(f"SELECT current_title, current_industry, led_headcount, budget_scale, "
+                   f"note, created_at FROM checkups WHERE email = {q(email)} "
+                   f"AND status IN ('reported','delivered','closed') ORDER BY created_at DESC LIMIT 1")
+            if r:
+                ck = r[0]
+        if not ck and phone:
+            r = d1(f"SELECT current_title, current_industry, led_headcount, budget_scale, "
+                   f"note, created_at FROM checkups WHERE phone = {q(phone)} "
+                   f"AND status IN ('reported','delivered','closed') ORDER BY created_at DESC LIMIT 1")
+            if r:
+                ck = r[0]
+        if ck:
+            static['prior_checkup'] = ck
+    except Exception:
+        pass  # 查不到／查詢失敗都不擋面談，這是加分資訊不是必要資訊
+
     # 2026-08-19 加：這個職缺的專業題庫（build_expertise.py 事先產好存在 D1）。
     # 這是「讓阿財變成該領域行家」的關鍵——沒有它，阿財只問得出動機、經歷、
     # 穩定度這類通用題，用人主管真正想知道的「他到底會不會做」完全沒碰到。
@@ -1051,6 +1079,26 @@ def build_prompt(ctx, skill_md):
             lines.append(f'  ⚠️ 上面標 🚨 的 {len(crit)} 條是「不過就不用談」的，'
                          '**問到明確答案為止**；對方迴避或給不出時間點，就記下他的原話，'
                          '不要自己幫他圓場、也不要當作問過了。')
+
+    # ── 這位候選人之前用過阿福履歷健檢 ──
+    # 2026-08-26 加：就像真人顧問「記得這個人來聊過」一樣，讓阿財知道有這回事，
+    # 可以自然銜接、不用重問已經問過的基本背景，但**不是**硬性劇本，話題沒
+    # 自然帶到就不用主動提起，更不要讓候選人覺得被監控。
+    pck = ctx.get('prior_checkup')
+    if pck:
+        lines.append(f'\n【這位候選人之前用過我們的履歷健檢服務（{pck.get("created_at", "")[:10]}）】')
+        facts = []
+        if pck.get('current_title'): facts.append(f'當時職稱：{pck["current_title"]}')
+        if pck.get('current_industry'): facts.append(f'當時產業：{pck["current_industry"]}')
+        if pck.get('led_headcount'): facts.append(f'帶人規模：{pck["led_headcount"]}')
+        if pck.get('budget_scale'): facts.append(f'負責預算／營收規模：{pck["budget_scale"]}')
+        if pck.get('note'): facts.append(f'他當時想讓顧問知道的事：{pck["note"]}')
+        for f in facts:
+            lines.append(f'  · {f}')
+        lines.append('  ⚠️ 這是背景參考，不是拿來考他或對質的——如果話題自然聊到相關經歷，'
+                     '可以順著這個脈絡往下問、不用重新從頭問一次；如果他這次講的跟當時不一樣，'
+                     '不用當面點破，記下差異讓顧問自己判斷。不要主動說「我看到你之前用過健檢」，'
+                     '除非他自己先提起。')
 
     # ── 這個職缺的專業題庫 ──
     # 2026-08-19 加（Jacky 指定：「要讓阿財成為每一個職缺該領域的專家」）。

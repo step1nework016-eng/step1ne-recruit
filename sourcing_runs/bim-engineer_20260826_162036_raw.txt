@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [
+    {
+      "name": "陳家均",
+      "headline": "BIM建模設計工程師（廠務統包體系，個人貢獻者職級）",
+      "company": "漢唐集成股份有限公司（United Integrated Services，2404）",
+      "location": "桃園市桃園區",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E5%AE%B6%E5%9D%87-%E9%99%B3-587795323",
+      "source_url": "https://tw.linkedin.com/in/%E5%AE%B6%E5%9D%87-%E9%99%B3-587795323",
+      "fit_score": 78,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項：(1)公司＝漢唐集成股份有限公司，本輪指定改道的第一位優先挖掘對象、半導體無塵室機電統包龍頭，與本職缺『銅鑼建廠專案＋約2成無塵室工時』的工作脈絡完全同一體系；(2)Title＝BIM建模設計工程師，屬純建模／圖模個人貢獻者，非經理副理以上主管，符合職級鎖定；(3)地點＝桃園區，與『先赴桃園楊梅受訓1週』的訓練地重疊，且桃園→苗栗銅鑼屬可評估的搬遷距離。缺口：公開資料只取得公司＋Title，取不到任職起訖日期，無法證明為2024-2026現職，故未通過本輪HARD GATE第一條，僅能列待確認。待確認項目：現職起訖年月、實際年資與薪資帶、可否接受苗栗銅鑼全實體到班與無租屋宿舍（每月5,000元租屋補助）、機車駕照。"
+    },
+    {
+      "name": "Shelly Lin（林，公開頁僅顯示英文名）",
+      "headline": "BIM Engineer / BIM Coordination（無塵室機電統包，個人貢獻者職級）",
+      "company": "聖暉工程科技股份有限公司（Acter Group，5536）",
+      "location": "臺中市",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/shelly-lin-500a1b191",
+      "source_url": "https://tw.linkedin.com/in/shelly-lin-500a1b191",
+      "fit_score": 79,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項：(1)公司＝聖暉工程科技，本輪指定第一優先名單內的廠務統包商，總部台中、主營無塵室與機電整合；(2)Title＝BIM Engineer／BIM Coordination，是建模＋圖面整合檢討的個人貢獻者，正是本職缺main_duties『BIM模型建置與修正、BIM整合與圖面檢討』；(3)學校＝國立勤益科技大學（台中），與JD加分條件『相關科系』一致；(4)地點＝台中市，直接命中加分條件『現居苗栗台中一帶』，台中→銅鑼通勤可行性最高。缺口：同名者眾（LinkedIn同名70+），公開頁僅英文別名、無中文全名，且取不到任職起訖日期，未通過HARD GATE第一條。待確認項目：中文全名、現職起訖年月、年資、可否全實體到班銅鑼、機車駕照、1個月內到職。"
+    },
+    {
+      "name": "Hsiao Yeh Lin（Sean Lin）",
+      "headline": "VDC Engineer / BIM Engineer（高科技廠房EPC，個人貢獻者職級）",
+      "company": "Exyte（艾克達，台灣分公司）",
+      "location": "台灣",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/hsiao-yeh-sean-lin-82a33a75",
+      "source_url": "https://tw.linkedin.com/in/hsiao-yeh-sean-lin-82a33a75",
+      "fit_score": 76,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項：(1)公司＝Exyte，本輪指定第一優先名單內的高科技廠房EPC統包商，與銅鑼建廠專案同一承攬體系；(2)Title＝VDC Engineer（另有第三方商業名錄顯示為BIM Engineer at Exyte），屬個人貢獻者非主管；(3)學校＝National United University 國立聯合大學，校區就在苗栗市，地緣關係直接支持『可長期於苗栗銅鑼廠區全實體到班』與加分條件『現居苗栗台中一帶』。專案訊號：公開摘要自述曾負責 Entegris 廠案與 Microsoft 資料中心案的BIM管理，屬廠房／資料中心等級的現場整合工作，與『協助工地現場視勘、可接受無塵室環境』相符。缺口：專案未附可查證日期，個人頁HTTP 999無法讀取任職起訖年月，第二錨點僅來自商業名錄（供應商彙整資料，本輪不採計為現職證據），未通過HARD GATE第一條。待確認項目：現職起訖年月、目前是否仍在Exyte、薪資帶與職級落差、到職時間。"
+    },
+    {
+      "name": "WEIMING LI",
+      "headline": "Senior BIM Engineer（半導體廠務統包，資深個人貢獻者）",
+      "company": "帆宣系統科技股份有限公司（Marketech International，6196）",
+      "location": "臺北市",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/weiming-li-865477367",
+      "source_url": "https://tw.linkedin.com/in/weiming-li-865477367",
+      "fit_score": 70,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點三項：(1)公司＝帆宣系統科技，本輪指定第一優先名單首位，無塵室與機電廠務TURNKEY統包，公開職缺敘述亦為『BIM機電圖模工程師：責任圖模建置、產製真BIM施工圖』，與本職缺工作內容同一型態；(2)Title＝Senior BIM Engineer，仍為個人貢獻者而非經理副理以上主管，符合職級鎖定的上緣；(3)學校＝國立東華大學。能力面適配，但可招募性面存在系統性落差：本職缺為0年資、月薪40,833–50,167元的entry缺，Senior BIM Engineer的現行薪資帶與職級預期明顯高於此缺，屬職級／薪資錯配風險，依規定不得因能力符合就升為直接候選人。缺口：同樣取不到任職起訖日期，未通過HARD GATE第一條。待確認項目：現職起訖年月、實際年資、可接受的薪資下限、是否願意接受平行或下修職級。"
+    },
+    {
+      "name": "Shih-En Kao",
+      "headline": "BIM高級工程師，5年以上BIM經歷，專精Revit／Navisworks／AutoCAD、3D模型整合與碰撞檢討",
+      "company": "永青營造（相鄰營造體系，非本輪第一優先名單）",
+      "location": "台灣",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/shih-en-kao-818911226",
+      "source_url": "https://tw.linkedin.com/in/shih-en-kao-818911226",
+      "fit_score": 68,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點三項：(1)公司＝永青營造，營造施工端而非廠務統包端，屬相鄰生態；(2)Title＝BIM高級工程師，個人貢獻者職級；(3)技能＝公開自述具5年以上BIM工程經驗，熟悉Revit、Navisworks、AutoCAD，專長3D模型整合、碰撞檢測與現場空間協調——直接對應本職缺的AutoCAD／Revit工具需求、『BIM整合與圖面檢討』與『協助工地現場視勘』。落差：非廠房／無塵室背景，缺無塵室環境經驗；5年以上年資對0年資entry缺同樣有薪資與職級錯配風險。缺口：取不到任職起訖日期，未通過HARD GATE第一條。待確認項目：現職起訖年月、是否有高科技廠房經驗、薪資期待、可否接受苗栗銅鑼到班。"
+    }
+  ],
+  "run_summary": "【結論：ROUTE_CALIBRATION_FAILED，但失敗原因與前兩輪不同，方向是對的、證據層破了】\n\n一、前置步驟。已完整讀取SKILL.md、full-prompt-v3.4.md、job-strategy-router.md、job-route-calibration-v1.md四份規範。Archetype Lock依第三輪既有明確前提直接沿用並標記ARCHETYPE_LOCKED（正向：廠務統包／建廠專案體系內的初階至中階在職BIM／VDC建模個人貢獻者；排除：教授、負責人、經理副理以上主管、講師顧問、學生與純結訓名冊；封鎖來源：CICHE學生BIM競賽名冊、Autodesk生態圈講者池、2023年（含）以前為最近任職的舊履歷與舊報導）。Job Strategy Router輸出：Primary＝ENG_CONSTRUCTION（無Secondary，本缺無API／Dynamo需求，不加SOFTWARE_DATA）；SENIORITY＝entry；EMPLOYMENT_MODE＝permanent／onsite；EVIDENCE_MODE＝role＋project；OVERLAYS＝SHIFT_OR_ATTENDANCE（專案期程加班、無塵室約2成工時）、CONFIDENTIAL_ROLE（客戶名稱保密、須簽保密條款）、LOCATION_HARD_GATE（苗栗銅鑼全實體到班、無宿舍僅5,000元租屋補助）、LICENSE_LIGHT（機車駕照）。\n\n二、依本輪指定改道實際執行的來源。第一優先（廠務統包與建廠承攬體系）逐家掃過帆宣、漢唐集成、亞翔工程、聖暉、洋基工程、Exyte、泛亞工程、麗明營造、瑞助營造。第二優先（機電BIM繪圖產學班／職訓結訓後已就業者）查了勞動部產業新尖兵計畫、高科大土木系BIM數位建設工程實務班與機電進階實務班、聯成電腦機電BIM繪圖設計產學班、桃竹苗分署學員專區。第三優先（專案新聞稿、工程實績、得標公告）查了銅鑼科學園區建廠相關報導、廠務工程五雄2025-2026新聞、政府BIM規範與BIM執行計畫書類文件。另外交叉查了非招募的技術內容家族：CICHE《土木水利》2025年52卷5期「營建自動化與智慧化」專輯（已下載PDF解析）、台灣營建研究院研討會、TBIMA台灣建築資訊模型協會、台灣BIM聯盟認證、漢唐集成永續報告書全文（已下載解析，全文0處提及BIM）、GitHub公開開發者。工具面：tw.linkedin.com個人頁實測仍為HTTP 999；DuckDuckGo依規定不碰；Mojeek/Ecosia/Brave回403/429；Startpage為JS導頁無法解析；改用Yahoo奇摩搜尋做中文X-ray有效，但約20次查詢後遭節流，持續回HTTP 500。\n\n三、實際找到什麼。改道是成功的——第一次穩定挖到符合鎖定條件的人：漢唐集成的BIM建模設計工程師、聖暉工程的BIM Engineer／BIM Coordination、Exyte的VDC Engineer、帆宣的Senior BIM Engineer、永青營造的BIM高級工程師，全部是個人貢獻者、全部在廠務統包或營造施工體系內，沒有一個是教授、負責人、經理副理以上主管，也沒有一個來自學生競賽名冊或Autodesk講者池。地緣上還命中兩個加分訊號：聖暉那位現居台中、Exyte那位畢業於苗栗的國立聯合大學。同一批掃描中被我主動剔除的高職級樣本包括：聖暉林聖宏（BIM部門經理）、聖暉Chun Yen Chang（空間整合副理）、Exyte Hung Pin Chiu（BIM/VDC Manager）、泛亞JIA JEN YU（BIM Project Manager）、亞翔丁家驤（副總經理）、帆宣joyce Peng（BIM team leader，職級界線模糊故不採），避免重演第二輪的職級系統性偏高。\n\n四、為什麼仍判FAILED（兩條硬規則同時未過，不靠文字掩蓋）。第一，HARD GATE第一條要求2024-2026現職證據＝公司＋Title＋日期，或2024-2026近期專案。這5位都只取得公司＋Title，取不到任何一位的任職起訖年月：唯一能穩定surface這批人的通道是搜尋引擎對tw.linkedin.com公開頁的摘要，而摘要固定只帶公司與職稱、不帶日期，個人頁本身HTTP 999讀不到，我對五位逐一做了非LinkedIn的第二錨點查證（公司官網、專案報導、活動名冊、期刊作者、ESG報告書），全部SEARCHED_NOT_FOUND。Exyte那位雖有Entegris廠案與Microsoft資料中心案的專案自述，但專案未附可查證日期，唯一第二筆佐證來自商業資料名錄（供應商彙整型資料，且Email為遮罩狀態），依規定不採計為現職證據、更不得取用其聯絡資料。第二，本輪規則(4)要求至少四類不同非招募來源、不得靠單一來源家族充數：這5位全部出自同一個家族（搜尋引擎X-ray LinkedIn公開摘要），而該家族依鎖定政策本身只能當身分／現職／技能的輔助驗證，不能當人才發現來源。若把這5位判為MATCH，等於用一個新的單一來源家族取代舊的單一來源家族，本質上是第三次犯同類錯誤，因此判FAILED。\n\n五、待查證線索處置。林寬（https://tw.linkedin.com/in/k1lin）本輪再查一次，Yahoo與WebSearch兩條路徑都只回到同一個LinkedIn URL，公司與時間線第二錨點仍取不到，維持UNVERIFIED，不臆測、不升級為候選人、不列入本次五人樣本。\n\n六、下一輪要改的地方（不重複本輪撞牆點）。本輪缺的不是方向而是『帶日期的公開文件』，建議下輪把發現來源換成本身就內含日期與職稱的文件類來源：(1)政府電子採購網與各科學園區管理局的建廠標案，取其BIM執行計畫書／工作計畫書附件中的BIM團隊組織表（含姓名、職稱、公司、版本日期）；(2)2024-2026年度的《現代營建》《營建知訊》《技師報》等業界期刊中，作者職稱為工程師層級（非經理以上）的技術文章；(3)公共工程金質獎與各縣市優良工程獎的得獎工程團隊具名名單；(4)高科大、聯成、桃竹苗分署等機電BIM產學班的結訓成果發表與媒合就業個案報導（重點取已就業者本人具名段落，不取結訓名冊）。同時建議準備一條可穩定使用的中文搜尋通道，本輪Yahoo在約20次查詢後即遭節流，是本輪覆蓋深度受限的主要技術瓶頸。\n\n七、量化缺口（不美化）：具名樣本5位、通過HARD GATE第一條0位、不同非招募發現來源家族1類（規則要求4類）、取得公開Email 0筆、公開電話0筆（本階段依規定不做聯絡深查）、UNVERIFIED線索1位（林寬）。依規定本批不得計入可用Candidate Pool，僅保留於校準與誤判稽核紀錄。"
+}

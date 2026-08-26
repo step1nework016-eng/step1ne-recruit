@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "CALIBRATION_PASSED_4_OF_5",
+  "candidates": [
+    {
+      "name": "許晏嘉",
+      "headline": "營建工程系學生／近期畢業生，2024 學生BIM軟體應用競賽第三名隊員（隊名：圖紙上談BIM）",
+      "company": "無公開現職紀錄；最近所屬單位為朝陽科技大學理工學院營建工程系所",
+      "location": "台中市霧峰區（就學地錨點，實際居住地待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?p=15299",
+      "fit_score": 82,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1)姓名＋學校系所＝朝陽科技大學理工學院營建工程系所；(2)專案＝2024學生BIM軟體應用競賽參賽作品「圖紙上談BIM」第三名；(3)技能＝BIM建模／軟體應用實作，對應JD的BIM模型建置與修正、Revit工具需求；(4)指導老師王琨淇＋競賽年份2024，時間線一致。由中國土木水利工程學會官方榮譽榜與競賽官方網站兩個獨立來源交叉確認同一份名單。符合Archetype Lock：大學層級相關科系、實作型BIM證據、無經驗可、知名度屬EMERGING（無個人媒體聲量、非主管／技師／建築師／顧問公司負責人）、地點在台中屬JD加分的苗栗台中一帶。待本人確認的Hard Gates：是否已畢業非在學、可否苗栗銅鑼全實體到班且接受無宿舍僅5,000元租屋補助、機車駕照、無塵室環境接受度、1個月內到職、保密條款。"
+    },
+    {
+      "name": "游翔皓",
+      "headline": "營建工程系學生／近期畢業生，連續兩屆學生BIM軟體應用競賽佳作隊員（2022 建造奇蹟、2024 勢在BIM行）",
+      "company": "無公開現職紀錄；最近所屬單位為朝陽科技大學營建工程系所",
+      "location": "台中市霧峰區（就學地錨點，實際居住地待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?p=12236",
+      "fit_score": 80,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點四項一致：(1)姓名＋學校系所＝朝陽科技大學營建工程系所；(2)專案＝2022學生BIM軟體應用競賽佳作「建造奇蹟」與2024同競賽佳作「勢在BIM行」；(3)技能＝跨兩屆的BIM建模實作證據，是本批樣本中BIM持續投入訊號最強者；(4)指導老師同為王琨淇，2022→2024時間線連續，符合大學部升碩士班的合理路徑。IDENTITY_NOTE：2022與2024為同名同系同指導老師，判定為同一人，但公開資料未直接聲明學制銜接，標記為待確認而非已驗證。符合Archetype Lock：相關科系、實作型證據、非主管／教授／負責人、知名度EMERGING、位於JD加分的台中一帶。待確認Hard Gates同上（畢業狀態、銅鑼全實體到班、無宿舍、機車駕照、無塵室、到職日、保密）。"
+    },
+    {
+      "name": "林珮芸",
+      "headline": "營建工程系學生／近期畢業生，2024 學生BIM軟體應用競賽佳作隊員（隊名：勢在BIM行）",
+      "company": "無公開現職紀錄；最近所屬單位為朝陽科技大學理工學院營建工程系所",
+      "location": "台中市霧峰區（就學地錨點，實際居住地待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://sites.google.com/con-api.team/2024bimcontest",
+      "fit_score": 76,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項一致：(1)姓名＋學校系所＝朝陽科技大學理工學院營建工程系所；(2)專案＝2024學生BIM軟體應用競賽佳作「勢在BIM行」；(3)技能＋時間線＝2024年BIM軟體應用實作、指導老師王琨淇。競賽官方網站與中國土木水利工程學會榮譽榜兩來源名單一致。符合Archetype Lock：技職體系營建相關科系、具動手做BIM證據而非理論或管理角色、知名度EMERGING、地點屬JD加分的台中一帶、年資0年符合本職缺無經驗可設定。待確認Hard Gates：畢業狀態、苗栗銅鑼全實體到班意願與租屋條件、機車駕照、無塵室約2成工時接受度、1個月內到職、保密條款。"
+    },
+    {
+      "name": "林俊徉",
+      "headline": "土木工程與環境資源管理系學生／近期畢業生，2024 學生BIM軟體應用競賽第二名隊員（隊名：笑到BIM Great-GB）",
+      "company": "無公開現職紀錄；最近所屬單位為明新科技大學土木工程與環境資源管理系",
+      "location": "新竹縣新豐鄉（就學地錨點，實際居住地待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?p=15299",
+      "fit_score": 74,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "身分錨點三項一致：(1)姓名＋學校系所＝明新科技大學土木工程與環境資源管理系；(2)專案＝2024學生BIM軟體應用競賽第二名「笑到BIM Great-GB」；(3)技能＋時間線＝2024年BIM軟體應用實作、指導老師阮玉梅。學會榮譽榜與競賽官網兩來源一致。符合Archetype Lock：土木相關科系、實作型BIM證據、知名度EMERGING、非主管或技師層級。地點屬中度風險：新竹新豐距苗栗銅鑼約50公里，非JD加分的苗栗台中一帶，且公司不提供宿舍僅5,000元租屋補助，需本人確認搬遷或通勤意願，因此列CONTACT_AFTER_CONFIRMATION而非DIRECT_TARGET。其餘待確認Hard Gates：畢業狀態、機車駕照、無塵室接受度、1個月內到職、保密條款。"
+    },
+    {
+      "name": "張宸翰",
+      "headline": "土木工程研究所碩士層級，2024 學生BIM軟體應用競賽第一名隊員（Taiwan BIM Guys），2022 同競賽第二名隊員",
+      "company": "無公開現職紀錄；最近所屬單位為國立陽明交通大學土木工程所",
+      "location": "新竹市／新竹地區（就學地錨點，實際居住地待確認）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "http://www.ciche.org.tw/wordpress/?p=15299",
+      "fit_score": 58,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "此為本輪唯一 MISMATCH 樣本，作為 Archetype Lock 的負向邊界測試。身分錨點四項一致：(1)姓名＋學校系所＝國立陽明交通大學土木工程學系（2022）與土木工程所（2024）；(2)專案＝2022競賽第二名「NYCU BIM No1」、2024競賽第一名「Taiwan BIM Guys」；(3)技能＝BIM建模與整合；(4)指導老師兩屆同為高明秀，2022→2024大學部升碩士班時間線連續。能力面（Capability）完全符合甚至超出JD，但Recruitability面不符合鎖定的人才成熟度與現實可招募性：頂大土木碩士＋全國競賽第一名，職涯出海口通常為大型工程顧問公司、統包商或半導體廠務BIM整合職，薪資與職級預期高於本職缺40,833–50,167元的無經驗可帶，且本職缺在苗栗銅鑼、無宿舍、需先赴楊梅受訓，與其新竹生活圈與職涯期待錯配。依 full-prompt-v3.4 第五步與 job-route-calibration-v1 的規定，「能力符合但太成熟／不太可能接受」不得計為 MATCH，故列 ADJACENT_TARGET，可作為未來較高階BIM職缺人選或 Referral 節點，不進入本職缺 Direct Pool。"
+    }
+  ],
+  "run_summary": "【Archetype Lock】正向人才類型：土木／營建／建築／機電／機械／工業設計相關科系之大學以上近期畢業生，具AutoCAD／Revit或BIM建模的動手做公開證據（競賽、專題、職訓作品），知名度層級EMERGING，可訓練、年資0年，現居或就學於苗栗台中新竹一帶。負向／禁止類型：BIM經理與部門主管、建築師、技師、大學教授與講師、BIM顧問公司負責人或創辦人、BIM軟體代理商業務、資深BIM講者、任何以公開聲量或管理職為主要訊號的人。必要公開證據：姓名＋至少兩個一致身分錨點（學校系所／專案／技能／時間線／指導老師／地點）。禁止來源：以104、1111、Cake、LinkedIn Recruiter作為主要發掘來源（本輪未使用，且校準階段依規定不做Email／電話深查）。【Job Strategy Router】Primary Talent Ecosystem＝ENG_CONSTRUCTION（符合路由器第五個基準案例對BIM工程師的判定）；Secondary＝無（JD未要求Dynamo／API／二次開發，未達30%另一生態證據門檻，故不加掛SOFTWARE_DATA）；SENIORITY＝entry；EMPLOYMENT_MODE＝permanent／onsite；EVIDENCE_MODE＝project＋portfolio；OVERLAYS＝SHIFT_OR_ATTENDANCE（全實體到班、配合專案加班）、CONFIDENTIAL_ROLE（保密條款、客戶名稱保密）、PORTFOLIO_REQUIRED（BIM作品或競賽證據）。Source Priority 依此路由重排為：專案／競賽成果 → 課程職訓培訓成果 → 目標公司與校系 → 公協會 → 活動講者，並將招募平台降為輔助。【本輪使用來源】(1)中國土木水利工程學會官方榮譽榜 2024 與 2022 學生BIM軟體應用競賽優勝名單（www.ciche.org.tw，非招募來源）；(2)2024學生BIM軟體應用競賽官方網站（sites.google.com/con-api.team/2024bimcontest，非招募來源）；(3)朝陽科技大學營建工程系公告與明新科技大學系所頁作為學校與系所錨點交叉驗證。5位樣本100%來自非招募來源，本輪未使用任何需登入的頁面、未使用外洩資料庫、未猜測任何Email格式，故全部候選人的email／phone／linkedin_url一律填null。【低命中與排除的來源】勞動部全國技能競賽「CAD機械設計製圖」職類得獎名單雖可大量取得具名entry-level繪圖人才，但得獎者多為工業高中在學生，直接牴觸JD「大學以上學歷、畢業非在學」硬門檻，故本職缺標記為低Fit路徑並排除，不作全域黑名單。2025年學生BIM競賽名單目前未公開索引到，2026年競賽仍在報名中，標記為ROUTE_PATH_EXHAUSTED待新名單釋出後重啟。【校準結果】5位具名樣本中4位判定MATCH（許晏嘉、游翔皓、林珮芸、林俊徉），1位判定MISMATCH（張宸翰，能力超標但成熟度與現實可招募性不符鎖定條件，改列ADJACENT_TARGET），達成CALIBRATION_PASSED_4_OF_5，未出現系統性路由衝突，ENG_CONSTRUCTION路由確認可用。【停在哪裡與為什麼】依job-route-calibration-v1的Scaling Rule，校準通過後才可擴張至30–100人池與執行Contact深查；本次任務範圍僅限五人校準，故在此停止，未進行Email／電話／Cake／LinkedIn的Contact Enrichment。【已知缺口與下一步】全部5位的畢業狀態、苗栗銅鑼全實體到班意願、無宿舍僅5,000元租屋補助的接受度、機車駕照、無塵室約2成工時接受度、1個月內到職與保密條款，皆屬公開資料無法解決的Hard Gates，一律標記ASSUMPTION_TO_CONFIRM，因此無人可標記CLIENT_READY，也無人可標記DIRECT_TARGET。下一輪建議擴張路徑：朝陽科大營建系、明新科大土木系、中央大學土木系、北科大土木系等歷屆BIM競賽名單全展開；中部BIM／Revit職訓班結訓作品發表；台灣世曦、中興工程、亞新等工程顧問公司的專案BIM團隊初階成員與前員工；以及聯合大學、勤益科大、逢甲等苗栗台中在地校系的BIM實務專題成果，以取得更多具備JD加分項「現居苗栗台中一帶」的人選。"
+}

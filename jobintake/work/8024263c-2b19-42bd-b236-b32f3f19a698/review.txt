@@ -1,0 +1,44 @@
+📋 <b>新職缺待審核</b>　集團財務主管 Group Treasury Head（台北信義・總部常駐）
+
+服務線：中高階獵才　｜　客戶對象：已簽約客戶
+網址：/jobs/finance-group-treasury-head-xinyi/
+薪資：面議／未提供　｜　地點：台北市信義區松高路9號11樓
+具名：具名　｜　AI 揭露：always　｜　報告品牌：Step1ne
+
+✅ 禁刊過濾器：原始資料沒有命中
+
+❓ <b>待你確認</b>（來源沒給，頁面上暫時不會出現）
+・薪資下限、薪資上限
+
+📝 <b>顧問說明</b>
+# 集團財務主管 — 上架前顧問確認報告
+
+| 項目 | 內容 |
+|---|---|
+| 來源檔 | `集團財務主管.pdf`（104 職缺頁列印檔，2 頁，狀態「刊登中」，更新日 2026/08/19） |
+| 客戶 | 美德向邦股份有限公司（美德醫療 Medtecs 集團，信箱網域 medtecs.com） |
+| 服務線 | 中高階獵才（顧問已定，未更動） |
+| `client_named` | 1 — 頁面具名寫出公司名稱 |
+| `ai_disclosure` | always — 已寫進規格表、應徵流程與獨立 FAQ |
+| slug | `finance-group-treasury-head-xinyi` |
+| 對外標題 | 集團財務主管 Group Treasury Head（台北信義・總部常駐） |
+| 薪資 | 依學經歷敘級（面議）— `salary_min`／`salary_max` **兩欄皆未填**，JobPosting schema 不放 `baseSalary` |
+| 產出 | `spec.json`、`report.md`。未部署、未 push、未跑 `publish_job.py`、未動網站原始碼、未寫 D1。 |
+
+規則式禁刊掃描 0 命中——但那只代表這份來源沒寫「限 35 歲以下」這種明著違法的句子。
+逐條讀完之後，有 **6 類內容不能照原文上網**。
+
+---
+
+## 一、我擋掉了什麼
+
+### 1. 客戶端 4 組聯絡信箱與 104 直投管道 → 全數移除，改導向顧問保密初談
+
+**原文**：職務 E-mail `sophia.tsai@medtecs.com`、`ricky5328@unet.net.tw`、`hr@medtecs.com`、
+`ray.hsu@medtecs.com`；職務聯絡人 HR／部門 財務部；應徵方式「透過 104 投履歷：收應徵履歷 E-mail、匯入 VIP 檔案夾」。
+
+**為什麼擋**：兩個理由，任一個都夠。
+
+第一，這是客戶端員工的個資，其中 `ricky5328@unet.n…（完整版在後台）
+
+按下面的按鈕決定。<b>沒按「核准發布」就不會動到網站。</b>

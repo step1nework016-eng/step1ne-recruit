@@ -188,17 +188,42 @@ def update_applyjson(j):
     json.dump(d, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 
 
+def check_duplicate(j):
+    """職缺建立有好幾條互不相通的路（用人需求表 portal／招募形式評估工具／這支
+    Telegram 自建職缺流程），沒有人會互相檢查撞名——律准的「資深職業安全衛生
+    工程師」就是這樣重複建了兩筆。這裡在真的寫入前先查一次：同一個客戶
+    （client_name 文字相符）＋同樣的職稱，卻是不同的 slug，就是撞名，
+    印出來讓顧問自己決定要不要繼續（不自動擋死，怕誤判卡住正常流程）。
+    """
+    client_name = j.get('client_name')
+    title = (j.get('title') or '').strip()
+    if not client_name or not title:
+        return None
+    row = D.d1(
+        f"SELECT slug, status FROM jobs WHERE trim(client_name)={D.q(client_name.strip())} "
+        f"AND trim(title)={D.q(title)} AND status != 'closed' AND slug != {D.q(j['slug'])} LIMIT 1"
+    )
+    return row[0] if row else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('spec_json')
     ap.add_argument('--dry', action='store_true', help='只產頁面到 /tmp，不動網站也不動 D1')
     ap.add_argument('--deploy', action='store_true', help='產完直接 git push 部署')
+    ap.add_argument('--force', action='store_true', help='忽略撞名警告，強制繼續')
     a = ap.parse_args()
 
     j = json.load(open(a.spec_json, encoding='utf-8'))
     for k in ('slug', 'title', 'page_title', 'description'):
         if not j.get(k):
             sys.exit(f'缺少必要欄位：{k}')
+
+    if not a.dry:
+        dup = check_duplicate(j)
+        if dup and not a.force:
+            sys.exit(f"⚠️ 疑似撞名：同一個客戶已經有一筆「{j['title']}」了（slug={dup['slug']}）。"
+                      f"確認不是重複職缺的話，加 --force 繼續。")
 
     html = render_page(j)
     if a.dry:

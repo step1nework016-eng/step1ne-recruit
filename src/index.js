@@ -488,12 +488,19 @@ function nameVariants(name, aliases) {
   return [...out].filter((v) => v.length >= 2);
 }
 
+// 2026-08-26 改：原本讀獨立的 clients 表（陌生開發用的關係黑名單），跟
+// portal 客戶帳號（client_companies）是兩本互不相通的名冊——律准科技在
+// 兩邊都各存一筆，改一邊不會同步到另一邊。Jacky 確認這其實是同一件事
+// （客戶關係狀態），已經把 clients 的 9 筆資料併進 client_companies
+// 的 relation／relation_note／via_client／aliases 欄位，這裡改讀同一張表，
+// 不再有兩本名冊。
 async function guardCompany(env, company) {
   const c = String(company || '').trim();
   if (!c) return null;
   const cv = nameVariants(c, '');
   const { results } = await env.DB.prepare(
-    `SELECT name, aliases, relation, blocked_reason, via_client FROM clients`).all();
+    `SELECT display_name AS name, aliases, relation, relation_note AS blocked_reason, via_client
+       FROM client_companies WHERE relation IS NOT NULL`).all();
   for (const row of results || []) {
     if (!CLIENT_BLOCK[row.relation]) continue;
     for (const v of nameVariants(row.name, row.aliases)) {
@@ -1264,8 +1271,12 @@ const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((s, i) => [s.key, i]));
 // app: applications 那一列（要含 manual_stage/manual_stage_note/manual_stage_by/manual_stage_at）；
 // report: 最新一份報告（要有 consultant_decision）；
 // appts: interview_appointments 全部列（見 /admin/session、/admin/report 的查詢，不是只取最新一筆）；
-// placement: 最新一筆 placements
-function resolveStage(app, report, appts, placement) {
+// placement: 最新一筆 placements；
+// roundLabels: 可選，applications.client_interview_labels 解析後的物件（{stage1:'人資面談',...}）——
+// 客戶在 portal 自己選的面談輪次類型，蓋掉預設的「第N階段」空泛標籤。顧問後台跟客戶 portal
+// 都吃這裡的輸出，兩邊標籤才會永遠對得上，不用各自維護一份文案。
+function resolveStage(app, report, appts, placement, roundLabels) {
+  roundLabels = roundLabels || {};
   const latestByStage = (stg) => (appts || []).filter((x) => x.stage === stg).slice(-1)[0];
   let careLen = 0;
   try { careLen = JSON.parse((placement && placement.candidate_care_log) || '[]').length; } catch { careLen = 0; }
@@ -1305,7 +1316,7 @@ function resolveStage(app, report, appts, placement) {
   const effIdx = Math.max(autoIdx, manualStepIdx);
 
   return {
-    steps: steps.map((s, i) => ({ key: s.key, lb: s.lb, done: i < effIdx, now: i === effIdx })),
+    steps: steps.map((s, i) => ({ key: s.key, lb: roundLabels[s.key] || s.lb, done: i < effIdx, now: i === effIdx })),
     effective_key: effIdx >= 0 ? steps[effIdx].key : null,
     effective_index: effIdx,
     manual_active: manualStepIdx > autoIdx,   // 手動指定目前正在「頂著」畫面，自動資料還沒追上
@@ -1314,6 +1325,106 @@ function resolveStage(app, report, appts, placement) {
     manual_by: (app && app.manual_stage_by) || null,
     manual_at: (app && app.manual_stage_at) || null,
   };
+}
+
+// 客戶 portal 可以直接用這支通用端點設的階段子集——只剩「錄取」「備選」。
+// stage1~stage4（面試輪次）2026-08-25 改走專用的 add-interview-round 端點
+// （自動累加輪次＋記錄面談類型，不給客戶跳著選）；screening／confirm 是
+// Step1ne 推薦給客戶「之前」的內部流程，客戶看不到意義；onboard（報到）跟
+// care（到職關懷）維持顧問專用，不開放客戶。跟 /admin/set-manual-stage
+// 給顧問用的完整 STAGE_INDEX 不同，顧問仍然可以設全部 9 個 key。
+const CLIENT_SETTABLE_STAGES = ['offer', 'backup'];
+
+// 面談輪次類型的顯示名稱——客戶在 portal 每新增一輪面試時選其中一種。
+const INTERVIEW_ROUND_TYPE_LABEL = { hr: '人資面談', manager: '用人單位主管面談' };
+
+// 寫入 manual_stage 的共用邏輯——/admin/set-manual-stage（顧問）跟 portal 的
+// 客戶回填端點都呼叫這裡，保證兩邊行為（含推播候選人 LINE）不會走鐘。
+//
+// ⚠️ 2026-08-26 加 company_id：同一位人選可以推給好幾家客戶，每一家的面試
+// 進度是各自獨立的（A 家談到第二關、B 家還沒約）。有 company_id 就只更新
+// 那一家的 candidate_forwards；沒有的話（顧問在後台總覽操作、或這位人選
+// 還沒推給任何人）才落回 applications 那份「整體進度」。
+// applications.manual_stage 保留當作候選人自己在 LINE 查進度時看到的版本——
+// 候選人不該知道自己同時被推給幾家，看到的是「最靠前的那一關」。
+async function applyManualStage(env, { application_id, stage, note, by, company_id }) {
+  const now = nowTaipei();
+  if (company_id) {
+    await env.DB.prepare(
+      `UPDATE candidate_forwards SET manual_stage=?, manual_stage_note=?, manual_stage_by=?, manual_stage_at=?
+        WHERE application_id=? AND company_id=?`
+    ).bind(stage, stage ? (note || null) : null, stage ? (by || null) : null,
+           stage ? now : null, application_id, company_id).run();
+    // 候選人 LINE 看到的是「所有客戶裡最靠前的那一關」——他不需要知道
+    // 自己同時在幾家手上，但也不該看到比實際落後的進度。
+    const { results: all } = await env.DB.prepare(
+      `SELECT manual_stage FROM candidate_forwards WHERE application_id=? AND manual_stage IS NOT NULL`
+    ).bind(application_id).all();
+    let best = null, bestIdx = -1;
+    for (const r of all || []) {
+      const i = STAGE_INDEX[r.manual_stage];
+      if (i !== undefined && i > bestIdx) { bestIdx = i; best = r.manual_stage; }
+    }
+    await env.DB.prepare(
+      `UPDATE applications SET manual_stage=?, manual_stage_by=?, manual_stage_at=? WHERE id=?`
+    ).bind(best, best ? (by || null) : null, best ? now : null, application_id).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE applications SET manual_stage=?, manual_stage_note=?, manual_stage_by=?, manual_stage_at=? WHERE id=?`
+    ).bind(stage, stage ? (note || null) : null, stage ? (by || null) : null,
+           stage ? now : null, application_id).run();
+  }
+  // 手動指定可能讓候選人的進度往前跳（例如提前標成錄取），跟其他會改變進度的
+  // 動作（decide-report／mark-offer）一樣，順手推播更新，不用等自動資料追上才通知。
+  await notifyLineProgress(env, application_id);
+  return { manual_stage: stage, manual_stage_at: stage ? now : null };
+}
+
+// 開關職缺的招募狀態——顧問後台既有的 open/closed 切換（/admin/jobs/:slug）
+// 跟客戶 portal 的「結束招募／重新招募」都呼叫這裡，行為（含誰關的／原因／
+// 時間戳）不會兩邊各自維護出不同步的版本。關閉時記錄 closed_by／closed_reason／
+// closed_at；重新打開時清空這三個欄位（該次招募已經結束了），reason 存進
+// reopened_reason 純供顧問參考，不是必填也不影響狀態機。
+async function setJobOpenState(env, { slug, status, by, reason }) {
+  const now = nowTaipei();
+  if (status === 'closed') {
+    await env.DB.prepare(
+      `UPDATE jobs SET status='closed', closed_by=?, closed_reason=?, closed_at=? WHERE slug=?`
+    ).bind(by || null, reason || null, now, slug).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE jobs SET status='open', closed_by=NULL, closed_reason=NULL, closed_at=NULL, reopened_reason=? WHERE slug=?`
+    ).bind(reason || null, slug).run();
+  }
+  return { status, closed_by: status === 'closed' ? (by || null) : null, closed_at: status === 'closed' ? now : null };
+}
+
+// 2026-08-25 加：職缺建立目前有 4 條互不相通的入口（Telegram 自建職缺流程／
+// 用人需求表 portal／招募形式評估工具／顧問直接改資料庫），沒有一個會檢查
+// 「這個職缺是不是已經存在了」——律准的「資深職業安全衛生工程師」就是這樣
+// 撞出兩筆。這裡收斂成一顆共用函式，凡是會新建 jobs 列的地方都先查一次：
+// 同一家客戶（company_id 相符，或沒有 company_id 就比對 client_name 文字）
+// ＋同樣的職稱（去頭尾空白後完全相同），排除已關閉的職缺（那可能是真的結案
+// 過的舊職缺，不該擋新職缺重新開）。抓到就回傳既有那筆，讓呼叫端決定要
+// 擋下來還是提醒顧問，不要自己偷偷合併內容（合併判斷該讓人做，不該自動猜）。
+async function findDuplicateJob(env, { companyId, clientName, title, excludeSlug }) {
+  const normTitle = String(title || '').trim();
+  if (!normTitle) return null;
+  if (companyId) {
+    const row = await env.DB.prepare(
+      `SELECT slug, title, status FROM jobs
+        WHERE company_id = ? AND trim(title) = ? AND status != 'closed' AND slug != ?`
+    ).bind(companyId, normTitle, excludeSlug || '').first();
+    if (row) return row;
+  }
+  if (clientName) {
+    const row = await env.DB.prepare(
+      `SELECT slug, title, status FROM jobs
+        WHERE trim(client_name) = ? AND trim(title) = ? AND status != 'closed' AND slug != ?`
+    ).bind(String(clientName).trim(), normTitle, excludeSlug || '').first();
+    if (row) return row;
+  }
+  return null;
 }
 
 // 單筆應徵的「候選人看得懂的現況」。
@@ -1372,10 +1483,13 @@ async function deriveApplicationProgress(env, appId) {
   const app = await env.DB.prepare(
     `SELECT id, name, job_slug, job_title, interview_state, handled_note,
             interview_started_at, interview_ended_at, created_at,
-            manual_stage, manual_stage_note, manual_stage_by, manual_stage_at
+            manual_stage, manual_stage_note, manual_stage_by, manual_stage_at,
+            client_interview_labels
        FROM applications WHERE id = ?`
   ).bind(appId).first();
   if (!app) return null;
+  let roundLabels = {};
+  try { roundLabels = JSON.parse(app.client_interview_labels || '{}'); } catch { roundLabels = {}; }
 
   const report = await env.DB.prepare(
     `SELECT consultant_decision FROM reports
@@ -1396,7 +1510,7 @@ async function deriveApplicationProgress(env, appId) {
   // 2026-08-13 全面改：候選人查進度看到的文字，完全交給跟後台階段列共用的
   // resolveStage() 判斷結果決定——不管候選人現在卡在哪一關（含顧問手動指定的
   // 任何一關，不只「錄取」），這裡跟後台階段列講的永遠是同一件事。
-  const stageInfo = resolveStage(app, report, appts || [], placement);
+  const stageInfo = resolveStage(app, report, appts || [], placement, roundLabels);
   const stageUp = placement ? String(placement.stage || '').toUpperCase() : '';
 
   const jobTitle = app.job_title || app.job_slug || '這個職缺';
@@ -2247,8 +2361,21 @@ export default {
     //
     // 資料表全部是 hm_ 前綴（hm_cases／hm_todos／hm_audit_logs），
     // 跟 applications／assessments／jobs 那些既有表完全不重疊。
-    if (p === '/assessment' || p.startsWith('/assessment/')) {
-      const sub = p.slice('/assessment'.length) || '/';
+    // ⚠️ 2026-08-26：這套（企業客戶用）跟候選人的「工作風格測驗」原本共用
+    // /assessment/ 這個網址開頭，結果這個區塊把候選人的測驗連結
+    // （/assessment/<一長串隨機碼>）全部吃掉回 404，候選人根本填不了測驗——
+    // 廖若辰那筆就是這樣卡住的。改成專屬的 /hiring-mode/ 網址，兩套永久分開。
+    // 舊的 /assessment/ 開頭保留成相容別名，但只認得下面那幾個固定子路徑
+    // （health／lead-email／submit／submissions／cases／fetch-url），
+    // 候選人的隨機碼 token 一定落不進來，不會再撞第二次。
+    const HM_SUBS = ['/health', '/lead-email', '/submit', '/submissions', '/cases', '/fetch-url'];
+    const isHmPath = p === '/hiring-mode' || p.startsWith('/hiring-mode/')
+      || ((p === '/assessment' || p.startsWith('/assessment/'))
+          && HM_SUBS.some((s) => p === '/assessment' + s || p.startsWith('/assessment' + s + '/')));
+    if (isHmPath) {
+      const sub = (p.startsWith('/hiring-mode')
+        ? p.slice('/hiring-mode'.length)
+        : p.slice('/assessment'.length)) || '/';
       const auth = request.headers.get('authorization') || '';
       const isConsultant = !!env.ADMIN_TOKEN && safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`);
 
@@ -2279,7 +2406,9 @@ export default {
         const companyName = String(b.companyName || '').trim().slice(0, 200);
         const source = String(b.source || '').trim().slice(0, 60) || 'unknown';
 
-        const link = 'https://enterprise.step1ne.com/?utm_source=step1ne&utm_medium=email&utm_campaign=hiring_mode_lead';
+        // 2026-08-25 加 email query string：讓真正的評估工具頁面能讀到這個人
+        // 是誰、自動帶入送出的紀錄裡，不然信箱留過就跟後面的填表紀錄斷線。
+        const link = `https://enterprise.step1ne.com/?utm_source=step1ne&utm_medium=email&utm_campaign=hiring_mode_lead&email=${encodeURIComponent(email)}`;
         const sent = await sendMail(env, email,
           '您的「招募形式快速評估工具」連結',
           [
@@ -2319,18 +2448,24 @@ export default {
         }
         const id = `asm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const now = nowTaipei();
+        // 2026-08-25 加 email：之前留信箱（/lead-email）跟真正填表送出（這裡）
+        // 是兩支完全不相干的 API，信箱只拿去寄信、Telegram 通知一次，沒存進
+        // 任何資料表，顧問後台這份提交紀錄永遠看不到對方的信箱。改成信箱從
+        // 寄出的連結帶 query string 過來（見 /lead-email），前端讀出來後跟著
+        // 這次送出一起存，不是必填（有些人是從舊連結直接進來，沒有信箱）。
+        const email = String(b.email || '').trim().slice(0, 200) || null;
         await env.DB.prepare(
           `INSERT INTO assessment_submissions
              (id, company_name, industry, job_title, salary_text,
-              duration, employer, talent_type, mode, mode_label, status, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?, 'new', ?)`
+              duration, employer, talent_type, mode, mode_label, status, created_at, email)
+           VALUES (?,?,?,?,?,?,?,?,?,?, 'new', ?, ?)`
         ).bind(
           id,
           String(b.companyName).slice(0, 200), String(b.industry).slice(0, 100),
           String(b.jobTitle).slice(0, 200), String(b.salaryText).slice(0, 100),
           String(b.duration).slice(0, 40), String(b.employer).slice(0, 40),
           String(b.talentType).slice(0, 40), String(b.mode).slice(0, 40),
-          String(b.modeLabel).slice(0, 40), now
+          String(b.modeLabel).slice(0, 40), now, email
         ).run();
 
         // Telegram 通知顧問——不擋回應，通知失敗也不影響前端拿到結果。
@@ -2340,6 +2475,7 @@ export default {
           `公司：${b.companyName}\n產業：${b.industry}\n` +
           `職稱：${b.jobTitle}　薪資：${b.salaryText}\n` +
           `建議形式：${b.modeLabel}\n` +
+          (email ? `聯絡信箱：${email}\n` : '') +
           `後台查看：https://step1ne.com/consultant/hiring-assessments/`,
           { message_thread_id: THREAD.intake }
         ).catch(() => {});
@@ -2519,49 +2655,13 @@ export default {
             ).run();
           }
 
-          // ── 同步到 jobs 表（顧問後台／阿財共用的那份 JD） ──
-          // 顧問確認過（approved／exported）才寫入，狀態固定 draft，
-          // 不會自動變成官網公開頁面（公開清單排除 status='draft'）。
-          // 之後顧問要對外刊登，走 step1ne-job-posting 技能的禁刊過濾流程，
-          // 不是這裡自動做的事。
-          if (b.status === 'approved' || b.status === 'exported') {
-            const f = (k) => (b.fields && b.fields[k] && b.fields[k].value) || null;
-            const jobSlug = `assess-${caseId}`;
-            const modeLabel = { dispatch: '人力派遣', executive_search: '中高階獵才', rpo_volume: '正職代招' };
-            const employment = modeLabel[
-              (b.review && b.review.consultantVersion && b.review.consultantVersion.primary)
-              || (b.assessment && b.assessment.primary) || ''
-            ] || null;
-            const notesParts = [];
-            if (f('hiring_reason')) notesParts.push(`用人原因：${f('hiring_reason')}`);
-            if (f('expected_duration')) notesParts.push(`預計使用期間：${f('expected_duration')}`);
-            if (f('post_project_arrangement')) notesParts.push(`結束後安排：${f('post_project_arrangement')}`);
-            if (f('job_duties')) notesParts.push(`工作內容：${f('job_duties')}`);
-            notesParts.push(`（此筆由招募形式評估工具同步，案件編號 ${caseId}，顧問確認前請勿對外刊登）`);
-            await env.DB.prepare(
-              `INSERT INTO jobs
-                 (slug, title, updated_at, client_name, years_min, must_skills,
-                  locations, employment, onboard_by, notes, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?, 'draft')
-               ON CONFLICT(slug) DO UPDATE SET
-                 title       = excluded.title,
-                 updated_at  = excluded.updated_at,
-                 client_name = excluded.client_name,
-                 years_min   = excluded.years_min,
-                 must_skills = excluded.must_skills,
-                 locations   = excluded.locations,
-                 employment  = excluded.employment,
-                 onboard_by  = excluded.onboard_by,
-                 notes       = excluded.notes`
-            ).bind(
-              jobSlug, f('job_title') || String(b.title || '未命名案件'), now,
-              f('company_name'),
-              (() => { const n = parseInt(f('experience_years'), 10); return Number.isFinite(n) ? n : null; })(),
-              f('required_skills'), f('work_location'), employment,
-              f('start_date'), notesParts.join('\n')
-            ).run();
-          }
-
+          // 2026-08-26 拿掉：這裡原本有一段「案件核准/匯出後自動同步進 jobs 表」的
+          // 邏輯。查證過沒有任何現行前端會呼叫這支 /assessment/cases/:id 端點
+          // （enterprise.step1ne.com 現在的簡化版走的是 /assessment/submit，
+          // 寫進完全不同的 assessment_submissions 表）——這是「2026-08-25 簡化
+          // 重做」之前的舊版評估工具遺留的孤兒程式碼。Jacky 確認這個工具本質是
+          // 留潛在客戶名單開發用，不是職缺建立工具，不該碰 jobs 表：律准那筆
+          // 「資深職業安全衛生工程師」重複職缺就是這段孤兒程式碼自動寫出來的。
           return json(request, { ok: true, id: caseId, updated_at: b.updatedAt || now });
         }
 
@@ -2660,6 +2760,67 @@ export default {
     // （他們的用人條件、FAQ、薪資說明、公司名稱），是要拿來對焦用的，不是我們的東西，
     // 不該擋。真正該擋的只有 notes（顧問寫給顧問自己看的內部工作筆記，跟職缺內容無關）
     // 跟 scoring_notes（阿財的評分方法論，是 STEP1NE 自己的招募know-how，不是他們的職缺資料）。
+    // 2026-08-26 加：禁刊過濾器，從 jobintake/publishing_filters.py 搬過來的同一套
+    // 規則（純規則，不用 AI——這是法遵，不是文筆，同一份文字每次都要擋一樣的東西，
+    // 不能靠 LLM 判斷，判斷不保證每次一致）。Telegram 自建職缺那條路本來就會經過
+    // 這關（draft_job.py 呼叫 Python 版），但用人需求表 portal 這條路（客戶自己填）
+    // 完全沒有這一關——客戶送審後，顧問核准前完全看不到有沒有違法/洩密內容。
+    // 這裡在顧問查看待審核職缺時即時掃一次，把命中的地方列出來，顧問才知道
+    // 「這份要改什麼才能刊」，不是盲目按核准。
+    const PUBLISH_FILTER_RULES = [
+      ['年齡歧視', /(限|需|須|僅限|只收|徵)?\s*\d{2}\s*歲\s*(以下|以內|(以)?上)/g, '違反就業服務法第5條（年齡歧視），刊出會被裁罰'],
+      ['年齡歧視', /年齡\s*[:：]?\s*\d{2}\s*[-–~至]\s*\d{2}/g, '違反就業服務法第5條（年齡歧視）'],
+      ['年齡歧視', /(未滿|不超過|不得超過)\s*\d{2}\s*歲/g, '違反就業服務法第5條（年齡歧視）'],
+      ['年齡歧視', /(年輕|年紀輕|六年級|七年級|八年級|九年級)(生|後)?(佳|尤佳|優先)?/g, '間接年齡指涉，實務上同樣認定為年齡歧視'],
+      ['性別歧視', /(限|僅限|只收|徵|需|以)\s*(男|女)(性|生|士)?(為主|佳|尤佳|優先)?/g, '違反就業服務法第5條（性別歧視）'],
+      ['性別歧視', /(男|女)(性|生)\s*(佳|尤佳|優先|為佳)/g, '違反就業服務法第5條（性別歧視）'],
+      ['婚育歧視', /(已婚|未婚|單身|需已婚|限未婚)/g, '違反就業服務法第5條（婚姻歧視）'],
+      ['婚育歧視', /(無|不得有|近期無)\s*(懷孕|生育|婚育|生子)\s*(計畫|規劃|打算)?/g, '違反就業服務法第5條（懷孕歧視），這條裁罰最重'],
+      ['國籍歧視', /(限|僅限|只收|需|須)\s*(具備|具|有)?\s*(本國|台灣|中華民國|國)籍/g, '違反就業服務法第5條（國籍歧視）'],
+      ['國籍歧視', /(不收|不用|排除|不考慮)\s*(外籍|外勞|移工|陸籍|外國人)/g, '違反就業服務法第5條（國籍歧視）'],
+      ['容貌歧視', /(五官端正|形象佳|外型佳|外貌佳|身高\s*\d{3}|體重\s*\d{2,3}|口齒清晰且外型)/g, '違反就業服務法第5條（容貌歧視）'],
+      ['身心障礙歧視', /(不收|不適合|排除)\s*(身心障礙|殘障|身障)/g, '違反就業服務法第5條（身心障礙歧視）'],
+      ['內部獵頭策略', /(建議鎖定|建議搜尋|搜尋職稱|目標公司|挖角|對標公司|競品名單|人選來源建議)/g, '等於把挖角名單公開給同業看'],
+      ['內部溝通備註', /(客戶(最初|原本|一開始)說|建議二次確認|與確認的.{0,10}有落差|內部備註|待客戶回覆)/g, '這是我們跟客戶之間的往來，不是給求職者看的'],
+      ['未確認欄位', /(待確認|待補|未確認|\?\?|待客戶確認|TBD|tbd)/g, '不刊未驗證資訊——刊錯的工作條件會害候選人白跑一趟'],
+      ['內部作業口吻', /(由\s*Step1ne\s*投保|由我方投保|我司投保|派遣公司為本公司)/g, '這是內部作業說明，寫在頁面上會讓求職者覺得自己是貨物'],
+    ];
+    function scanPublishFilters(text, clientName) {
+      text = text || '';
+      const hits = [];
+      const context = (i, j) => {
+        const a = Math.max(0, i - 20), b = Math.min(text.length, j + 20);
+        return (a > 0 ? '…' : '') + text.slice(a, b).replace(/\n/g, ' ') + (b < text.length ? '…' : '');
+      };
+      for (const [kind, re, why] of PUBLISH_FILTER_RULES) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(text))) {
+          hits.push({ kind, matched: m[0].trim(), context: context(m.index, m.index + m[0].length), why });
+          if (m[0] === '') re.lastIndex++; // 避免零寬配對造成無窮迴圈
+        }
+      }
+      if (clientName) {
+        const stem = clientName.replace(/(股份)?有限公司$|公司$|集團$|企業社$/, '').trim();
+        for (const name of new Set([clientName, stem].filter((n) => n && n.length >= 2))) {
+          const re2 = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+          let m;
+          while ((m = re2.exec(text))) {
+            hits.push({ kind: '委任客戶名稱', matched: m[0], context: context(m.index, m.index + m[0].length),
+              why: '客戶保密義務。頁面不可出現，請改用產業描述' });
+          }
+        }
+      }
+      // 去重
+      const seen = new Set(); const out = [];
+      for (const h of hits) {
+        const key = `${h.kind}|${h.matched}|${h.context}`;
+        if (seen.has(key)) continue;
+        seen.add(key); out.push(h);
+      }
+      return out;
+    }
+
     const PORTAL_FIELDS = [
       'client_name', 'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
       'client_screen_conditions', 'faq_notes', 'salary_note',
@@ -2690,7 +2851,7 @@ export default {
 
       // GET /portal/:token — 回傳公司資訊＋這家公司底下所有職缺（只挑白名單欄位）
       if (parts.length === 1 && request.method === 'GET') {
-        const cols = ['slug', 'status', ...PORTAL_FIELDS].join(', ');
+        const cols = ['slug', 'status', 'closed_by', 'closed_reason', ...PORTAL_FIELDS].join(', ');
         const { results } = await env.DB.prepare(
           `SELECT ${cols} FROM jobs WHERE company_id = ? ORDER BY slug`
         ).bind(company.id).all();
@@ -2732,6 +2893,53 @@ export default {
           `到「客戶資訊」分頁看完整內容、核准或拒絕：https://step1ne.com/consultant/client-info/`,
           { message_thread_id: THREAD.intake }).catch(() => {});
         return json(request, { ok: true, slug, status: 'pending_review' });
+      }
+
+      // POST /portal/:token/jobs/:slug/close-hire — 客戶自己找到人了，結束招募。
+      // 效果全部沿用既有機制：GET /jobs-closed 會讓公開頁面隱藏這個職缺、
+      // POST /apply 會擋新應徵，已經在談的候選人不受影響——這兩件事都不用
+      // 另外寫，只要把 status 設成 closed 就白拿。這裡只負責權限檢查、
+      // 要求填原因、通知顧問。
+      if (parts.length === 4 && parts[1] === 'jobs' && parts[3] === 'close-hire' && request.method === 'POST') {
+        const slug = parts[2];
+        const b = await request.json().catch(() => ({}));
+        const reason = b.reason ? String(b.reason).trim().slice(0, 300) : '';
+        if (!reason) return json(request, { ok: false, error: '請填寫結束招募的原因' }, 400);
+        const owned = await env.DB.prepare(
+          `SELECT slug, title, status FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        if (owned.status !== 'open') {
+          return json(request, { ok: false, error: '這個職缺目前不是招募中的狀態' }, 400);
+        }
+        await setJobOpenState(env, { slug, status: 'closed', by: 'client', reason });
+        notify(env,
+          `✅ ${company.display_name} 標記「結束招募」：「${owned.title || slug}」\n原因：${reason}`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, slug, status: 'closed' });
+      }
+
+      // POST /portal/:token/jobs/:slug/reopen — 重新招募。
+      // 2026-08-25 改：不管是客戶自己按「結束招募」關的，還是顧問後台關的，
+      // 客戶都能自己重新招募——Jacky 明確要求兩種情況都要讓客戶能自己重啟，
+      // 不要卡在「只有顧問關的才不給重開」這個限制上。
+      if (parts.length === 4 && parts[1] === 'jobs' && parts[3] === 'reopen' && request.method === 'POST') {
+        const slug = parts[2];
+        const b = await request.json().catch(() => ({}));
+        const reason = b.reason ? String(b.reason).trim().slice(0, 300) : '';
+        if (!reason) return json(request, { ok: false, error: '請填寫重新招募的原因' }, 400);
+        const owned = await env.DB.prepare(
+          `SELECT slug, title, status, closed_by FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        if (owned.status !== 'closed') {
+          return json(request, { ok: false, error: '這個職缺目前不是關閉狀態' }, 400);
+        }
+        await setJobOpenState(env, { slug, status: 'open', by: 'client', reason });
+        notify(env,
+          `🔄 ${company.display_name} 重新招募：「${owned.title || slug}」\n原因：${reason}`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, slug, status: 'open' });
       }
 
       // PUT /portal/:token/jobs/:slug — 只准更新白名單欄位，且該職缺必須真的屬於這個 token 對應的公司。
@@ -2790,6 +2998,13 @@ export default {
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         const title = String(b.title || '').trim();
         if (!title) return json(request, { ok: false, error: '請填職缺名稱' }, 400);
+
+        // 2026-08-25 加：同一家客戶不能建兩筆同標題的職缺——擋下來，請客戶去改
+        // 既有那筆，不要生出撞名的重複資料。
+        const dup = await findDuplicateJob(env, { companyId: company.id, title });
+        if (dup) {
+          return json(request, { ok: false, error: `已經有一筆「${dup.title}」了，請直接編輯那一筆，不要重新建立` }, 409);
+        }
 
         const slug = `pending-${company.id}-${[...crypto.getRandomValues(new Uint8Array(4))]
           .map((x) => x.toString(16).padStart(2, '0')).join('')}`;
@@ -2935,6 +3150,207 @@ export default {
         await env.DB.prepare(`UPDATE portal_imports SET status='applied', updated_at=? WHERE id=?`)
           .bind(now, importId).run();
         return json(request, { ok: true, slug: imp.job_slug });
+      }
+
+      // GET /portal/:token/candidates — 人選推送列表。只列「顧問已經按下推薦給
+      // 客戶」的人選（reports.consultant_decision='forwarded'）——還沒推派的
+      // 案子客戶連看都看不到。階段一律用 resolveStage()（跟顧問後台階段條、
+      // 候選人 LINE 查進度共用同一顆函式），保證三邊顯示的階段絕對一致。
+      if (parts.length === 2 && parts[1] === 'candidates' && request.method === 'GET') {
+        // 2026-08-25 改：改成靠 candidate_forwards 判斷「這位人選有沒有明確推薦給
+        // 這家公司」，不是只看 j.company_id（那樣只認得「原本應徵的那家」，一個
+        // 人選被同時推薦給好幾家客戶時，其他家客戶會完全看不到，而且顧問也無從
+        // 得知到底推薦給了誰）。
+        // ⚠️ 2026-08-26 改：階段欄位改讀 candidate_forwards（每家客戶一筆），
+        // 不是 applications（每個人選一筆）。同一位人選推給兩家客戶時，
+        // 兩家的面試進度是各自獨立的——A 家談到第二關、B 家還沒約，
+        // 原本共用 applications.manual_stage 會讓兩家看到同一個進度。
+        const { results: rows } = await env.DB.prepare(
+          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+                  a.interview_started_at, a.interview_ended_at,
+                  cf.manual_stage, cf.manual_stage_note, cf.manual_stage_by, cf.manual_stage_at,
+                  cf.client_interview_labels,
+                  j.title AS job_title, j.client_named,
+                  r.id AS report_id, r.consultant_decision, cf.forwarded_at
+             FROM candidate_forwards cf
+             JOIN applications a ON a.id = cf.application_id
+             JOIN jobs j ON j.slug = a.job_slug
+             JOIN reports r ON r.id = (
+                   SELECT id FROM reports WHERE application_id = a.id
+                   ORDER BY created_at DESC LIMIT 1)
+            WHERE cf.company_id = ? AND r.consultant_decision = 'forwarded'
+            ORDER BY cf.forwarded_at DESC`
+        ).bind(company.id).all();
+
+        const candidates = [];
+        for (const row of (rows || [])) {
+          const placement = await env.DB.prepare(
+            `SELECT stage, onboard_date, candidate_care_log FROM placements
+              WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
+          ).bind(row.application_id).first();
+          const { results: appts } = await env.DB.prepare(
+            `SELECT stage, status, confirmed_slot FROM interview_appointments
+              WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
+          ).bind(row.application_id).all();
+          let roundLabels = {};
+          try { roundLabels = JSON.parse(row.client_interview_labels || '{}'); } catch { roundLabels = {}; }
+          const stageInfo = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, roundLabels);
+          const stage1Idx = STAGE_INDEX.stage1;
+          // screening／confirm 是 Step1ne 推薦給客戶「之前」的內部流程階段，不能把
+          // 這兩關的內部名稱／格子顯示給客戶看。把這兩關收成陣列最前面一格合成
+          // 的「已推薦・待安排面試」，其餘（stage1~4／offer／onboard／care／backup）
+          // 照 resolveStage() 原樣帶出——客戶跟顧問後台看的是同一份 steps，
+          // 差別只在客戶看不到 screening／confirm 這兩格。
+          const visibleSteps = stageInfo.steps.filter((s) => s.key !== 'screening' && s.key !== 'confirm');
+          const matched = { key: 'matched', lb: '已推薦・待安排面試', done: stageInfo.effective_index >= stage1Idx, now: stageInfo.effective_index < stage1Idx };
+          const steps = [matched, ...visibleSteps];
+          candidates.push({
+            application_id: row.application_id,
+            // client_named=0（未簽約／匿名客戶）比照既有報告／履歷的匿名慣例，不放真名。
+            // ⚠️ 2026-08-26 修：原本用 client_named 決定要不要顯示姓名，那是錯的——
+            // client_named 的意思是「我們能不能對外公開講出這家客戶的名字」（客戶保密），
+            // 跟「客戶能不能看到候選人姓名」是兩回事。這個畫面是客戶自己的 portal，
+            // 列的是我們主動推薦給他們、他們要去面試的人，當然要看得到是誰，
+            // 不然沒辦法安排面試也沒辦法跟顧問討論。履歷匿名（cv_mode）管的是
+            // 「送評估用的履歷要不要去識別化」，不是這個進度追蹤畫面。
+            candidate_name: row.candidate_name,
+            job_slug: row.job_slug,
+            job_title: row.job_title,
+            forwarded_at: row.forwarded_at,
+            steps,
+            current_stage: stageInfo.effective_index >= stage1Idx
+              ? { key: stageInfo.effective_key, lb: (steps.find((s) => s.key === stageInfo.effective_key) || {}).lb }
+              : { key: null, lb: '已推薦・待安排面試' },
+            interview_rounds_used: Object.keys(roundLabels).length,
+            interview_round_types: INTERVIEW_ROUND_TYPE_LABEL,
+            editable_stages: CLIENT_SETTABLE_STAGES.map((key) => ({
+              key, lb: (STAGE_ORDER.find((s) => s.key === key) || {}).lb,
+            })),
+          });
+        }
+        return json(request, { ok: true, candidates });
+      }
+
+      // POST /portal/:token/candidates/:applicationId/add-interview-round — 客戶
+      // 自己回報「這一輪面試是什麼類型」（人資面談／用人單位主管面談，可加備註是
+      // 哪個層級），系統自動判斷這是第幾輪（數目前已經記了幾輪＋1），組成
+      // 「人資面談（第一階段面談）」這種標籤存進 client_interview_labels，
+      // 再呼叫既有的 applyManualStage() 把 manual_stage 推到對應的 stageN——
+      // 顧問後台階段條、候選人 LINE 進度會自動同步（都吃同一顆 resolveStage()）。
+      if (parts.length === 4 && parts[1] === 'candidates' && parts[3] === 'add-interview-round' && request.method === 'POST') {
+        const applicationId = parts[2];
+        const b = await request.json().catch(() => ({}));
+        const interviewType = b.interview_type ? String(b.interview_type) : '';
+        if (!INTERVIEW_ROUND_TYPE_LABEL[interviewType]) {
+          return json(request, { ok: false, error: '面談類型只能是人資面談或用人單位主管面談' }, 400);
+        }
+        const detailNote = b.detail_note ? String(b.detail_note).trim().slice(0, 60) : '';
+
+        // 2026-08-25 改：擁有權檢查改看 candidate_forwards 有沒有這家公司的推薦紀錄，
+        // 不是看 j.company_id（同一個人選可能被推薦給好幾家客戶，j.company_id 只認得
+        // 「原本應徵的那家」）。
+        // 面試輪次也是每家客戶各自獨立的——A 家談到第三輪，不代表 B 家也是。
+        const row = await env.DB.prepare(
+          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+                  cf.client_interview_labels, r.consultant_decision,
+                  cf.id AS forward_id
+             FROM candidate_forwards cf
+             JOIN applications a ON a.id = cf.application_id
+             JOIN reports r ON r.id = (
+                   SELECT id FROM reports WHERE application_id = a.id
+                   ORDER BY created_at DESC LIMIT 1)
+            WHERE cf.application_id = ? AND cf.company_id = ?`
+        ).bind(applicationId, company.id).first();
+        if (!row) {
+          return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        }
+        if (row.consultant_decision !== 'forwarded') {
+          return json(request, { ok: false, error: '這位人選還沒有正式推派' }, 400);
+        }
+
+        let roundLabels = {};
+        try { roundLabels = JSON.parse(row.client_interview_labels || '{}'); } catch { roundLabels = {}; }
+        const usedCount = Object.keys(roundLabels).length;
+        if (usedCount >= 4) {
+          return json(request, { ok: false, error: '面試輪次已達上限（4 輪），如需新增請聯繫顧問' }, 400);
+        }
+        const nextStage = `stage${usedCount + 1}`;
+        const roundLb = STAGE_ORDER.find((s) => s.key === nextStage).lb;
+        const label = INTERVIEW_ROUND_TYPE_LABEL[interviewType] + (detailNote ? `（${detailNote}）` : '') + `（${roundLb}）`;
+        roundLabels[nextStage] = label;
+
+        await env.DB.prepare(`UPDATE candidate_forwards SET client_interview_labels=? WHERE id=?`)
+          .bind(JSON.stringify(roundLabels), row.forward_id).run();
+        const result = await applyManualStage(env, {
+          application_id: applicationId, stage: nextStage, by: `client:${company.id}`,
+          company_id: company.id,
+        });
+        notify(env,
+          `📋 ${company.display_name} 新增了一輪面試：${row.candidate_name}（${row.job_slug}）→ ${label}`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, stage: nextStage, label, ...result });
+      }
+
+      // POST /portal/:token/candidates/:applicationId/stage — 客戶回填這個人選
+      // 目前在他們那邊面試到哪一關。寫入邏輯跟顧問用的 /admin/set-manual-stage
+      // 共用 applyManualStage()，會自動推播候選人 LINE、顧問後台階段條也會
+      // 同步反映（都讀同一個 resolveStage()）。
+      if (parts.length === 4 && parts[1] === 'candidates' && parts[3] === 'stage' && request.method === 'POST') {
+        const applicationId = parts[2];
+        const b = await request.json().catch(() => ({}));
+        const stage = b.stage ? String(b.stage) : '';
+        if (!CLIENT_SETTABLE_STAGES.includes(stage)) {
+          return json(request, { ok: false, error: '不合法的階段代碼' }, 400);
+        }
+
+        // 安全檢查：這個 application 必須有 candidate_forwards 明確推薦給這家公司，
+        // 不能靠猜 application_id 打到別家公司的資料——也不能只看 j.company_id，
+        // 一個人選可能同時被推薦給好幾家客戶（見 /admin/forward-candidate）。
+        const row = await env.DB.prepare(
+          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+                  a.interview_started_at, a.interview_ended_at,
+                  cf.manual_stage, cf.manual_stage_note, cf.manual_stage_by, cf.manual_stage_at,
+                  cf.client_interview_labels, r.consultant_decision
+             FROM candidate_forwards cf
+             JOIN applications a ON a.id = cf.application_id
+             JOIN reports r ON r.id = (
+                   SELECT id FROM reports WHERE application_id = a.id
+                   ORDER BY created_at DESC LIMIT 1)
+            WHERE cf.application_id = ? AND cf.company_id = ?`
+        ).bind(applicationId, company.id).first();
+        if (!row) {
+          return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        }
+        if (row.consultant_decision !== 'forwarded') {
+          return json(request, { ok: false, error: '這位人選還沒有正式推派' }, 400);
+        }
+
+        // 防止客戶手滑倒退：新階段不能比目前實際顯示的階段還早。
+        const placement = await env.DB.prepare(
+          `SELECT stage, onboard_date, candidate_care_log FROM placements
+            WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
+        ).bind(applicationId).first();
+        const { results: appts } = await env.DB.prepare(
+          `SELECT stage, status, confirmed_slot FROM interview_appointments
+            WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
+        ).bind(applicationId).all();
+        let stageRoundLabels = {};
+        try { stageRoundLabels = JSON.parse(row.client_interview_labels || '{}'); } catch { stageRoundLabels = {}; }
+        const current = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, stageRoundLabels);
+        const newIdx = STAGE_INDEX[stage];
+        if (stage !== 'backup' && newIdx < current.effective_index) {
+          return json(request, { ok: false, error: '新階段不能比目前的還早，如需訂正請聯繫顧問' }, 400);
+        }
+
+        const result = await applyManualStage(env, {
+          application_id: applicationId, stage, note: b.note, by: `client:${company.id}`,
+          company_id: company.id,
+        });
+        notify(env,
+          `📋 ${company.display_name} 回填了人選進度：${row.candidate_name}（${row.job_slug}）→ ` +
+          `${(STAGE_ORDER.find((s) => s.key === stage) || {}).lb || stage}`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, ...result });
       }
 
       return json(request, { ok: false, error: 'not found' }, 404);
@@ -3579,16 +3995,16 @@ export default {
         //    加了那個條件等於全部擋掉——2026-08-12 第一次上線就是這樣，
         //    Jacky 打了「湯豐銘客戶約週四下午面試」完全沒進資料庫。
         //    主題 id 已經夠精確了，其他主題不會落到這裡。
+        // 2026-08-26 停用：Jacky 明確要求只留一條路——顧問直接在系統的階段條
+        // 上調整，不要再有「Telegram 打字→AI 解析→問過才寫」這條平行路徑。
+        // 這裡不再寫進 consultant_reports（report_tick.py 這支背景腳本也已經
+        // 停用，就算漏寫了訊息也不會有東西去處理），改成回一句話引導顧問
+        // 去系統操作，不要讓訊息看起來「有送出但沒反應」。
         if (rm && Number(rm.message_thread_id) === THREAD.report &&
-            String(rm.text || '').trim()) {
-          const who = (rm.from && (rm.from.username || rm.from.first_name)) || '顧問';
-          // 自己發的確認訊息不要再收一次
-          if (!(rm.from && rm.from.is_bot)) {
-            await env.DB.prepare(
-              `INSERT INTO consultant_reports (id, created_at, tg_message_id, sender, raw_text, status, updated_at)
-               VALUES (?,?,?,?,?, 'new', ?)`
-            ).bind(uid(), nowTaipei(), rm.message_id, who, rm.text.trim(), nowTaipei()).run();
-          }
+            String(rm.text || '').trim() && !(rm.from && rm.from.is_bot)) {
+          await notify(env,
+            '這裡已經不會自動處理進度回報了——請直接到顧問後台「初篩報告」頁的階段條調整，客戶跟候選人那邊會自動同步，不用再打字回報。',
+            { message_thread_id: THREAD.report }).catch(() => {});
           return new Response('ok');
         }
       }
@@ -5241,13 +5657,34 @@ export default {
       // 這次刻意不做自動寄信（對外寄信是不可逆動作，不交給自動化）。
       // 客戶資訊清單：顧問後台「客戶資訊」分頁用，每家公司＋掛在底下的職缺數。
       if (p === '/admin/portal/companies' && request.method === 'GET') {
+        // 2026-08-26 加 ?for_job=<slug>：顧問要把人選推給客戶時，先把「有開這個
+        // 職缺的客戶」標出來方便快選，但清單仍然回傳全部——同一位人選可能適合
+        // 別家客戶的類似職缺，不該因為職缺沒對上就選不到。
+        const forJob = (url.searchParams.get('for_job') || '').trim();
         const { results } = await env.DB.prepare(
           `SELECT c.id, c.display_name, c.contact_email, c.contact_name, c.portal_token, c.created_at, c.last_emailed_at,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id AND status = 'pending_review') AS pending_count
              FROM client_companies c ORDER BY c.display_name`
         ).all();
-        return json(request, { ok: true, companies: results || [] });
+        let companies = results || [];
+        if (forJob) {
+          // 這個職缺的標題是什麼，就找「也有開同名職缺」的其他客戶
+          const thisJob = await env.DB.prepare(
+            `SELECT title, company_id FROM jobs WHERE slug = ?`).bind(forJob).first();
+          const relevant = new Set();
+          if (thisJob) {
+            if (thisJob.company_id) relevant.add(thisJob.company_id);
+            const { results: same } = await env.DB.prepare(
+              `SELECT DISTINCT company_id FROM jobs
+                WHERE trim(title) = ? AND company_id IS NOT NULL
+                  AND COALESCE(status,'open') NOT IN ('closed')`
+            ).bind(String(thisJob.title || '').trim()).all();
+            for (const r of same || []) relevant.add(r.company_id);
+          }
+          companies = companies.map((c) => ({ ...c, relevant: relevant.has(c.id) }));
+        }
+        return json(request, { ok: true, companies });
       }
 
       // 單一公司詳情：公司資訊＋底下所有職缺（含未掛公司的可選清單，方便顧問手動掛新職缺）。
@@ -5265,7 +5702,15 @@ export default {
         const { results: jobs } = await env.DB.prepare(
           `SELECT ${cols} FROM jobs WHERE company_id = ? ORDER BY slug`
         ).bind(id).all();
-        return json(request, { ok: true, company, jobs: jobs || [] });
+        // 客戶自己填的內容從沒經過禁刊過濾——待審核的職缺這裡即時掃一次，
+        // 顧問點開待審核清單就看得到「這份要改什麼才能刊」，不是盲目按核准。
+        const jobsWithFilter = (jobs || []).map((j) => {
+          if (j.status !== 'pending_review') return j;
+          const text = PORTAL_FIELDS.map((f) => j[f]).filter(Boolean).join('\n');
+          const hits = scanPublishFilters(text, j.client_name || company.display_name);
+          return { ...j, compliance_hits: hits };
+        });
+        return json(request, { ok: true, company, jobs: jobsWithFilter });
       }
 
       if (p === '/admin/portal/companies' && request.method === 'POST') {
@@ -5548,14 +5993,19 @@ export default {
       //    一筆都不在裡面：洽談中的、客戶的終端客戶、明確禁止接觸的。
       //    2026-08-10 agent 提議去敲台灣美光（律准的終端客戶），
       //    2026-08-11 提議去敲帆宣（顧問正在談簽約）——兩次都是因為查不到。
+      // 2026-08-26 改：原本是獨立的 clients 表，跟 portal 客戶帳號
+      // （client_companies）是兩本互不相通的名冊，同一家客戶在兩邊各存
+      // 一筆、改一邊不會同步到另一邊。Jacky 確認這其實是同一件事（客戶
+      // 關係狀態），已經把 9 筆舊資料併進 client_companies，這裡改讀寫
+      // 同一張表——不管是這個分頁還是「客戶資訊」分頁，看到的都是同一份。
       if (p === '/admin/clients' && request.method === 'GET') {
         const { results } = await env.DB.prepare(
-          `SELECT id, name, aliases, relation, blocked_reason, via_client, owner, note,
-                  created_at, updated_at
-             FROM clients ORDER BY
+          `SELECT id, display_name AS name, aliases, relation, relation_note AS blocked_reason,
+                  via_client, owner, note, created_at, updated_at
+             FROM client_companies WHERE relation IS NOT NULL ORDER BY
                CASE relation WHEN 'end_client' THEN 0 WHEN 'negotiating' THEN 1
                              WHEN 'signed' THEN 2 WHEN 'blocked' THEN 3 ELSE 4 END,
-               name`
+               display_name`
         ).all();
         return json(request, { ok: true, rows: results || [] });
       }
@@ -5565,7 +6015,11 @@ export default {
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         const now = nowTaipei();
         if (b.delete && b.id) {
-          await env.DB.prepare(`DELETE FROM clients WHERE id = ?`).bind(b.id).run();
+          // 這裡的「刪除」只清掉關係狀態，不刪整個客戶帳號——這筆公司可能
+          // 還有 portal 職缺掛在底下，不能整筆砍掉。
+          await env.DB.prepare(
+            `UPDATE client_companies SET relation=NULL, relation_note=NULL, via_client=NULL WHERE id = ?`
+          ).bind(b.id).run();
           return json(request, { ok: true, deleted: b.id });
         }
         const name = String(b.name || '').trim();
@@ -5578,17 +6032,27 @@ export default {
         if (b.relation === 'end_client' && !String(b.via_client || '').trim()) {
           return json(request, { ok: false, error: '「客戶的終端客戶」請填是透過哪一家接觸到的，否則日後沒人知道為什麼不能碰' }, 400);
         }
-        const id = String(b.id || '').trim() || uid();
+        const id = String(b.id || '').trim();
+        if (id) {
+          // 更新既有客戶帳號的關係狀態
+          await env.DB.prepare(
+            `UPDATE client_companies SET display_name=?, aliases=?, relation=?, relation_note=?,
+                    via_client=?, owner=?, note=?, updated_at=? WHERE id=?`
+          ).bind(name, b.aliases || null, b.relation, b.blocked_reason || null,
+                 b.via_client || null, b.owner || null, b.note || null, now, id).run();
+          return json(request, { ok: true, id });
+        }
+        // 全新的公司（還沒有 portal 帳號）——一樣生一組 token，即使不會馬上
+        // 寄給客戶，維持跟其他客戶帳號同一套資料結構，不要另外開一份格式。
+        const newId = `co_${[...crypto.getRandomValues(new Uint8Array(4))].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+        const token = [...crypto.getRandomValues(new Uint8Array(24))].map((x) => x.toString(16).padStart(2, '0')).join('');
         await env.DB.prepare(
-          `INSERT INTO clients (id,name,aliases,relation,blocked_reason,via_client,owner,note,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(id) DO UPDATE SET
-             name=excluded.name, aliases=excluded.aliases, relation=excluded.relation,
-             blocked_reason=excluded.blocked_reason, via_client=excluded.via_client,
-             owner=excluded.owner, note=excluded.note, updated_at=excluded.updated_at`
-        ).bind(id, name, b.aliases || null, b.relation, b.blocked_reason || null,
-               b.via_client || null, b.owner || null, b.note || null, now, now).run();
-        return json(request, { ok: true, id });
+          `INSERT INTO client_companies (id, display_name, aliases, relation, relation_note, via_client,
+                  owner, note, portal_token, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(newId, name, b.aliases || null, b.relation, b.blocked_reason || null,
+               b.via_client || null, b.owner || null, b.note || null, token, now, now).run();
+        return json(request, { ok: true, id: newId });
       }
 
       // ── 反向開發的入口：顧問說「我要開發做這種缺的客戶」──
@@ -6670,8 +7134,12 @@ export default {
         const { results } = await env.DB.prepare(
           // 漏斗數字一起帶出來。只看應徵數會誤判——20 個應徵但 0 個送到客戶，
           // 跟 3 個應徵送出 2 個，是完全不同的狀況，而後者才是好職缺。
+          // 2026-08-25 加 cc.display_name：兩個不同客戶的職缺標題可能撞名
+          // （例如宏昌跟律準都開「BIM 工程師」），只看標題分不出是哪家，
+          // 一定要把客戶名稱一起帶出來顯示。
           `SELECT j.slug, j.title, j.service_line, j.client_relation, j.seniority,
                   j.client_named, j.ai_disclosure, j.client_code, j.status, j.interview_language, j.onboarding_prep_note,
+                  cc.display_name AS company_display_name,
                   -- ① 應徵：填完申請表送出的人（不含重複投遞被標記取代的）
                   (SELECT COUNT(*) FROM applications a
                     WHERE a.job_slug = j.slug AND a.superseded_by IS NULL) AS applicants,
@@ -6688,14 +7156,21 @@ export default {
                             ORDER BY r.created_at DESC LIMIT 1) IS NULL) AS screening,
                   -- ③ 客戶面談：從顧問把履歷送給客戶那一刻起算，
                   --    客戶不論面試幾關都算在這一關，直到錄取才離開。
+                  -- ⚠️ 2026-08-26 補齊字彙：placements.stage 歷來由三套工具寫入，
+                  --    用的詞不一樣（placement_tracker.py 寫 AWAITING_CLIENT_FEEDBACK／
+                  --    INTERVIEW_COMPLETED／REJECTED_BY_CLIENT／WITHDRAWN_BY_CANDIDATE／
+                  --    CLOSED，Telegram 回報流程寫 SUBMITTED／OFFER_ACCEPTED…）。
+                  --    這裡原本只認 4 個詞，實測 12 筆送件有 8 筆落在任何一欄之外——
+                  --    張博州、呂皓宇等客戶回覆已經 22 天，漏斗上完全看不到。
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
                     WHERE p.job_slug = j.slug
-                      AND UPPER(p.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW')
+                      AND UPPER(p.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW',
+                                             'AWAITING_CLIENT_FEEDBACK','INTERVIEW_COMPLETED')
                       AND p.onboard_date IS NULL) AS client_stage,
                   -- ④ 錄取：客戶決定要了、還沒到職（談offer、辦離職、等報到都在這）
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
                     WHERE p.job_slug = j.slug
-                      AND UPPER(p.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED')
+                      AND UPPER(p.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED','PLACED')
                       AND p.onboard_date IS NULL) AS offered,
                   -- ⑤ 到職：真的上工了。這一關才算成案。
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
@@ -6703,9 +7178,15 @@ export default {
                   -- ⑥ 結案：送出去之後客戶不要或人選拒絕，案子停在這裡不會再動。
                   --    2026-08-12 加：在這之前 CLOSED_LOST 的人不落在任何一關，
                   --    畫面上就是憑空消失——顧問完全看不出「送了多少、掉了多少」。
+                  --    2026-08-26 補上另外三種結案寫法（不同工具寫的同一件事）。
+                  --    已經到職的不算結案（互斥）——不然同一個人會在兩欄各出現一次，
+                  --    漏斗加總會超過實際送件數。
                   (SELECT COUNT(DISTINCT p.application_id) FROM placements p
-                    WHERE p.job_slug = j.slug AND UPPER(p.stage) = 'CLOSED_LOST') AS closed
+                    WHERE p.job_slug = j.slug
+                      AND UPPER(p.stage) IN ('CLOSED_LOST','CLOSED','REJECTED_BY_CLIENT','WITHDRAWN_BY_CANDIDATE')
+                      AND p.onboard_date IS NULL) AS closed
              FROM jobs j
+             LEFT JOIN client_companies cc ON cc.id = j.company_id
             ORDER BY (j.status = 'closed'), j.service_line, j.slug`
         ).all();
         return json(request, { ok: true, jobs: results || [] });
@@ -6818,13 +7299,15 @@ export default {
                     AND (SELECT r.consultant_decision FROM reports r WHERE r.application_id = a.id
                           ORDER BY r.created_at DESC LIMIT 1) IS NULL`;
         } else if (stage === 'client_stage' || stage === 'offered' || stage === 'onboard' || stage === 'closed') {
+          // ⚠️ 這幾組字彙必須跟上面 /admin/jobs 漏斗計數用的完全一致——
+          // 不一致的話會出現「漏斗顯示 3 人、點進去只看到 1 人」這種對不起來的狀況。
           const st = stage === 'onboard'
             ? `p2.onboard_date IS NOT NULL`
             : (stage === 'offered'
-                ? `UPPER(p2.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED') AND p2.onboard_date IS NULL`
+                ? `UPPER(p2.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED','PLACED') AND p2.onboard_date IS NULL`
                 : (stage === 'closed'
-                    ? `UPPER(p2.stage) = 'CLOSED_LOST'`
-                    : `UPPER(p2.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW') AND p2.onboard_date IS NULL`));
+                    ? `UPPER(p2.stage) IN ('CLOSED_LOST','CLOSED','REJECTED_BY_CLIENT','WITHDRAWN_BY_CANDIDATE')`
+                    : `UPPER(p2.stage) IN ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW','AWAITING_CLIENT_FEEDBACK','INTERVIEW_COMPLETED') AND p2.onboard_date IS NULL`));
           where = ` AND EXISTS (SELECT 1 FROM placements p2
                                  WHERE p2.application_id = a.id AND ${st})`;
         }
@@ -6894,18 +7377,27 @@ export default {
         }
         // 2026-08-17 加：動態開關職缺——找到人了先關掉，不影響已經在談的人
         // （只擋「新」應徵，/apply 那邊會擋），隨時可以再打開，不用改網站檔案。
+        // 2026-08-25 改用 setJobOpenState() 共用函式（跟客戶 portal 的「結束招募／
+        // 重新招募」共用），順便記 closed_by='consultant'，讓客戶 portal 那邊能判斷
+        // 「這個職缺是顧問自己關的，不能自己重開」。
+        let statusChanged = false;
         if (b.status !== undefined) {
           if (!['open', 'closed'].includes(b.status)) {
             return json(request, { ok: false, error: '狀態只能是 open 或 closed' }, 400);
           }
-          sets.push('status = ?'); bind.push(b.status);
+          statusChanged = true;
         }
-        if (!sets.length) return json(request, { ok: false, error: '沒有要更新的欄位' }, 400);
+        if (!sets.length && !statusChanged) return json(request, { ok: false, error: '沒有要更新的欄位' }, 400);
 
-        await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`)
-          .bind(...bind, slug).run();
+        if (sets.length) {
+          await env.DB.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE slug = ?`)
+            .bind(...bind, slug).run();
+        }
+        if (statusChanged) {
+          await setJobOpenState(env, { slug, status: b.status, by: 'consultant', reason: null });
+        }
         const row = await env.DB.prepare(
-          `SELECT slug, service_line, client_relation, seniority, client_named, ai_disclosure, client_code, interview_language, onboarding_prep_note, status
+          `SELECT slug, service_line, client_relation, seniority, client_named, ai_disclosure, client_code, interview_language, onboarding_prep_note, status, closed_by, closed_reason
              FROM jobs WHERE slug = ?`).bind(slug).first();
         if (!row) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
         return json(request, { ok: true, job: row });
@@ -7123,7 +7615,10 @@ export default {
         const st = url.searchParams.get('status') || 'new';
         const q = (url.searchParams.get('q') || '').trim().slice(0, 60);
         const cat = (url.searchParams.get('cat') || '').trim().slice(0, 20);
-        const src = (url.searchParams.get('source') || '').trim().slice(0, 20);
+        // 2026-08-26 修：原本截 20 字元，來源字串一長（例如
+        // talent-intelligence-sourcing-v15-manual，40字）就被砍斷，
+        // 跟資料庫存的完整值比對永遠不相等，篩選結果永遠是 0 筆。
+        const src = (url.searchParams.get('source') || '').trim().slice(0, 80);
         const has = (url.searchParams.get('has') || '').trim();   // email / linkedin / github
         const page = Math.max(0, parseInt(url.searchParams.get('page') || '0', 10) || 0);
         const SIZE = 60;
@@ -7146,7 +7641,8 @@ export default {
         const { results } = await env.DB.prepare(
           `SELECT id, created_at, source, source_url, name, headline, company, location,
                   email, github_url, linkedin_url, skills, job_slug, status, category, cat_src,
-                  contacted_at, converted_application_id, note, reject_reason
+                  contacted_at, converted_application_id, note, reject_reason, owner,
+                  (SELECT display_name FROM consultants c WHERE c.id = sourced_candidates.owner) AS owner_name
              FROM sourced_candidates
             WHERE ${W}
             ORDER BY (COALESCE(email,'') <> '') DESC, (COALESCE(headline,'') <> '') DESC,
@@ -7191,6 +7687,181 @@ export default {
             WHERE id=?`
         ).bind(b.status, b.status, b.note ? String(b.note).slice(0, 500) : null,
                b.status, b.status === 'rejected' ? String(b.reason) : null, b.id).run();
+        return json(request, { ok: true });
+      }
+
+      // ── 顧問名單 ──
+      // 2026-08-26 加。在這之前「誰負責這個人選」是散在各表的自由文字
+      //（同一個人被寫成 '同事'、'behe10'、'Phoebe' 三種），統計不起來、
+      // 也沒辦法做「每個顧問看自己的表」。收斂成一張表當唯一名單來源，
+      // applications.owner / placements.owner / sourced_candidates.owner
+      // 一律存 consultants.id。
+      if (p === '/admin/consultants' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT id, display_name, is_active, note FROM consultants
+            ORDER BY is_active DESC, display_name ASC`).all();
+        return json(request, { ok: true, consultants: results || [] });
+      }
+
+      if (p === '/admin/consultants' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const name = String(b.display_name || '').trim().slice(0, 40);
+        if (!name) return json(request, { ok: false, error: '請填顧問名字' }, 400);
+        const now = nowTaipei();
+        if (b.id) {
+          // 既有顧問：只改名字跟啟用狀態。不提供刪除——顧問離職後他手上
+          // 的人選歷史還是要查得到，砍掉會讓那些紀錄變成 owner 指向空值。
+          await env.DB.prepare(
+            `UPDATE consultants SET display_name=?, is_active=?, note=?, updated_at=? WHERE id=?`
+          ).bind(name, b.is_active === 0 ? 0 : 1, b.note ? String(b.note).slice(0, 200) : null,
+                 now, String(b.id)).run();
+          return json(request, { ok: true, id: String(b.id) });
+        }
+        // 新顧問：id 用名字轉小寫英數，撞名就加序號
+        let base = name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'c';
+        let id = base, n = 1;
+        while (await env.DB.prepare(`SELECT 1 FROM consultants WHERE id=?`).bind(id).first()) {
+          id = base + (++n);
+        }
+        await env.DB.prepare(
+          `INSERT INTO consultants (id, display_name, is_active, note, created_at, updated_at)
+           VALUES (?,?,1,?,?,?)`
+        ).bind(id, name, b.note ? String(b.note).slice(0, 200) : null, now, now).run();
+        return json(request, { ok: true, id });
+      }
+
+      // ── 顧問自己的 pipeline ──
+      // 「每個顧問一張自己的表」。一列＝一件手上還沒收尾的事，
+      // 不是一個人選——同一個人選同時被推去兩家客戶，就是兩件事。
+      //
+      // 分頁不照資料表切（sourced/applications/placements 是實作細節），
+      // 照「現在球在誰手上」切，因為顧問早上打開這頁只想知道
+      // 「哪幾件是在等我動，哪幾件是我在等別人」。
+      if (p === '/admin/pipeline' && request.method === 'GET') {
+        const owner = (url.searchParams.get('owner') || '').trim();
+        // 'all' = 不過濾；'unassigned' = 還沒指派負責人的（人才池大宗都在這，
+        // 分出來才看得出「有多少存貨根本沒人在管」）；其他 = 該顧問自己的。
+        const isUn = owner === 'unassigned';
+        const isFiltered = !!owner && owner !== 'all';
+        const ownerSql = isUn ? ` AND owner IS NULL` : (isFiltered ? ` AND owner = ?` : '');
+        const bind = (isFiltered && !isUn) ? [owner] : [];
+
+        // ① 要我接觸：找到人了、還沒發出第一封信
+        const toContact = (await env.DB.prepare(
+          `SELECT id, name, headline, company, job_slug, grade, score, email,
+                  created_at AS since, status, owner, source
+             FROM sourced_candidates
+            WHERE status IN ('new','shortlisted')${ownerSql}
+            ORDER BY COALESCE(score,0) DESC, created_at ASC LIMIT 200`
+        ).bind(...bind).all()).results || [];
+
+        // ② 等對方回：信發出去了，人還沒回
+        const waiting = (await env.DB.prepare(
+          `SELECT id, name, headline, company, job_slug, grade, email,
+                  COALESCE(contacted_at, created_at) AS since, status, owner, source
+             FROM sourced_candidates
+            WHERE status = 'contacted'${ownerSql}
+            ORDER BY since ASC LIMIT 200`
+        ).bind(...bind).all()).results || [];
+
+        // ③ 等我看報告：談完了，顧問還沒決定推不推
+        // ⚠️ 排除掉已經在等人選回覆的（PENDING_CANDIDATE）——那些球在人選身上，
+        // 不是在顧問身上，混進這一關會讓「今天該我動的有幾件」灌水。
+        const toReview = (await env.DB.prepare(
+          `SELECT a.id, a.name, a.job_slug, a.job_title, a.email, a.phone, a.owner,
+                  COALESCE(a.interview_ended_at, a.created_at) AS since
+             FROM applications a
+            WHERE a.interview_state IN ('done','paused')
+              AND (SELECT r.consultant_decision FROM reports r
+                    WHERE r.application_id = a.id
+                    ORDER BY r.created_at DESC LIMIT 1) IS NULL
+              AND NOT EXISTS (SELECT 1 FROM placements p3
+                               WHERE p3.application_id = a.id
+                                 AND UPPER(p3.stage) = 'PENDING_CANDIDATE')
+              ${isUn ? ' AND a.owner IS NULL' : (isFiltered ? ' AND a.owner = ?' : '')}
+            ORDER BY since ASC LIMIT 200`
+        ).bind(...bind).all()).results || [];
+
+        // ④ 客戶手上 ⑤ 快成交：都從 placements 來，差在階段
+        // 字彙沿用上面漏斗那套（三套工具寫入、詞不統一，這裡必須全認）
+        const CLIENT_ST = `('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW','AWAITING_CLIENT_FEEDBACK','INTERVIEW_COMPLETED')`;
+        const OFFER_ST = `('OFFER','OFFER_ACCEPTED','HIRED','PLACED','OFFER_PENDING','ONBOARDING')`;
+        const pl = async (stSql) => (await env.DB.prepare(
+          `SELECT p.id, p.application_id, p.candidate_name AS name, p.job_slug, p.job_title,
+                  p.client_name, p.client_company, p.stage, p.owner,
+                  COALESCE(p.stage_since, p.created_at) AS since,
+                  p.next_followup, p.onboard_date, a.email, a.phone
+             FROM placements p
+             LEFT JOIN applications a ON a.id = p.application_id
+            WHERE ${stSql}${isUn ? ' AND p.owner IS NULL' : (isFiltered ? ' AND p.owner = ?' : '')}
+            ORDER BY since ASC LIMIT 200`
+        ).bind(...bind).all()).results || [];
+
+        // ② 續：等對方回還有另一種——已經談完初篩、顧問也接觸了，
+        // 但人選遲遲沒回覆條件。這種人以前只能被標成「婉拒／退出」才收得起來，
+        // 結果就是明明只是沒回訊息的人被當成拒絕，整個從待辦裡消失
+        //（林均緯就是這樣消失了 14 天）。PENDING_CANDIDATE 就是給這種狀況用的。
+        const waitingPl = await pl(`UPPER(p.stage) = 'PENDING_CANDIDATE'`);
+
+        const clientSide = await pl(`UPPER(p.stage) IN ${CLIENT_ST} AND p.onboard_date IS NULL`);
+        const closing = await pl(`(UPPER(p.stage) IN ${OFFER_ST} OR p.onboard_date IS NOT NULL)
+                                  AND UPPER(p.stage) NOT IN ('CLOSED_LOST','CLOSED','REJECTED_BY_CLIENT','WITHDRAWN_BY_CANDIDATE')`);
+
+        // 停滯天數的紅線。這幾個數字不是猜的，是照實際資料抓出來的：
+        // 目前最久的兩筆（張博州、呂皓宇）在客戶端卡了 22 天沒人動，
+        // 所以客戶端 14 天就該亮燈；主動開發沒回信 7 天就該補一封或放掉；
+        // 報告放著沒看超過 3 天，人選通常已經接受別家面試了。
+        const STALE = { to_contact: 5, waiting_reply: 7, to_review: 3, client_side: 14, closing: 10 };
+        const today = new Date(Date.now() + 8 * 3600 * 1000);
+        const ageOf = (s) => {
+          if (!s) return null;
+          const d = new Date(String(s).replace(' ', 'T') + (String(s).length <= 10 ? 'T00:00:00' : ''));
+          if (isNaN(d)) return null;
+          return Math.floor((today - d) / 86400000);
+        };
+        const deco = (rows, key) => rows.map((r) => {
+          const age = ageOf(r.since);
+          return { ...r, age_days: age, stale: age !== null && age >= STALE[key] };
+        });
+
+        // ⑥ 已收尾：成交或結案的。放進來是因為顧問手上沒有進行中案子時
+        // 這張表會整片空白，看起來像系統壞掉；而且要回頭查「上個月那個人
+        // 後來怎麼了」也只有這裡查得到。不列入停滯計算。
+        const doneRows = await pl(`(UPPER(p.stage) IN ('CLOSED_LOST','CLOSED','REJECTED_BY_CLIENT','WITHDRAWN_BY_CANDIDATE')
+                                    OR p.onboard_date IS NOT NULL)`);
+
+        const tabs = {
+          to_contact: deco(toContact, 'to_contact'),
+          waiting_reply: deco(waiting.concat(waitingPl), 'waiting_reply'),
+          to_review: deco(toReview, 'to_review'),
+          client_side: deco(clientSide, 'client_side'),
+          closing: deco(closing, 'closing'),
+          done: doneRows.map((r) => ({ ...r, age_days: ageOf(r.since), stale: false })),
+        };
+        const counts = {}, stale = {};
+        for (const k of Object.keys(tabs)) {
+          counts[k] = tabs[k].length;
+          stale[k] = tabs[k].filter((r) => r.stale).length;
+        }
+        return json(request, { ok: true, owner: owner || 'all', tabs, counts, stale, thresholds: STALE });
+      }
+
+      // ── 指定負責顧問 ──
+      // 一支端點吃三張表，因為顧問在畫面上不會分「這是 sourced 還是 placement」，
+      // 他只是在某一列上選一個人名。
+      if (p === '/admin/set-owner' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const TB = { sourced: 'sourced_candidates', application: 'applications', placement: 'placements' };
+        const tb = TB[String(b.kind || '')];
+        if (!tb || !b.id) return json(request, { ok: false, error: '參數錯誤' }, 400);
+        const ow = b.owner ? String(b.owner) : null;
+        if (ow) {
+          const c = await env.DB.prepare(`SELECT 1 FROM consultants WHERE id=? AND is_active=1`).bind(ow).first();
+          if (!c) return json(request, { ok: false, error: '找不到這位顧問（或已停用）' }, 400);
+        }
+        await env.DB.prepare(`UPDATE ${tb} SET owner=? WHERE id=?`).bind(ow, String(b.id)).run();
         return json(request, { ok: true });
       }
 
@@ -7416,11 +8087,13 @@ export default {
           ? `https://step1ne.com/interview/?t=${app.chat_token}`
           : null;
         delete app.chat_token;
+        let sessRoundLabels = {};
+        try { sessRoundLabels = JSON.parse(app.client_interview_labels || '{}'); } catch { sessRoundLabels = {}; }
         return json(request, { ok: true, application: app, interview_url: interviewUrl,
                                transcript: results || [], report: rep || null,
                                flags: flags.results || [], feedback: fb || null,
                                appointments: appts || [], placement: placement || null,
-                               stage: resolveStage(app, rep, appts || [], placement) });
+                               stage: resolveStage(app, rep, appts || [], placement, sessRoundLabels) });
       }
 
       if (p === '/admin/reports') {
@@ -7491,7 +8164,8 @@ export default {
                   a.expected_salary, a.available_date, a.location_ok, a.note,
                   a.utm_source, a.utm_medium, a.utm_campaign, a.referrer,
                   a.interview_started_at, a.interview_ended_at, a.resume_file_id, a.resume_url,
-                  a.manual_stage, a.manual_stage_note, a.manual_stage_by, a.manual_stage_at
+                  a.manual_stage, a.manual_stage_note, a.manual_stage_by, a.manual_stage_at,
+                  a.client_interview_labels
              FROM reports r JOIN applications a ON a.id = r.application_id
             WHERE r.id = ?`
         ).bind(rid).first();
@@ -7514,8 +8188,10 @@ export default {
              FROM placements WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
         ).bind(r.application_id).first();
 
+        let repRoundLabels = {};
+        try { repRoundLabels = JSON.parse(r.client_interview_labels || '{}'); } catch { repRoundLabels = {}; }
         return json(request, { ok: true, report: r, transcript: results || [], appointments: appts || [], placement: placement || null,
-                               stage: resolveStage(r, r, appts || [], placement) });
+                               stage: resolveStage(r, r, appts || [], placement, repRoundLabels) });
       }
 
       // 顧問處置回寫。這一步是整套流程會不會變準的關鍵——
@@ -7546,7 +8222,7 @@ export default {
             placement_id = dup.id;
           } else {
             const app = await env.DB.prepare(
-              `SELECT a.name, a.job_slug, a.job_title, j.client_name
+              `SELECT a.name, a.job_slug, a.job_title, j.client_name, j.company_id
                  FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug
                 WHERE a.id = ?1`
             ).bind(b.app_id).first();
@@ -7564,10 +8240,90 @@ export default {
                      b.by || null, b.note || null).run();
               placement_id = r.meta?.last_row_id ?? null;
             }
+            // 2026-08-25 加：「轉給客戶」預設推薦給這個人選原本應徵的那家客戶——
+            // 一個人選其實可以被推薦給好幾家客戶（同一份人才被拿去 pitch 多家
+            // 相似職缺是正常的獵頭作法），單靠 job.company_id 隱含只認得「原本
+            // 應徵的那家」，client portal 端無從得知「還有沒有其他客戶也收到」。
+            // 這裡把「轉給客戶」的預設對象明確寫進 candidate_forwards，之後要
+            // 追加推薦給其他客戶就呼叫 /admin/forward-candidate，不會互相蓋掉
+            // （UNIQUE(application_id, company_id)，同一家公司按第二次不會重複）。
+            if (app && app.company_id) {
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+              ).bind(uid(), b.app_id, app.company_id, b.by || null, now, b.note || null).run();
+            }
           }
         }
         if (b.app_id) await notifyLineProgress(env, b.app_id);
         return json(request, { ok: true, decided_at: now, placement_id });
+      }
+
+      // 2026-08-25 加：把同一個人選「追加推薦」給另一家客戶（不是原本應徵的那家）——
+      // 一個人選可以同時被推薦給好幾家客戶，這裡才是明確記錄「推薦給哪家」的地方，
+      // 不是只能靠 job.company_id 猜。要求 report 已經是 forwarded（品質先過關才能
+      // 拿去 pitch 其他客戶，不能跳過審核直接推）。
+      if (p === '/admin/forward-candidate' && request.method === 'POST') {
+        const b = await request.json().catch(() => ({}));
+        if (!b.application_id || !b.company_id) {
+          return json(request, { ok: false, error: '缺 application_id 或 company_id' }, 400);
+        }
+        const report = await env.DB.prepare(
+          `SELECT consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+        ).bind(b.application_id).first();
+        if (!report || report.consultant_decision !== 'forwarded') {
+          return json(request, { ok: false, error: '這位人選還沒有通過「轉給客戶」的審核，不能推薦給其他客戶' }, 400);
+        }
+        const company = await env.DB.prepare(`SELECT id, display_name FROM client_companies WHERE id = ?`)
+          .bind(b.company_id).first();
+        if (!company) return json(request, { ok: false, error: '找不到這家客戶' }, 404);
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(uid(), b.application_id, b.company_id, b.by || null, now, b.note || null).run();
+        return json(request, { ok: true, company: company.display_name, forwarded_at: now });
+      }
+
+      // 這位人選目前被明確推薦給了哪些客戶——顧問後台用來顯示「已推薦給：A公司、B公司」，
+      // 不用再靠猜。
+      if (p.startsWith('/admin/candidate-forwards/') && request.method === 'GET') {
+        const appId = decodeURIComponent(p.slice('/admin/candidate-forwards/'.length));
+        const { results } = await env.DB.prepare(
+          `SELECT cf.company_id, cc.display_name, cf.forwarded_at,
+                  cf.manual_stage, cf.client_interview_labels
+             FROM candidate_forwards cf JOIN client_companies cc ON cc.id = cf.company_id
+            WHERE cf.application_id = ? ORDER BY cf.forwarded_at DESC`
+        ).bind(appId).all();
+        // 2026-08-26 加：每一家客戶的面試進度是各自獨立的，這裡把每家目前
+        // 走到哪一關一起帶回去，顧問後台的人選卡片才能一眼看到
+        // 「律准：第二階段／宏昌：錄取」，不用一家一家點進去查。
+        const app = await env.DB.prepare(
+          `SELECT id, interview_started_at, interview_ended_at FROM applications WHERE id = ?`
+        ).bind(appId).first();
+        const report = await env.DB.prepare(
+          `SELECT consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+        ).bind(appId).first();
+        const { results: appts } = await env.DB.prepare(
+          `SELECT stage, status, confirmed_slot FROM interview_appointments
+            WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
+        ).bind(appId).all();
+        const forwards = (results || []).map((f) => {
+          let labels = {};
+          try { labels = JSON.parse(f.client_interview_labels || '{}'); } catch { labels = {}; }
+          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels);
+          return {
+            ...f,
+            stage_key: info.effective_key,
+            stage_label: info.effective_key
+              ? (info.steps.find((s) => s.key === info.effective_key) || {}).lb
+              : '尚未安排面試',
+            // 完整的 steps 讓顧問後台能一家畫一條進度條，不是只有一行文字
+            steps: info.steps,
+            manual_active: info.manual_active,
+          };
+        });
+        return json(request, { ok: true, forwards });
       }
 
       // 2026-08-13 加：顧問手動指定候選人目前卡在哪一關（跟自動判斷並存）。
@@ -7725,15 +8481,13 @@ export default {
         if (stage && !(stage in STAGE_INDEX)) {
           return json(request, { ok: false, error: '不合法的階段代碼' }, 400);
         }
-        const now = nowTaipei();
-        await env.DB.prepare(
-          `UPDATE applications SET manual_stage=?, manual_stage_note=?, manual_stage_by=?, manual_stage_at=? WHERE id=?`
-        ).bind(stage, stage ? (b.note || null) : null, stage ? (b.by || null) : null,
-               stage ? now : null, b.application_id).run();
-        // 手動指定可能讓候選人的進度往前跳（例如提前標成錄取），跟其他會改變進度的
-        // 動作（decide-report／mark-offer）一樣，順手推播更新，不用等自動資料追上才通知。
-        await notifyLineProgress(env, b.application_id);
-        return json(request, { ok: true, manual_stage: stage, manual_stage_at: stage ? now : null });
+        // 2026-08-26 加 company_id：顧問在某一家客戶的進度條上調整時，只動那一家；
+        // 不帶就是動「整體進度」（人選還沒推給任何人的階段，例如阿財初審/顧問確認）。
+        const result = await applyManualStage(env, {
+          application_id: b.application_id, stage, note: b.note, by: b.by,
+          company_id: b.company_id || null,
+        });
+        return json(request, { ok: true, ...result });
       }
 
       if (p === '/admin/decide' && request.method === 'POST') {

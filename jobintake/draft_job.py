@@ -679,14 +679,31 @@ def main():
         for r in rows:
             it = load_intake_d1(r['id'])
             D.d1(f"UPDATE job_intakes SET status='drafting' WHERE id={D.q(r['id'])}")
-            process(it, dry=a.dry, rewrite_note=it.get('rewrite_note'))
+            try:
+                process(it, dry=a.dry, rewrite_note=it.get('rewrite_note'))
+            except Exception as e:
+                # 2026-08-26 修：process() 炸掉（例如 claude -p 逾時，2026-08-19
+                # 撞過一次）之前，狀態已經先設成 drafting——但 tick.py 的排程
+                # 只認得 new/rewrite/approved 這三種狀態，drafting 不在裡面，
+                # 一旦這裡沒接住例外，這筆就會卡死在 drafting，7 天都不會再被
+                # 撿起來重試（撞過的真實案例：8/19 之後整條排程看起來像沒在跑，
+                # 其實是這一筆卡住讓人誤以為排程壞了）。退回原本狀態，下一輪
+                # tick 才會重新撿到。
+                log(f'❌ {r["id"]} 擬稿失敗，退回原狀態重試：{e}')
+                D.d1(f"UPDATE job_intakes SET status={D.q(it['status'])} WHERE id={D.q(r['id'])}")
         return
 
     if not a.intake:
         sys.exit('要給 --intake、--local 或 --all')
     it = load_intake_d1(a.intake)
+    orig_status = it['status']
     D.d1(f"UPDATE job_intakes SET status='drafting' WHERE id={D.q(a.intake)}")
-    process(it, dry=a.dry, rewrite_note=a.rewrite_note or it.get('rewrite_note'))
+    try:
+        process(it, dry=a.dry, rewrite_note=a.rewrite_note or it.get('rewrite_note'))
+    except Exception as e:
+        log(f'❌ {a.intake} 擬稿失敗，退回原狀態重試：{e}')
+        D.d1(f"UPDATE job_intakes SET status={D.q(orig_status)} WHERE id={D.q(a.intake)}")
+        raise
 
 
 if __name__ == '__main__':

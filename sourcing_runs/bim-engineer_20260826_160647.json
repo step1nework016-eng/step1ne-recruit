@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [
+    {
+      "name": "張瑋巖",
+      "headline": "BIM 機電顧問（機電工程 20 年以上、機電 BIM 10 年以上、BIM 教育訓練講師 8 年以上）",
+      "company": "願景資訊有限公司",
+      "location": "台灣（公開資料未載明確切縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://boards.autodesk.com/aec--webinar",
+      "fit_score": 62,
+      "recruitability_class": "REFERRAL_ONLY",
+      "evidence": "身分錨點四項：公司＝願景資訊有限公司；職稱＝BIM 機電顧問；技能＝機電 BIM／Revit 元件庫與機電樣板（主講「新版 BIM 規範書機電篇增修內容與 2022 版元件庫及機電樣板說明」）；來源＝Autodesk 台灣工程建設 webinar 官方講者頁（2024 年度檔期）。能力面與本職缺的 BIM 建模／整合／圖面檢討高度相關，且機電背景貼近廠房專案。但依 Archetype Lock 判定 MISMATCH：資歷 20 年／10 年 BIM 且為顧問＋講師身分，遠超 entry、無經驗可、月薪 40,833–50,167、需先赴楊梅受訓 1 週再進苗栗銅鑼全實體到班的職級與薪資帶；Capability Fit 高但 Recruitability Fit 極低，僅能作為 referral 與人脈圖擴張節點，不得列為直接候選人。"
+    },
+    {
+      "name": "張淳茜",
+      "headline": "產品技術專案副理／BIM 工程師，6 年行業經驗，持 Autodesk Revit 與 AutoCAD 國際認證",
+      "company": "聯強國際",
+      "location": "台灣（公開資料未載明確切縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://boards.autodesk.com/aec--webinar/items/bim-awards-%E4%BA%BA%E6%B0%A3%E7%8D%8E--%E6%96%BD%E5%B7%A5%E7%B5%84%E4%BD%B3%E4%BD%9C---%E5%9C%8B%E5%AE%B6%E5%9C%96%E6%9B%B8%E9%A4%A8%E5%8D%97%E9%83%A8%E5%88%86%E9%A4%A8%E6%9A%A8%E5%9C%8B%E5%AE%B6%E8%81%AF%E5%90%88%E5%85%B8%E8%97%8F%E4%B8%AD%E5%BF%83%E6%96%B0%E5%BB%BA%E5%B7%A5%E7%A8%8B%E5%B0%88%E6%A1%88%E6%8A%80%E8%A1%93%E5%88%86%E4%BA%AB",
+      "fit_score": 58,
+      "recruitability_class": "ADJACENT_TARGET",
+      "evidence": "身分錨點四項：公司＝聯強國際；職稱＝產品技術專案副理（自述 BIM 工程師）；技能＝Autodesk Revit／AutoCAD 國際認證，與 JD 指定工具完全一致；日期＝2024/8/20、2024/9/10、2024/10/22 三場 Autodesk 台灣官方 webinar 主講，滿足 HARD GATE 第一條「近期在職證據（公司＋Title＋日期）」。判定 MISMATCH 的原因：一為職級—「副理」屬管理職，違反 Archetype Lock 鎖定的 Junior/Mid 個人貢獻者；二為工作型態—其為軟體經銷／產品技術顧問路線，非專案端 BIM 建模與圖面檢討的實作 IC；三為可招募性—6 年年資對應 entry 薪資帶與苗栗銅鑼全實體到班、無宿舍僅 5,000 元租屋補助的條件不具現實接受度。"
+    },
+    {
+      "name": "王德琳",
+      "headline": "建築部資深工程師／專案工程師，參與 BIM 與大數據環控模型專案",
+      "company": "台灣世曦工程顧問股份有限公司",
+      "location": "台灣（公開資料未載明確切縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.ibtmag.com.tw/new_article.asp?ar_id=24807",
+      "fit_score": 55,
+      "recruitability_class": "REFERRAL_ONLY",
+      "evidence": "身分錨點三項：公司＝台灣世曦工程顧問；部門＋職稱＝建築部資深工程師／專案工程師；專案＝iBT 數位建築雜誌報導之「以 BIM 創造新市場、用大數據打造最佳環控模型」。職級屬個人貢獻者（工程師而非主管），能力方向與 BIM 模型建置、整合與圖面檢討相符。判定 MISMATCH 的關鍵在 HARD GATE 第一條：可取得的公開職涯證據年份為 2022 年，未查得 2024–2026 現職或近期專案，屬「舊報導不等於現職」；且「資深工程師」層級與本職缺 0 年資、無經驗可、40,833–50,167 元月薪的職級／薪資帶明顯錯配。"
+    },
+    {
+      "name": "吳東融",
+      "headline": "技術整合部副理，具 10 年 Autodesk 相關經驗，主講 Autodesk 二次開發打造標準化 BIM 專案工作流程",
+      "company": "衛武資訊股份有限公司",
+      "location": "台灣（公開資料未載明確切縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://boards.autodesk.com/aec--webinar",
+      "fit_score": 45,
+      "recruitability_class": "REFERRAL_ONLY",
+      "evidence": "身分錨點三項：公司＝衛武資訊股份有限公司；職稱＝技術整合部副理；技能／主題＝Autodesk 二次開發與 BIM 專案工作流程標準化，來源為 Autodesk 台灣官方 webinar 講者頁（2024 年度檔期）。判定 MISMATCH：職稱為「副理」管理職，直接違反 Archetype Lock 第 3 條「排除教授、負責人、經理、主管」；且其專長偏 API／二次開發與流程建置，非本職缺所要求的 BIM 模型建置、模型修正與圖面檢討的實作型繪圖作業。可作為其公司 BIM 團隊初階建模人員的轉介節點。"
+    },
+    {
+      "name": "柳儒錚",
+      "headline": "公開履歷顯示曾任大地／BIM 工程師，後轉專案經理、產品經理；最近一段任職於 2023/02 結束",
+      "company": "SGS 台灣檢驗科技股份有限公司（2022/05–2023/02，最近一段可查任職）",
+      "location": "台灣（公開資料未載明確切縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://www.cake.me/resumes/ruzheng-liu",
+      "fit_score": 35,
+      "recruitability_class": "LONG_TERM_POOL",
+      "evidence": "身分錨點四項：公司序列＝林同棪工程顧問（大地／BIM 工程師，2011/12–2015/02）→ 台大土木工程資訊模擬與管理研究中心（專案經理，2015/03–2021/06）→ SGS（產品經理，2022/05–2023/02）；技能＝Revit、Tekla、Navisworks 與「BIM 理論、導入與應用」；學歷＝陽明交大土木碩士。判定 MISMATCH 有兩個獨立原因：(1) HARD GATE 第一條不通過—公開履歷最後一段任職結束於 2023/02，查無 2024–2026 現職或近期專案；(2) 職涯軌跡已離開 BIM 實作端轉往專案／產品管理，且職級與學歷對應薪資遠高於本職缺帶，屬「能力曾符合但已不可招募」。列 LONG_TERM_POOL 僅供日後 BIM 主管職缺回訪。"
+    }
+  ],
+  "run_summary": "本輪先完成 Talent DNA 與 Archetype Lock（正向：2024–2026 在職 Junior/Mid BIM 建模／繪圖個人貢獻者，證據須為公司＋Title＋日期或 2024–2026 近期專案；排除：教授、負責人、經理、副理以上主管、在學生、純競賽／實習名冊、已離開 BIM 的轉職者），Job Strategy Router 判定 Primary=ENG_CONSTRUCTION、Secondary=無（未出現 30% 以上 API／Dynamo 證據，故不加掛 SOFTWARE_DATA）、SENIORITY=entry、EMPLOYMENT_MODE=permanent+onsite、EVIDENCE_MODE=role+project、OVERLAYS=SHIFT_OR_ATTENDANCE／CONFIDENTIAL_ROLE／SCARCE_HIGH_TOUCH。依歷史校準紀錄重排來源優先序後，本輪實際跑過六類非招募來源：(1) 專案／獎項公告—Autodesk 台灣 BIM Awards 入選名單 PDF（只到公司層級，取得 泛亞工程 BIM 中心、益鼎工程、宏昇營造、瑞助營造、金永營造、清庭整合科技、點構土木結構技師事務所 等目標公司，無人名）；(2) 公司 BIM 中心／團隊頁—台賓科技、精兵科技 elite-bim（/members 回 404）、若水 BIM、頂尖國際工程顧問，皆未公開具名工程師；(3) Autodesk 活動與客戶案例—boards.autodesk.com 官方講者頁，取得 4 位具名在職者（本輪主要人名來源）；(4) 技術期刊／論文—土木水利 52(4) 2025、中興工程技術通訊、中華技術，命中作者為總經理層級；(5) 課程／證照結訓—台灣 BIM 聯盟認證、聯成電腦機電 BIM 繪圖產學班，結訓名單未公開；(6) 公開履歷／公開 Profile（輔助）—Cake 公開履歷 1 筆、LinkedIn 公開搜尋摘要。共取得 9 位具名線索，去重後保留 5 位證據最完整者作為校準樣本。判定結果 0/5 MATCH，故標記 ROUTE_CALIBRATION_FAILED，不得進入 30 人擴張與 Contact 深查。本輪已成功避開上一輪（20260826_154405）的 false-positive 型態：5 位樣本全數具備公司與職稱錨點，無任何一位來自 CICHE 學生 BIM 競賽名單或純學生名冊；搜尋中出現的「2024 學生 BIM 軟體應用競賽」與台灣 BIM 聯盟 2023 成果影片頁已依 LOCKED 規則主動排除，未寫入樣本。但本輪暴露出一個新的 false-positive 家族，必須寫入下一輪的排除規則：『Autodesk 生態圈講者池』—Autodesk 官方 webinar／經銷商／BIM 顧問公司的講者頁雖然 100% 滿足「公司＋Title＋日期」硬性證據要求，卻系統性地只產出副理以上管理職、軟體經銷技術顧問與 10–20 年資深講師，職級與可招募性全數超出 entry 鎖定值，屬於『證據品質高但職級系統性偏高』的來源，與上一輪『證據品質過低』正好是相反方向的兩種偏移。第二個觀察到的失敗型態是『資歷過時』：Cake 與舊期刊報導可查到 BIM 工程師身分，但最近可查任職分別停在 2023/02 與 2022 年，不符 2024–2026 近期在職要求。診斷訊號比對：本輪 5 人中 0 人取得可驗證的 LinkedIn 個人頁（tw.linkedin.com 個人頁回 HTTP 999，僅能取得搜尋摘要），LinkedIn 命中率 0/5，與歷史 30 人池的 30/30 差距極大；但成因與上一輪不同—上一輪是抓到學生所以本來就沒有在職足跡，本輪是抓到在職者但技術上無法抓取 LinkedIn 頁面，屬 HUMAN_ACTION_REQUIRED 的工具限制，不是人才生態判斷錯誤。技術阻礙一併記錄：LinkedIn 個人頁 HTTP 999、DuckDuckGo 觸發 CAPTCHA（依硬性規則未繞過，直接改道）、Bing HTML 回傳與查詢無關的快取內容、sinotech 技術通訊 PDF 連結 404、pcc.gov.tw BIM 專區為導覽頁未直接列出簡報。另有一位高度符合 Archetype 的線索 林寬（LinkedIn 公開搜尋摘要顯示 headline 為「BIM 工程師」，https://tw.linkedin.com/in/k1lin），因個人頁無法讀取、查無公司與時間線第二錨點，依 Identity Resolution 規則標記 UNVERIFIED，未寫入 candidates。所有 5 位均未執行 Email／電話深查，email 與 phone 全部誠實填 null。下一輪重跑校準的具體改道：把來源優先序第一位從『獎項／活動公告』換成『廠務統包商與建廠專案的初階建模職缺所屬團隊』，鎖定 苗栗銅鑼 P5 廠脈絡下的實際承攬體系（力積電銅鑼廠已於 2026/01 由美光以 18 億美元收購，Micron 台中亦有 Global Facilities BIM Lead/Engineer 編制），並優先挖 帆宣、漢唐集成、亞翔工程、聖暉、洋基工程、Exyte、麗明營造、瑞助營造、泛亞工程 BIM 中心、益鼎工程 等公司的 BIM／VDC 初階建模人員，搭配機電 BIM 繪圖產學班與職訓結訓的在職就業者，並把 Autodesk 講者頁降為僅供 referral 與 graph expansion 使用、不再作為候選人發現來源。"
+}

@@ -1,0 +1,15 @@
+interface:
+  display_name: Talent Intelligence Sourcing
+  short_description: Calibrate and build Email-ready candidate pools
+  default_prompt: Use $talent-intelligence-sourcing to lock the candidate archetype,
+    pass the five-person route calibration, then build or continue a public-source
+    pool, enrich verified contacts, and record every result in the packaged workbook.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

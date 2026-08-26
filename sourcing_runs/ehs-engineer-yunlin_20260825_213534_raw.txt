@@ -1,0 +1,34 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [
+    {
+      "name": "陳河沅",
+      "headline": "工業安全/職業衛生技師",
+      "company": "文元管理顧問有限公司",
+      "location": "台灣（公開頁未標示派駐縣市）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/%E6%B2%B3%E6%B2%85-%E9%99%B3-331728106",
+      "source_url": "https://tw.linkedin.com/in/%E6%B2%B3%E6%B2%85-%E9%99%B3-331728106",
+      "fit_score": 35,
+      "recruitability_class": "REFERRAL_ONLY",
+      "evidence": "身分錨點兩項以上：公開職稱『工業安全/職業衛生技師』＋現職公司『文元管理顧問有限公司』（安衛顧問業）。判定為 MISMATCH：技師級顧問屬 Archetype Lock 的負向類型（顧問／技師／主管級），成熟度與薪資期待明顯高於本職缺 40-50K 的工地派駐中階職安衛人員，且無工地常駐、承攬商管理、工具箱會議等現場執行證據，亦無雲林虎尾／中部派駐可能性證據。僅可作為同業轉介節點（Referral），不得列為直接候選人。"
+    },
+    {
+      "name": "江劭剛",
+      "headline": "中山醫學大學職業安全衛生學系（雙主修醫學資訊），在學期間取得職業安全衛生管理員、廢棄物處理技術員證照",
+      "company": "公開頁未揭露現職雇主",
+      "location": "台中市",
+      "email": null,
+      "phone": null,
+      "linkedin_url": null,
+      "source_url": "https://ioh.tw/talks/%E4%B8%AD%E5%B1%B1%E9%86%AB%E8%81%B7%E5%AE%89%E7%B3%BB-%E6%B1%9F%E5%8A%AD%E5%89%9B-tw-study-csmu-bde",
+      "fit_score": 30,
+      "recruitability_class": "LONG_TERM_POOL",
+      "evidence": "身分錨點兩項以上：學校／科系『中山醫學大學職業安全衛生學系』＋公開證照『職業安全衛生管理員』＋地點『台中』。判定為 MISMATCH：IOH 為求學階段經驗分享（2019 畢業），公開資料無現職雇主、無工地現場執行證據、無 3 年以上實務年資證據，未通過 Qualified Gate 第 1 項（current/recent employability）。與上一輪『太資深』相反、屬『證據過舊且過生澀』的另一種失準，僅能列長期池待重新查證現職。"
+    }
+  ],
+  "run_summary": "已完成 Archetype Lock 與 Job Strategy Router。Route＝ENG_CONSTRUCTION（Secondary：無，機電/廠務證據未達 30% 另生態）；SENIORITY=mid；EMPLOYMENT_MODE=permanent+onsite/派駐；EVIDENCE_MODE=role+project+certification；OVERLAYS=LICENSE_REQUIRED（甲種業務主管/乙級管理員為加分）、SHIFT_OR_ATTENDANCE（桃竹苗/台中/雲林調派、現駐虎尾）、SCARCE_HIGH_TOUCH。正向原型：3-8 年工地常駐職安衛人員（承攬商管理、工具箱會議、入廠許可、巡查），任職系統廠房/機電/營造協力廠商，薪資帶對得上 40-50K；負向原型：大型企業/公部門職安處經理與主管、技師級顧問、學界、得獎名冊人物。依照本輪指示已封鎖得獎/表揚類來源。實際執行來源：(1) 工程施工計畫書與職業安全衛生管理計畫書 PDF（勞動部職安署、台中市勞工局、水利署、台北市建管處、888營建、HVAC 公會）——全部為空白範本，公開上網的版本不含實際安衛人員姓名；(2) 職業安全衛生協議組織會議紀錄 PDF（水保署台南分署、明志/銘傳/龍華、Accton 承攬商入口）——同為表單範本或無法解析出具名出席名冊；(3) 雲林虎尾在地專案（台糖虎尾、中科虎尾園區、雲林產業園區、雲林縣府標案）——只查到招商與土地資訊，無工程團隊具名文件；(4) 同業公司（帆宣、漢唐、聖暉、亞翔）——僅有法人研究與訂單新聞，官網不公開工地層級安衛人員名單；(5) 訓練結訓名冊、乙級技術士榜單、公協會名冊——未公開或不含公司欄位，無法建立第二身分錨點；(6) 職安系所系友頁/IOH——僅得學生階段分享；(7) 輔助路徑：Cake 公開搜尋頁回 403（不得登入繞過，已停止），LinkedIn 公開頁僅撈到顧問/技師級與無關職稱，Threads 上的工安發文者（如 @lo_pei_rong）僅有暱稱、無公司或專案錨點，依規列 UNVERIFIED_SAME_NAME 不寫入候選池。結果：具名且通過『姓名＋兩個一致錨點』的樣本只有 2 位，且 2 位皆判 MISMATCH（1 位技師級顧問過於資深、1 位為在學期分享無現職），MATCH 為 0/5，未達 4/5 門檻，故標記 ROUTE_CALIBRATION_FAILED，不進入批量擴張與 Contact 深查。本輪 false-positive 型態已改變：不再是得獎名單造成的『全部太資深』，而是『規劃來源零產出』——工地層級職安衛人員的姓名幾乎不會出現在可公開索引的網頁，公開上網的施工/安衛計畫書都是去識別化範本。下一輪建議改道：(a) 以標案決標公告反查在雲林虎尾、中科、竹科有在建案的中小型機電/系統廠房承攬商，再逐家查其官網、FB 工程實績貼文與工地開工/工安月會照片說明中的具名人員；(b) 改查職安衛在職教育訓練/雇主聯合訓練的公開成果報告與縣市勞檢處輔導案例中的承商安衛人員；(c) 針對已鎖定的中小型同業公司，改用『公司優先』的離職員工與專案人員路徑；(d) 若三輪仍為零產出，應向顧問回報此職缺屬 HUMAN_ACTION_REQUIRED，需以人脈轉介或平台主動應徵流量為主，而非公開資訊 sourcing。"
+}
