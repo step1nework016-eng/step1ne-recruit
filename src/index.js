@@ -7152,7 +7152,7 @@ export default {
           // 漏斗數字一起帶出來。只看應徵數會誤判——20 個應徵但 0 個送到客戶，
           // 跟 3 個應徵送出 2 個，是完全不同的狀況，而後者才是好職缺。
           // 2026-08-25 加 cc.display_name：兩個不同客戶的職缺標題可能撞名
-          // （例如宏昌跟律準都開「BIM 工程師」），只看標題分不出是哪家，
+          // （例如弘昌跟律準都開「BIM 工程師」），只看標題分不出是哪家，
           // 一定要把客戶名稱一起帶出來顯示。
           `SELECT j.slug, j.title, j.service_line, j.client_relation, j.seniority,
                   j.client_named, j.ai_disclosure, j.client_code, j.status, j.interview_language, j.onboarding_prep_note,
@@ -8133,7 +8133,7 @@ export default {
       if (p === '/admin/outreach/outcome' && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const OK = ['sent', 'replied', 'no_reply', 'declined', 'meeting'];
+        const OK = ['todo', 'sent', 'replied', 'no_reply', 'declined', 'meeting'];
         if (!b.id || !OK.includes(String(b.outcome || ''))) {
           return json(request, { ok: false, error: '參數錯誤', outcomes: OK }, 400);
         }
@@ -8710,7 +8710,7 @@ export default {
         ).bind(appId).all();
         // 2026-08-26 加：每一家客戶的面試進度是各自獨立的，這裡把每家目前
         // 走到哪一關一起帶回去，顧問後台的人選卡片才能一眼看到
-        // 「律准：第二階段／宏昌：錄取」，不用一家一家點進去查。
+        // 「律准：第二階段／弘昌：錄取」，不用一家一家點進去查。
         const app = await env.DB.prepare(
           `SELECT id, interview_started_at, interview_ended_at FROM applications WHERE id = ?`
         ).bind(appId).first();
