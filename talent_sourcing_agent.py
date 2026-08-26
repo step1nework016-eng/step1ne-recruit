@@ -311,6 +311,23 @@ Email-first contact waterfall（照順序，不要跳）：
 5. 個人網站、作品集、GitHub 公開 Profile/README、YouTube About、已驗證社群 Bio
 6. 本人公開的專業電話與已驗證社群帳號
 
+【本輪重點：Username X-ray（waterfall 第 5 步）】
+上面每位都附了已知的 LinkedIn 網址。請把網址尾端的 username 字串抽出來
+（例如 tw.linkedin.com/in/shihwei-ku 的 username 是 shihwei-ku），
+然後拿這個字串本身去查 GitHub、個人網站、作品集、Behance、Medium、
+Notion 公開頁、YouTube、已驗證社群 Bio。獨特的 username 常常跨平台重複使用，
+這條路不需要登入，也不必碰 LinkedIn 本體。
+
+注意：先前那輪是用「姓名＋公司＋職稱」查的，本輪要用 username 這條新路徑，
+不要重複跑等價查詢。username 命中的頁面必須另有第二錨點（公司／學校／專案／
+技能／地點）才可採用，只有字串相同不算，記 UNVERIFIED_SAME_NAME。
+
+【聯絡管道優先序（2026-08-26 Jacky 指定，覆蓋規範原本的順序）】
+Email ＞ 社群連結（個人網站／GitHub／作品集／Cake） ＞ 電話。
+規範原文是 Email＞電話＞社群，本輪社群與電話對調。
+理由：Email 用於自動化聯繫，社群連結可自助查看且能再導出聯絡方式，
+電話屬人工且干擾性最高。
+
 硬性規則（違反等於任務失敗）：
 - 不登入任何帳號、不繞驗證碼或付費牆、不使用外洩資料庫、不用帳號還原機制
 - **絕對不可以猜 Email**：不得用 name@company.com 這類公司格式推導、不得猜 Gmail、

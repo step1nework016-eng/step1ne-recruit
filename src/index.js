@@ -8058,12 +8058,32 @@ export default {
         //    存在 content_json.verdict 裡（值得轉給顧問／資訊不足建議補問／
         //    硬條件不符／待顧問判斷，定義在 interview_daemon.py 的 _VERDICTS）。
         //    用 json_extract 直接拿，不要再假裝 recommend 有資料。
+        // 2026-08-26 加「有進面試／有錄取」兩個里程碑。
+        // ⚠️ 刻意不新開欄位：這兩件事在系統裡已經有唯一真相，就是進度條
+        //（applications.manual_stage ＋ placements.stage，resolveStage() 那一套）。
+        // 另外存一份「顧問在 KPI 頁按過的里程碑」，兩邊一定會分歧——
+        // 客戶在自己的入口回填了面試，這頁卻還顯示沒進面試，那這頁又在量錯東西。
+        // 所以按鈕寫的是同一個 manual_stage，讀的也是同一份資料。
+        const INTV = `('stage1','stage2','stage3','stage4','offer','onboard','care')`;
+        const OFFR = `('offer','onboard','care')`;
+        const PL_INTV = `('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW','AWAITING_CLIENT_FEEDBACK','INTERVIEW_COMPLETED','OFFER','OFFER_ACCEPTED','HIRED','PLACED','OFFER_PENDING','ONBOARDING')`;
+        const PL_OFFR = `('OFFER','OFFER_ACCEPTED','HIRED','PLACED','OFFER_PENDING','ONBOARDING')`;
         const { results } = await env.DB.prepare(
-          `SELECT a.id, a.name, a.job_slug, j.title AS job_title,
+          `SELECT a.id, a.name, a.job_slug, j.title AS job_title, a.manual_stage,
                   r.id AS report_id, r.created_at AS report_at,
                   json_extract(r.content_json, '$.verdict') AS ai_verdict,
                   r.consultant_decision,
-                  CAST((julianday('now','+8 hours') - julianday(r.created_at)) AS INT) AS days
+                  CAST((julianday('now','+8 hours') - julianday(r.created_at)) AS INT) AS days,
+                  (COALESCE(a.manual_stage,'') IN ${INTV}
+                    OR EXISTS (SELECT 1 FROM placements p WHERE p.application_id = a.id
+                                AND (UPPER(p.stage) IN ${PL_INTV} OR p.onboard_date IS NOT NULL))
+                    OR EXISTS (SELECT 1 FROM candidate_forwards cf WHERE cf.application_id = a.id
+                                AND COALESCE(cf.manual_stage,'') IN ${INTV})) AS reached_interview,
+                  (COALESCE(a.manual_stage,'') IN ${OFFR}
+                    OR EXISTS (SELECT 1 FROM placements p WHERE p.application_id = a.id
+                                AND (UPPER(p.stage) IN ${PL_OFFR} OR p.onboard_date IS NOT NULL))
+                    OR EXISTS (SELECT 1 FROM candidate_forwards cf WHERE cf.application_id = a.id
+                                AND COALESCE(cf.manual_stage,'') IN ${OFFR})) AS reached_offer
              FROM applications a
              JOIN reports r ON r.id = (SELECT r2.id FROM reports r2
                                         WHERE r2.application_id = a.id
@@ -8082,9 +8102,18 @@ export default {
         // 實際在講的東西，之前的算法沒有真的比對阿財的判斷，算出來的數字沒有意義。
         const agree = done.filter((x) => x.ai_verdict === '值得轉給顧問' && x.verdict === '會推').length;
         const aiWorthInterview = done.filter((x) => x.ai_verdict === '值得轉給顧問').length;
+        // 「顧問推了」只是第一層。真正證明阿財看對人的是後面兩層：
+        // 客戶願意約面試、客戶真的要。分母都用「阿財說值得轉」的那些，
+        // 一路往下看漏在哪一關，比單一個準確率有用得多。
+        const aiWorth = rows.filter((x) => x.ai_verdict === '值得轉給顧問');
+        const gotInterview = aiWorth.filter((x) => x.reached_interview).length;
+        const gotOffer = aiWorth.filter((x) => x.reached_offer).length;
         return json(request, { ok: true, rows,
           stats: { total: rows.length, done: done.length, pending: rows.length - done.length,
                    agree, aiWorthInterview,
+                   gotInterview, gotOffer,
+                   interviewRate: aiWorthInterview >= 5 ? Math.round((gotInterview / aiWorthInterview) * 100) : null,
+                   offerRate: aiWorthInterview >= 5 ? Math.round((gotOffer / aiWorthInterview) * 100) : null,
                    // 樣本太少就不給百分比——與其給一個看起來很漂亮的數字，
                    // 不如老實說「還不能算」。分母是「阿財說值得面談」的那些，
                    // 不是全部已回填的，這樣才是在問「阿財說可以的，顧問真的推了幾成」。
@@ -8106,6 +8135,41 @@ export default {
         ).bind(decision, now, b.reportId).run();
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這份報告' }, 404);
         return json(request, { ok: true });
+      }
+
+      // 標記里程碑：這個人選有進到面試／有到錄取。
+      // 走的是跟顧問後台進度條、客戶入口、候選人 LINE 完全同一套
+      // applyManualStage()——按了這裡，三個地方會同時往前跳，不會各自一份。
+      if (p === '/admin/kpi/milestone' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const MS = { interview: 'stage1', offer: 'offer' };
+        const stage = MS[String(b.milestone || '')];
+        const appId = String(b.applicationId || '').trim();
+        if (!appId || !stage) return json(request, { ok: false, error: '參數錯誤' }, 400);
+
+        const app = await env.DB.prepare(
+          `SELECT id, manual_stage FROM applications WHERE id = ?`).bind(appId).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+
+        // 取消：把手動指定清掉，讓進度條退回系統自己算出來的位置。
+        // 不是往回設一個更早的階段——那會變成「顧問手動把人往回拖」，
+        // 客戶那邊看到進度倒退會以為出事了。
+        if (b.undo) {
+          await applyManualStage(env, { application_id: appId, stage: null,
+                                        note: null, by: 'consultant:kpi' });
+          return json(request, { ok: true, undone: true });
+        }
+
+        // 已經比這一關更前面了就不要往回設。按「有進面試」的人如果早就錄取了，
+        // 應該維持在錄取，不是被拉回面試。
+        const cur = STAGE_INDEX[app.manual_stage];
+        if (cur !== undefined && cur >= STAGE_INDEX[stage]) {
+          return json(request, { ok: true, skipped: '目前進度已經在這一關之後了' });
+        }
+        await applyManualStage(env, { application_id: appId, stage,
+                                      note: null, by: 'consultant:kpi' });
+        return json(request, { ok: true, stage });
       }
 
       // 不合適的原因統計——給策略調整那支 agent 讀的
