@@ -213,6 +213,38 @@ async function saveResume(env, b, now) {
 //
 // ⚠️ 顧問上傳的原始檔一律保留，不隨職缺被拒絕而刪除——
 //    事後要回溯「客戶當初給的到底是什麼」，靠的就是這份底稿。
+// 不該出現在對外貼文裡的客戶識別字。跟 social_post_agent.py 的
+// client_name_terms() 同一套規則：正式名＋別名＋去後綴的字根，
+// 三個字以內的純英文別名不用（帆宣的別名「MIC」會把「MIC 收音」誤判）。
+async function clientNameTerms(env) {
+  const terms = new Set();
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT display_name, aliases FROM client_companies`).all();
+    for (const r of results || []) {
+      const vals = [r.display_name, ...String(r.aliases || '').split('\n')];
+      for (let v of vals) {
+        v = String(v || '').trim();
+        if (v.length < 2) continue;
+        terms.add(v);
+        const base = v.replace(/(股份有限公司|有限公司|集團|公司|科技|國際開發)$/, '').trim();
+        if (base.length >= 2) terms.add(base);
+      }
+    }
+  } catch { return []; }
+  return [...terms].filter((t) => !/^[A-Za-z0-9]{1,3}$/.test(t))
+                   .sort((a, b) => b.length - a.length);
+}
+function hitsClientNames(text, terms) {
+  const t = String(text || '');
+  return terms.filter((x) => {
+    if (/^[A-Za-z0-9 .&-]+$/.test(x)) {
+      return new RegExp(`(?<![A-Za-z0-9])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`, 'i').test(t);
+    }
+    return t.includes(x);
+  });
+}
+
 async function saveUpload(env, file, now) {
   const b64 = String(file.b64 || '');
   if (!b64) return null;
@@ -4348,7 +4380,7 @@ export default {
         // 職缺可以對應多筆 social_post_queue 排隊紀錄，每筆各自獨立，
         // 按鈕直接認排隊紀錄的 id，不會再互相蓋掉。
         const row = await env.DB.prepare(
-          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, j.title
+          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, j.title
              FROM social_post_queue q JOIN jobs j ON j.slug = q.job_slug WHERE q.id = ?`
         ).bind(qid).first();
         if (!row) { await answer('❌ 找不到這筆排隊紀錄（可能太舊或已被清除）'); return new Response('ok'); }
@@ -4356,6 +4388,32 @@ export default {
 
         if (action === 'soc_approve') {
           if (!row.draft) { await answer('❌ 這則沒有草稿內容，沒辦法發文'); return new Response('ok'); }
+
+          // 🚨 2026-08-27 加：草稿放太久就不准直接發。
+          // 職缺內容會變——BIM 的薪資 8/27 改成面議之後，8/21 產的那批草稿裡
+          // 還完整寫著「月薪 40,833–50,167（已含 2 個月年終攤提）」；
+          // 那時的按鈕還躺在 Telegram 裡，按下去就把已經撤下的內容公開發出去。
+          // 實測 45 筆待確認草稿有 20 筆含現在不能講的內容。
+          // 重產一次會重跑現行的所有過濾，比在這裡逐項列黑名單可靠。
+          const ageDays = row.requested_at
+            ? Math.floor((Date.now() - Date.parse(String(row.requested_at).replace(' ', 'T') + '+08:00')) / 86400000)
+            : 0;
+          if (ageDays >= 3) {
+            await env.DB.prepare(`UPDATE social_post_queue SET status='expired' WHERE id=?`).bind(row.id).run();
+            await answer(`❌ 這則草稿是 ${ageDays} 天前產的，職缺內容可能已經改過（薪資、客戶名稱等），不能直接發。請按「🔄 重新產一次」。`, true);
+            return new Response('ok');
+          }
+
+          // 🚨 客戶名稱稽核。產稿時已經擋過一次，但草稿是存下來的，
+          // 而客戶名單會新增（今天就補了台灣美光與帆宣兩筆）——
+          // 發出去那一刻用最新的名單再掃一次才算數。
+          const terms = await clientNameTerms(env);
+          const nameHits = hitsClientNames(row.draft, terms);
+          if (nameHits.length) {
+            await env.DB.prepare(`UPDATE social_post_queue SET status='blocked_compliance' WHERE id=?`).bind(row.id).run();
+            await answer(`🚫 這則出現客戶公司名稱「${nameHits.join('」「')}」，社群一律不提客戶名，已擋下。請按「🔄 重新產一次」。`, true);
+            return new Response('ok');
+          }
 
           // 🚨 草稿沒填完就不准發。這是公開貼文，發出去才發現要自己去刪。
           const ph = placeholderHits(row.draft);
@@ -7896,6 +7954,69 @@ export default {
         return json(request, { ok: true });
       }
 
+      // ── 把草稿的審核通知重推一次到 Telegram ──
+      // 顧問在覆蓋表上看到 ✎「草稿等你確認」，但 Telegram 裡翻不到那則訊息——
+      // 舊的早就被洗掉了（最舊的是 8/14，十三天前）。點一下重推一則新的。
+      //
+      // ⚠️ 但不是無腦重推：草稿是存下來的，職缺內容會變。BIM 的薪資 8/27 改成
+      //    面議之後，8/21 產的草稿裡還完整寫著「月薪 40,833–50,167」。
+      //    所以推之前先檢查，過期或含客戶名的一律不推，改成退回重產。
+      if (p === '/admin/social/renotify' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const row = await env.DB.prepare(
+          `SELECT q.*, j.title, a.label AS account_label, a.tg_thread_id
+             FROM social_post_queue q
+             JOIN jobs j ON j.slug = q.job_slug
+             LEFT JOIN social_accounts a ON a.id = q.account_id
+            WHERE q.id = ?`).bind(b.id).first();
+        if (!row) return json(request, { ok: false, error: '找不到這筆' }, 404);
+        if (row.status === 'posted') return json(request, { ok: false, error: '這則已經發過了' }, 400);
+        if (!row.draft) return json(request, { ok: false, error: '這則沒有草稿內容' }, 400);
+
+        const ageDays = row.requested_at
+          ? Math.floor((Date.now() - Date.parse(String(row.requested_at).replace(' ', 'T') + '+08:00')) / 86400000)
+          : 0;
+        const terms = await clientNameTerms(env);
+        const nameHits = hitsClientNames(row.draft, terms);
+
+        if (ageDays >= 3 || nameHits.length) {
+          // 退回重產：把狀態清成待產稿，本機的腳本下一輪（每 2 分鐘）就會用
+          // 現在的職缺內容與現行過濾重新寫一則，並推一則新的 Telegram 通知。
+          await env.DB.prepare(
+            `UPDATE social_post_queue SET status=NULL, draft=NULL, tg_message_id=NULL WHERE id=?`
+          ).bind(row.id).run();
+          return json(request, { ok: true, requeued: true, age_days: ageDays,
+            reason: nameHits.length ? `草稿裡有客戶名稱「${nameHits.join('、')}」`
+                                    : `草稿是 ${ageDays} 天前產的，職缺內容可能已經改過`,
+            note: '已經退回重產，2 分鐘內會推一則全新的草稿到 Telegram' });
+        }
+
+        // 還新、也乾淨，就直接把同一則草稿再推一次
+        const thread = row.tg_thread_id || 3306;
+        const msg = `📱 全民獵才貼文草稿（重新提醒）\n`
+          + `帳號：${row.account_label || '（未指定帳號）'}\n`
+          + `職缺：${row.title}\n\n`
+          + `── 以下會被公開發布 ──\n${row.draft}`;
+        const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: env.TG_CHAT_ID, message_thread_id: thread, text: msg,
+            reply_markup: { inline_keyboard: [[
+              { text: '✅ 確認發布', callback_data: `soc_approve:${row.id}` },
+              { text: '🔄 重新產一次', callback_data: `soc_regen:${row.id}` },
+              { text: '❌ 不發這篇', callback_data: `soc_skip:${row.id}` },
+            ]] },
+          }),
+        });
+        const rd = await r.json().catch(() => ({}));
+        if (!rd.ok) return json(request, { ok: false, error: 'Telegram 推送失敗：' + JSON.stringify(rd).slice(0, 200) }, 502);
+        await env.DB.prepare(`UPDATE social_post_queue SET tg_message_id=? WHERE id=?`)
+          .bind(String(rd.result.message_id), row.id).run();
+        return json(request, { ok: true, requeued: false, thread,
+                               note: '已經重推一則到 Telegram，去按確認發布' });
+      }
+
       // ── 發文覆蓋表：哪個帳號、哪個職缺還沒發 ──
       // 2026-08-27 加。在這之前只有一條「發過什麼」的流水帳，要回答
       // 「還有哪些沒發」只能自己在腦中做交叉比對——而那正是每天要決定
@@ -7914,7 +8035,7 @@ export default {
         // 一次撈完所有紀錄，在記憶體裡組表——職缺 × 帳號可能上百格，
         // 一格一次查會變成上百次往返。
         const { results: posts } = await env.DB.prepare(
-          `SELECT job_slug, account_id, status, posted_at, url, views, likes, replies
+          `SELECT id, job_slug, account_id, status, requested_at, posted_at, url, views, likes, replies
              FROM social_post_queue
             WHERE requested_at >= datetime('now','+8 hours','-' || ? || ' days')
                OR posted_at >= datetime('now','+8 hours','-' || ? || ' days')`
@@ -7937,8 +8058,9 @@ export default {
           slug: j.slug, title: j.title,
           cells: accounts.map((a) => {
             const r = byKey[j.slug + '|' + a.id];
-            return { account_id: a.id,
+            return { account_id: a.id, queue_id: r ? r.id : null,
                      state: r ? r.status : 'none',
+                     requested_at: r ? r.requested_at : null,
                      posted_at: r ? r.posted_at : null,
                      url: r ? r.url : null,
                      views: r ? r.views : null };
@@ -8424,7 +8546,8 @@ export default {
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         if (!b.id) return json(request, { ok: false, error: '缺 id' }, 400);
         const OK = { name: 80, headline: 200, company: 120, location: 120, email: 120,
-                     linkedin_url: 300, github_url: 300, skills: 500, note: 2000 };
+                     linkedin_url: 300, github_url: 300, source_url: 500,
+                     other_links: 2000, skills: 500, note: 2000 };
         const sets = [], bind = [];
         for (const k of Object.keys(OK)) {
           if (b[k] === undefined) continue;
