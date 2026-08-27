@@ -4760,6 +4760,30 @@ export default {
       return json(request, { ok: true, ...result });
     }
 
+    // 人選點開邀請連結時，應徵表單拿這支去問「我是誰、要應徵什麼、履歷有沒有」。
+    // ⚠️ 這支不帶 ADMIN_TOKEN，任何人拿到 token 都讀得到——所以只回傳
+    //    「他自己本來就知道的東西」：他的姓名、信箱、要應徵哪個職缺。
+    //    絕不回傳分數、等第、評語、負責顧問、來源網址那些內部判斷。
+    if (p.startsWith('/apply/invite/') && request.method === 'GET') {
+      const tk = decodeURIComponent(p.slice('/apply/invite/'.length));
+      if (!tk || tk.length < 20) return json(request, { ok: false, error: '連結不正確' }, 400);
+      const row = await env.DB.prepare(
+        `SELECT s.id, s.name, s.email, s.invite_job_slug,
+                (s.resume_file_id IS NOT NULL OR COALESCE(s.resume_url,'') <> '') AS has_resume,
+                j.title AS job_title, COALESCE(j.status,'open') AS job_status
+           FROM sourced_candidates s
+           LEFT JOIN jobs j ON j.slug = s.invite_job_slug
+          WHERE s.invite_token = ?`).bind(tk).first();
+      if (!row) return json(request, { ok: false, error: '連結不正確或已失效' }, 404);
+      if (row.job_status === 'closed') {
+        return json(request, { ok: false, error: '這個職缺已經結束招募了，請聯繫你的顧問' }, 410);
+      }
+      return json(request, { ok: true,
+        name: row.name || '', email: row.email || '',
+        job_slug: row.invite_job_slug, job_title: row.job_title || '',
+        has_resume: !!row.has_resume });
+    }
+
     if (p === '/apply' && request.method === 'POST') {
       let b;
       try {
@@ -4867,6 +4891,19 @@ export default {
         b.resume_url = dup.resume_url;
       }
 
+      // ── 邀請連結帶進來的履歷 ──
+      // 顧問先幫他傳好的那一份。人選走邀請連結進來時不用再傳一次——
+      // 每多一個步驟就掉一批人，而履歷是最容易讓人放棄的那一步。
+      let inviteSrc = null;
+      if (b.invite_token) {
+        inviteSrc = await env.DB.prepare(
+          `SELECT id, resume_file_id, resume_url FROM sourced_candidates WHERE invite_token = ?`
+        ).bind(String(b.invite_token)).first();
+      }
+      // 本人自己有傳就用他傳的（比較新）；沒傳才用顧問先存的那一份。
+      const useFileId = fileId || (inviteSrc && inviteSrc.resume_file_id) || null;
+      const useResumeUrl = b.resume_url || (inviteSrc && inviteSrc.resume_url) || null;
+
       // DISC 是表單裡的量表算出來的分數（前端算好才送過來），不是這裡現算
       const discOk = ['disc_d', 'disc_i', 'disc_s', 'disc_c']
         .every((k) => Number.isInteger(b[k]));
@@ -4882,13 +4919,45 @@ export default {
       ).bind(
         id, now, b.job_slug, b.job_title || null, b.name, b.email, b.phone || null,
         b.expected_salary || null, b.available_date || null, b.location_ok || null,
-        fileId, b.resume_url || null, b.note || null,
+        useFileId, useResumeUrl, b.resume_104_url || null, b.note || null,
         b.utm_source || null, b.utm_medium || null, b.utm_campaign || null,
         b.referrer || null, now,
         discOk ? b.disc_d : null, discOk ? b.disc_i : null,
         discOk ? b.disc_s : null, discOk ? b.disc_c : null,
         discOk ? (b.disc_primary || null) : null, socialLinks
       ).run();
+
+      // ── 接回人才池 ──
+      // 2026-08-27 加。在這之前 sourced_candidates.converted_application_id
+      // 這個欄位從建表到現在**一次都沒被寫過**：顧問主動找到的人，後來自己
+      // 跑來應徵、跟阿財談完，人才池那張卡片完全不知道——同一個人在系統裡
+      // 變成兩筆互不相干的資料，顧問還在人才池那邊當他是「待接觸」。
+      // 用 email 比對（大小寫與前後空白都吃掉），沒有 email 就退而用電話。
+      try {
+        const mail = String(b.email || '').trim().toLowerCase();
+        const tel = String(b.phone || '').replace(/[^0-9]/g, '');
+        // 走邀請連結進來的，是誰不用猜——顧問已經指定了。
+        let hit = inviteSrc ? { id: inviteSrc.id } : null;
+        if (!hit && mail) {
+          hit = await env.DB.prepare(
+            `SELECT id FROM sourced_candidates
+              WHERE lower(trim(COALESCE(email,''))) = ? AND converted_application_id IS NULL
+              LIMIT 1`).bind(mail).first();
+        }
+        // 電話比對只留末 9 碼再比——池子裡存的格式很雜（+886/0912/0912-345-678），
+        // 而且電話多半是顧問打完之後寫在 note 裡的，不是獨立欄位。
+        if (!hit && tel.length >= 8) {
+          hit = await env.DB.prepare(
+            `SELECT id FROM sourced_candidates
+              WHERE converted_application_id IS NULL AND COALESCE(note,'') LIKE ?
+              LIMIT 1`).bind('%' + tel.slice(-9) + '%').first();
+        }
+        if (hit) {
+          await env.DB.prepare(
+            `UPDATE sourced_candidates SET converted_application_id = ?, status = 'converted'
+              WHERE id = ?`).bind(id, hit.id).run();
+        }
+      } catch (e) { /* 接不起來不影響應徵本身，不要因為這個擋掉求職者 */ }
 
       // 新的那筆已經安全寫進去了，這時才把舊的標記掉。
       // ⚠️ 標記不是刪除——刪掉就查不出「他到底送了幾次、每次填的一不一樣」。
@@ -8037,7 +8106,21 @@ export default {
             `SELECT s.*, (SELECT display_name FROM consultants c WHERE c.id = s.owner) AS owner_name
                FROM sourced_candidates s WHERE s.id = ?`).bind(id).first();
           if (!row) return json(request, { ok: false, error: '找不到' }, 404);
-          return json(request, { ok: true, kind, sourced: row });
+          // 他後來變成應徵者了嗎？有的話把面談那一側的資料一起帶回來——
+          // 同一個人，顧問不該為了看他的履歷或報告再跳去另一頁找一次。
+          let linked = null;
+          if (row.converted_application_id) {
+            linked = await env.DB.prepare(
+              `SELECT a.id, a.job_slug, a.job_title, a.email, a.phone,
+                      a.resume_file_id, a.resume_url, a.resume_104_url,
+                      a.interview_state, a.interview_ended_at, a.chat_token,
+                      (SELECT r.id FROM reports r WHERE r.application_id = a.id
+                        ORDER BY r.created_at DESC LIMIT 1) AS report_id,
+                      (SELECT r.consultant_decision FROM reports r WHERE r.application_id = a.id
+                        ORDER BY r.created_at DESC LIMIT 1) AS consultant_decision
+                 FROM applications a WHERE a.id = ?`).bind(row.converted_application_id).first();
+          }
+          return json(request, { ok: true, kind, sourced: row, linked });
         }
 
         // application / placement 都收斂成「一位人選的完整檔案」。
@@ -8200,6 +8283,69 @@ export default {
           if (!c) return json(request, { ok: false, error: '找不到這位顧問（或已停用）' }, 400);
         }
         await env.DB.prepare(`UPDATE ${tb} SET owner=? WHERE id=?`).bind(ow, String(b.id)).run();
+        return json(request, { ok: true });
+      }
+
+      // ── 產一條專屬應徵連結給人選 ──
+      // 顧問先找到人、先幫他把履歷傳好，然後給他這條連結。人選點進去，
+      // 職缺跟履歷都已經在裡面，只剩測驗要自己填，填完直接跟阿財面談。
+      //
+      // 為什麼不是叫他自己去官網投：那樣他要重打一次基本資料、重傳一次履歷，
+      // 而且十之八九會投錯職缺（同名職缺有兩個）。每多一個步驟就掉一批人。
+      if (p === '/admin/sourced/invite' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.id || !b.job_slug) return json(request, { ok: false, error: '缺 id 或 job_slug' }, 400);
+        const row = await env.DB.prepare(
+          `SELECT id, name, email, invite_token FROM sourced_candidates WHERE id = ?`).bind(String(b.id)).first();
+        if (!row) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const job = await env.DB.prepare(
+          `SELECT slug, title, COALESCE(status,'open') AS status FROM jobs WHERE slug = ?`
+        ).bind(String(b.job_slug)).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        // 已關閉的職缺不給發邀請——連結寄出去了，人選點進來卻被 /apply 擋掉，
+        // 那個體驗比沒收到連結還糟。
+        if (job.status === 'closed') {
+          return json(request, { ok: false, error: '這個職缺已經結束招募，不能發邀請連結' }, 400);
+        }
+        // 連結本身就是憑證，用 crypto 產生。重發時沿用同一組——
+        // 換一組的話，先前傳給人選的連結會直接失效，而顧問通常不知道。
+        let token = row.invite_token;
+        if (!token || b.regen) {
+          token = [...crypto.getRandomValues(new Uint8Array(18))]
+            .map((x) => x.toString(16).padStart(2, '0')).join('');
+        }
+        await env.DB.prepare(
+          `UPDATE sourced_candidates SET invite_token=?, invite_job_slug=?, invite_at=? WHERE id=?`
+        ).bind(token, job.slug, nowTaipei(), row.id).run();
+        return json(request, { ok: true, token, job_title: job.title,
+                               url: `https://step1ne.com/apply/?inv=${token}` });
+      }
+
+      // ── 顧問幫人才池的人上傳履歷 ──
+      // 顧問常常先拿到履歷才有機會接觸（對方 email 寄來、104 下載、介紹人給的），
+      // 這時候他還不是應徵者。以檔案為主、連結為輔——104 與雲端連結會過期，
+      // 檔案不會；等他真的來面談時，阿財看得到的是檔案那一份。
+      if (p === '/admin/sourced/resume' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.id) return json(request, { ok: false, error: '缺 id' }, 400);
+        const now = nowTaipei();
+        const sets = ['resume_at = ?'], bind = [now];
+        if (b.pdf_b64) {
+          const saved = await saveUpload(env, {
+            b64: b.pdf_b64, name: b.filename || `履歷_${b.id}.pdf`,
+            mime: b.mime || 'application/pdf' }, now);
+          if (!saved || saved.tooBig) return json(request, { ok: false, error: '檔案太大存不下' }, 400);
+          sets.push('resume_file_id = ?'); bind.push(saved.fileId);
+        }
+        if (b.resume_url !== undefined) { sets.push('resume_url = ?'); bind.push(b.resume_url || null); }
+        if (b.resume_note !== undefined) { sets.push('resume_note = ?'); bind.push(b.resume_note ? String(b.resume_note).slice(0, 500) : null); }
+        if (sets.length === 1) return json(request, { ok: false, error: '沒有給檔案也沒有給連結' }, 400);
+        bind.push(String(b.id));
+        const r = await env.DB.prepare(
+          `UPDATE sourced_candidates SET ${sets.join(', ')} WHERE id = ?`).bind(...bind).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這位人選' }, 404);
         return json(request, { ok: true });
       }
 
