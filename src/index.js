@@ -4970,10 +4970,10 @@ export default {
         `INSERT INTO applications
          (id, created_at, job_slug, job_title, name, email, phone,
           expected_salary, available_date, location_ok,
-          resume_file_id, resume_url, note,
+          resume_file_id, resume_url, resume_104_url, note,
           utm_source, utm_medium, utm_campaign, referrer, status, consent_at,
           disc_d, disc_i, disc_s, disc_c, disc_primary, social_links)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?,?,?,?,?, ?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?,?,?,?,?, ?)`
       ).bind(
         id, now, b.job_slug, b.job_title || null, b.name, b.email, b.phone || null,
         b.expected_salary || null, b.available_date || null, b.location_ok || null,
