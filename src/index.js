@@ -7896,6 +7896,64 @@ export default {
         return json(request, { ok: true });
       }
 
+      // ── 發文覆蓋表：哪個帳號、哪個職缺還沒發 ──
+      // 2026-08-27 加。在這之前只有一條「發過什麼」的流水帳，要回答
+      // 「還有哪些沒發」只能自己在腦中做交叉比對——而那正是每天要決定
+      // 「今天發哪一則」時唯一需要的資訊。
+      if (p === '/admin/social/coverage' && request.method === 'GET') {
+        const days = Math.min(90, Math.max(1, parseInt(url.searchParams.get('days') || '14', 10)));
+        const { results: accounts } = await env.DB.prepare(
+          `SELECT id, label, platform FROM social_accounts
+            WHERE is_active = 1 AND platform <> 'line_community'
+            ORDER BY platform, label`).all();
+        // 只列真的在招募的職缺——已結束或還沒核准的沒必要發文
+        const { results: jobs } = await env.DB.prepare(
+          `SELECT slug, title, service_line, seniority FROM jobs
+            WHERE COALESCE(status,'open') IN ('open','active')
+            ORDER BY slug`).all();
+        // 一次撈完所有紀錄，在記憶體裡組表——職缺 × 帳號可能上百格，
+        // 一格一次查會變成上百次往返。
+        const { results: posts } = await env.DB.prepare(
+          `SELECT job_slug, account_id, status, posted_at, url, views, likes, replies
+             FROM social_post_queue
+            WHERE requested_at >= datetime('now','+8 hours','-' || ? || ' days')
+               OR posted_at >= datetime('now','+8 hours','-' || ? || ' days')`
+        ).bind(days, days).all();
+
+        const byKey = {};
+        for (const r of posts || []) {
+          const k = r.job_slug + '|' + (r.account_id || 0);
+          const prev = byKey[k];
+          // 同一格可能有好幾筆（重發、退回重產）。留最能代表現況的那一筆：
+          // 已發布 > 等你確認 > 其他；同狀態取最新。
+          const rank = (x) => x.status === 'posted' ? 3 : (x.status === 'drafted' ? 2 : 1);
+          if (!prev || rank(r) > rank(prev)
+              || (rank(r) === rank(prev) && String(r.posted_at || '') > String(prev.posted_at || ''))) {
+            byKey[k] = r;
+          }
+        }
+
+        const grid = jobs.map((j) => ({
+          slug: j.slug, title: j.title,
+          cells: accounts.map((a) => {
+            const r = byKey[j.slug + '|' + a.id];
+            return { account_id: a.id,
+                     state: r ? r.status : 'none',
+                     posted_at: r ? r.posted_at : null,
+                     url: r ? r.url : null,
+                     views: r ? r.views : null };
+          }),
+        }));
+        // 每個帳號還差幾個職缺沒發——顧問最常問的就是這個數字
+        const gaps = accounts.map((a, i) => ({
+          ...a,
+          missing: grid.filter((g) => g.cells[i].state === 'none').length,
+          drafted: grid.filter((g) => g.cells[i].state === 'drafted').length,
+          posted: grid.filter((g) => g.cells[i].state === 'posted').length,
+        }));
+        return json(request, { ok: true, days, accounts, jobs, grid, gaps });
+      }
+
       // ── 顧問名單 ──
       // 2026-08-26 加。在這之前「誰負責這個人選」是散在各表的自由文字
       //（同一個人被寫成 '同事'、'behe10'、'Phoebe' 三種），統計不起來、
@@ -7969,8 +8027,12 @@ export default {
           `SELECT id, name, headline, company, job_slug, grade, score, email,
                   created_at AS since, status, owner, source
              FROM sourced_candidates
-            WHERE (status = 'shortlisted' OR (status = 'new' AND owner IS NOT NULL))${ownerSql}
-            ORDER BY COALESCE(score,0) DESC, created_at ASC LIMIT 200`
+            WHERE (status IN ('shortlisted','replied') OR (status = 'new' AND owner IS NOT NULL))${ownerSql}
+            -- ⚠️ 2026-08-27 補 'replied'。在這之前按下「他有回覆」的人**從所有分頁
+            -- 消失**——replied 不在任何一關的條件裡：要我接觸只收 shortlisted/new，
+            -- 等對方回只收 contacted。對方好不容易回信了，這個人反而不見了。
+            -- 球回到顧問手上，所以歸在「要我接觸」，並排到最前面。
+            ORDER BY (status = 'replied') DESC, COALESCE(score,0) DESC, created_at ASC LIMIT 200`
         ).bind(...bind).all()).results || [];
 
         // ② 等對方回：信發出去了，人還沒回
@@ -9275,8 +9337,15 @@ export default {
     // 抓回來的數字配上 posted_at，才能回答「幾點發、哪個帳號、哪種職缺有人看」。
     try {
       const { results: toMeasure } = await env.DB.prepare(
+        // ⚠️ 2026-08-27 加 platform='threads' 這個條件。原本會把 LinkedIn 的貼文
+        // 也撈進來，然後拿 LinkedIn 的網址去問 graph.threads.net——永遠對不上，
+        // 每 15 分鐘白跑一次，而且因為找不到帳號會退回全域的 Threads 金鑰，
+        // 等於拿 A 帳號的權杖去查 B 平台的貼文。
+        // LinkedIn 個人檔案的貼文本來就沒有公開的成效 API（只有企業專頁的
+        // organizationalEntityShareStatistics 有），所以這裡不是漏做，是做不到。
         `SELECT q.id, q.url, q.account_id, q.posted_at
            FROM social_post_queue q
+           JOIN social_accounts a ON a.id = q.account_id AND a.platform = 'threads'
           WHERE q.status='posted' AND q.url IS NOT NULL
             AND q.posted_at >= datetime('now','+8 hours','-3 days')
             AND (q.insights_at IS NULL OR q.insights_at <= datetime('now','+8 hours','-6 hours'))
