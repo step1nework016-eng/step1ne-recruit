@@ -7954,6 +7954,99 @@ export default {
         return json(request, { ok: true });
       }
 
+      // ── 發文排程行事曆 ──
+      // 為什麼要有：8 月實測有 16 組「同一個顧問、同一天、同一個職缺發兩次以上」，
+      // 8/21 的 BIM 有四個帳號各自發了 3 則。沒有一個地方看得到「今天誰要發什麼」，
+      // 每個人各自按各自的，撞在一起才發現。
+      //
+      // ⚠️ 只有一種情況是硬規則：同一個顧問、同一天、同一個職缺。
+      //    不同顧問同一天發同一個職缺是正常操作（四個帳號一起推），不擋。
+      //    第一版把它也算成重複，結果整個八月幾乎每天都在響——到處都在響的
+      //    警告等於沒有警告。
+      if (p === '/admin/social/schedule' && request.method === 'GET') {
+        const month = (url.searchParams.get('month') || '').match(/^\d{4}-\d{2}$/)
+          ? url.searchParams.get('month') : null;
+        const like = (month || '') + '%';
+        // 排好但還沒發的
+        const { results: planned } = await env.DB.prepare(
+          `SELECT s.id, s.post_date AS d, s.job_slug, s.account_id, s.status,
+                  j.title AS job_title, a.label, a.platform
+             FROM social_schedule s
+             LEFT JOIN jobs j ON j.slug = s.job_slug
+             LEFT JOIN social_accounts a ON a.id = s.account_id
+            WHERE s.status <> 'cancelled'${month ? ' AND s.post_date LIKE ?' : ''}
+            ORDER BY s.post_date`).bind(...(month ? [like] : [])).all();
+        // 已經發過／已排隊的（真實紀錄）。日期取實際發布時間，沒有就用排入時間。
+        const { results: actual } = await env.DB.prepare(
+          `SELECT q.id, substr(COALESCE(q.posted_at, q.requested_at),1,10) AS d,
+                  q.job_slug, q.account_id, q.status, q.url,
+                  j.title AS job_title, a.label, a.platform
+             FROM social_post_queue q
+             LEFT JOIN jobs j ON j.slug = q.job_slug
+             LEFT JOIN social_accounts a ON a.id = q.account_id
+            WHERE a.id IS NOT NULL${month ? " AND substr(COALESCE(q.posted_at, q.requested_at),1,7) = ?" : ''}`
+        ).bind(...(month ? [month] : [])).all();
+        const { results: accounts } = await env.DB.prepare(
+          `SELECT id, label, platform FROM social_accounts
+            WHERE is_active = 1 AND platform <> 'line_community' ORDER BY platform, label`).all();
+        const { results: jobs } = await env.DB.prepare(
+          `SELECT slug, title FROM jobs WHERE COALESCE(status,'open') IN ('open','active') ORDER BY slug`).all();
+        return json(request, { ok: true, month, accounts, jobs,
+                               planned: planned || [], actual: actual || [] });
+      }
+
+      if (p === '/admin/social/schedule' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const date = String(b.post_date || '').trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(request, { ok: false, error: '日期格式要 YYYY-MM-DD' }, 400);
+        if (!b.job_slug || !b.account_id) return json(request, { ok: false, error: '缺職缺或帳號' }, 400);
+        const job = await env.DB.prepare(
+          `SELECT slug, title, COALESCE(status,'open') AS status FROM jobs WHERE slug=?`).bind(String(b.job_slug)).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        if (job.status === 'closed') return json(request, { ok: false, error: '這個職缺已經結束招募了' }, 400);
+        const acc = await env.DB.prepare(
+          `SELECT id, label FROM social_accounts WHERE id=? AND is_active=1`).bind(b.account_id).first();
+        if (!acc) return json(request, { ok: false, error: '找不到這個帳號' }, 404);
+
+        // 硬規則：同一個顧問、同一天、同一個職缺。排程表跟已發紀錄都要查——
+        // 只查排程表的話，早上手動發過、下午又排一次，還是會重複。
+        const clashQ = await env.DB.prepare(
+          `SELECT 1 FROM social_post_queue
+            WHERE job_slug=? AND account_id=? AND status NOT IN ('skipped','deleted')
+              AND substr(COALESCE(posted_at, requested_at),1,10) = ? LIMIT 1`
+        ).bind(job.slug, acc.id, date).first();
+        if (clashQ) {
+          return json(request, { ok: false, error: `${acc.label} 這一天已經發過（或排過）同一個職缺了` }, 409);
+        }
+        const now = nowTaipei();
+        try {
+          const r = await env.DB.prepare(
+            `INSERT INTO social_schedule (post_date, job_slug, account_id, status, created_by, created_at, updated_at)
+             VALUES (?,?,?,'planned',?,?,?)`
+          ).bind(date, job.slug, acc.id, b.by || null, now, now).run();
+          return json(request, { ok: true, id: r.meta && r.meta.last_row_id });
+        } catch (e) {
+          if (String(e).includes('UNIQUE')) {
+            return json(request, { ok: false, error: `${acc.label} 這一天已經排過同一個職缺了` }, 409);
+          }
+          throw e;
+        }
+      }
+
+      if (p === '/admin/social/schedule/cancel' && request.method === 'POST') {
+        let b;
+        try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.id) return json(request, { ok: false, error: '缺 id' }, 400);
+        // 標成取消而不是刪除——之後要回答「這個月排了幾則、實際發了幾則、
+        // 中途撤掉幾則」，刪掉就查不出來了。
+        const r = await env.DB.prepare(
+          `UPDATE social_schedule SET status='cancelled', updated_at=? WHERE id=? AND status='planned'`
+        ).bind(nowTaipei(), b.id).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到、或這筆已經送去產稿了' }, 404);
+        return json(request, { ok: true });
+      }
+
       // ── 把草稿的審核通知重推一次到 Telegram ──
       // 顧問在覆蓋表上看到 ✎「草稿等你確認」，但 Telegram 裡翻不到那則訊息——
       // 舊的早就被洗掉了（最舊的是 8/14，十三天前）。點一下重推一則新的。
@@ -9403,6 +9496,35 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
+    // ── 排程行事曆：今天該發的，送去產稿 ──
+    // 顧問在行事曆上排「8/29 由 DR 發 BIM 工程師」，到那天這裡把它塞進
+    // social_post_queue（status 留 NULL），本機的 social_post_agent.py 每 2 分鐘
+    // 掃一次就會撿走、產稿、推 Telegram 給顧問按確認。
+    // ⚠️ 這裡只負責「把排程變成待產稿」，不會自己發文——發文一律要人按確認。
+    try {
+      const { results: due } = await env.DB.prepare(
+        `SELECT id, post_date, job_slug, account_id FROM social_schedule
+          WHERE status='planned' AND post_date <= date('now','+8 hours')
+          ORDER BY post_date LIMIT 20`).all();
+      for (const d of due || []) {
+        // 到期這一刻再檢查一次職缺還開著。排程可能是一週前排的，
+        // 中間客戶結束招募了，那就不該再發。
+        const job = await env.DB.prepare(
+          `SELECT COALESCE(status,'open') AS status FROM jobs WHERE slug=?`).bind(d.job_slug).first();
+        if (!job || job.status === 'closed') {
+          await env.DB.prepare(`UPDATE social_schedule SET status='cancelled', updated_at=? WHERE id=?`)
+            .bind(nowTaipei(), d.id).run();
+          continue;
+        }
+        const q = await env.DB.prepare(
+          `INSERT INTO social_post_queue (job_slug, account_id, requested_at) VALUES (?,?,?)`
+        ).bind(d.job_slug, d.account_id, nowTaipei()).run();
+        await env.DB.prepare(
+          `UPDATE social_schedule SET status='queued', queue_id=?, updated_at=? WHERE id=?`
+        ).bind(q.meta && q.meta.last_row_id, nowTaipei(), d.id).run();
+      }
+    } catch (e) { /* 排程轉檔失敗不要影響下面其他排程工作 */ }
+
     // ⚠️ 2026-08-19 加：LinkedIn 權杖自動續期。
     // LinkedIn 的 access token 只有 60 天，過期就發不出文——而且是無聲失敗，
     // 通常等到要發文那天才發現。這裡趕在到期前 14 天就換好。
