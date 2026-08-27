@@ -260,6 +260,27 @@ BLOCKED_EMPLOYERS = [
 ]
 
 
+def check_social_threads(dry):
+    """社群帳號有沒有忘了設 Telegram 主題。
+
+    修不了（要人去 TG 建主題、把 id 給我），但一定要講。
+    2026-08-27 踩過：三個 LinkedIn 帳號都沒設，通知全部掉到寫死的預設值，
+    而那個預設值正好是 Jacky 的個人主題——EYLISE 的貼文審核通知跑進
+    Jacky 的房間，Jacky 以為是自己的貼文、去自己的 LinkedIn 找，當然找不到。
+    這種錯不會報錯、看起來完全正常，只能靠主動檢查。
+    """
+    rows = D.d1("SELECT label, platform FROM social_accounts "
+                "WHERE is_active=1 AND tg_thread_id IS NULL "
+                "AND platform <> 'line_community'") or []
+    if not rows:
+        return
+    who = '、'.join(f"{r.get('label')}（{r.get('platform')}）" for r in rows)
+    alert(f'{len(rows)} 個社群帳號沒設 Telegram 主題：{who}',
+          '沒設的話，這些帳號的貼文審核通知會全部掉進共用主題（也就是 Jacky 的房間），'
+          '看起來像正常運作，但沒有人會發現通知跑錯地方',
+          '到 Telegram 那個群開好各自的主題，把 topic id 給我，我寫進 social_accounts')
+
+
 def check_blocked_employers(dry):
     """封鎖公司的員工被撈進人才池 → 自動標為不合適並註明原因。
 
@@ -295,7 +316,7 @@ def main():
 
     for fn in (check_daemons, check_stuck_intakes, check_stuck_locks,
                check_schedules, check_unreadable_resumes, check_site_drift,
-               check_blocked_employers):
+               check_blocked_employers, check_social_threads):
         try:
             fn(a.dry)
         except Exception as e:

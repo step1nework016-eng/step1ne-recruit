@@ -31,7 +31,12 @@ SKILL_PATH = os.path.expanduser(
 POST_MODEL = 'claude-sonnet-5'
 CLAUDE_TIMEOUT = 180
 
-TG_THREAD_SOCIAL = 3306  # 2026-08-14 加：獨立的「社群發文審核」主題，不要跟 #4 履歷池混在一起
+# ⚠️ 2026-08-27：這個值同時也是「Jacky - Threads」那個帳號的專屬 topic。
+# 後果：任何帳號忘了設 tg_thread_id，通知就會安靜地流進 Jacky 的房間，
+# 而且看起來完全像正常運作——三個 LinkedIn 帳號就是這樣，EYLISE 的貼文
+# 審核通知跑到 Jacky 那邊，Jacky 以為是自己的貼文、去自己的 LinkedIn 找，
+# 當然找不到。帳號的 topic 已經補齊，這裡再加一道：沒設的不要猜，明著講。
+TG_THREAD_SOCIAL = 3306  # 共用的社群發文主題（同時是 Jacky 的個人主題，見上）
 
 
 def log(msg):
@@ -455,12 +460,22 @@ def process_job(queue_row, job, repost=False):
         # 那個帳號綁定的專屬主題（EYLISE／PHOEBE／DR 各自一個），沒指定的
         # （排程自動掃到、沒人特別指名的舊職缺）維持送到共用的 TG_THREAD_SOCIAL。
         thread = TG_THREAD_SOCIAL
+        acct_label = ''
         if account_id:
-            acc = d1(f"SELECT tg_thread_id FROM social_accounts WHERE id={q(account_id)}")
-            if acc and acc[0].get('tg_thread_id'):
-                thread = int(acc[0]['tg_thread_id'])
+            acc = d1(f"SELECT label, tg_thread_id FROM social_accounts WHERE id={q(account_id)}")
+            if acc:
+                acct_label = acc[0].get('label') or ''
+                if acc[0].get('tg_thread_id'):
+                    thread = int(acc[0]['tg_thread_id'])
+                else:
+                    # 沒設 topic 就會掉進共用主題，而共用主題是 Jacky 的房間——
+                    # 不講的話沒有人會發現通知跑錯地方。
+                    log(f'⚠️ 帳號「{acct_label}」沒有設定 tg_thread_id，'
+                        f'這則通知會送到共用主題 {TG_THREAD_SOCIAL}')
         msg_id = tg_with_buttons(
-            f"📱 全民獵才貼文草稿：{title}\n{'（重新產出）' if repost else ''}\n\n"
+            f"📱 全民獵才貼文草稿\n"
+            f"帳號：{acct_label or '（未指定帳號）'}\n"
+            f"職缺：{title}{'　（重新產出）' if repost else ''}\n\n"
             f"── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
             [
