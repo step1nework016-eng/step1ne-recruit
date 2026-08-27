@@ -23,6 +23,7 @@
    cd ~/下載項目/step1ne-stopgap-site && git add -A && git commit && git push deploy HEAD:main
 """
 import os, sys, json, argparse, subprocess, importlib.util
+import re, uuid, secrets, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -49,6 +50,60 @@ def final_check(intake, spec):
         blob,
         client_name=intake.get('client_name') if spec.get('client_named') == 0 else None,
         client_code=intake.get('client_code'))
+
+
+def link_client(intake, spec):
+    """把收件單上的客戶接進客戶名單，並掛到職缺上。
+
+    ⚠️ 2026-08-27 加。在這之前這一段整段不存在：收件單上明明填了
+    client_name（台銀人壽保險股份有限公司），職缺也照常上架、狀態標成
+    published，但客戶從來沒進 client_companies、jobs.company_id 也留空。
+    後果是「客戶資訊」那一頁看不到這家客戶——顧問以為系統漏了，實際上是
+    這條線根本沒接。同一批還有三個職缺是類似狀況。
+
+    比對方式刻意寬鬆（去掉公司後綴再互相包含），因為同一家公司在收件單、
+    合約、104 上常常寫法不同（美德向邦／美德醫療／美德相邦集團）。
+    寧可接到既有的那一筆，也不要建出第二家一模一樣的客戶。
+    """
+    name = (intake.get('client_name') or '').strip()
+    slug = spec.get('slug')
+    if not name or not slug:
+        return
+    base = re.sub(r'(股份有限公司|有限公司|集團|公司)$', '', name).strip()
+    rows = D.d1("SELECT id, display_name, aliases FROM client_companies") or []
+    hit = None
+    for r in rows:
+        cands = [r.get('display_name') or ''] + str(r.get('aliases') or '').split('\n')
+        for c in cands:
+            c = c.strip()
+            if not c or len(c) < 2:
+                continue
+            cb = re.sub(r'(股份有限公司|有限公司|集團|公司)$', '', c).strip()
+            if base and cb and (base in cb or cb in base):
+                hit = r
+                break
+        if hit:
+            break
+
+    if not hit:
+        cid = 'co_' + uuid.uuid4().hex[:8]
+        token = secrets.token_hex(24)
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # 未簽約（client_named=0）的一律標 prospect 並在備註寫明對外匿名——
+        # 這個備註同時是社群貼文客戶名稱稽核的來源，寫進去才擋得住。
+        unsigned = spec.get('client_named') == 0
+        note = ('未簽約。對外全面匿名，公司名不得出現在任何對外文案、貼文或候選人訊息。'
+                if unsigned else None)
+        D.d1(f"INSERT INTO client_companies "
+             f"(id, display_name, portal_token, relation, relation_note, created_at, updated_at) "
+             f"VALUES ({D.q(cid)}, {D.q(name)}, {D.q(token)}, "
+             f"{D.q('prospect' if unsigned else 'signed')}, {D.q(note)}, {D.q(now)}, {D.q(now)})")
+        DJ.log(f"🆕 客戶名單新增：{name}")
+    else:
+        cid = hit['id']
+        DJ.log(f"🔗 客戶對到既有的：{hit[chr(39)+chr(39)]}")
+
+    D.d1(f"UPDATE jobs SET company_id={D.q(cid)} WHERE slug={D.q(slug)}")
 
 
 def upsert_extra_columns(spec):
@@ -157,6 +212,7 @@ def process(intake, dry=False):
     pushed, push_err = None, None
     if not dry:
         upsert_extra_columns(spec)
+        link_client(intake, spec)
         D.d1(f"UPDATE job_intakes SET status='published', published_slug={D.q(spec['slug'])}, "
              f"updated_at=datetime('now','+8 hours') WHERE id={D.q(iid)}")
         DJ.log('git push 部署中…')

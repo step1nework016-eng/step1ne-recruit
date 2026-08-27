@@ -260,6 +260,33 @@ BLOCKED_EMPLOYERS = [
 ]
 
 
+def check_orphan_jobs(dry):
+    """上架中的職缺有沒有漏掛客戶。
+
+    修不了（要人告訴我是哪一家），但一定要講。2026-08-27 踩到：擬稿流程
+    從來沒有把收件單的 client_name 帶去建客戶、也沒寫 jobs.company_id，
+    結果四個上架職缺在「客戶資訊」那一頁完全看不到——顧問以為系統漏了，
+    實際上是這條線根本沒接。程式那邊已經補了 link_client()，這裡當第二道。
+
+    ⚠️ 我們自己的職缺（直播主、獵頭顧問）本來就沒有客戶，要排除，
+    不然每輪都在報一個永遠修不掉的東西。
+    """
+    own = ("'live-streamer-home','headhunter-consultant'")
+    rows = D.d1(
+        "SELECT slug, title, COALESCE(client_name,'') cn FROM jobs "
+        "WHERE company_id IS NULL AND COALESCE(status,'open') IN ('open','active') "
+        f"AND slug NOT IN ({own})") or []
+    if not rows:
+        return
+    for r in rows:
+        who = r.get('title') or r.get('slug')
+        cn = (r.get('cn') or '').strip()
+        alert(f'職缺沒掛客戶：{who}',
+              ('職缺上寫的客戶是「' + cn + '」，但沒有對應到客戶名單裡的任何一家')
+              if cn else '這個職缺完全沒有客戶名，客戶資訊那一頁看不到它',
+              '到「客戶資訊」建好這家客戶，或告訴我公司全名我來接')
+
+
 def check_social_threads(dry):
     """社群帳號有沒有忘了設 Telegram 主題。
 
@@ -316,7 +343,7 @@ def main():
 
     for fn in (check_daemons, check_stuck_intakes, check_stuck_locks,
                check_schedules, check_unreadable_resumes, check_site_drift,
-               check_blocked_employers, check_social_threads):
+               check_blocked_employers, check_social_threads, check_orphan_jobs):
         try:
             fn(a.dry)
         except Exception as e:
