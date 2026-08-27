@@ -7838,7 +7838,7 @@ export default {
 
         const { results } = await env.DB.prepare(
           `SELECT id, created_at, source, source_url, name, headline, company, location,
-                  email, github_url, linkedin_url, skills, job_slug, status, category, cat_src,
+                  email, phone, github_url, linkedin_url, skills, job_slug, status, category, cat_src,
                   grade, recruitability_class, score,
                   contacted_at, converted_application_id, note, reject_reason, owner,
                   (SELECT display_name FROM consultants c WHERE c.id = sourced_candidates.owner) AS owner_name
@@ -8239,7 +8239,7 @@ export default {
         // 所以規則是：已挑出的（不論有沒有指派）＋ 已指派但還沒挑的。
         // 沒指派又沒挑出的，才是純存貨，留在「人才池」頁。
         const toContact = (await env.DB.prepare(
-          `SELECT id, name, headline, company, job_slug, grade, score, email,
+          `SELECT id, name, headline, company, job_slug, grade, score, email, phone,
                   created_at AS since, status, owner, source
              FROM sourced_candidates
             WHERE (status IN ('shortlisted','replied') OR (status = 'new' AND owner IS NOT NULL))${ownerSql}
@@ -8252,7 +8252,7 @@ export default {
 
         // ② 等對方回：信發出去了，人還沒回
         const waiting = (await env.DB.prepare(
-          `SELECT id, name, headline, company, job_slug, grade, email,
+          `SELECT id, name, headline, company, job_slug, grade, email, phone,
                   COALESCE(contacted_at, created_at) AS since, status, owner, source
              FROM sourced_candidates
             WHERE status = 'contacted'${ownerSql}
@@ -8638,7 +8638,8 @@ export default {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
         if (!b.id) return json(request, { ok: false, error: '缺 id' }, 400);
-        const OK = { name: 80, headline: 200, company: 120, location: 120, email: 120,
+        const OK = { name: 80, headline: 200, company: 120, location: 120,
+                     email: 120, phone: 40,
                      linkedin_url: 300, github_url: 300, source_url: 500,
                      other_links: 2000, skills: 500, note: 2000 };
         const sets = [], bind = [];
