@@ -139,3 +139,23 @@ owner：phoebe
 客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
 
 [09:30:25] 本輪：新增待辦 0 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 24 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 24 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:46]   建立待辦：吳秉洋｜BIM 工程師（無經驗可・正職）｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:30:46] 本輪：新增待辦 1 筆，發出通知 4 則

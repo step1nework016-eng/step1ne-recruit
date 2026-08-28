@@ -8324,6 +8324,18 @@ export default {
         // 後來怎麼了」也只有這裡查得到。不列入停滯計算。
         const doneRows = await pl(`(UPPER(p.stage) IN ('CLOSED_LOST','CLOSED','REJECTED_BY_CLIENT','WITHDRAWN_BY_CANDIDATE')
                                     OR p.onboard_date IS NOT NULL)`);
+        // ⚠️ 2026-08-27 補：人才池標「不合適」的人本來哪一關都不在。
+        // 卡片上的按鈕明寫「不合適 → 已收尾」，但已收尾只讀 placements，
+        // 而主動開發的人選根本沒有送件紀錄——按下去人就從整個「我的案子」
+        // 消失了。實際有 21 位卡在這個黑洞裡（Phoebe 12、Jacky 1、未指派 8）。
+        const doneSourced = (await env.DB.prepare(
+          `SELECT id, name, headline, company, job_slug, grade, email, phone,
+                  COALESCE(contacted_at, created_at) AS since, status, owner, source,
+                  reject_reason
+             FROM sourced_candidates
+            WHERE status = 'rejected'${ownerSql}
+            ORDER BY since DESC LIMIT 200`
+        ).bind(...bind).all()).results || [];
 
         const tabs = {
           to_contact: deco(toContact, 'to_contact'),
@@ -8331,7 +8343,8 @@ export default {
           to_review: deco(toReview, 'to_review'),
           client_side: deco(clientSide, 'client_side'),
           closing: deco(closing, 'closing'),
-          done: doneRows.map((r) => ({ ...r, age_days: ageOf(r.since), stale: false })),
+          done: doneRows.concat(doneSourced)
+                  .map((r) => ({ ...r, age_days: ageOf(r.since), stale: false })),
         };
         const counts = {}, stale = {};
         for (const k of Object.keys(tabs)) {
