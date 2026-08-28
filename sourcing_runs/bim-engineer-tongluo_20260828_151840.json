@@ -1,0 +1,73 @@
+{
+  "route": "ENG_CONSTRUCTION",
+  "archetype_locked": true,
+  "calibration_result": "CALIBRATION_PASSED_4_OF_5",
+  "candidates": [
+    {
+      "name": "TzuMing Su（蘇慈銘）",
+      "headline": "Tier 3｜空調工程師（半導體無塵室機電統包）",
+      "company": "亞翔工程股份有限公司",
+      "location": "台灣（搜尋摘要僅顯示國別，實際據點待確認；亞翔主力專案在竹科／中科廠區）",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/tzuming-su-1120a43b5",
+      "source_url": "https://tw.linkedin.com/in/tzuming-su-1120a43b5",
+      "fit_score": 76,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "錨點①公司：亞翔工程股份有限公司（半導體無塵室機電統包，與本案廠房BIM機電情境同生態）；錨點②職稱：空調工程師（LinkedIn公開摘要「空調工程師 · 工作經歷：亞翔工程股份有限公司 · 地點：台灣」）；錨點③技能域：HVAC機電，屬客戶科系順位②機械（含冷凍空調）對應之工作內容。符合Jacky裁示二放寬後的證據標準：機電圖說判讀能力為其日常工作核心。無塵室工時（G5約2成）對其非新環境。職稱無資深/主管字樣，通過G6。非帆宣。待確認：G1學歷校名科系畢業年份、G2苗栗銅鑼全實體到班、G3無宿舍僅5000租屋補助如何安排住宿、G4旺季46小時/月加班接受度、G5機車駕照與楊梅受訓1週、現職與期待薪資（本案薪資口徑兩份客戶文件矛盾，接觸時只能說依學歷/學校層級/科系分級核定、數字由顧問後續確認）。"
+    },
+    {
+      "name": "CHIANG MENGLING（江姓，公開摘要以英文拼寫呈現）",
+      "headline": "Tier 2｜繪圖工程師 / CAD Engineer（營造探勘工程）",
+      "company": "世久營造探勘工程有限公司",
+      "location": "台北",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/chiang-mengling-b0b672112",
+      "source_url": "https://tw.linkedin.com/in/chiang-mengling-b0b672112",
+      "fit_score": 71,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "錨點①公司：世久營造探勘工程有限公司；錨點②職稱：繪圖工程師／CAD engineer；錨點③學校：德霖科技大學（大學層級，且為在職者故非在學，G1的『畢業非在學』一半已由在職狀態滿足，剩校名科系畢業年份待問）；錨點④地點：台北。營造工程場域的2D CAD繪圖即客戶要的可訓練訊號（Revit由公司培訓，不列入場門檻）。職稱無資深/主管字樣，通過G6。非帆宣。最大卡點為G2/G3：現居台北，銅鑼全實體到班需搬遷，且本案不提供宿舍僅5000元/月租屋補助，必須主動說明後取得具體住宿安排答案。"
+    },
+    {
+      "name": "Chui Hung Chiu（邱姓，公開摘要以英文拼寫呈現）",
+      "headline": "Tier 2｜繪圖工程師 / CAD Engineer（治具製造）",
+      "company": "允利實業有限公司（Yunlitek，桃園市中壢區長春二路168號）",
+      "location": "桃園",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/chui-hung-chiu-40083428b",
+      "source_url": "https://tw.linkedin.com/in/chui-hung-chiu-40083428b",
+      "fit_score": 69,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "錨點①公司：允利實業有限公司（統編24632168，桃園中壢，客製化治具製造，公司地址經官網與公司登記資料查證）；錨點②職稱：繪圖工程師／CAD engineer；錨點③學校：國立聯合大學——正是Jacky裁示二指名的苗栗在地優先校源，代表其與苗栗有既有地緣連結，對G2到班與G3住宿是正向訊號；錨點④地點：桃園。2D/3D繪圖工具能力符合放寬後證據標準。職稱無資深/主管字樣，通過G6。非帆宣。待確認：G1科系是否落在客戶順位①電機②機械③工設④土木⑤建築、畢業年份、G2搬遷實際打算、G3住宿安排、G4加班強度接受度。"
+    },
+    {
+      "name": "Eliza chiang（江姓，公開摘要以英文拼寫呈現）",
+      "headline": "Tier 2｜繪圖工程師（營造業）",
+      "company": "萬德營造有限公司",
+      "location": "台北",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/eliza-chiang-11bb2a272",
+      "source_url": "https://tw.linkedin.com/in/eliza-chiang-11bb2a272",
+      "fit_score": 70,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "錨點①公司：萬德營造有限公司；錨點②職稱：繪圖工程師（LinkedIn公開摘要標題即『萬德營造有限公司繪圖工程師』）；錨點③地點：台北；錨點④職能：CAD engineer。營造業圖面繪製屬客戶科系順位④土木營建對應之實作能力，且為可直接轉訓Revit建模的2D繪圖底子。職稱無資深/主管字樣，通過G6。非帆宣。卡點同上：現居台北，G2銅鑼全實體到班與G3無宿舍僅5000租屋補助為首要必問項；另需確認G1校名科系畢業年份與G4旺季加班接受度。"
+    },
+    {
+      "name": "Wu Zheng-Xun（吳姓，LinkedIn顯示名為 kudo 0，本名見公開摘要）",
+      "headline": "Tier 2｜繪圖工程師（機械製造，機械繪圖）",
+      "company": "裕力機械股份有限公司（台中市西屯區工業區九路10號，台中工業區廠）",
+      "location": "台中",
+      "email": null,
+      "phone": null,
+      "linkedin_url": "https://tw.linkedin.com/in/kudo-0-8012a9368",
+      "source_url": "https://tw.linkedin.com/in/kudo-0-8012a9368",
+      "fit_score": 69,
+      "recruitability_class": "CONTACT_AFTER_CONFIRMATION",
+      "evidence": "錨點①公司：裕力機械股份有限公司（台中工業區，瓦楞紙板機械製造，公司地址與廠址經公開公司資料查證）；錨點②職稱：繪圖工程師，公開摘要描述為 machinery draftsperson with manufacturing background、specializes in design optimization for cost efficiency；錨點③地點：台中——本組人選中地緣最佳，台中西屯至苗栗銅鑼同屬中部通勤帶，G2與G3兩個最常見卡點壓力最低。機械繪圖屬客戶科系順位②機械對應之實作能力，2D/3D繪圖工具能力符合放寬後證據標準。職稱無資深/主管字樣，通過G6。非帆宣。身分錨點弱點：LinkedIn顯示名為暱稱 kudo 0，本名僅出現於公開摘要，接觸時須先確認本人身分。待確認：G1學歷校名科系畢業年份、G4加班接受度、G5機車駕照與無塵室接受度。"
+    }
+  ],
+  "run_summary": "【路由與鎖定】Route=ENG_CONSTRUCTION（無Secondary，軟體證據不足30%）。SENIORITY=entry（可至junior/mid，經理副理以上排除）；EMPLOYMENT_MODE=permanent+onsite；EVIDENCE_MODE=role（本輪核心轉向：以可查證的公開職稱取代前兩輪的科系＋畢業年份）；OVERLAYS=SHIFT_OR_ATTENDANCE、VOLUME_HIRING、CONFIDENTIAL_ROLE。ARCHETYPE_LOCKED=true。\n\n【校準結果】CALIBRATION_PASSED_4_OF_5。5位樣本：①Chui Hung Chiu（Tier2，允利實業CAD，國立聯合大學）MATCH ②TzuMing Su蘇慈銘（Tier3，亞翔工程空調工程師）MATCH ③Wu Zheng-Xun／kudo 0（Tier2，裕力機械繪圖工程師，台中）MATCH ④CHIANG MENGLING（Tier2，世久營造探勘繪圖工程師，德霖科大）MATCH ⑤Hsien Shu Huang（Tier2，繪圖工程師，摘要稱由工地安衛轉5D施工圖、works independently）UNCERTAIN——公開摘要無任何公司錨點，只有姓名＋職稱＋技能，未達『姓名＋兩個一致錨點』最低身分解析門檻，且『獨立接案』與本案正職全實體到班相衝突，依規格不得寫入Candidate Pool。故輸出的第5位改列同批次中身分錨點完整的Eliza chiang（萬德營造繪圖工程師）。\n\n【本輪要驗證的核心問題：Tier2/3路徑在『可驗證身分』上是否真的改善？答案是——有，而且是決定性的改善】前兩輪押『電機/機械/工設科系＋近兩年畢業生』0/5、0/5，失敗主因是三種false-positive：在學生型（G1畢業狀態公開不可查證）、工具訊號錯位型、職訓來源零具名型。本輪5位全部具備『姓名＋現職公司＋職稱』三錨點起跳，其中3位另有學校或公司登記地址可交叉查證（允利實業統編24632168桃園中壢、裕力機械台中工業區、德霖科大／國立聯合大學）。更關鍵的是：在職者的身分本身就解決了G1『畢業非在學』這一半——前兩輪最致命的淘汰理由在本輪自動消失，只剩『校名科系畢業年份』一項待問。結論：Tier2/3職稱路徑相較科系＋畢業年份路徑，在可驗證身分上從『幾乎為零』提升到『5/5可查證』，本輪假設成立。\n\n【Tier分布】Tier2（繪圖工程人才）4位、Tier3（MEP工程人才）1位、Tier1（真正BIM人才）0位——本輪未動用Tier1的1個名額。Tier1路徑另有觀察：查得許家誠（BIM Consultant，MEP drawing＋Revit＋AutoCAD）確實可被職稱搜尋命中，證明該路徑有效，但他已存在於Candidate Memory Ledger中，屬律准案engineering-design-engineer-hsinchu的人選，跨客戶不得搬移，故未列入。\n\n【重大發現：Tier2查詢類別與律准案高度重疊，去重必須嚴格執行】Yahoo X-ray『site:tw.linkedin.com/in 繪圖工程師』首頁7筆中有4筆已在Ledger內（林語欣／華懋科技Desicca、Jane Tsai／士林電機、吳怡蓉／建國工程、Ping Hua Huang／和鑫工程顧問），全部登記於律准科技的engineering-design-engineer-hsinchu案下。依增量規則一律記為CROSS_SOURCE_DUPLICATE，不計入NEW_UNIQUE_RAW_LEAD；且依閘門『原則上兩案候選人池不得互相搬移』亦不得改掛本案。該查詢類別對本案的重複率約57%，建議下輪加地點限定詞或改押Tier3以降低重疊。本輪5位全部為NEW_UNIQUE_RAW_LEAD。\n\n【排除紀錄】陳祖揚（廠務空調資深工程師，美光科技，苗栗）——雖非封鎖名單所列，但美光為本案實際進駐廠區之場域所有者，自其挖角等同動終端客戶的人，且職稱含『資深工程師』觸及G6，判MISMATCH不採用。顏震宇（冷凍空調工程技師，WSP）——G6明列資深技師排除。廖奕誠（Senior HVAC Design Engineer）、Chester Wang（Facility Integration Sr. Engineer）、Carey Yeh（三菱重工＋台北101完整經歷）——職稱明顯資深，不在5位試跑名額內使用。聯合大學查詢類別本輪產出以教授為主（Chun-Yu Cho、張良漢、林惠娟、洪偉肯等），全數G6排除，該查詢類別對本案標記低產出。帆宣系統科技：本輪0接觸、0列入、未作為擴張節點。\n\n【來源與查詢】Query Family四類皆用過：EXACT_TITLES（繪圖工程師／空調工程師／廠務工程師／機電工程師）、ADJACENT_TITLES（CAD Engineer／Mechanical Drafter／製圖工程師／配管工程師／施工圖）、SKILL_RESPONSIBILITY（AutoCAD＋機電圖說＋機電繪圖）、TARGET_COMPANY／地緣（苗栗、竹南、台中、國立聯合大學）。共執行13組查詢。來源類型4類：Search Engine（內建WebSearch）、LinkedIn public indexed（Yahoo TW X-ray）、公司官網與公司登記資料（允利官網、裕力官網、霖興、公司網／findcompany）、職稱與地緣交叉查證。技術限制實測：內建WebSearch對中文姓名企業命中率低（多數結果為香港jobsdb雜訊），Yahoo TW X-ray為本輪唯一穩定可用的中文檢索管道，共用約9次未觸發節流；Cake X-ray（site:www.cake.me）本輪0具名個人檔案，只回職缺分類頁，標記SEARCHED_NOT_FOUND；tw.linkedin.com個人頁全程未登入、未開啟、未繞牆，僅引用搜尋引擎公開摘要。\n\n【聯絡資料】依規定僅對通過校準者做公開查找，且不猜Email格式。Chui Hung Chiu與TzuMing Su已執行姓名＋公司＋email／電話／作品交叉查詢，兩人皆為CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH。5位人選的email與phone一律填null。DIRECT_EMAIL_VERIFIED=0、DIRECT_PHONE_VERIFIED=0、QUALIFIED_EMAIL_READY=0，本輪AUTO_OUTREACH_TARGET_MISSED。5位全部進LINKEDIN_MANUAL_QUEUE，需由顧問以人工方式於LinkedIn接觸。\n\n【為什麼停在5位而非10-20位】閘門檔【本輪產出要求】明文『本輪為試跑，只要5位，用來檢視新策略的人選品質，不是正式批量』，並重申『不是正式批量』。故校準雖通過4/5，仍依顧問設定之本輪範圍停在5位，未展開10-20位正式批量搜尋。Tier2/3路徑已驗證有效，批量擴張待顧問看過這5位品質後裁示；建議下輪批量時把地點詞（台中、苗栗、竹南、彰化、新竹）直接寫進query以提高G2/G3可行率，並先跑Ledger去重避免再撞到律准案人選。\n\n【仍未解且會影響本案成敗的結構性問題】朝陽科大系辦回覆已指出土木營建市場缺工、應屆生畢業即就業；本輪改押在職繪圖／機電人才確實找得到人，但這批人現職穩定，本案『無經驗線』薪資帶（兩份客戶文件矛盾、35,000–43,000與40,833–50,167未擇一）對他們是否具吸引力仍屬未知，不得預設答案。薪資口徑未經客戶擇一確認前，接觸時一律只能說『依學歷、學校層級與科系分級表核定，實際數字由顧問後續與你確認』。此外弘昌『有經驗人選用人需求表』仍未取得，Tier1人選無法處理。"
+}

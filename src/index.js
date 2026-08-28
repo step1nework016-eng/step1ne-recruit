@@ -7501,6 +7501,213 @@ export default {
         return json(request, { ok: true, job });
       }
 
+      // ── 招募職缺頁的「查看／編輯 JD」彈窗 ──────────────────────────
+      // JD 對外文案（標題、職缺介紹、工作內容、必要條件…）跟客戶在用人需求表
+      // 填的內容（client_intro／hiring_manager／main_duties／required_conditions
+      // 這些欄位）是兩件不同的事：前者是候選人在網站上看到的行銷文案，後者是
+      // 客戶給的原始需求（拿來簡報跟給阿財篩選用）。這兩組欄位長期以來是分開的——
+      // jd_spec_json 是新開的欄位，跟 jobs 表原本那批 client_* / main_duties 等
+      // 用人需求表欄位完全不共用，改這裡不會動到客戶портal 填的資料，反之亦然。
+      // 對外文案原本只活在發布當下產生的靜態頁 HTML 裡，發布之後就沒有任何
+      // 資料庫紀錄跟得上——這裡把它接回 jobs.jd_spec_json，往後每次改動都留得住。
+      const JD_SPEC_KEYS = ['title', 'subtitle', 'page_title', 'description', 'keywords',
+        'og_title', 'og_desc', 'intro', 'tags', 'locations', 'locality', 'region',
+        'must_skills', 'benefits', 'spec', 'duties', 'must', 'plus', 'why', 'faq',
+        'industry', 'card_meta', 'card_desc', 'employment', 'salary_min', 'salary_max',
+        'years_min', 'client_name'];
+
+      // 職缺頁不是全部都是用標準樣板產生的——有些是更早手刻、或客製版面
+      // （例如某些頁面多出「適合什麼樣的人」這種標準樣板完全沒有的區塊）。
+      // 這裡先掃一次線上頁面的 <h2> 段落標題，跟標準樣板會產生的那組比對，
+      // 多出來的就是「這頁重新產生會被砍掉」的內容——存檔前一定要讓顧問先看到。
+      const JD_STANDARD_H2 = ['職缺條件一覽', '工作內容', '應徵條件', '為什麼選擇這個機會',
+        '應徵流程', '立即應徵', '常見問題'];
+      const jdStripTags = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+
+      async function scrapeLiveJobPage(slug) {
+        let html;
+        try {
+          const res = await fetch(`https://step1ne.com/jobs/${slug}/`, { cf: { cacheTtl: 0 } });
+          if (!res.ok) return null;
+          html = await res.text();
+        } catch { return null; }
+
+        const h2s = [...html.matchAll(/<h2>([^<]*)<\/h2>/g)].map((m) => m[1].trim());
+        const extraSections = h2s.filter((h) => !JD_STANDARD_H2.includes(h));
+
+        const spec = {};
+        const h1m = html.match(/<h1[^>]*>([\s\S]*?)<span class="h1-sub">([\s\S]*?)<\/span><\/h1>/);
+        if (h1m) { spec.title = jdStripTags(h1m[1]); spec.subtitle = jdStripTags(h1m[2]); }
+        const introm = html.match(/<h1[\s\S]*?<\/h1>\s*<p[^>]*>([\s\S]*?)<\/p>/);
+        if (introm) spec.intro = jdStripTags(introm[1]);
+        const descm = html.match(/<meta name="description" content="([^"]*)"/);
+        if (descm) spec.description = descm[1];
+
+        const dlm = html.match(/<dl class="spec">([\s\S]*?)<\/dl>/);
+        if (dlm) {
+          const rows = [...dlm[1].matchAll(/<dt>([\s\S]*?)<\/dt>\s*<dd>([\s\S]*?)<\/dd>/g)]
+            .map((m) => [jdStripTags(m[1]), jdStripTags(m[2])]);
+          if (rows.length) spec.spec = rows;
+        }
+
+        const dutiesSecM = html.match(/<h2>工作內容<\/h2>([\s\S]*?)(<h2>|<\/section>)/);
+        if (dutiesSecM) {
+          const chunk = dutiesSecM[1];
+          const groups = [...chunk.matchAll(/<h3>([\s\S]*?)<\/h3>\s*<ul class="duties">([\s\S]*?)<\/ul>/g)]
+            .map((m) => ({ h: jdStripTags(m[1]), items: [...m[2].matchAll(/<li>([\s\S]*?)<\/li>/g)].map((x) => jdStripTags(x[1])) }));
+          if (groups.length) {
+            spec.duties = groups;
+          } else {
+            const flat = [...chunk.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((x) => jdStripTags(x[1]));
+            if (flat.length) spec.duties = [{ h: '', items: flat }];
+          }
+        }
+
+        const reqSecM = html.match(/<h2>應徵條件<\/h2>([\s\S]*?)(<h2>|<\/section>)/);
+        if (reqSecM) {
+          const chunk = reqSecM[1];
+          const mustM = chunk.match(/必要條件<\/div>\s*<ul class="duties">([\s\S]*?)<\/ul>/);
+          if (mustM) spec.must = [...mustM[1].matchAll(/<li>([\s\S]*?)<\/li>/g)].map((x) => jdStripTags(x[1]));
+          const plusM = chunk.match(/加分條件<\/div>\s*<ul class="duties">([\s\S]*?)<\/ul>/);
+          if (plusM) spec.plus = [...plusM[1].matchAll(/<li>([\s\S]*?)<\/li>/g)].map((x) => jdStripTags(x[1]));
+        }
+
+        const whySecM = html.match(/<h2>為什麼選擇這個機會<\/h2>([\s\S]*?)(<h2>|<\/section>)/);
+        if (whySecM) {
+          const items = [...whySecM[1].matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/g)]
+            .map((m) => ({ h: jdStripTags(m[1]), p: jdStripTags(m[2]) }));
+          if (items.length) spec.why = items;
+        }
+
+        const faqSecM = html.match(/<h2>常見問題<\/h2>([\s\S]*?)(<h2>|<\/section>)/);
+        if (faqSecM) {
+          const pairs = [...faqSecM[1].matchAll(/<span>([\s\S]*?)<\/span>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/g)]
+            .map((m) => [jdStripTags(m[1]), jdStripTags(m[2])]);
+          if (pairs.length) spec.faq = pairs;
+        }
+
+        return { spec, extraSections, mismatched: extraSections.length > 0 };
+      }
+
+
+      if (p.startsWith('/admin/jobs/') && p.endsWith('/content') && request.method === 'GET') {
+        const slug = decodeURIComponent(p.slice('/admin/jobs/'.length, -'/content'.length));
+        const job = await env.DB.prepare(
+          `SELECT slug, title, jd_spec_json, jd_regen_pending, jd_updated_at, jd_updated_by,
+                  jd_regen_last_at, jd_regen_last_error, jd_ai_request, jd_ai_requested_at,
+                  jd_ai_requested_by FROM jobs WHERE slug = ?`).bind(slug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        let spec = null, source = 'none';
+        if (job.jd_spec_json) {
+          try { spec = JSON.parse(job.jd_spec_json); source = 'saved'; } catch { spec = null; }
+        }
+        if (!spec) {
+          // 還沒存過——找發布這個職缺時的原始收件單當底稿，讓顧問不用從零打字。
+          const intake = await env.DB.prepare(
+            `SELECT draft_json FROM job_intakes WHERE published_slug = ?
+              ORDER BY updated_at DESC LIMIT 1`).bind(slug).first();
+          if (intake && intake.draft_json) {
+            try { spec = JSON.parse(intake.draft_json); source = 'backfilled_from_intake'; } catch { spec = null; }
+          }
+        }
+        let mismatched = false, extraSections = [];
+        if (!spec) {
+          // 收件單也沒有——這批多半是比 job_intakes 流程更早、或用別的方式
+          // 上架的職缺（人工建立、Telegram 舊流程）。直接掃線上頁面湊一份底稿，
+          // 顧問至少看得到現在網站上寫什麼，不用面對一片空白重打一次。
+          const scraped = await scrapeLiveJobPage(slug);
+          if (scraped && Object.keys(scraped.spec).length) {
+            spec = scraped.spec; source = 'scraped_live_page';
+            mismatched = scraped.mismatched; extraSections = scraped.extraSections;
+          }
+        }
+        if (!spec) { spec = { slug, title: job.title }; source = 'none'; }
+        return json(request, {
+          ok: true, source, spec, mismatched, extraSections,
+          pending: !!job.jd_regen_pending,
+          updated_at: job.jd_updated_at, updated_by: job.jd_updated_by,
+          regen_last_at: job.jd_regen_last_at, regen_last_error: job.jd_regen_last_error,
+          ai_request: job.jd_ai_request, ai_requested_at: job.jd_ai_requested_at,
+          ai_requested_by: job.jd_ai_requested_by,
+        });
+      }
+
+      // 手動改欄位——存了就直接標成待套用，本機背景腳本會撿去重新產生靜態頁
+      // 並自動 git push（顧問已經確認要這個行為：改完不用再多按一次「上線」）。
+      if (p.startsWith('/admin/jobs/') && p.endsWith('/content') && request.method === 'POST') {
+        const slug = decodeURIComponent(p.slice('/admin/jobs/'.length, -'/content'.length));
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const job = await env.DB.prepare(`SELECT jd_spec_json FROM jobs WHERE slug = ?`).bind(slug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        let spec = {}, hadSaved = !!job.jd_spec_json;
+        if (job.jd_spec_json) { try { spec = JSON.parse(job.jd_spec_json) || {}; } catch { spec = {}; } }
+        if (!Object.keys(spec).length) {
+          const intake = await env.DB.prepare(
+            `SELECT draft_json FROM job_intakes WHERE published_slug = ?
+              ORDER BY updated_at DESC LIMIT 1`).bind(slug).first();
+          if (intake && intake.draft_json) { try { spec = JSON.parse(intake.draft_json) || {}; } catch { spec = {}; } }
+        }
+        // 第一次存檔（之前從沒存過、也沒有收件單底稿）才需要檢查——這種職缺
+        // 唯一的內容來源是線上頁面本身，重新產生前一定要確認頁面不是客製版面，
+        // 不然「改個薪資」會把手刻的區塊整段砍掉，而且不會有任何警告。
+        if (!hadSaved && !Object.keys(spec).length) {
+          const scraped = await scrapeLiveJobPage(slug);
+          if (scraped && scraped.mismatched && !b.confirm_mismatch) {
+            return json(request, { ok: false, error: 'template_mismatch',
+              mismatched: true, extraSections: scraped.extraSections,
+              message: `這個職缺頁不是用標準樣板做的，多了：${scraped.extraSections.join('、')}。存檔會用標準樣板整頁重新產生，這些內容會不見。確定要繼續請再送一次並帶 confirm_mismatch。` }, 409);
+          }
+        }
+        const fields = b.fields || {};
+        const changed = [];
+        for (const k of JD_SPEC_KEYS) {
+          if (!(k in fields)) continue;
+          if (JSON.stringify(spec[k] ?? null) === JSON.stringify(fields[k] ?? null)) continue;
+          spec[k] = fields[k]; changed.push(k);
+        }
+        if (!changed.length) return json(request, { ok: false, error: '沒有欄位變更' }, 400);
+        spec.slug = slug;
+        // 未簽約客戶的匿名規則對這裡一樣適用——顧問手改文案也可能不小心打進客戶全名。
+        const terms = await clientNameTerms(env);
+        const blob = JSON.stringify(fields);
+        const nameHits = hitsClientNames(blob, terms);
+        if (nameHits.length) {
+          return json(request, { ok: false,
+            error: `文案裡出現了客戶名稱（${nameHits.join('、')}），這個客戶對外要匿名，請改掉再存` }, 400);
+        }
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `UPDATE jobs SET jd_spec_json=?, jd_regen_pending=1, jd_updated_at=?, jd_updated_by=?
+            WHERE slug=?`
+        ).bind(JSON.stringify(spec), now, b.by || null, slug).run();
+        await notify(env,
+          `✏️ <b>JD 更新</b>　${spec.title || slug}\n改了：${changed.join('、')}\n`
+          + `由 ${b.by || '顧問'} 從招募職缺頁直接修改，本機腳本最多 15 分鐘內會重新產生頁面並自動上線。`,
+          { message_thread_id: THREAD.system });
+        return json(request, { ok: true, changed, pending: true });
+      }
+
+      // 交給 AI 重擬——只記錄請求，不自動套用。AI 寫出來的東西沒人看過就直接
+      // 上正式站風險太高，這條路一定要人確認過才會進到上面那支「存檔」端點。
+      if (p.startsWith('/admin/jobs/') && p.endsWith('/ai-request') && request.method === 'POST') {
+        const slug = decodeURIComponent(p.slice('/admin/jobs/'.length, -'/ai-request'.length));
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const note = String(b.note || '').trim();
+        if (!note) return json(request, { ok: false, error: '要交給 AI 重擬，請先寫一句話說要改什麼' }, 400);
+        const job = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(slug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `UPDATE jobs SET jd_ai_request=?, jd_ai_requested_at=?, jd_ai_requested_by=? WHERE slug=?`
+        ).bind(note, now, b.by || null, slug).run();
+        await notify(env,
+          `🤖 <b>顧問要求重擬 JD</b>　${job.title || slug}\n`
+          + `${b.by || '顧問'}：${note}\n`
+          + `這則不會自動套用，需要有人看過重擬結果、確認沒問題再存檔上線。`,
+          { message_thread_id: THREAD.system });
+        return json(request, { ok: true });
+      }
+
       // 更新分類。⚠️ 客戶對象一改，三個連動欄位要一起改，
       // 不能讓顧問一個一個設——漏設一個就是隱私外洩。
       if (p.startsWith('/admin/jobs/') && request.method === 'POST') {
@@ -7991,7 +8198,20 @@ export default {
             WHERE is_active = 1 AND platform <> 'line_community' ORDER BY platform, label`).all();
         const { results: jobs } = await env.DB.prepare(
           `SELECT slug, title FROM jobs WHERE COALESCE(status,'open') IN ('open','active') ORDER BY slug`).all();
-        return json(request, { ok: true, month, accounts, jobs,
+        // 「這個缺最近有人選在跟阿財面談」——排程建議要照這個排優先順序，
+        // 不是照發文次數。發文次數少不代表現在該推：有的缺本來就冷門，
+        // 硬推也接不住人；有人選正在談，才是「現在發有機會接住他」的訊號。
+        // interview_started_at 是實際開始面談的時間點，比 created_at 準——
+        // 有些應徵是投了履歷但還沒開始談，那個不算「近期有人選面談」。
+        const { results: recentIv } = await env.DB.prepare(
+          `SELECT job_slug, COUNT(*) AS n FROM applications
+            WHERE interview_started_at IS NOT NULL
+              AND interview_started_at >= datetime('now','+8 hours','-14 days')
+              AND (interview_mode IS NULL OR interview_mode <> 'consultant_call')
+            GROUP BY job_slug`).all();
+        const recentInterviews = {};
+        (recentIv || []).forEach((r) => { recentInterviews[r.job_slug] = r.n; });
+        return json(request, { ok: true, month, accounts, jobs, recentInterviews,
                                planned: planned || [], actual: actual || [] });
       }
 
