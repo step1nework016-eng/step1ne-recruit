@@ -742,6 +742,62 @@ async function getOrCreateClientTopic(env, company) {
   }
 }
 
+// 2026-09-01 加：電洽新增人選整套 TG bot 對話用的小工具。
+// 跟 getOrCreateClientTopic() 是同一個模式，但存進通用的 bot_topics 表
+// （key/topic_id），不專屬客戶——這支 topic 是「顧問電洽新增人選」用的，
+// 只建一次，之後都固定用同一個。
+async function getOrCreateTopic(env, key, name) {
+  const row = await env.DB.prepare(`SELECT topic_id FROM bot_topics WHERE key=?`).bind(key).first();
+  if (row) return row.topic_id;
+  if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return null;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/createForumTopic`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: env.TG_CHAT_ID, name }),
+      signal: AbortSignal.timeout(6000),
+    });
+    const rd = await r.json().catch(() => ({}));
+    if (!rd.ok) return null;
+    const topicId = rd.result.message_thread_id;
+    await env.DB.prepare(`INSERT INTO bot_topics (key, topic_id) VALUES (?,?)`).bind(key, topicId).run();
+    return topicId;
+  } catch {
+    return null;
+  }
+}
+
+// Worker 每次呼叫都是全新的、沒有記憶——「現在對話走到哪一步」存在
+// tg_bot_sessions（chat_id+user_id 當 key），每一則新訊息進來都要重新查一次。
+async function ncSession(env, chatId, userId) {
+  const row = await env.DB.prepare(
+    `SELECT step, data FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`
+  ).bind(String(chatId), String(userId)).first();
+  if (!row) return null;
+  let data = {};
+  try { data = JSON.parse(row.data || '{}'); } catch {}
+  return { step: row.step, data };
+}
+async function ncSetSession(env, chatId, userId, step, data) {
+  const now = nowTaipei();
+  await env.DB.prepare(
+    `INSERT INTO tg_bot_sessions (chat_id, user_id, step, data, updated_at) VALUES (?,?,?,?,?)
+     ON CONFLICT(chat_id, user_id) DO UPDATE SET step=excluded.step, data=excluded.data, updated_at=excluded.updated_at`
+  ).bind(String(chatId), String(userId), step, JSON.stringify(data || {}), now).run();
+}
+async function ncClearSession(env, chatId, userId) {
+  await env.DB.prepare(`DELETE FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`)
+    .bind(String(chatId), String(userId)).run();
+}
+async function ncSend(env, chatId, threadId, text, replyMarkup) {
+  await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId, message_thread_id: threadId, text,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    }),
+  }).catch(() => {});
+}
+
 // 待審核通知：附履歷 + 按鈕，讓顧問在 Telegram 上直接核准/婉拒，不用開網頁後台。
 // 回傳送出的 Telegram message_id，之後 callback 要編輯同一則訊息把按鈕拿掉。
 async function notifyScreening(env, app, job) {
@@ -4389,6 +4445,163 @@ export default {
       }
       let update;
       try { update = await request.json(); } catch { return new Response('ok'); }
+
+      // ── 電洽新增人選：TG bot 多輪對話（2026-09-01 加）──
+      // 顧問電話洽談完，不用開網頁後台，直接在這個獨立 topic 走完整套：
+      // /new 開始 → 貼逐字稿 → 問履歷（有就傳檔案）→ 選客戶按鈕 → 選職缺按鈕
+      // （客戶/職缺清單即時查資料庫，新增的會自動出現，不是寫死的）。
+      // 收齊後呼叫既有的 /admin/pipeline/manual-forward——跟網頁「新增人選」
+      // 按鈕完全同一支端點，不重寫一份新邏輯：AI 初篩報告顧問版沿用本機
+      // consultant_call_report_tick.py 排程，不用另外做。
+      // 放在最前面處理，跟其他 topic 的邏輯（顧問人選回報區等）互不影響。
+      {
+        const callIntakeTopic = await getOrCreateTopic(env, 'call_intake', '📞 電洽新增人選');
+        const rm2 = update.message;
+        const cq2 = update.callback_query;
+
+        if (rm2 && callIntakeTopic && Number(rm2.message_thread_id) === callIntakeTopic
+            && String(rm2.text || '').trim() === '/new') {
+          await ncSetSession(env, rm2.chat.id, rm2.from.id, 'transcript', {});
+          await ncSend(env, rm2.chat.id, callIntakeTopic, '請貼上這通電洽的逐字稿（一大串文字都可以，直接貼上來）。');
+          return new Response('ok');
+        }
+
+        if (rm2 && callIntakeTopic && Number(rm2.message_thread_id) === callIntakeTopic
+            && !(rm2.from && rm2.from.is_bot)) {
+          const sess = await ncSession(env, rm2.chat.id, rm2.from.id);
+          if (sess) {
+            if (sess.step === 'transcript' && String(rm2.text || '').trim()) {
+              sess.data.transcript = rm2.text.trim();
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'resume_ask', sess.data);
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。有履歷要一起附上嗎？', {
+                inline_keyboard: [[{ text: '有，我上傳', callback_data: 'nc_resume_yes' },
+                                    { text: '沒有，跳過', callback_data: 'nc_resume_no' }]],
+              });
+              return new Response('ok');
+            }
+            if (sess.step === 'resume_file' && rm2.document) {
+              try {
+                const fr = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${rm2.document.file_id}`);
+                const fd = await fr.json();
+                if (fd.ok) {
+                  const fileUrl = `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${fd.result.file_path}`;
+                  const fileResp = await fetch(fileUrl);
+                  const buf = await fileResp.arrayBuffer();
+                  let bin = '';
+                  const bytes = new Uint8Array(buf);
+                  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                  sess.data.resume_b64 = btoa(bin);
+                  sess.data.resume_name = rm2.document.file_name || 'resume';
+                  sess.data.resume_mime = rm2.document.mime_type || 'application/octet-stream';
+                }
+              } catch (e) { /* 履歷抓不到不擋主流程，之後可以在網頁補傳 */ }
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '履歷收到了。這位人選姓名？');
+              return new Response('ok');
+            }
+            if (sess.step === 'name' && String(rm2.text || '').trim()) {
+              sess.data.name = rm2.text.trim();
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'contact', sess.data);
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '電話或 Email（填一個就好）？');
+              return new Response('ok');
+            }
+            if (sess.step === 'contact' && String(rm2.text || '').trim()) {
+              const v = rm2.text.trim();
+              if (v.includes('@')) sess.data.email = v; else sess.data.phone = v;
+              const { results: companies } = await env.DB.prepare(
+                `SELECT id, display_name FROM client_companies ORDER BY display_name LIMIT 20`).all();
+              if (!companies || !companies.length) {
+                await ncSend(env, rm2.chat.id, callIntakeTopic, '目前系統裡沒有任何客戶資料，沒辦法選——先跟顧問後台確認客戶名單。');
+                await ncClearSession(env, rm2.chat.id, rm2.from.id);
+                return new Response('ok');
+              }
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'client', sess.data);
+              const rows = [];
+              for (let i = 0; i < companies.length; i += 2) {
+                rows.push(companies.slice(i, i + 2).map((c) => ({ text: c.display_name, callback_data: 'nc_client:' + c.id })));
+              }
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '這位人選要應徵哪個客戶？', { inline_keyboard: rows });
+              return new Response('ok');
+            }
+          }
+        }
+
+        if (cq2 && String(cq2.data || '').startsWith('nc_')) {
+          const ans2 = async (t) => {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: cq2.id, text: t || '' }),
+            }).catch(() => {});
+          };
+          const chatId = cq2.message.chat.id;
+          const threadId = cq2.message.message_thread_id;
+          const sess = await ncSession(env, chatId, cq2.from.id);
+          if (!sess) { await ans2('這個流程已經過期了，請重新 /new 開始'); return new Response('ok'); }
+
+          if (cq2.data === 'nc_resume_yes') {
+            await ans2();
+            await ncSetSession(env, chatId, cq2.from.id, 'resume_file', sess.data);
+            await ncSend(env, chatId, threadId, '請上傳履歷檔案（PDF/Word 都可以）。');
+            return new Response('ok');
+          }
+          if (cq2.data === 'nc_resume_no') {
+            await ans2();
+            await ncSetSession(env, chatId, cq2.from.id, 'name', sess.data);
+            await ncSend(env, chatId, threadId, '好，這位人選姓名？');
+            return new Response('ok');
+          }
+          if (cq2.data.startsWith('nc_client:')) {
+            const companyId = cq2.data.slice('nc_client:'.length);
+            await ans2();
+            sess.data.company_id = companyId;
+            const { results: jobs } = await env.DB.prepare(
+              `SELECT slug, title FROM jobs WHERE company_id=? AND status NOT IN ('closed','client_draft','pending_review') ORDER BY title LIMIT 20`
+            ).bind(companyId).all();
+            if (!jobs || !jobs.length) {
+              await ncSend(env, chatId, threadId, '這家客戶目前沒有開放中的職缺，先跟顧問後台確認。');
+              await ncClearSession(env, chatId, cq2.from.id);
+              return new Response('ok');
+            }
+            await ncSetSession(env, chatId, cq2.from.id, 'job', sess.data);
+            const rows = jobs.map((j) => [{ text: j.title, callback_data: 'nc_job:' + j.slug }]);
+            await ncSend(env, chatId, threadId, '哪個職缺？', { inline_keyboard: rows });
+            return new Response('ok');
+          }
+          if (cq2.data.startsWith('nc_job:')) {
+            const jobSlug = cq2.data.slice('nc_job:'.length);
+            await ans2('處理中…');
+            const who = (cq2.from && (cq2.from.username || cq2.from.first_name)) || '顧問';
+            const payload = {
+              source_kind: 'new', job_slug: jobSlug, consent_confirmed: true,
+              name: sess.data.name, email: sess.data.email || '', phone: sess.data.phone || '',
+              call_notes: sess.data.transcript || '', by: who,
+              source_channel: 'TG 電洽新增',
+            };
+            if (sess.data.resume_b64) {
+              payload.resume_b64 = sess.data.resume_b64;
+              payload.resume_name = sess.data.resume_name;
+              payload.resume_mime = sess.data.resume_mime;
+            }
+            try {
+              const cr = await fetch('https://step1ne-recruit-api.aiagentg888.workers.dev/admin/pipeline/manual-forward', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
+                body: JSON.stringify(payload),
+              });
+              const crd = await cr.json().catch(() => ({}));
+              if (crd.ok) {
+                await ncSend(env, chatId, threadId, `✅ 建好了：${sess.data.name}\n初篩報告大約 5 分鐘後會出現在人選卡片上（需要本機排程在跑）。`);
+              } else {
+                await ncSend(env, chatId, threadId, `❌ 失敗：${crd.error || '不知道為什麼'}`);
+              }
+            } catch (e) {
+              await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩重新 /new 再試一次。');
+            }
+            await ncClearSession(env, chatId, cq2.from.id);
+            return new Response('ok');
+          }
+        }
+      }
 
       // ── 顧問在「顧問人選回報區」講的話 ──
       //
