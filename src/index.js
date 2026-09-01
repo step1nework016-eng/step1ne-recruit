@@ -564,7 +564,7 @@ async function fileB64(env, fileId) {
     b64 = (results || []).map((r) => r.b64).join('');
   }
   if (!b64) return null;
-  return { filename: f.filename || 'attachment.pdf', content: b64 };
+  return { filename: f.filename || 'attachment.pdf', content: b64, mime: f.mime || 'application/octet-stream' };
 }
 
 // 開發信跟給候選人的信不是同一種東西：
@@ -9882,6 +9882,46 @@ export default {
              WHERE id=?`
         ).bind(newNote.slice(0, 4000), text || null, fileId, callSummaryMd, b.application_id).run();
         return json(request, { ok: true, report_queued: true, call_summary_md: callSummaryMd });
+      }
+
+      // ⚠️ 2026-09-01 加：補上面那個 bug 修好之前，已經卡在「有附件、沒有即時彙整」
+      // 狀態的舊資料（例如周丞恩）——不用叫顧問重傳一次檔案（會多打一筆歷史紀錄、
+      // 也會多觸發一次本機排程重跑），直接讀已存的附件重新產生 call_summary_md。
+      // 一次性補資料用途，之後有其他卡住的舊案子也能重複呼叫。
+      if (p === '/admin/application/call-note/backfill-summary' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.application_id) return json(request, { ok: false, error: '缺 application_id' }, 400);
+        const app = await env.DB.prepare(
+          `SELECT call_notes_file_id, consultant_call_notes FROM applications WHERE id=?`
+        ).bind(b.application_id).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        let textForAi = (app.consultant_call_notes || '').trim();
+        if (!textForAi && app.call_notes_file_id) {
+          const f = await fileB64(env, app.call_notes_file_id);
+          if (f) {
+            try {
+              const bytes = Uint8Array.from(atob(f.content), (c) => c.charCodeAt(0));
+              const md = await env.AI.toMarkdown([{ name: f.filename, blob: new Blob([bytes], { type: f.mime }) }]);
+              textForAi = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+            } catch (e) { textForAi = ''; }
+          }
+        }
+        if (!textForAi) return json(request, { ok: false, error: '沒有可用的電訪文字或附件' }, 400);
+        let callSummaryMd = null;
+        try {
+          const ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+            messages: [
+              { role: 'system', content: '你是獵頭顧問的助理，把顧問打的電訪筆記整理成重點條列，不要新增筆記裡沒提到的資訊，沒提到的欄位就寫「未提及」。用繁體中文回答，直接輸出，不要開場白。' },
+              { role: 'user', content: `請把下面這段電訪筆記整理成這六個標題各一段（每段2-3行以內）：\n重點狀況\n求職需求\n期望薪資\n離職原因\n優勢與劣勢\n顧問可再確認／可主動告知客戶的部分\n\n電訪筆記：\n${textForAi.slice(0, 4000)}` },
+            ],
+          });
+          callSummaryMd = (ai && (ai.response || ai.result)) ? String(ai.response || ai.result).trim() : null;
+        } catch (e) {
+          return json(request, { ok: false, error: '彙整產生失敗' }, 500);
+        }
+        await env.DB.prepare(`UPDATE applications SET call_summary_md=? WHERE id=?`)
+          .bind(callSummaryMd, b.application_id).run();
+        return json(request, { ok: true, call_summary_md: callSummaryMd });
       }
 
       // ── 人才池批次指派負責顧問 ──
