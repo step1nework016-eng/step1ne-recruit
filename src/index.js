@@ -9042,7 +9042,8 @@ export default {
             env.DB.prepare(
               `SELECT cf.company_id, cf.manual_stage, cf.manual_stage_note, cf.client_note,
                       cf.line_id_given, cf.forwarded_at, cc.display_name AS company_name,
-                      cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason
+                      cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason,
+                      cf.client_rejected_at, cf.client_reject_reason
                  FROM candidate_forwards cf LEFT JOIN client_companies cc ON cc.id = cf.company_id
                 WHERE cf.application_id=? ORDER BY cf.forwarded_at ASC`
             ).bind(a.id).all(),
@@ -9061,8 +9062,14 @@ export default {
             ).bind(a.id, f.company_id).first();
             const stageInfo = resolveStage(
               { manual_stage: f.manual_stage }, report, appts, placement, {});
-            const closed = placement && /^CLOSED_/.test(String(placement.stage || '').toUpperCase())
-              ? placement.stage.toUpperCase() : null;
+            // 2026-09-01 加：client_rejected_at 本來只會發一次 Telegram 通知，
+            // 追蹤頁完全沒讀這個欄位——顧問錯過那則通知，這張卡就會一直卡在
+            // 「客戶手上」看起來像還在進行中，其實客戶早就婉拒了。這裡把它也
+            // 當成一種「結案」，跟 CLOSED_* 一樣會讓這張卡落進「已結案」。
+            const closed = f.client_rejected_at
+              ? 'CLIENT_REJECTED'
+              : (placement && /^CLOSED_/.test(String(placement.stage || '').toUpperCase())
+                  ? placement.stage.toUpperCase() : null);
             return {
               company_id: f.company_id, client_name: f.company_name || '（未知客戶）',
               job_title: a.job_full_title || a.job_title, forwarded_at: f.forwarded_at,
@@ -9071,6 +9078,8 @@ export default {
               steps: stageInfo.steps, effective_index: stageInfo.effective_index,
               advisor_not_recommended_at: f.advisor_not_recommended_at || null,
               advisor_not_recommended_reason: f.advisor_not_recommended_reason || null,
+              client_rejected_at: f.client_rejected_at || null,
+              client_reject_reason: f.client_reject_reason || null,
             };
           }));
           const primaryPlacement = placements[0] || null;
@@ -9210,6 +9219,23 @@ export default {
         cards.push(...(standbyRes.results || []).map((r) => sourcedCard(r, 'standby')));
 
         return json(request, { ok: true, cards });
+      }
+
+      // 2026-09-01 加：顧問想即時看到「現在誰正在跟阿財面談」，不是只有面談
+      // 結束產出報告才看得到。interview_state='active' 本來就是這個標記
+      // （liveLoad() 已經在用它算「幾場面談在跑」），這裡補一支給人選清單，
+      // 不是只有數字。純讀取，不寫任何東西。
+      if (p === '/admin/interviews/live' && request.method === 'GET') {
+        const { results } = await env.DB.prepare(
+          `SELECT a.id AS application_id, a.name, a.job_slug, a.interview_started_at, a.owner,
+                  j.title AS job_title,
+                  (SELECT display_name FROM consultants c WHERE c.id = a.owner) AS owner_name
+             FROM applications a
+             LEFT JOIN jobs j ON j.slug = a.job_slug
+            WHERE a.interview_state = 'active'
+            ORDER BY a.interview_started_at ASC LIMIT 50`
+        ).all();
+        return json(request, { ok: true, interviews: results || [] });
       }
 
       // ── 下載存在 D1 裡的檔案（履歷等） ──
