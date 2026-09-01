@@ -9842,15 +9842,32 @@ export default {
         // 這裡用 Workers AI（env.AI，秒級回應，不用等本機）先產一份「重點彙整」
         // 存起來，送出當下就有東西可以看；正式報告還是走本機那套完整流程
         // （要交叉比對職缺/履歷），兩條路徑並行，不是取代關係。
-        // 只有純文字才能做——純上傳檔案的話這裡還沒有文字可以餵，等本機
-        // 排程把檔案內容抽出來一起處理。
+        // ⚠️ 2026-09-01 補：上面那句「只有純文字才能做」原本沒做完——顧問單純拖檔案
+        // 上傳（沒打字）時 text 是空的，即時彙整整段跳過，畫面上只留「附檔，內容由
+        // AI整理中」這句空話，顧問等到天荒地老都不會出現東西（Jacky 這裡實際卡住的
+        // 就是這個情境）。用 env.AI.toMarkdown 把附件先轉成文字再餵給同一支彙整，
+        // 這樣拖檔案跟打字兩條路都能秒出重點；toMarkdown 認不得的格式或轉換失敗就
+        // 放棄即時彙整（不擋主流程），本機排程那份完整報告一樣會照跑。
+        let textForAi = text;
+        if (!textForAi && b.file_b64) {
+          try {
+            const bytes = Uint8Array.from(atob(b.file_b64), (c) => c.charCodeAt(0));
+            const md = await env.AI.toMarkdown([
+              { name: b.file_name || 'upload', blob: new Blob([bytes], { type: b.file_mime || 'application/octet-stream' }) },
+            ]);
+            const extracted = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+            if (extracted) textForAi = extracted;
+          } catch (e) {
+            textForAi = '';
+          }
+        }
         let callSummaryMd = null;
-        if (text) {
+        if (textForAi) {
           try {
             const ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
               messages: [
                 { role: 'system', content: '你是獵頭顧問的助理，把顧問打的電訪筆記整理成重點條列，不要新增筆記裡沒提到的資訊，沒提到的欄位就寫「未提及」。用繁體中文回答，直接輸出，不要開場白。' },
-                { role: 'user', content: `請把下面這段電訪筆記整理成這六個標題各一段（每段2-3行以內）：\n重點狀況\n求職需求\n期望薪資\n離職原因\n優勢與劣勢\n顧問可再確認／可主動告知客戶的部分\n\n電訪筆記：\n${text.slice(0, 4000)}` },
+                { role: 'user', content: `請把下面這段電訪筆記整理成這六個標題各一段（每段2-3行以內）：\n重點狀況\n求職需求\n期望薪資\n離職原因\n優勢與劣勢\n顧問可再確認／可主動告知客戶的部分\n\n電訪筆記：\n${textForAi.slice(0, 4000)}` },
               ],
             });
             callSummaryMd = (ai && (ai.response || ai.result)) ? String(ai.response || ai.result).trim() : null;
