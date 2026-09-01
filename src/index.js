@@ -798,6 +798,35 @@ async function ncSend(env, chatId, threadId, text, replyMarkup) {
   }).catch(() => {});
 }
 
+// 2026-09-01 加：同名舊紀錄確認過是同一人之後，走這支——呼叫既有的
+// /admin/application/call-note（附加不覆蓋，時間戳記自動記錄「現在」），
+// 不是 manual-forward（那支是建新卡片，會重複）。
+async function ncSubmitMerge(env, sess, chatId, threadId, who) {
+  try {
+    const cr = await fetch('https://step1ne-recruit-api.aiagentg888.workers.dev/admin/application/call-note', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      body: JSON.stringify({
+        application_id: sess.data.existing_application_id,
+        text: sess.data.transcript || '',
+        by: who,
+        ...(sess.data.resume_b64
+          ? { file_b64: sess.data.resume_b64, file_name: sess.data.resume_name, file_mime: sess.data.resume_mime }
+          : {}),
+      }),
+    });
+    const crd = await cr.json().catch(() => ({}));
+    if (crd.ok) {
+      await ncSend(env, chatId, threadId,
+        `✅ 已整合進 ${sess.data.name} 的既有紀錄，這次電洽內容記錄在現在這個時間點，不會蓋掉之前的。正式報告會重新產生（約5分鐘，需本機排程在跑）。`);
+    } else {
+      await ncSend(env, chatId, threadId, `❌ 整合失敗：${crd.error || '不知道為什麼'}`);
+    }
+  } catch (e) {
+    await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩重新 /new 再試一次。');
+  }
+}
+
 // 待審核通知：附履歷 + 按鈕，讓顧問在 Telegram 上直接核准/婉拒，不用開網頁後台。
 // 回傳送出的 Telegram message_id，之後 callback 要編輯同一則訊息把按鈕拿掉。
 async function notifyScreening(env, app, job) {
@@ -4472,8 +4501,35 @@ export default {
           if (sess) {
             if (sess.step === 'transcript' && String(rm2.text || '').trim()) {
               sess.data.transcript = rm2.text.trim();
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。這位人選姓名？（先問名字是為了查有沒有舊紀錄，同一個人不會建重複）');
+              return new Response('ok');
+            }
+            // 2026-09-01 加：問完姓名先查有沒有同名舊紀錄，避免同一個人被重複
+            // 建成兩筆卡片（這正是之前「周丞恩／吳丞恩」事件的同類風險）。
+            // 找到就秀出來給顧問確認是不是同一人，是的話後面直接整合進舊紀錄
+            // （呼叫 /admin/application/call-note，附加不覆蓋），不是就照原流程建新卡片。
+            if (sess.step === 'name' && String(rm2.text || '').trim()) {
+              sess.data.name = rm2.text.trim();
+              const { results: dups } = await env.DB.prepare(
+                `SELECT id, job_slug, job_title, created_at FROM applications
+                  WHERE name = ? ORDER BY created_at DESC LIMIT 5`
+              ).bind(sess.data.name).all();
+              if (dups && dups.length) {
+                await ncSetSession(env, rm2.chat.id, rm2.from.id, 'dup_confirm', sess.data);
+                const lines = dups.map((d) => `・${d.job_title || d.job_slug}（${String(d.created_at).slice(0, 10)}）`).join('\n');
+                const rows = dups.slice(0, 3).map((d) => ([{
+                  text: '是同一人，整合進「' + (d.job_title || d.job_slug) + '」那筆',
+                  callback_data: 'nc_dup_yes:' + d.id,
+                }]));
+                rows.push([{ text: '不是，這是新的人選', callback_data: 'nc_dup_no' }]);
+                await ncSend(env, rm2.chat.id, callIntakeTopic,
+                  `找到同名的舊紀錄：\n${lines}\n\n是同一個人選嗎？是的話這次電洽內容會整合進舊紀錄（不會覆蓋，時間會記這一刻）；不是的話就當新人選繼續建。`,
+                  { inline_keyboard: rows });
+                return new Response('ok');
+              }
               await ncSetSession(env, rm2.chat.id, rm2.from.id, 'resume_ask', sess.data);
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。有履歷要一起附上嗎？', {
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '沒有找到同名舊紀錄，當新人選處理。有履歷要一起附上嗎？', {
                 inline_keyboard: [[{ text: '有，我上傳', callback_data: 'nc_resume_yes' },
                                     { text: '沒有，跳過', callback_data: 'nc_resume_no' }]],
               });
@@ -4495,14 +4551,14 @@ export default {
                   sess.data.resume_mime = rm2.document.mime_type || 'application/octet-stream';
                 }
               } catch (e) { /* 履歷抓不到不擋主流程，之後可以在網頁補傳 */ }
-              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '履歷收到了。這位人選姓名？');
-              return new Response('ok');
-            }
-            if (sess.step === 'name' && String(rm2.text || '').trim()) {
-              sess.data.name = rm2.text.trim();
+              const who = (rm2.from && (rm2.from.username || rm2.from.first_name)) || '顧問';
+              if (sess.data.existing_application_id) {
+                await ncSubmitMerge(env, sess, rm2.chat.id, callIntakeTopic, who);
+                await ncClearSession(env, rm2.chat.id, rm2.from.id);
+                return new Response('ok');
+              }
               await ncSetSession(env, rm2.chat.id, rm2.from.id, 'contact', sess.data);
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '電話或 Email（填一個就好）？');
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '履歷收到了。電話或 Email（填一個就好）？');
               return new Response('ok');
             }
             if (sess.step === 'contact' && String(rm2.text || '').trim()) {
@@ -4538,6 +4594,26 @@ export default {
           const sess = await ncSession(env, chatId, cq2.from.id);
           if (!sess) { await ans2('這個流程已經過期了，請重新 /new 開始'); return new Response('ok'); }
 
+          if (cq2.data.startsWith('nc_dup_yes:')) {
+            const existingId = cq2.data.slice('nc_dup_yes:'.length);
+            await ans2();
+            sess.data.existing_application_id = existingId;
+            await ncSetSession(env, chatId, cq2.from.id, 'resume_ask', sess.data);
+            await ncSend(env, chatId, threadId, '好，這次會整合進舊紀錄。有履歷要一起附上嗎？', {
+              inline_keyboard: [[{ text: '有，我上傳', callback_data: 'nc_resume_yes' },
+                                  { text: '沒有，跳過', callback_data: 'nc_resume_no' }]],
+            });
+            return new Response('ok');
+          }
+          if (cq2.data === 'nc_dup_no') {
+            await ans2();
+            await ncSetSession(env, chatId, cq2.from.id, 'resume_ask', sess.data);
+            await ncSend(env, chatId, threadId, '好，當新人選處理。有履歷要一起附上嗎？', {
+              inline_keyboard: [[{ text: '有，我上傳', callback_data: 'nc_resume_yes' },
+                                  { text: '沒有，跳過', callback_data: 'nc_resume_no' }]],
+            });
+            return new Response('ok');
+          }
           if (cq2.data === 'nc_resume_yes') {
             await ans2();
             await ncSetSession(env, chatId, cq2.from.id, 'resume_file', sess.data);
@@ -4546,8 +4622,14 @@ export default {
           }
           if (cq2.data === 'nc_resume_no') {
             await ans2();
-            await ncSetSession(env, chatId, cq2.from.id, 'name', sess.data);
-            await ncSend(env, chatId, threadId, '好，這位人選姓名？');
+            const who = (cq2.from && (cq2.from.username || cq2.from.first_name)) || '顧問';
+            if (sess.data.existing_application_id) {
+              await ncSubmitMerge(env, sess, chatId, threadId, who);
+              await ncClearSession(env, chatId, cq2.from.id);
+              return new Response('ok');
+            }
+            await ncSetSession(env, chatId, cq2.from.id, 'contact', sess.data);
+            await ncSend(env, chatId, threadId, '好，電話或 Email（填一個就好）？');
             return new Response('ok');
           }
           if (cq2.data.startsWith('nc_client:')) {
