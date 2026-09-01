@@ -823,7 +823,7 @@ async function ncSubmitMerge(env, sess, chatId, threadId, who) {
       await ncSend(env, chatId, threadId, `❌ 整合失敗：${crd.error || '不知道為什麼'}`);
     }
   } catch (e) {
-    await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩重新 /new 再試一次。');
+    await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩按「🆕 開始新增人選」重新來一次。');
   }
 }
 
@@ -4489,15 +4489,20 @@ export default {
         const cq2 = update.callback_query;
 
         if (rm2 && callIntakeTopic && Number(rm2.message_thread_id) === callIntakeTopic
-            && String(rm2.text || '').trim() === '/new') {
-          await ncSetSession(env, rm2.chat.id, rm2.from.id, 'transcript', {});
-          await ncSend(env, rm2.chat.id, callIntakeTopic, '請貼上這通電洽的逐字稿（一大串文字都可以，直接貼上來）。');
-          return new Response('ok');
-        }
-
-        if (rm2 && callIntakeTopic && Number(rm2.message_thread_id) === callIntakeTopic
             && !(rm2.from && rm2.from.is_bot)) {
           const sess = await ncSession(env, rm2.chat.id, rm2.from.id);
+          // 2026-09-01 改：拿掉 `/new` 文字指令——這個群組另一支通用機器人
+          // （commander/bot.py，「總指揮」）把任何開頭是 `/` 的訊息都當成
+          // 在叫它，`/new` 會讓兩隻同時回應，顧問分不清誰在做事。改成純按鈕
+          // （callback_query），總指揮那套規則只認文字訊息，按鈕完全不會誤觸發，
+          // 也剛好符合最早的需求（「顧問點擊 tg bot」）。
+          // 沒有進行中的對話時，任何一則訊息都先回一個「開始」按鈕當入口。
+          if (!sess) {
+            await ncSend(env, rm2.chat.id, callIntakeTopic, '要幫這位人選建立卡片嗎？', {
+              inline_keyboard: [[{ text: '🆕 開始新增人選', callback_data: 'nc_begin' }]],
+            });
+            return new Response('ok');
+          }
           if (sess) {
             if (sess.step === 'transcript' && String(rm2.text || '').trim()) {
               sess.data.transcript = rm2.text.trim();
@@ -4591,8 +4596,16 @@ export default {
           };
           const chatId = cq2.message.chat.id;
           const threadId = cq2.message.message_thread_id;
+
+          if (cq2.data === 'nc_begin') {
+            await ans2();
+            await ncSetSession(env, chatId, cq2.from.id, 'transcript', {});
+            await ncSend(env, chatId, threadId, '請貼上這通電洽的逐字稿（一大串文字都可以，直接貼上來）。');
+            return new Response('ok');
+          }
+
           const sess = await ncSession(env, chatId, cq2.from.id);
-          if (!sess) { await ans2('這個流程已經過期了，請重新 /new 開始'); return new Response('ok'); }
+          if (!sess) { await ans2('這個流程已經過期了，按「🆕 開始新增人選」重新開始'); return new Response('ok'); }
 
           if (cq2.data.startsWith('nc_dup_yes:')) {
             const existingId = cq2.data.slice('nc_dup_yes:'.length);
@@ -4677,7 +4690,7 @@ export default {
                 await ncSend(env, chatId, threadId, `❌ 失敗：${crd.error || '不知道為什麼'}`);
               }
             } catch (e) {
-              await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩重新 /new 再試一次。');
+              await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩按「🆕 開始新增人選」重新來一次。');
             }
             await ncClearSession(env, chatId, cq2.from.id);
             return new Response('ok');
