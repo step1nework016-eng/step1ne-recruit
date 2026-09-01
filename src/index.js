@@ -1433,6 +1433,40 @@ const STAGE_ORDER = [
 ];
 const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((s, i) => [s.key, i]));
 
+// 2026-09-01 加：面試輪數（第一～第四階段哪幾關「存在」）是職缺的屬性，不是
+// 候選人的——同一個職缺不管推給哪個人選，關數都一樣。存在 jobs.interview_stage_config
+// （JSON 陣列，例如 ["stage1","stage2"]）。沒設定過就預設只有第一階段（Jacky
+// 2026-09-01 定案：「預設他們至少只有第一階段面談」）。
+// ⚠️ 這是全新欄位，跟舊有的 jobs.interview_rounds（自由文字，例如「共面試2次：
+// 先HR後主管」，被 set_job.py／draft_thresholds.py／interview_daemon.py／
+// social_post_agent.py／portal 的「面試次數」標籤等好幾支既有程式當文案在讀）
+// 是兩個不同欄位，不能共用同一格，否則會撞壞那幾支既有的消費者。
+function jobStageKeysFromConfig(raw) {
+  let arr;
+  try { arr = JSON.parse(raw || 'null'); } catch { arr = null; }
+  if (!Array.isArray(arr) || !arr.length) return ['stage1'];
+  const cleaned = arr.filter((k) => ['stage1', 'stage2', 'stage3', 'stage4'].includes(k));
+  return cleaned.length ? cleaned : ['stage1'];
+}
+async function getJobStageKeys(env, jobSlug) {
+  if (!jobSlug) return ['stage1'];
+  const row = await env.DB.prepare(`SELECT interview_stage_config FROM jobs WHERE slug = ?`).bind(jobSlug).first();
+  return jobStageKeysFromConfig(row && row.interview_stage_config);
+}
+// 一次查多個職缺（列表頁用，避免 N 位候選人 N 次查詢）——回傳 { slug: [key,...] }。
+async function getJobStageKeysMap(env, jobSlugs) {
+  const slugs = [...new Set((jobSlugs || []).filter(Boolean))];
+  const map = {};
+  if (!slugs.length) return map;
+  const placeholders = slugs.map(() => '?').join(',');
+  const { results } = await env.DB.prepare(
+    `SELECT slug, interview_stage_config FROM jobs WHERE slug IN (${placeholders})`
+  ).bind(...slugs).all();
+  (results || []).forEach((r) => { map[r.slug] = jobStageKeysFromConfig(r.interview_stage_config); });
+  slugs.forEach((s) => { if (!map[s]) map[s] = ['stage1']; });
+  return map;
+}
+
 // app: applications 那一列（要含 manual_stage/manual_stage_note/manual_stage_by/manual_stage_at）；
 // report: 最新一份報告（要有 consultant_decision）；
 // appts: interview_appointments 全部列（見 /admin/session、/admin/report 的查詢，不是只取最新一筆）；
@@ -1440,8 +1474,11 @@ const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((s, i) => [s.key, i]));
 // roundLabels: 可選，applications.client_interview_labels 解析後的物件（{stage1:'人資面談',...}）——
 // 客戶在 portal 自己選的面談輪次類型，蓋掉預設的「第N階段」空泛標籤。顧問後台跟客戶 portal
 // 都吃這裡的輸出，兩邊標籤才會永遠對得上，不用各自維護一份文案。
-function resolveStage(app, report, appts, placement, roundLabels) {
+// jobStageKeys: 可選，這個職缺實際設定的面試關數（見 getJobStageKeys()）。不傳就當
+// 只有第一階段（最保守的預設，不會平白多長出關卡）。
+function resolveStage(app, report, appts, placement, roundLabels, jobStageKeys) {
   roundLabels = roundLabels || {};
+  const allowedStage234 = (jobStageKeys && jobStageKeys.length ? jobStageKeys : ['stage1']);
   const latestByStage = (stg) => (appts || []).filter((x) => x.stage === stg).slice(-1)[0];
   let careLen = 0;
   try { careLen = JSON.parse((placement && placement.candidate_care_log) || '[]').length; } catch { careLen = 0; }
@@ -1465,9 +1502,14 @@ function resolveStage(app, report, appts, placement, roundLabels) {
   [2, 3, 4].forEach((stg) => {
     const a = latestByStage(stg);
     const key = 'stage' + stg;
-    // 手動指定的位置已經到這關或更後面，就讓這個步驟出現——即使還沒真的排過面談，
-    // 不然顧問手動標成「第三階段」，畫面上卻連第三階段的格子都沒有，會很怪。
-    if (a || manualIdx >= STAGE_INDEX[key]) {
+    // 2026-09-01 改：原本「manualIdx >= STAGE_INDEX[key]」會讓 manual_stage 只要
+    // 設到更後面的關（例如顧問把人選標成「錄取」），第二、三、四階段就全部被當成
+    // 「已完成」顯示，即使這個職缺根本沒有那些輪次、也沒有真的排過那些面談——
+    // 陳其寬案就是這樣被誤判成經歷了四階段面試。改成：這一關要不要出現，看這個
+    // 職缺實際有沒有設定到這一關（allowedStage234，來自 jobs.interview_stage_config），
+    // 或者手動指定「剛好就是」這一關本身（保留舊資料相容，不會因為這次改動讓
+    // 已經手動標到第二/三/四階段的候選人畫面上憑空消失這一格）。
+    if (a || allowedStage234.includes(key) || (app && app.manual_stage === key)) {
       steps.push({ key, lb: STAGE_LB2[stg], ok: !!(a && a.status === 'confirmed') });
     }
   });
@@ -1747,7 +1789,8 @@ async function deriveApplicationProgress(env, appId) {
   // 2026-08-13 全面改：候選人查進度看到的文字，完全交給跟後台階段列共用的
   // resolveStage() 判斷結果決定——不管候選人現在卡在哪一關（含顧問手動指定的
   // 任何一關，不只「錄取」），這裡跟後台階段列講的永遠是同一件事。
-  const stageInfo = resolveStage(app, report, appts || [], placement, roundLabels);
+  const jobStageKeys = await getJobStageKeys(env, app.job_slug);
+  const stageInfo = resolveStage(app, report, appts || [], placement, roundLabels, jobStageKeys);
   const stageUp = placement ? String(placement.stage || '').toUpperCase() : '';
 
   const jobTitle = app.job_title || app.job_slug || '這個職缺';
@@ -3062,7 +3105,7 @@ export default {
       'client_name', 'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
       'client_screen_conditions', 'faq_notes', 'salary_note',
       'salary_min', 'salary_max', 'salary_unit', 'locations', 'employment', 'onboard_by',
-      'team_size', 'interview_rounds', 'interview_who', 'has_test',
+      'team_size', 'interview_rounds', 'interview_stage_config', 'interview_who', 'has_test',
       'client_contact_name', 'client_contact_phone', 'headcount', 'work_mode',
       'work_hours', 'leave_policy', 'employment_period', 'overtime_policy',
       'hiring_reason', 'urgency', 'main_duties', 'reports_to', 'leads_team',
@@ -3449,11 +3492,12 @@ export default {
           return { row, placement, appts: apptsRes.results || [] };
         }));
 
+        const jobStageKeysMap = await getJobStageKeysMap(env, (rows || []).map((r) => r.job_slug));
         const candidates = [];
         for (const { row, placement, appts } of perRow) {
           let roundLabels = {};
           try { roundLabels = JSON.parse(row.client_interview_labels || '{}'); } catch { roundLabels = {}; }
-          const stageInfo = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, roundLabels);
+          const stageInfo = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, roundLabels, jobStageKeysMap[row.job_slug]);
           const stage1Idx = STAGE_INDEX.stage1;
           // screening 是 Step1ne 推薦給客戶「之前」的內部流程階段，客戶看不到意義；
           // care（到職關懷）是報到之後的內部追蹤，客戶也不用看。
@@ -3628,10 +3672,18 @@ export default {
         ).bind(applicationId).all();
         let stageRoundLabels = {};
         try { stageRoundLabels = JSON.parse(row.client_interview_labels || '{}'); } catch { stageRoundLabels = {}; }
-        const current = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, stageRoundLabels);
+        const jobStageKeysForRow = await getJobStageKeys(env, row.job_slug);
+        const current = resolveStage(row, { consultant_decision: row.consultant_decision }, appts || [], placement, stageRoundLabels, jobStageKeysForRow);
         const newIdx = STAGE_INDEX[stage];
         if (stage !== 'backup' && newIdx < current.effective_index) {
           return json(request, { ok: false, error: '新階段不能比目前的還早，如需訂正請聯繫顧問' }, 400);
+        }
+        // 2026-09-01 加：客戶（或代客戶操作的顧問）不能把階段設到這個職缺根本沒
+        // 設定的輪次——例如職缺只設了第一階段，不該讓表格下拉選單選到「第三階段」。
+        // stage2~4 才需要檢查；stage1／offer／onboard／backup 永遠允許（backup 是
+        // 平行狀態、offer/onboard 是終點，不受輪數設定約束）。
+        if (['stage2', 'stage3', 'stage4'].includes(stage) && !jobStageKeysForRow.includes(stage)) {
+          return json(request, { ok: false, error: '這個職缺目前沒有設定這一輪面試，請先到職缺設定新增' }, 400);
         }
 
         const result = await applyManualStage(env, {
@@ -8535,9 +8587,13 @@ export default {
 
       // 給「一鍵發文」頁面的帳號下拉選單用——只回標籤跟平台，絕對不回
       // access_token，那顆是後端用的，不該出現在任何前端回應裡。
+      // ⚠️ 2026-09-01 改：原本只回 is_active=1 的帳號——新加的顧問（還沒去
+      // 開發者後台申請 access_token）在下拉選單裡完全不存在，顧問社群看不到
+      // 「這個人已經排進來但還不能發」，還以為系統忘了加。改成全部回傳＋帶
+      // is_active，前端自己決定要不要讓選、要不要標「尚未設定」。
       if (p === '/admin/social-accounts' && request.method === 'GET') {
         const { results } = await env.DB.prepare(
-          `SELECT id, label, platform FROM social_accounts WHERE is_active = 1 ORDER BY id`
+          `SELECT id, label, platform, is_active FROM social_accounts ORDER BY is_active DESC, id`
         ).all();
         return json(request, { ok: true, accounts: results || [] });
       }
@@ -9338,6 +9394,7 @@ export default {
 
         // 每個 application 各自的報告／進度／推送狀態——平行查，資料量到幾百筆
         // 這個做法還在合理範圍（跟 /portal/:token/candidates 同一套 Promise.all 模式）。
+        const trackerJobStageKeysMap = await getJobStageKeysMap(env, (apps || []).map((a) => a.job_slug));
         const detail = await Promise.all((apps || []).map(async (a) => {
           const [report, forwardsRes, apptsRes] = await Promise.all([
             env.DB.prepare(
@@ -9369,7 +9426,7 @@ export default {
                 WHERE application_id=? AND client_id=? ORDER BY updated_at DESC LIMIT 1`
             ).bind(a.id, f.company_id).first();
             const stageInfo = resolveStage(
-              { manual_stage: f.manual_stage }, report, appts, placement, {});
+              { manual_stage: f.manual_stage }, report, appts, placement, {}, trackerJobStageKeysMap[a.job_slug]);
             // 2026-09-01 加：client_rejected_at 本來只會發一次 Telegram 通知，
             // 追蹤頁完全沒讀這個欄位——顧問錯過那則通知，這張卡就會一直卡在
             // 「客戶手上」看起來像還在進行中，其實客戶早就婉拒了。這裡把它也
@@ -9662,13 +9719,14 @@ export default {
           `SELECT stage, status, confirmed_slot FROM interview_appointments
             WHERE application_id = ? ORDER BY stage ASC, created_at ASC`).bind(appId).all();
         const stages = [];
+        const singleJobStageKeys = await getJobStageKeys(env, app.job_slug);
         for (const f of (forwards || [])) {
           let lbs = {};
           try { lbs = JSON.parse(f.client_interview_labels || '{}'); } catch { lbs = {}; }
           const pm = (placements || []).find((x) => x.job_slug === app.job_slug) || (placements || [])[0] || null;
           const info = resolveStage({ ...app, manual_stage: f.manual_stage },
                                     { consultant_decision: report ? report.consultant_decision : null },
-                                    appts || [], pm, lbs);
+                                    appts || [], pm, lbs, singleJobStageKeys);
           const cur = info.effective_index >= 0 ? info.steps[info.effective_index] : null;
           stages.push({ company_id: f.company_id, company_name: f.company_name,
                         forwarded_at: f.forwarded_at,
@@ -9732,11 +9790,12 @@ export default {
               WHERE application_id=?`).bind(hApp.id).all();
 
           if ((hForwards || []).length) {
+            const hJobStageKeys = await getJobStageKeys(env, hApp.job_slug);
             for (const f of hForwards) {
               let lbs = {}; try { lbs = JSON.parse(f.client_interview_labels || '{}'); } catch { lbs = {}; }
               const pm = (hPlacements || []).find((x) => x.job_slug === hApp.job_slug) || (hPlacements || [])[0] || null;
               const info = resolveStage({ ...hApp, manual_stage: f.manual_stage },
-                { consultant_decision: hReport ? hReport.consultant_decision : null }, hAppts || [], pm, lbs);
+                { consultant_decision: hReport ? hReport.consultant_decision : null }, hAppts || [], pm, lbs, hJobStageKeys);
               const cur = info.effective_index >= 0 ? info.steps[info.effective_index] : null;
               history.push({ application_id: hApp.id, job_slug: hApp.job_slug,
                 job_title: hJob ? hJob.title : hApp.job_slug, applied_at: hApp.created_at,
@@ -10699,11 +10758,12 @@ export default {
         delete app.chat_token;
         let sessRoundLabels = {};
         try { sessRoundLabels = JSON.parse(app.client_interview_labels || '{}'); } catch { sessRoundLabels = {}; }
+        const sessJobStageKeys = await getJobStageKeys(env, app.job_slug);
         return json(request, { ok: true, application: app, interview_url: interviewUrl,
                                transcript: results || [], report: rep || null,
                                flags: flags.results || [], feedback: fb || null,
                                appointments: appts || [], placement: placement || null,
-                               stage: resolveStage(app, rep, appts || [], placement, sessRoundLabels) });
+                               stage: resolveStage(app, rep, appts || [], placement, sessRoundLabels, sessJobStageKeys) });
       }
 
       if (p === '/admin/reports') {
@@ -10813,8 +10873,9 @@ export default {
 
         let repRoundLabels = {};
         try { repRoundLabels = JSON.parse(r.client_interview_labels || '{}'); } catch { repRoundLabels = {}; }
+        const repJobStageKeys = await getJobStageKeys(env, r.job_slug);
         return json(request, { ok: true, report: r, transcript: results || [], appointments: appts || [], placement: placement || null,
-                               stage: resolveStage(r, r, appts || [], placement, repRoundLabels) });
+                               stage: resolveStage(r, r, appts || [], placement, repRoundLabels, repJobStageKeys) });
       }
 
       // 顧問編輯「給客戶看的報告版本」——content_md 是內部原文（可能有直白的
@@ -11015,7 +11076,7 @@ export default {
         // 走到哪一關一起帶回去，顧問後台的人選卡片才能一眼看到
         // 「律准：第二階段／弘昌：錄取」，不用一家一家點進去查。
         const app = await env.DB.prepare(
-          `SELECT id, interview_started_at, interview_ended_at FROM applications WHERE id = ?`
+          `SELECT id, job_slug, interview_started_at, interview_ended_at FROM applications WHERE id = ?`
         ).bind(appId).first();
         const report = await env.DB.prepare(
           `SELECT consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
@@ -11024,10 +11085,11 @@ export default {
           `SELECT stage, status, confirmed_slot FROM interview_appointments
             WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
         ).bind(appId).all();
+        const cfListJobStageKeys = await getJobStageKeys(env, app && app.job_slug);
         const forwards = (results || []).map((f) => {
           let labels = {};
           try { labels = JSON.parse(f.client_interview_labels || '{}'); } catch { labels = {}; }
-          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels);
+          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels, cfListJobStageKeys);
           return {
             ...f,
             stage_key: info.effective_key,
