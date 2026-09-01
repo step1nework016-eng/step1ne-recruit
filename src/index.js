@@ -1845,6 +1845,61 @@ async function doMarkClosed(env, b) {
   return { status: 200, body: { ok: true } };
 }
 
+// ─────────────────────────────────────────────────────────────
+// 2026-09-01 加：客戶版履歷（表格＋大頭貼版）。
+// ⚠️ 這裡的 CLIENT_BANNED_RE／scrubForClient／isAnonymous／clientDisplayName
+// 是從 deliver.py（本機 Python，既有客戶版 client.html 樣板用的過濾邏輯）
+// 逐字 1:1 搬過來的——這是唯一一份「什麼字不能給客戶看」的規則，兩邊分別
+// 維護一定會走鐘，寧可重複程式碼也不能重寫邏輯。deliver.py 改規則時這裡也要
+// 跟著改。
+const CLIENT_BANNED_RE = new RegExp(
+  '(' +
+  '(接案|目前|現有|現在|現職|原本|每月|月|年|實際)?收入' +
+  '|現領|現薪|目前薪(資|水)|原薪' +
+  '|其他(在談的)?(機會|offer|Offer|OFFER)' +
+  '|手上(還有|有)(其他|別的)' +
+  '|同時(在談|面試)' +
+  '|(DISC|disc)' +
+  '|人格(測驗|量表)' +
+  '|測驗分數' +
+  '|沒有正面回(答|應)|未正面回(答|應)|問(了)?兩次' +
+  '|避而不(答|談)|閃避|說詞反覆|避重就輕' +
+  '|籠統|含糊|交代不清|說不清楚|存疑|可信度|真實性' +
+  '|建議(客戶)?(面試時)?(可以)?追問|追問清單' +
+  '|內部評分|BARS' +
+  ')'
+);
+function scrubForClient(text) {
+  if (!text) return '';
+  const clauses = String(text).split(/(?<=[。；;\n])/);
+  const keep = [];
+  for (const c of clauses) {
+    if (!c.trim()) continue;
+    if (!CLIENT_BANNED_RE.test(c)) { keep.push(c); continue; }
+    const subs = c.split(/(?<=[，、])/).filter((s) => s.trim() && !CLIENT_BANNED_RE.test(s));
+    if (subs.length) keep.push(subs.join('').replace(/[，、]+$/, ''));
+  }
+  const out = keep.join('').trim();
+  return /[\w一-鿿]/.test(out) ? out : '';
+}
+function isAnonymous(clientNamed) {
+  return !(clientNamed === 1 || clientNamed === '1');
+}
+function anonName(fullName) {
+  const n = String(fullName || '').trim();
+  if (!n) return '候選人';
+  for (const sur of ['歐陽', '司馬', '諸葛', '上官', '皇甫', '尉遲', '公孫', '夏侯', '端木']) {
+    if (n.startsWith(sur)) return sur + '先生／小姐';
+  }
+  if (/^[一-鿿]/.test(n)) return n[0] + '先生／小姐';
+  const parts = n.split(/\s+/);
+  return parts[parts.length - 1] + '先生／小姐';
+}
+function clientDisplayName(fullName, clientNamed) {
+  return isAnonymous(clientNamed) ? anonName(fullName) : (fullName || '候選人');
+}
+
+
 // 開關職缺的招募狀態——顧問後台既有的 open/closed 切換（/admin/jobs/:slug）
 // 跟客戶 portal 的「結束招募／重新招募」都呼叫這裡，行為（含誰關的／原因／
 // 時間戳）不會兩邊各自維護出不同步的版本。關閉時記錄 closed_by／closed_reason／
@@ -3661,22 +3716,43 @@ export default {
         // （decision 預設是 null），「最新那份」的 decision 一 null，這個人選
         // 就會從客戶 portal 悄悄消失，即使他早就被正式推薦過。
 
-        // 2026-08-31 改：這裡原本是 for-loop 裡逐筆 await 兩支查詢，人選一多
-        // （N 位人選＝2N 次序列化 D1 往返）就是「人選進度」分頁明顯變慢的主因。
-        // 每一位人選的資料互不相依，用 Promise.all 全部平行查，不用等前一位查完
-        // 才查下一位。
-        const perRow = await Promise.all((rows || []).map(async (row) => {
-          const [placement, apptsRes] = await Promise.all([
-            env.DB.prepare(
-              `SELECT stage, onboard_date, candidate_care_log FROM placements
-                WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
-            ).bind(row.application_id).first(),
-            env.DB.prepare(
-              `SELECT stage, status, confirmed_slot FROM interview_appointments
-                WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
-            ).bind(row.application_id).all(),
-          ]);
-          return { row, placement, appts: apptsRes.results || [] };
+        // ⚠️ 2026-09-01 再改一次：上一版（2026-08-31）把「N 位人選序列查兩次」
+        // 改成「N 位人選平行查兩次」，LATENCY 有改善，但 D1 是照「讀了幾列」計費／
+        // 算額度，平行執行並不會減少總查詢次數——這支端點正是今天把 D1 免費方案
+        // 每日讀取額度（500 萬筆）打到 2200 萬筆、整個後台斷線一整天的另一個主因
+        // （這裡是客戶自己會打開的 portal 頁面，流量不比顧問後台少）。改成用
+        // application_id IN (...) 一次批次撈，總查詢次數從「O(人數)×2」降到固定
+        // 2 次，不管這家客戶底下有幾位人選都一樣。
+        const rowAppIds = (rows || []).map((r) => r.application_id);
+        // D1 單次 bind 參數上限保守抓 100，客戶底下人選數理論上沒有上限（累積
+        // 久了可能超過），跟顧問後台那支一樣分批查再合併，不要賭「這家客戶
+        // 人選一定不會太多」。
+        const portalChunk = (arr, size) => { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; };
+        const portalBatchAll = async (sql, ids) => {
+          const out = [];
+          for (const ids2 of portalChunk(ids, 100)) {
+            if (!ids2.length) continue;
+            const { results } = await env.DB.prepare(sql(ids2.length)).bind(...ids2).all();
+            out.push(...(results || []));
+          }
+          return out;
+        };
+        const [placementRowsAll, apptRowsAll] = rowAppIds.length
+          ? await Promise.all([
+              portalBatchAll((n) => `SELECT application_id, stage, onboard_date, candidate_care_log, updated_at FROM placements
+                  WHERE application_id IN (${Array.from({ length: n }, () => '?').join(',')})
+                  ORDER BY application_id, updated_at DESC`, rowAppIds),
+              portalBatchAll((n) => `SELECT application_id, stage, status, confirmed_slot FROM interview_appointments
+                  WHERE application_id IN (${Array.from({ length: n }, () => '?').join(',')})
+                  ORDER BY application_id, stage ASC, created_at ASC`, rowAppIds),
+            ])
+          : [[], []];
+        const placementByApp = new Map();
+        for (const pl of placementRowsAll) if (!placementByApp.has(pl.application_id)) placementByApp.set(pl.application_id, pl);
+        const apptsByApp = new Map();
+        for (const ap of apptRowsAll) { if (!apptsByApp.has(ap.application_id)) apptsByApp.set(ap.application_id, []); apptsByApp.get(ap.application_id).push(ap); }
+        const perRow = (rows || []).map((row) => ({
+          row, placement: placementByApp.get(row.application_id) || null, appts: apptsByApp.get(row.application_id) || [],
         }));
 
         const jobStageKeysMap = await getJobStageKeysMap(env, (rows || []).map((r) => r.job_slug));
@@ -9607,49 +9683,74 @@ export default {
             ORDER BY a.created_at DESC LIMIT 500`
         ).bind(...ownerBind).all();
 
-        // 每個 application 各自的報告／進度／推送狀態——平行查，資料量到幾百筆
-        // 這個做法還在合理範圍（跟 /portal/:token/candidates 同一套 Promise.all 模式）。
+        // ⚠️ 2026-09-01 改：原本這裡對「每一個」application 各自平行查 4~5 次
+        // （report／forwards／appts／no-company placement，再加上每筆 forward
+        // 各自查一次 placement），117 個人選一次載入就是 700 次上下的查詢。
+        // 這頁前端還有 30 秒自動刷新——長時間開著疊起來，是這次把 D1 免費方案
+        // 每日讀取額度（500 萬筆）打到 2200 萬筆、整個後台斷線一整天的主因。
+        // 改成依 application_id 批次撈（IN 子句，超過 100 筆分批以免超過 D1
+        // bind 參數上限），撈回來後在記憶體裡用 Map 分組，查詢次數從「O(人數)」
+        // 降到固定的幾次，不管有 10 個人選還是 500 個人選都一樣。
+        const appIds = (apps || []).map((a) => a.id);
+        const chunk = (arr, size) => { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; };
+        const inClause = (n) => `(${Array.from({ length: n }, () => '?').join(',')})`;
+        const batchAll = async (sql, ids) => {
+          const rows = [];
+          for (const ids2 of chunk(ids, 100)) {
+            if (!ids2.length) continue;
+            const { results } = await env.DB.prepare(sql(ids2.length)).bind(...ids2).all();
+            rows.push(...(results || []));
+          }
+          return rows;
+        };
+
         const trackerJobStageKeysMap = await getJobStageKeysMap(env, (apps || []).map((a) => a.job_slug));
-        const detail = await Promise.all((apps || []).map(async (a) => {
-          const [report, forwardsRes, apptsRes, noCompanyPlacement] = await Promise.all([
-            env.DB.prepare(
-              `SELECT id, content_md, consultant_decision FROM reports
-                WHERE application_id=? ORDER BY created_at DESC LIMIT 1`).bind(a.id).first(),
-            // 同一個 application 可以被推薦給好幾家客戶（/admin/forward-candidate
-            // 「追加推薦」就是做這件事）——candidate_forwards 用 application_id+
-            // company_id 當主鍵，一筆 application 對多筆 candidate_forwards 是
-            // 正常、預期中的資料形狀，不是這個職缺對應的那家客戶就一定只有一筆。
-            env.DB.prepare(
-              `SELECT cf.company_id, cf.manual_stage, cf.manual_stage_note, cf.client_note,
+
+        const [reportRows, forwardRowsAll, apptRowsAll, noCoPlacementRows, coPlacementRows] = appIds.length
+          ? await Promise.all([
+              batchAll((n) => `SELECT application_id, id, content_md, consultant_decision, created_at FROM reports
+                WHERE application_id IN ${inClause(n)} ORDER BY application_id, created_at DESC`, appIds),
+              batchAll((n) => `SELECT cf.application_id, cf.company_id, cf.manual_stage, cf.manual_stage_note, cf.client_note,
                       cf.line_id_given, cf.forwarded_at, cc.display_name AS company_name,
                       cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason,
                       cf.client_rejected_at, cf.client_reject_reason
                  FROM candidate_forwards cf LEFT JOIN client_companies cc ON cc.id = cf.company_id
-                WHERE cf.application_id=? ORDER BY cf.forwarded_at ASC`
-            ).bind(a.id).all(),
-            env.DB.prepare(
-              `SELECT stage, status FROM interview_appointments WHERE application_id=?`
-            ).bind(a.id).all(),
-            // 2026-09-01 加：職缺沒綁客戶（例如 TG「暫時沒有推薦的職缺」流程用的
-            // unspecified 職缺）不會有 candidate_forwards 列，下面靠 forwardRows
-            // 才查得到的 placements 進度完全看不到這種人——mark-closed 明明已經
-            // 寫了一筆 client_id 是 NULL 的 CLOSED_INTERNAL，卻因為沒有對應的
-            // candidate_forwards 而永遠查不到，導致這種人卡在「等人選填完」，
-            // 進不了顧問履歷庫。這裡直接補查一次 client_id IS NULL 的那筆。
-            env.DB.prepare(
-              `SELECT stage FROM placements WHERE application_id=? AND client_id IS NULL
-                ORDER BY updated_at DESC LIMIT 1`
-            ).bind(a.id).first(),
-          ]);
-          const appts = apptsRes.results || [];
-          const forwardRows = forwardsRes.results || [];
-          // 每家客戶各自的 placements 進度要分開查——同一個 application 推給
+                WHERE cf.application_id IN ${inClause(n)} ORDER BY cf.application_id, cf.forwarded_at ASC`, appIds),
+              batchAll((n) => `SELECT application_id, stage, status FROM interview_appointments
+                WHERE application_id IN ${inClause(n)}`, appIds),
+              batchAll((n) => `SELECT application_id, stage, updated_at FROM placements
+                WHERE application_id IN ${inClause(n)} AND client_id IS NULL
+                ORDER BY application_id, updated_at DESC`, appIds),
+              batchAll((n) => `SELECT application_id, client_id, stage, onboard_date, updated_at FROM placements
+                WHERE application_id IN ${inClause(n)} AND client_id IS NOT NULL
+                ORDER BY application_id, client_id, updated_at DESC`, appIds),
+            ])
+          : [[], [], [], [], []];
+
+        // 「每個 application 最新一筆」的挑法統一用同一招：來源已經 ORDER BY ... DESC，
+        // 用 Map 只留第一次看到的那筆（Map.set 只在 key 不存在時才寫）。
+        const latestByApp = (rows) => { const m = new Map(); for (const r of rows) if (!m.has(r.application_id)) m.set(r.application_id, r); return m; };
+        const reportByApp = latestByApp(reportRows);
+        const noCoPlacementByApp = latestByApp(noCoPlacementRows);
+        const forwardsByApp = new Map();
+        for (const f of forwardRowsAll) { if (!forwardsByApp.has(f.application_id)) forwardsByApp.set(f.application_id, []); forwardsByApp.get(f.application_id).push(f); }
+        const apptsByApp = new Map();
+        for (const ap of apptRowsAll) { if (!apptsByApp.has(ap.application_id)) apptsByApp.set(ap.application_id, []); apptsByApp.get(ap.application_id).push(ap); }
+        const placementByAppCompany = new Map();
+        for (const pl of coPlacementRows) {
+          const key = pl.application_id + '|' + pl.client_id;
+          if (!placementByAppCompany.has(key)) placementByAppCompany.set(key, pl);
+        }
+
+        const detail = (apps || []).map((a) => {
+          const report = reportByApp.get(a.id) || null;
+          const appts = apptsByApp.get(a.id) || [];
+          const forwardRows = forwardsByApp.get(a.id) || [];
+          const noCompanyPlacement = noCoPlacementByApp.get(a.id) || null;
+          // 每家客戶各自的 placements 進度要分開算——同一個 application 推給
           // A、B 兩家客戶，A 已經到第二階段、B 才剛推送，不能共用一份 stage。
-          const placements = await Promise.all(forwardRows.map(async (f) => {
-            const placement = await env.DB.prepare(
-              `SELECT stage, onboard_date FROM placements
-                WHERE application_id=? AND client_id=? ORDER BY updated_at DESC LIMIT 1`
-            ).bind(a.id, f.company_id).first();
+          const placements = forwardRows.map((f) => {
+            const placement = placementByAppCompany.get(a.id + '|' + f.company_id) || null;
             const stageInfo = resolveStage(
               { manual_stage: f.manual_stage }, report, appts, placement, {}, trackerJobStageKeysMap[a.job_slug]);
             // 2026-09-01 加：client_rejected_at 本來只會發一次 Telegram 通知，
@@ -9671,7 +9772,7 @@ export default {
               client_rejected_at: f.client_rejected_at || null,
               client_reject_reason: f.client_reject_reason || null,
             };
-          }));
+          });
           const primaryPlacement = placements[0] || null;
           const aiDone = !!(a.interview_mode !== 'consultant_call' && a.interview_state === 'done');
           const evaluated = !!report;
@@ -9704,7 +9805,7 @@ export default {
             placements, // 這個 application 底下全部客戶各自的進度，多於一筆時 UI 才會逐一列出
             created_at: a.created_at,
           };
-        }));
+        });
 
         // ── 合併：email 或電話任一相符就併成同一張卡，出現在同一張卡的
         // application 除了「主要」那一筆，其餘進 placements 陣列。
@@ -10574,6 +10675,149 @@ export default {
           ok: true, application_id: newId, chat_token: chatToken,
           url: `https://step1ne.com/interview/?t=${chatToken}`,
         });
+      }
+
+      // GET /admin/application/:id/client-formal-prefill — 「製作客戶版履歷」彈窗
+      // 打開時先預填的資料。只回傳已經過白名單＋逐句過濾的欄位（跟 client.html
+      // 客戶版同一套規則），「相關經驗」「交通工具」「現況」目前面談規格沒有收集
+      // 這三格，回傳 null 讓顧問自己在彈窗手動補——不要用其他欄位瞎猜著填。
+      if (p.startsWith('/admin/application/') && p.endsWith('/client-formal-prefill') && request.method === 'GET') {
+        const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/client-formal-prefill'.length));
+        const app = await env.DB.prepare(
+          `SELECT a.name, a.job_slug, a.job_title, a.expected_salary, a.available_date,
+                  j.title AS job_full_title, j.client_named, j.company_id,
+                  cc.display_name AS client_name
+             FROM applications a
+             LEFT JOIN jobs j ON j.slug = a.job_slug
+             LEFT JOIN client_companies cc ON cc.id = j.company_id
+            WHERE a.id = ?`
+        ).bind(appId).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const report = await env.DB.prepare(
+          `SELECT content_json FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(appId).first();
+        let data = {};
+        try { data = report && report.content_json ? JSON.parse(report.content_json) : {}; } catch { data = {}; }
+        const basics = (data && typeof data.basics === 'object' && data.basics) || {};
+        const clientNamed = app.client_named;
+        const name = clientDisplayName(app.name, clientNamed);
+        const anon = isAnonymous(clientNamed);
+        const txt = (v) => {
+          const s = scrubForClient(v);
+          return anon ? String(s || '').split(String(app.name || ' ')).join(name) : s;
+        };
+        const fc = data.for_client || {};
+        return json(request, {
+          ok: true,
+          name, anonymous: anon,
+          job_title: app.job_full_title || app.job_title || '',
+          client_name: app.client_name || '（未綁客戶）',
+          residence: basics.residence || null,
+          age: anon ? null : (basics.age || null),
+          education: basics.education || null,
+          languages: basics.languages || null,
+          certificates: basics.certificates || null,
+          military: basics.military || null,
+          expected_salary: app.expected_salary || null,
+          available_date: app.available_date || null,
+          positioning: txt(data.one_liner),
+          reasons: (fc.reasons || []).map(txt).filter(Boolean),
+          risks: (fc.risks_to_disclose || []).map(txt).filter(Boolean),
+          // 這三格面談規格沒收集，前端要顯示成必填的手動輸入格，不要留空值就直接印
+          current_state: null, related_experience: null, transportation: null,
+        });
+      }
+
+      // POST /admin/application/:id/client-formal-report — 顧問補完手動欄位＋
+      // （可選）大頭貼 base64 之後，組出完整的客戶版履歷 HTML，前端開新分頁
+      // window.print() 存成 PDF（跟既有「下載報告（PDF）」同一種做法，不用等
+      // 本機排程、不用另外接 headless Chrome／第三方服務）。
+      if (p.startsWith('/admin/application/') && p.endsWith('/client-formal-report') && request.method === 'POST') {
+        const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/client-formal-report'.length));
+        const b = await request.json().catch(() => ({}));
+        const app = await env.DB.prepare(
+          `SELECT a.name, a.job_slug, a.job_title, a.expected_salary, a.available_date,
+                  j.title AS job_full_title, j.client_named, j.company_id,
+                  cc.display_name AS client_name
+             FROM applications a
+             LEFT JOIN jobs j ON j.slug = a.job_slug
+             LEFT JOIN client_companies cc ON cc.id = j.company_id
+            WHERE a.id = ?`
+        ).bind(appId).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const report = await env.DB.prepare(
+          `SELECT content_json FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(appId).first();
+        let data = {};
+        try { data = report && report.content_json ? JSON.parse(report.content_json) : {}; } catch { data = {}; }
+        const basics = (data && typeof data.basics === 'object' && data.basics) || {};
+        const clientNamed = app.client_named;
+        const name = clientDisplayName(app.name, clientNamed);
+        const anon = isAnonymous(clientNamed);
+        const txt = (v) => scrubForClient(v);
+        const fc = data.for_client || {};
+        const eHtml = (s) => String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+        const rows = [
+          ['姓名', name],
+          ['現況', String(b.current_state || '').trim().slice(0, 300) || null],
+          ['現居地', basics.residence || null],
+          ['學歷', basics.education || null],
+          ['出生年月', anon ? null : (basics.age || null)],
+          ['兵役', basics.military || null],
+          ['語言', basics.languages || null],
+          ['相關經驗', String(b.related_experience || '').trim().slice(0, 300) || null],
+          ['交通工具', String(b.transportation || '').trim().slice(0, 200) || null],
+          ['期望待遇', app.expected_salary || null],
+          ['可到職', app.available_date || null],
+        ].filter(([, v]) => v);
+
+        const reasons = (fc.reasons || []).map(txt).filter(Boolean);
+        const risks = (fc.risks_to_disclose || []).map(txt).filter(Boolean);
+        const positioning = txt(data.one_liner);
+        const photoHtml = b.photo_b64
+          ? `<img src="${b.photo_b64}" alt="大頭貼">`
+          : '';
+        const now = nowTaipei().slice(0, 10);
+        const watermark = `Step1ne 德仁管理顧問｜${eHtml(name)} 人選推薦報告｜內部整理，經人選同意後提供貴公司參考，未經同意不得轉予第三方`;
+
+        const html = `<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
+      <title>${eHtml(name)}_人選推薦報告</title>
+      <style>
+      @page{size:A4;margin:14mm}
+      body{font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:#23262d;font-size:13px;line-height:1.7;margin:0}
+      .watermark{font-size:10px;color:#8a8d95;border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:14px}
+      h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 6px}
+      .jobtitle{text-align:center;font-weight:700;font-size:14px;margin:0 0 4px}
+      .meta{text-align:center;color:#6b6f78;font-size:12px;margin:0 0 18px}
+      h2{font-size:14px;border-bottom:2px solid #a67c3d;color:#a67c3d;padding-bottom:4px;margin:22px 0 10px}
+      table.basics{width:100%;border-collapse:collapse;table-layout:fixed}
+      table.basics td{border:1px solid #ddd;padding:8px 12px;vertical-align:top}
+      table.basics td.k{width:110px;font-weight:700;background:#faf8f3}
+      .photobox{float:right;width:110px;height:140px;border:1px solid #ddd;margin-left:10px;overflow:hidden;background:#f4f1ea}
+      .photobox img{width:100%;height:100%;object-fit:cover}
+      ol.cond{padding-left:20px}
+      ol.cond li{margin-bottom:10px}
+      ul.notes{padding-left:20px}
+      .rec{white-space:pre-wrap}
+      </style>
+      <body>
+      <div class="watermark">${watermark}</div>
+      <h1>人 選 推 薦 報 告</h1>
+      <div class="jobtitle">${eHtml(app.job_full_title || app.job_title || '')}</div>
+      <div class="meta">${eHtml(app.client_name || '')} ｜ Step1ne 德仁管理顧問有限公司 ｜ ${now}</div>
+      <h2>人選基本資料</h2>
+      ${photoHtml ? `<div class="photobox">${photoHtml}</div>` : ''}
+      <table class="basics">${rows.map(([k, v]) => `<tr><td class="k">${eHtml(k)}</td><td>${eHtml(v)}</td></tr>`).join('')}</table>
+      <div style="clear:both"></div>
+      ${positioning ? `<h2>整體定位</h2><p>${eHtml(positioning)}</p>` : ''}
+      ${reasons.length ? `<h2>核心條件對應</h2><ol class="cond">${reasons.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ol>` : ''}
+      ${risks.length ? `<h2>補充說明</h2><ul class="notes">${risks.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ul>` : ''}
+      <div class="watermark" style="border-top:1px solid #eee;border-bottom:none;margin-top:24px;padding-top:6px">${watermark}</div>
+      </body></html>`;
+
+        return json(request, { ok: true, html });
       }
 
       // 2026-09-01 加：人選卡片改版——⑤給推薦客戶的備註，每一筆推薦紀錄各自
