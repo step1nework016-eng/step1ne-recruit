@@ -18,7 +18,7 @@ LinkedIn 還沒申請，之後金鑰到位後一樣是加在 Worker 那個 callb
     python3 social_post_agent.py <slug>    # 只處理指定職缺（測試用）
     python3 social_post_agent.py --repost <slug>   # 職缺內容改過，重新產一次草稿
 """
-import ast, json, os, re, subprocess, sys, datetime, urllib.request
+import ast, json, os, re, subprocess, sys, time, datetime, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
@@ -314,29 +314,46 @@ def run_claude(prompt):
     return r.stdout.strip()
 
 
-def tg_with_buttons(text, buttons, thread=None):
+def tg_with_buttons(text, buttons, thread=None, retries=3):
     """跟 interview_daemon.py 的 tg() 一樣讀設定檔，但這裡要帶 inline
     keyboard（核准／略過按鈕），tg() 本身沒有這個參數，不改共用函式、
-    這支自己組。"""
+    這支自己組。
+
+    ⚠️ 2026-09-01 真實事故：舊版遇到網路瞬斷（例如 Connection reset by
+    peer）就直接放棄回傳 None，呼叫端卻不管有沒有拿到 msg_id 都印
+    「✅ 草稿已送出審核」——顧問完全看不出這篇到底有沒有真的推播到
+    Telegram，Jacky 那天就是等不到通知、按不了審核。這種網路瞬斷通常
+    重試就過了，先加 3 次重試（間隔漸長）；真的重試完還是失敗，把完整
+    錯誤丟回去讓呼叫端印出明確的失敗訊息，不能再裝作成功。"""
     try:
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {
-            'chat_id': e['TG_CHAT_ID'], 'text': text,
-            'reply_markup': json.dumps({'inline_keyboard': [buttons]}),
-        }
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
-        if tid:
-            body['message_thread_id'] = tid
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
-            data=json.dumps(body).encode(), headers={'content-type': 'application/json'})
-        r = json.loads(urllib.request.urlopen(req, timeout=20).read())
-        return r.get('result', {}).get('message_id')
     except Exception as ex:
-        log(f'Telegram 推播失敗：{ex}')
+        log(f'Telegram 推播失敗（讀設定檔失敗，不會重試）：{ex}')
         return None
+    body = {
+        'chat_id': e['TG_CHAT_ID'], 'text': text,
+        'reply_markup': json.dumps({'inline_keyboard': [buttons]}),
+    }
+    tid = thread if thread is not None else e.get('TG_THREAD_ID')
+    if tid:
+        body['message_thread_id'] = tid
+    req_data = json.dumps(body).encode()
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+                data=req_data, headers={'content-type': 'application/json'})
+            r = json.loads(urllib.request.urlopen(req, timeout=20).read())
+            return r.get('result', {}).get('message_id')
+        except Exception as ex:
+            last_err = ex
+            if attempt < retries:
+                time.sleep(3 * attempt)  # 3s、6s
+    log(f'Telegram 推播失敗（重試 {retries} 次都失敗）：{last_err}')
+    return None
 
 
 POST_START = '<<<POST_START>>>'
@@ -487,7 +504,14 @@ def process_job(queue_row, job, repost=False):
         )
         if msg_id:
             d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))} WHERE id={qid}")
-        log(f'✅ {title}：草稿已送出審核')
+            log(f'✅ {title}：草稿已送出審核')
+        else:
+            # 2026-09-01 改：不能再跟成功印一樣的訊息——草稿本身已經存進 D1
+            # （status='drafted'），只是沒有 Telegram 通知，顧問要自己去
+            # consultant/social-post/ 頁面手動找到這篇審核，不然會一直卡著
+            # 沒人知道。
+            log(f'❌ {title}：草稿已產生但 Telegram 通知沒送出，'
+                f'請去 consultant/social-post/ 頁面手動審核（queue id={qid}）')
     except Exception as e:
         log(f'❌ {title}（{slug}）產生草稿失敗：{e}')
 
