@@ -32,6 +32,22 @@ D = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(D)
 
 
+def find_prior_ai_report(app_id):
+    """找這個人選過去是不是已經有一份『阿財真的面談產生』的報告——用來判斷
+    這次電訪要不要跟舊報告合併。判斷方式：報告內文開頭沒有「資料來源：顧問電訪」
+    這個 marker（那個 marker 是 consultant_call_report.py 自己每次都會寫的，
+    真正阿財面談產生的報告不會有），取最早的一份當「阿財原始報告」——不用
+    interview_mode 判斷是因為那個欄位會在第一次電訪處理後被改成
+    'consultant_call'，蓋掉「這人本來有沒有跟阿財談過」這個歷史事實。"""
+    rows = D.d1(f"SELECT id, content_md, created_at FROM reports WHERE application_id={D.q(app_id)} "
+                f"ORDER BY created_at ASC")
+    for row in rows:
+        content = row.get('content_md') or ''
+        if '資料來源：顧問電訪' not in content and '資料來源:顧問電訪' not in content:
+            return row
+    return None
+
+
 def build(app_id, notes, by):
     rows = D.d1(f"SELECT id, name, job_slug, interview_state FROM applications WHERE id={D.q(app_id)}")
     if not rows:
@@ -45,12 +61,35 @@ def build(app_id, notes, by):
         if resume_text else
         '\n\n【履歷】這位候選人沒有可讀的履歷檔案，報告裡的經歷一律標「來源：口述」。')
 
+    # ⚠️ 2026-09-01 加：這個人選如果之前已經有一份阿財真的面談產生的報告，
+    # 這次電訪不能當作「從零開始」重寫一份——要把阿財那份也讀進去，產出
+    # 一份整合兩次接觸的新報告。阿財原本那份報告在資料庫裡完全不動
+    # （報告本來就是每次新增一列，不會覆蓋），顧問兩份都看得到。
+    prior = find_prior_ai_report(app_id)
+    prior_block = (
+        '\n\n【這個人選先前跟阿財面談產生的原始報告——這次電訪內容要跟這份對照、'
+        '互相補充，不是重新寫一份，兩邊都提到的地方以更晚、更明確的說法為準】\n'
+        + prior['content_md']
+        if prior else '')
+
+    merge_instruction = (
+        '\n\n⚠️ 這個人選先前已經有阿財面談的報告（上面附上了）。這次是同一個人選'
+        '第二次接觸，顧問又親自電訪一次。請把兩次接觸的資訊合併成一份新報告：\n'
+        '  - 阿財面談問到的、電訪沒再問的，繼續保留在新報告裡，不要因為這次沒問到就刪掉。\n'
+        '  - 電訪這次新問到、阿財面談沒問到的，補進去。\n'
+        '  - 兩邊都問到但答案不一樣的（例如期望待遇改了），以電訪這次（比較新）為準，'
+        '並註明「（電訪更新：原本 XXX，現在 XXX）」，不要默默改掉沒講。\n'
+        '  - 報告開頭除了「資料來源：顧問電訪」，再加一行「本報告整合阿財面談'
+        '（' + str(prior['created_at'] if prior else '') + '）＋顧問電訪（' + by + '）兩次接觸紀錄」。\n'
+        if prior else '')
+
     prompt = (
         '以下是一場**由獵頭顧問親自電話訪談**的紀錄。請依規範的 Phase 7 產出初篩報告。\n\n'
         + D.skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block
+        + prior_block
         + '\n\n【顧問電訪紀錄】\n' + notes
         # 這一段是這支跟阿財那條線唯一真正不同的地方，一定要講清楚，
         # 不然模型會照「AI 面談」的假設去寫，報告裡出現根本沒發生過的問答。
@@ -61,6 +100,7 @@ def build(app_id, notes, by):
           '顧問看報告是要知道「還有哪些沒問到」，自己補上去的內容會讓他以為問過了。\n'
           '3. 不要引用不存在的問答對話，也不要評論候選人的回答速度或投入程度'
           '（那些訊號只有 AI 面談才有）。\n'
+        + merge_instruction
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
 
     r = subprocess.run(['claude', '-p', D.sanitize(prompt), '--model', D.REPORT_MODEL,
