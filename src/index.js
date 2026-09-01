@@ -1659,6 +1659,192 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
   return { manual_stage: stage, manual_stage_at: stage ? now : null };
 }
 
+// 手動新增應徵紀錄的核心邏輯——抽成獨立函式讓「/admin/pipeline/manual-forward」
+// 這支 HTTP 路由跟 Telegram webhook 都能直接呼叫。2026-09-01 修：TG bot 原本是
+// 用 fetch() 打自己這個 Worker 的公開網址（self-fetch）來呼叫這支端點，結果被
+// Cloudflare error 1042（Worker 呼叫自己會被當成防迴圈機制擋下）擋掉，導致
+// 「電洽新增人選」功能整個失敗。改成直接 in-process 呼叫這個函式，不再繞出去
+// 打自己的網址。回傳 { status, body }，body 的形狀跟原本 json() 回應完全一樣，
+// 呼叫端（HTTP 路由或 TG webhook）自己決定怎麼包裝。
+async function doManualForward(env, b) {
+  const sourceKind = b.source_kind === 'sourced' ? 'sourced'
+    : b.source_kind === 'new' ? 'new' : 'application';
+  const sourceId = String(b.source_id || '').trim();
+  const jobSlug = String(b.job_slug || '').trim();
+  if (!jobSlug) return { status: 400, body: { ok: false, error: '缺職缺' } };
+  if (sourceKind !== 'new' && !sourceId) return { status: 400, body: { ok: false, error: '缺人選' } };
+  if (!b.consent_confirmed) {
+    return { status: 400, body: { ok: false, error: '請先確認已經取得本人同意，才能幫他建立應徵紀錄' } };
+  }
+  if (b.initial_stage && !MANUAL_STAGE_OPTS.includes(b.initial_stage)) {
+    return { status: 400, body: { ok: false, error: '初始階段不合法' } };
+  }
+
+  const job = await env.DB.prepare(
+    `SELECT slug, title, company_id FROM jobs WHERE slug=?`).bind(jobSlug).first();
+  if (!job) return { status: 404, body: { ok: false, error: '找不到這個職缺' } };
+
+  let src;
+  if (sourceKind === 'new') {
+    const newName = String(b.name || '').trim();
+    let newEmail = String(b.email || '').trim();
+    const newPhone = String(b.phone || '').trim();
+    if (!newName) return { status: 400, body: { ok: false, error: '請填姓名' } };
+    if (!newEmail && !newPhone) {
+      return { status: 400, body: { ok: false, error: '至少要填 Email 或電話其中一個，才能識別本人' } };
+    }
+    if (!newEmail) newEmail = `phone-${newPhone.replace(/\D/g, '')}@no-email.step1ne.local`;
+    src = { name: newName, email: newEmail, phone: newPhone, resume_file_id: null, resume_url: null };
+  } else if (sourceKind === 'sourced') {
+    src = await env.DB.prepare(`SELECT * FROM sourced_candidates WHERE id=?`).bind(sourceId).first();
+  } else {
+    src = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(sourceId).first();
+  }
+  if (!src) return { status: 404, body: { ok: false, error: '找不到這個人選' } };
+  const email = String(src.email || '').trim();
+  const phone = String(src.phone || '').trim();
+  if (!email && !phone) return { status: 400, body: { ok: false, error: '這個人選沒有 email 也沒有電話，沒辦法建應徵紀錄（至少要有一個可以識別本人的聯絡方式）' } };
+  if (!String(src.name || '').trim()) {
+    return { status: 400, body: { ok: false, error: '這個人選沒有姓名，請先在人選卡片補上姓名再建應徵紀錄' } };
+  }
+
+  const now = nowTaipei();
+  const phoneTail = phone.replace(/\D/g, '').slice(-9);
+  let appId = email ? (await env.DB.prepare(
+    `SELECT id FROM applications WHERE LOWER(TRIM(email))=? AND job_slug=? LIMIT 1`
+  ).bind(email.toLowerCase(), jobSlug).first() || {}).id : null;
+  if (!appId && phoneTail) {
+    appId = (await env.DB.prepare(
+      `SELECT id FROM applications WHERE phone LIKE ? AND job_slug=? LIMIT 1`
+    ).bind('%' + phoneTail, jobSlug).first() || {}).id;
+  }
+
+  let created = false;
+  let reportQueued = false;
+  if (!appId) {
+    appId = uid();
+    created = true;
+    const consentNote = `[${now}] 顧問手動新增應徵紀錄：${b.consent_note ? String(b.consent_note).slice(0, 300) : '（未填說明）'}`;
+    let resumeFileId = src.resume_file_id || null;
+    if ((sourceKind === 'new' || sourceKind === 'sourced') && b.resume_b64) {
+      const saved = await saveResume(env, b, now);
+      if (saved && saved.tooBig) {
+        return { status: 400, body: { ok: false, error: '履歷檔案太大，請壓縮後再上傳' } };
+      }
+      if (saved) resumeFileId = saved.fileId;
+    }
+    const callNotes = (sourceKind === 'new' || sourceKind === 'sourced') && b.call_notes ? String(b.call_notes).trim() : '';
+    let callNotesFileId = null;
+    if ((sourceKind === 'new' || sourceKind === 'sourced') && b.call_notes_file_b64) {
+      const saved = await saveUpload(env, {
+        b64: b.call_notes_file_b64, name: b.call_notes_file_name, mime: b.call_notes_file_mime,
+      }, now);
+      if (saved && saved.tooBig) {
+        return { status: 400, body: { ok: false, error: '面談內容檔案太大，請壓縮後再上傳' } };
+      }
+      if (saved) callNotesFileId = saved.fileId;
+    }
+    reportQueued = !!(callNotes || callNotesFileId);
+    const sourceChannel = (sourceKind === 'new' || sourceKind === 'sourced') && b.source_channel ? String(b.source_channel).trim() : null;
+    const resumeSource = (sourceKind === 'new' || sourceKind === 'sourced') && b.resume_source ? String(b.resume_source).trim() : null;
+    await env.DB.prepare(
+      `INSERT INTO applications
+         (id, created_at, job_slug, job_title, name, email, phone,
+          resume_file_id, resume_url, note, status, consent_at,
+          interview_state, handled_by, handled_note, owner,
+          consultant_call_notes, call_report_pending, call_notes_file_id, source_channel, resume_source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'new',?,'not_started',?,?,?,?,?,?,?,?)`
+    ).bind(appId, now, jobSlug, job.title, src.name || null, email || null, phone || null,
+           resumeFileId, src.resume_url || null, consentNote, now,
+           b.by || null, `顧問手動送出，未透過阿財面談（${b.by || '顧問'}）`, b.owner || null,
+           callNotes || null, reportQueued ? 1 : 0, callNotesFileId, sourceChannel, resumeSource).run();
+    if (sourceKind === 'sourced' && !src.converted_application_id) {
+      await env.DB.prepare(
+        `UPDATE sourced_candidates SET converted_application_id=? WHERE id=?`
+      ).bind(appId, sourceId).run();
+    }
+  }
+
+  if (job.company_id) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
+       VALUES (?,?,?,?,?,?)`
+    ).bind(uid(), appId, job.company_id, b.by || null, now, '顧問手動新增（未透過阿財面談）').run();
+    const existingPl = await env.DB.prepare(
+      `SELECT id FROM placements WHERE application_id=? AND client_id=? LIMIT 1`
+    ).bind(appId, job.company_id).first();
+    if (!existingPl) {
+      await env.DB.prepare(
+        `INSERT INTO placements (application_id, candidate_name, job_slug, job_title, client_name, stage, client_id, stage_since, created_at, updated_at)
+         VALUES (?,?,?,?,?, 'SUBMITTED', ?, ?, ?, ?)`
+      ).bind(appId, src.name || null, jobSlug, job.title,
+             (await env.DB.prepare(`SELECT display_name FROM client_companies WHERE id=?`).bind(job.company_id).first() || {}).display_name || '未命名客戶',
+             job.company_id, now.slice(0, 10), now, now).run();
+    }
+  }
+
+  if (b.initial_stage) {
+    await applyManualStage(env, { application_id: appId, stage: b.initial_stage,
+      note: '手動新增時直接設定', by: b.by || null, company_id: job.company_id || null });
+  }
+
+  return { status: 200, body: { ok: true, application_id: appId, created, report_queued: reportQueued,
+    company_linked: !!job.company_id,
+    message: job.company_id ? null : '這個職缺還沒連到客戶名單，這筆紀錄目前只會在內部看得到，不會出現在客戶 portal' } };
+}
+
+// 內部結案／標記不推薦的核心邏輯——同樣抽成獨立函式（理由跟 doManualForward
+// 一樣：TG bot 的 nc_pool 流程會在建立人選後立刻鏈式呼叫這支，原本用 self-fetch
+// 一樣會撞 Cloudflare error 1042）。
+async function doMarkClosed(env, b) {
+  if (!b.application_id) return { status: 400, body: { ok: false, error: '缺 application_id' } };
+  const notify = b.notify !== false;
+  const reason = String(b.reason || '').trim().slice(0, 500);
+  // 🚨 就服法紅線：這段文字會原封不動送給候選人，不是內部備註。
+  const hits = law5Hits(reason);
+  if (hits.length) {
+    return { status: 422, body: {
+      ok: false, error: 'law5_blocked',
+      hits,
+      message: `這段訊息會直接送給候選人，裡面出現了「${hits.join('」「')}」——`
+        + '就業服務法第 5 條禁止以性別、年齡、婚育、國籍、身心障礙、宗教、'
+        + '容貌等條件對求職者為差別待遇。\n\n'
+        + '請改成不涉及這些條件的說法（例如「這次的職務條件與您的經歷方向不同」）。\n'
+        + '⚠️ 客戶的原始要求該記還是要記，但記在顧問備註，不要寫進要送出去的訊息。',
+    } };
+  }
+  const stageVal = notify ? 'CLOSED_LOST' : 'CLOSED_INTERNAL';
+  const app = await env.DB.prepare(
+    `SELECT a.name, a.job_slug, a.job_title, j.client_name FROM applications a
+       LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = ?`
+  ).bind(b.application_id).first();
+  if (!app) return { status: 404, body: { ok: false, error: '找不到這筆應徵' } };
+
+  const now = nowTaipei();
+  const exist = await env.DB.prepare(`SELECT id FROM placements WHERE application_id = ?`).bind(b.application_id).first();
+  if (exist) {
+    await env.DB.prepare(`UPDATE placements SET stage=?, close_reason=?, updated_at=? WHERE id=?`)
+      .bind(stageVal, reason || null, now, exist.id).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO placements (application_id, candidate_name, job_slug, job_title, client_name, stage, stage_since, close_reason, created_at, updated_at)
+       VALUES (?,?,?,?,?, ?, ?, ?, ?, ?)`
+    ).bind(b.application_id, app.name, app.job_slug, app.job_title,
+           app.client_name || '（職缺未綁客戶）', stageVal, now.slice(0, 10), reason || null, now, now).run();
+  }
+  if (notify) {
+    const rep = await env.DB.prepare(
+      `SELECT id, consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+    ).bind(b.application_id).first();
+    if (rep && !rep.consultant_decision) {
+      await env.DB.prepare(`UPDATE reports SET consultant_decision='rejected', decided_at=? WHERE id=?`)
+        .bind(now, rep.id).run();
+    }
+    await notifyLineProgress(env, b.application_id);
+  }
+  return { status: 200, body: { ok: true } };
+}
+
 // 開關職缺的招募狀態——顧問後台既有的 open/closed 切換（/admin/jobs/:slug）
 // 跟客戶 portal 的「結束招募／重新招募」都呼叫這裡，行為（含誰關的／原因／
 // 時間戳）不會兩邊各自維護出不同步的版本。關閉時記錄 closed_by／closed_reason／
@@ -3446,17 +3632,18 @@ export default {
         // 兩家的面試進度是各自獨立的——A 家談到第二關、B 家還沒約，
         // 原本共用 applications.manual_stage 會讓兩家看到同一個進度。
         const { results: rows } = await env.DB.prepare(
-          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+          `SELECT a.id AS application_id, a.name AS candidate_name,
+                  COALESCE(cf.job_slug, a.job_slug) AS job_slug,
                   a.interview_started_at, a.interview_ended_at,
                   a.resume_file_id, a.resume_url,
                   cf.manual_stage, cf.manual_stage_note, cf.manual_stage_by, cf.manual_stage_at,
                   cf.client_interview_labels, cf.line_id_given, cf.client_note,
-                  cf.client_rejected_at, cf.client_reject_reason,
+                  cf.client_rejected_at, cf.client_reject_reason, cf.client_advanced_at,
                   j.title AS job_title, j.client_named,
                   r.id AS report_id, r.content_client_md, r.consultant_decision, cf.forwarded_at
              FROM candidate_forwards cf
              JOIN applications a ON a.id = cf.application_id
-             JOIN jobs j ON j.slug = a.job_slug
+             JOIN jobs j ON j.slug = COALESCE(cf.job_slug, a.job_slug)
              LEFT JOIN reports r ON r.id = (
                    SELECT id FROM reports WHERE application_id = a.id
                    ORDER BY created_at DESC LIMIT 1)
@@ -3535,12 +3722,13 @@ export default {
             forwarded_at: row.forwarded_at,
             steps,
             current_stage: row.client_rejected_at
-              ? { key: 'rejected', lb: '已婉拒' }
+              ? { key: 'rejected', lb: '不推進' }
               : stageInfo.effective_index >= stage1Idx
                 ? { key: stageInfo.effective_key, lb: (steps.find((s) => s.key === stageInfo.effective_key) || {}).lb }
                 : { key: null, lb: '用人單位' },
             client_rejected_at: row.client_rejected_at || null,
             client_reject_reason: row.client_reject_reason || null,
+            client_advanced_at: row.client_advanced_at || null,
             interview_rounds_used: Object.keys(roundLabels).length,
             interview_round_types: INTERVIEW_ROUND_TYPE_LABEL,
             editable_stages: CLIENT_SETTABLE_STAGES.map((key) => ({
@@ -3586,7 +3774,8 @@ export default {
         // reports.consultant_decision 覆核一次；改成 LEFT JOIN，report 沒有就是
         // NULL，不擋流程。
         const row = await env.DB.prepare(
-          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+          `SELECT a.id AS application_id, a.name AS candidate_name,
+                  COALESCE(cf.job_slug, a.job_slug) AS job_slug,
                   cf.client_interview_labels, r.consultant_decision,
                   cf.id AS forward_id
              FROM candidate_forwards cf
@@ -3646,7 +3835,8 @@ export default {
         // 會把從沒產出過報告的人選（顧問手動新增、直接推薦）擋在外面，candidate_forwards
         // 存在本身就已經證明「正式推薦給這家客戶」，不需要再靠 reports 表覆核。
         const row = await env.DB.prepare(
-          `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
+          `SELECT a.id AS application_id, a.name AS candidate_name,
+                  COALESCE(cf.job_slug, a.job_slug) AS job_slug,
                   a.interview_started_at, a.interview_ended_at,
                   cf.manual_stage, cf.manual_stage_note, cf.manual_stage_by, cf.manual_stage_at,
                   cf.client_interview_labels, r.consultant_decision
@@ -3882,6 +4072,37 @@ export default {
             .bind(tgId, msgId).run();
         }
         return json(request, { ok: true });
+      }
+
+      // POST /portal/:token/candidates/:applicationId/advance — 用人單位在表格
+      // 「用人單位」欄選「推進」。2026-09-01 加：這格原本選了「推進」什麼事都
+      // 不會發生（純粹是預設值、不算真的動作），但 Jacky 要的是：①客戶明確
+      // 表態要推進，顧問要收到通知才知道可以安排面試；②面試階段／錄取／報到
+      // 這三欄要等客戶真的按過「推進」才能填，不然還沒決定要不要推進，
+      // 這些欄位填了也沒意義。用同一個 candidate_forwards.client_advanced_at
+      // 時間戳同時滿足這兩個需求：有值＝前端解鎖後面三欄；第一次寫入才發
+      // TG 通知（避免同一位人選被重複點很多次「推進」灌爆顧問的 TG）。
+      if (parts.length === 4 && parts[1] === 'candidates' && parts[3] === 'advance' && request.method === 'POST') {
+        const applicationId = parts[2];
+        const fwd = await env.DB.prepare(
+          `SELECT client_advanced_at FROM candidate_forwards WHERE application_id=? AND company_id=?`
+        ).bind(applicationId, company.id).first();
+        if (!fwd) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        if (fwd.client_advanced_at) return json(request, { ok: true, client_advanced_at: fwd.client_advanced_at, already: true });
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `UPDATE candidate_forwards SET client_advanced_at=? WHERE application_id=? AND company_id=?`
+        ).bind(now, applicationId, company.id).run();
+        const app = await env.DB.prepare(
+          `SELECT a.name AS name, a.job_slug AS job_slug, j.title AS job_title
+             FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id=?`
+        ).bind(applicationId).first();
+        const jobLine = app && (app.job_title || app.job_slug) ? `（${app.job_title || app.job_slug}）` : '';
+        const topicId = await getOrCreateClientTopic(env, company);
+        notify(env,
+          `✅ ${company.display_name} 確認推進人選「${(app && app.name) || applicationId}」${jobLine}，可以安排接下來的面試了`,
+          { message_thread_id: topicId || THREAD.decide }).catch(() => {});
+        return json(request, { ok: true, client_advanced_at: now });
       }
 
       // GET /portal/:token/notifications — 通知鈴鐺角標，讀 candidate_forwards
@@ -4621,19 +4842,16 @@ export default {
             if (sess.step === 'contact' && String(rm2.text || '').trim()) {
               const v = rm2.text.trim();
               if (v.includes('@')) sess.data.email = v; else sess.data.phone = v;
-              const { results: companies } = await env.DB.prepare(
-                `SELECT id, display_name FROM client_companies ORDER BY display_name LIMIT 20`).all();
-              if (!companies || !companies.length) {
-                await ncSend(env, rm2.chat.id, callIntakeTopic, '目前系統裡沒有任何客戶資料，沒辦法選——先跟顧問後台確認客戶名單。');
-                await ncClearSession(env, rm2.chat.id, rm2.from.id);
-                return new Response('ok');
-              }
-              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'client', sess.data);
-              const rows = [];
-              for (let i = 0; i < companies.length; i += 2) {
-                rows.push(companies.slice(i, i + 2).map((c) => ({ text: c.display_name, callback_data: 'nc_client:' + c.id })));
-              }
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '這位人選要應徵哪個客戶？', { inline_keyboard: rows });
+              // 2026-09-01 加：指派負責顧問——原本這個流程建出來的人選 owner
+              // 永遠是 NULL，顧問人選追蹤那邊的「全部顧問／Jacky／Phoebe」篩選
+              // 完全篩不到這批人。改成動態讀 consultants 表（is_active=1），
+              // 新增或停用顧問不用改這裡的程式碼。
+              const { results: consultants } = await env.DB.prepare(
+                `SELECT id, display_name FROM consultants WHERE is_active=1 ORDER BY display_name`).all();
+              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'owner', sess.data);
+              const ownerRows = (consultants || []).map((c) => ([{ text: c.display_name, callback_data: 'nc_owner:' + c.id }]));
+              ownerRows.push([{ text: '未指派', callback_data: 'nc_owner:' }]);
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '這位人選要指派給哪位顧問？', { inline_keyboard: ownerRows });
               return new Response('ok');
             }
           }
@@ -4697,6 +4915,63 @@ export default {
             await ncSend(env, chatId, threadId, '好，電話或 Email（填一個就好）？');
             return new Response('ok');
           }
+          if (cq2.data.startsWith('nc_owner:')) {
+            const ownerId = cq2.data.slice('nc_owner:'.length);
+            await ans2();
+            sess.data.owner = ownerId || null;
+            sess.data.owner_name = ownerId
+              ? (await env.DB.prepare(`SELECT display_name FROM consultants WHERE id=?`).bind(ownerId).first() || {}).display_name || null
+              : '未指派';
+            const { results: companies } = await env.DB.prepare(
+              `SELECT id, display_name FROM client_companies ORDER BY display_name LIMIT 20`).all();
+            if (!companies || !companies.length) {
+              await ncSend(env, chatId, threadId, '目前系統裡沒有任何客戶資料，沒辦法選——先跟顧問後台確認客戶名單。');
+              await ncClearSession(env, chatId, cq2.from.id);
+              return new Response('ok');
+            }
+            await ncSetSession(env, chatId, cq2.from.id, 'client', sess.data);
+            const rows = [];
+            for (let i = 0; i < companies.length; i += 2) {
+              rows.push(companies.slice(i, i + 2).map((c) => ({ text: c.display_name, callback_data: 'nc_client:' + c.id })));
+            }
+            rows.push([{ text: '❓ 暫時沒有推薦的職缺', callback_data: 'nc_pool' }]);
+            await ncSend(env, chatId, threadId, '這位人選要應徵哪個客戶？', { inline_keyboard: rows });
+            return new Response('ok');
+          }
+          if (cq2.data === 'nc_pool') {
+            await ans2('處理中…');
+            const who2 = (cq2.from && (cq2.from.username || cq2.from.first_name)) || '顧問';
+            const payload2 = {
+              source_kind: 'new', job_slug: 'unspecified', consent_confirmed: true,
+              name: sess.data.name, email: sess.data.email || '', phone: sess.data.phone || '',
+              call_notes: sess.data.transcript || '', by: who2, owner: sess.data.owner || null,
+              source_channel: 'TG 電洽新增',
+            };
+            if (sess.data.resume_b64) {
+              payload2.resume_b64 = sess.data.resume_b64;
+              payload2.resume_name = sess.data.resume_name;
+              payload2.resume_mime = sess.data.resume_mime;
+            }
+            try {
+              // 2026-09-01 修：原本用 fetch() 打自己這個 Worker 的公開網址，會被
+              // Cloudflare error 1042（self-fetch 防迴圈機制）擋掉，這是「電洽新增
+              // 人選」一直失敗的真正原因。改成直接 in-process 呼叫共用函式。
+              const r2 = await doManualForward(env, payload2);
+              if (r2.body.ok) {
+                // 建好之後立刻標記內部結案（不通知候選人，因為根本還沒有推薦
+                // 給任何客戶）——讓他直接落進「顧問履歷庫」分頁，不會卡在
+                // 「等我決定」看起來像有事要處理。
+                await doMarkClosed(env, { application_id: r2.body.application_id, notify: false, reason: '電洽新增時暫無適合職缺，先存進顧問履歷庫' }).catch(() => {});
+                await ncSend(env, chatId, threadId, `✅ 建好了：${sess.data.name}（指派給：${sess.data.owner_name || '未指派'}）\n先存進「顧問履歷庫」，之後有適合的職缺再到顧問人選追蹤手動推薦給客戶。`);
+              } else {
+                await ncSend(env, chatId, threadId, `❌ 失敗：${r2.body.error || '未知錯誤'}`);
+              }
+            } catch (e) {
+              await ncSend(env, chatId, threadId, `❌ 系統錯誤：${e && e.message ? e.message : String(e)}`);
+            }
+            await ncClearSession(env, chatId, cq2.from.id);
+            return new Response('ok');
+          }
           if (cq2.data.startsWith('nc_client:')) {
             const companyId = cq2.data.slice('nc_client:'.length);
             await ans2();
@@ -4721,7 +4996,7 @@ export default {
             const payload = {
               source_kind: 'new', job_slug: jobSlug, consent_confirmed: true,
               name: sess.data.name, email: sess.data.email || '', phone: sess.data.phone || '',
-              call_notes: sess.data.transcript || '', by: who,
+              call_notes: sess.data.transcript || '', by: who, owner: sess.data.owner || null,
               source_channel: 'TG 電洽新增',
             };
             if (sess.data.resume_b64) {
@@ -4730,19 +5005,15 @@ export default {
               payload.resume_mime = sess.data.resume_mime;
             }
             try {
-              const cr = await fetch('https://step1ne-recruit-api.aiagentg888.workers.dev/admin/pipeline/manual-forward', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
-                body: JSON.stringify(payload),
-              });
-              const crd = await cr.json().catch(() => ({}));
-              if (crd.ok) {
-                await ncSend(env, chatId, threadId, `✅ 建好了：${sess.data.name}\n初篩報告大約 5 分鐘後會出現在人選卡片上（需要本機排程在跑）。`);
+              // 2026-09-01 修：改成直接 in-process 呼叫，理由同上（error 1042）。
+              const r = await doManualForward(env, payload);
+              if (r.body.ok) {
+                await ncSend(env, chatId, threadId, `✅ 建好了：${sess.data.name}（指派給：${sess.data.owner_name || '未指派'}）\n初篩報告大約 5 分鐘後會出現在人選卡片上（需要本機排程在跑）。`);
               } else {
-                await ncSend(env, chatId, threadId, `❌ 失敗：${crd.error || '不知道為什麼'}`);
+                await ncSend(env, chatId, threadId, `❌ 失敗：${r.body.error || '未知錯誤'}`);
               }
             } catch (e) {
-              await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩按「🆕 開始新增人選」重新來一次。');
+              await ncSend(env, chatId, threadId, `❌ 系統錯誤：${e && e.message ? e.message : String(e)}`);
             }
             await ncClearSession(env, chatId, cq2.from.id);
             return new Response('ok');
@@ -7764,66 +8035,8 @@ export default {
 
       if (p === '/admin/mark-closed' && request.method === 'POST') {
         const b = await request.json();
-        if (!b.application_id) return json(request, { ok: false, error: '缺 application_id' }, 400);
-        // ⚠️ 2026-08-14 改：這欄原本存的是「塞進固定模板中間那句話的片段」，
-        // 改成顧問後台彈窗直接編輯完整訊息之後，這裡存的就是完整訊息本身
-        // （開頭+理由+結尾都在裡面），deriveApplicationProgress() 的 CLOSED_LOST
-        // 分支不再自己組模板，直接原樣（套用客戶→用人單位替換）當作 message。
-        //
-        // ⚠️ 2026-08-14 加 notify：不是每次結案都是「拒絕候選人」——用人單位可能
-        // 只是暫時不錄取、談別的合作方向，這種不該讓候選人收到委婉道歉卡片。
-        // notify=false 時 stage 存 CLOSED_INTERNAL（不是 CLOSED_LOST）：
-        // deriveApplicationProgress() 只認 CLOSED_LOST 為「結案」，CLOSED_INTERNAL
-        // 對候選人查進度來說完全不存在，也不推播、不動報告的處置決定——
-        // 純粹是顧問自己看得到的內部記錄。
-        const notify = b.notify !== false;
-        const reason = String(b.reason || '').trim().slice(0, 500);
-        // 🚨 就服法紅線：這段文字會原封不動送給候選人，不是內部備註。
-        const hits = law5Hits(reason);
-        if (hits.length) {
-          return json(request, {
-            ok: false, error: 'law5_blocked',
-            hits,
-            message: `這段訊息會直接送給候選人，裡面出現了「${hits.join('」「')}」——`
-              + '就業服務法第 5 條禁止以性別、年齡、婚育、國籍、身心障礙、宗教、'
-              + '容貌等條件對求職者為差別待遇。\n\n'
-              + '請改成不涉及這些條件的說法（例如「這次的職務條件與您的經歷方向不同」）。\n'
-              + '⚠️ 客戶的原始要求該記還是要記，但記在顧問備註，不要寫進要送出去的訊息。',
-          }, 422);
-        }
-        const stageVal = notify ? 'CLOSED_LOST' : 'CLOSED_INTERNAL';
-        const app = await env.DB.prepare(
-          `SELECT a.name, a.job_slug, a.job_title, j.client_name FROM applications a
-             LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = ?`
-        ).bind(b.application_id).first();
-        if (!app) return json(request, { ok: false, error: '找不到這筆應徵' }, 404);
-
-        const now = nowTaipei();
-        const exist = await env.DB.prepare(`SELECT id FROM placements WHERE application_id = ?`).bind(b.application_id).first();
-        if (exist) {
-          await env.DB.prepare(`UPDATE placements SET stage=?, close_reason=?, updated_at=? WHERE id=?`)
-            .bind(stageVal, reason || null, now, exist.id).run();
-        } else {
-          await env.DB.prepare(
-            `INSERT INTO placements (application_id, candidate_name, job_slug, job_title, client_name, stage, stage_since, close_reason, created_at, updated_at)
-             VALUES (?,?,?,?,?, ?, ?, ?, ?, ?)`
-          ).bind(b.application_id, app.name, app.job_slug, app.job_title,
-                 app.client_name || '（職缺未綁客戶）', stageVal, now.slice(0, 10), reason || null, now, now).run();
-        }
-        if (notify) {
-          // 順手把還沒處置過的報告標成「不推薦」，跟「初審」那格的狀態對起來——
-          // 不然顧問看畫面會覺得系統壞了（跟 report_tick.py 現有的邏輯一致）。
-          // 內部結案（notify=false）不算拒絕候選人，不動這個欄位。
-          const rep = await env.DB.prepare(
-            `SELECT id, consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
-          ).bind(b.application_id).first();
-          if (rep && !rep.consultant_decision) {
-            await env.DB.prepare(`UPDATE reports SET consultant_decision='rejected', decided_at=? WHERE id=?`)
-              .bind(now, rep.id).run();
-          }
-          await notifyLineProgress(env, b.application_id);
-        }
-        return json(request, { ok: true });
+        const result = await doMarkClosed(env, b);
+        return json(request, result.body, result.status);
       }
 
       // 2026-08-13 加：清除處置——轉給客戶／需補問／不推薦按錯了，之前完全沒有
@@ -8053,9 +8266,11 @@ export default {
           // 2026-08-25 加 cc.display_name：兩個不同客戶的職缺標題可能撞名
           // （例如弘昌跟律準都開「BIM 工程師」），只看標題分不出是哪家，
           // 一定要把客戶名稱一起帶出來顯示。
+          // 2026-09-01 加 j.company_id：人選卡片「推薦給客戶／職缺」要能依選定的
+          // 客戶篩出「這家客戶有哪些職缺」，之前只有客戶名稱、沒有 id 對不起來。
           `SELECT j.slug, j.title, j.service_line, j.client_relation, j.seniority,
                   j.client_named, j.ai_disclosure, j.client_code, j.status, j.interview_language, j.onboarding_prep_note,
-                  cc.display_name AS company_display_name,
+                  j.company_id, cc.display_name AS company_display_name,
                   -- ① 應徵：填完申請表送出的人（不含重複投遞被標記取代的）
                   (SELECT COUNT(*) FROM applications a
                     WHERE a.job_slug = j.slug AND a.superseded_by IS NULL) AS applicants,
@@ -9396,7 +9611,7 @@ export default {
         // 這個做法還在合理範圍（跟 /portal/:token/candidates 同一套 Promise.all 模式）。
         const trackerJobStageKeysMap = await getJobStageKeysMap(env, (apps || []).map((a) => a.job_slug));
         const detail = await Promise.all((apps || []).map(async (a) => {
-          const [report, forwardsRes, apptsRes] = await Promise.all([
+          const [report, forwardsRes, apptsRes, noCompanyPlacement] = await Promise.all([
             env.DB.prepare(
               `SELECT id, content_md, consultant_decision FROM reports
                 WHERE application_id=? ORDER BY created_at DESC LIMIT 1`).bind(a.id).first(),
@@ -9415,6 +9630,16 @@ export default {
             env.DB.prepare(
               `SELECT stage, status FROM interview_appointments WHERE application_id=?`
             ).bind(a.id).all(),
+            // 2026-09-01 加：職缺沒綁客戶（例如 TG「暫時沒有推薦的職缺」流程用的
+            // unspecified 職缺）不會有 candidate_forwards 列，下面靠 forwardRows
+            // 才查得到的 placements 進度完全看不到這種人——mark-closed 明明已經
+            // 寫了一筆 client_id 是 NULL 的 CLOSED_INTERNAL，卻因為沒有對應的
+            // candidate_forwards 而永遠查不到，導致這種人卡在「等人選填完」，
+            // 進不了顧問履歷庫。這裡直接補查一次 client_id IS NULL 的那筆。
+            env.DB.prepare(
+              `SELECT stage FROM placements WHERE application_id=? AND client_id IS NULL
+                ORDER BY updated_at DESC LIMIT 1`
+            ).bind(a.id).first(),
           ]);
           const appts = apptsRes.results || [];
           const forwardRows = forwardsRes.results || [];
@@ -9452,6 +9677,9 @@ export default {
           const evaluated = !!report;
           const pushed = placements.length > 0;
           const hardGate = a.status === 'pending_screen' && !a.screen_decision;
+          const noCompanyClosed = !primaryPlacement && noCompanyPlacement
+            && /^CLOSED_/.test(String(noCompanyPlacement.stage || '').toUpperCase())
+            ? noCompanyPlacement.stage.toUpperCase() : null;
           return {
             application_id: a.id, name: a.name, email: a.email, phone: a.phone,
             job_slug: a.job_slug, job_title: a.job_full_title || a.job_title,
@@ -9465,7 +9693,7 @@ export default {
             consultant_note: a.consultant_note,
             expected_salary: a.expected_salary, available_date: a.available_date,
             ai_done: aiDone, evaluated, pushed,
-            closed: primaryPlacement ? primaryPlacement.closed : null, hard_gate: hardGate,
+            closed: primaryPlacement ? primaryPlacement.closed : noCompanyClosed, hard_gate: hardGate,
             decision: report ? report.consultant_decision : null,
             report_id: report ? report.id : null, report_md: report ? report.content_md : null,
             manual_stage_note: primaryPlacement ? primaryPlacement.manual_stage_note : null,
@@ -9514,14 +9742,23 @@ export default {
             : null;
           // tab 在後端算好直接回傳，不要讓前端各自猜——這正是「初篩報告」跟
           // 「我的案子」原本各算一套才會兜不起來的老問題，這次不能重蹈覆轍。
+          // 2026-09-01 改：Jacky 定案的 6 分頁架構——
+          //   fill  （等人選填完）：還沒推給客戶、也還沒有報告可看——球在人選
+          //          身上（阿財面談還沒結束）或系統背景處理中（電洽摘要還沒
+          //          產出）。用 evaluated（有沒有報告）判斷，同時涵蓋自己面談
+          //          跟顧問電洽兩種來源，不用分別檢查 interview_state。
+          //   decide（等我決定）：有報告了，等顧問審閱——hard_gate（阿財初審
+          //          卡關）也併進這裡，一起等顧問處理，不獨立分頁。
+          //   client（客戶面談階段）：已推給客戶，原本「客戶手上」跟「快成交」
+          //          兩個分頁合併成一個，不再靠 effective_index 猜要分去哪邊。
+          //   pool  （候補池）：已結案／顧問明確不推薦，跟主動開發那邊的
+          //          「先留著（預備區）」是同一個分頁——人選本身沒有消失，
+          //          只是目前沒有進行中的媒合，隨時可以被重新推薦。
           let tab;
-          if (primary.closed || primary.decision === 'rejected') tab = 'done';
-          else if (primary.hard_gate) tab = 'screening';
-          else if (!primary.pushed) tab = 'to_review';
-          else {
-            const steps = primary.steps || [];
-            tab = primary.effective_index >= steps.length - 2 ? 'closing' : 'client_side';
-          }
+          if (primary.closed || primary.decision === 'rejected') tab = 'pool';
+          else if (primary.hard_gate) tab = 'decide'; // 阿財初審卡關，併入等我決定
+          else if (!primary.pushed) tab = primary.evaluated ? 'decide' : 'fill';
+          else tab = 'client';
           return { ...primary, kind: 'application', tab, dup_notice: dupNotice, extra_placements: rest };
         });
 
@@ -9581,7 +9818,9 @@ export default {
         });
         cards.push(...(toContactRes.results || []).map((r) => sourcedCard(r, 'to_contact')));
         cards.push(...(waitingRes.results || []).map((r) => sourcedCard(r, 'waiting_reply')));
-        cards.push(...(standbyRes.results || []).map((r) => sourcedCard(r, 'standby')));
+        // 2026-09-01 改：預備區併進「候補池」（pool）——跟正式應徵那邊「已結案」
+        // 是同一個分頁，人選本身沒有消失，只是目前沒有進行中的媒合。
+        cards.push(...(standbyRes.results || []).map((r) => sourcedCard(r, 'pool')));
 
         return json(request, { ok: true, cards });
       }
@@ -9829,157 +10068,8 @@ export default {
       const MANUAL_STAGE_OPTS = ['stage1', 'stage2', 'stage3', 'stage4', 'offer', 'onboard', 'care', 'backup'];
       if (p === '/admin/pipeline/manual-forward' && request.method === 'POST') {
         let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        // 'new' ＝ 這個人完全不在系統裡任何地方（沒跟阿財面談過、也沒在人才池），
-        // 顧問直接手key姓名/聯絡方式建一筆——2026-08-31 補的，之前只能從「已存在
-        // 的人選卡片」裡面挑，逼顧問要嘛先假造一筆人才池資料才能用，體驗很怪。
-        const sourceKind = b.source_kind === 'sourced' ? 'sourced'
-          : b.source_kind === 'new' ? 'new' : 'application';
-        const sourceId = String(b.source_id || '').trim();
-        const jobSlug = String(b.job_slug || '').trim();
-        if (!jobSlug) return json(request, { ok: false, error: '缺職缺' }, 400);
-        if (sourceKind !== 'new' && !sourceId) return json(request, { ok: false, error: '缺人選' }, 400);
-        if (!b.consent_confirmed) {
-          return json(request, { ok: false, error: '請先確認已經取得本人同意，才能幫他建立應徵紀錄' }, 400);
-        }
-        if (b.initial_stage && !MANUAL_STAGE_OPTS.includes(b.initial_stage)) {
-          return json(request, { ok: false, error: '初始階段不合法' }, 400);
-        }
-
-        const job = await env.DB.prepare(
-          `SELECT slug, title, company_id FROM jobs WHERE slug=?`).bind(jobSlug).first();
-        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
-
-        let src;
-        if (sourceKind === 'new') {
-          const newName = String(b.name || '').trim();
-          let newEmail = String(b.email || '').trim();
-          const newPhone = String(b.phone || '').trim();
-          if (!newName) return json(request, { ok: false, error: '請填姓名' }, 400);
-          if (!newEmail && !newPhone) {
-            return json(request, { ok: false, error: '至少要填 Email 或電話其中一個，才能識別本人' }, 400);
-          }
-          // applications.email 是 NOT NULL（全站很多地方靠這欄位識別/去重），
-          // 只有電話沒有 email 時補一個看得出來是佔位用的假信箱，不能留空——
-          // 顧問要看的是「有沒有電話」，這個假信箱只是滿足資料庫欄位限制。
-          if (!newEmail) newEmail = `phone-${newPhone.replace(/\D/g, '')}@no-email.step1ne.local`;
-          src = { name: newName, email: newEmail, phone: newPhone, resume_file_id: null, resume_url: null };
-        } else if (sourceKind === 'sourced') {
-          src = await env.DB.prepare(`SELECT * FROM sourced_candidates WHERE id=?`).bind(sourceId).first();
-        } else {
-          src = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(sourceId).first();
-        }
-        if (!src) return json(request, { ok: false, error: '找不到這個人選' }, 404);
-        const email = String(src.email || '').trim();
-        const phone = String(src.phone || '').trim();
-        if (!email && !phone) return json(request, { ok: false, error: '這個人選沒有 email 也沒有電話，沒辦法建應徵紀錄（至少要有一個可以識別本人的聯絡方式）' }, 400);
-        if (!String(src.name || '').trim()) {
-          return json(request, { ok: false, error: '這個人選沒有姓名，請先在人選卡片補上姓名再建應徵紀錄' }, 400);
-        }
-
-        const now = nowTaipei();
-        // 同一個人、同一個職缺已經有應徵紀錄了，就沿用那一筆，不要重複建立。
-        // ⚠️ 2026-08-31 修：原本只比對 email，這正是周丞恩事件的根本原因——
-        // 顧問電訪時用了跟阿財面談紀錄不同的 email（同一支電話），比對完全沒抓到，
-        // 憑空多了一筆「吳丞恩」重複紀錄。現在 email／電話任一相符就視為同一人，
-        // 電話只比對末 9 碼（不同格式的 0912-345-678 / 0912345678 都要抓得到）。
-        const phoneTail = phone.replace(/\D/g, '').slice(-9);
-        let appId = email ? (await env.DB.prepare(
-          `SELECT id FROM applications WHERE LOWER(TRIM(email))=? AND job_slug=? LIMIT 1`
-        ).bind(email.toLowerCase(), jobSlug).first() || {}).id : null;
-        if (!appId && phoneTail) {
-          appId = (await env.DB.prepare(
-            `SELECT id FROM applications WHERE phone LIKE ? AND job_slug=? LIMIT 1`
-          ).bind('%' + phoneTail, jobSlug).first() || {}).id;
-        }
-
-        let created = false;
-        let reportQueued = false;
-        if (!appId) {
-          appId = uid();
-          created = true;
-          const consentNote = `[${now}] 顧問手動新增應徵紀錄：${b.consent_note ? String(b.consent_note).slice(0, 300) : '（未填說明）'}`;
-          // 新增人選時可以順便上傳履歷——沿用 /apply 那套切塊存檔機制
-          // （saveResume 只認 b.resume_b64/resume_name/resume_mime，剛好就是
-          // 整個 request body，不用另外包一層）。
-          let resumeFileId = src.resume_file_id || null;
-          if (sourceKind === 'new' && b.resume_b64) {
-            const saved = await saveResume(env, b, now);
-            if (saved && saved.tooBig) {
-              return json(request, { ok: false, error: '履歷檔案太大，請壓縮後再上傳' }, 400);
-            }
-            if (saved) resumeFileId = saved.fileId;
-          }
-          // 顧問電訪/面談內容——文字直接存，或是上傳一份檔案（doc/txt/md/html/
-          // pdf/excel 都收，跟履歷同一套切塊存檔）交給本機的
-          // consultant_call_report_tick.py 去抽文字。先標記待處理，
-          // 呼叫跟阿財面談完全同一套流程產出初篩報告。
-          const callNotes = sourceKind === 'new' && b.call_notes ? String(b.call_notes).trim() : '';
-          let callNotesFileId = null;
-          if (sourceKind === 'new' && b.call_notes_file_b64) {
-            const saved = await saveUpload(env, {
-              b64: b.call_notes_file_b64, name: b.call_notes_file_name, mime: b.call_notes_file_mime,
-            }, now);
-            if (saved && saved.tooBig) {
-              return json(request, { ok: false, error: '面談內容檔案太大，請壓縮後再上傳' }, 400);
-            }
-            if (saved) callNotesFileId = saved.fileId;
-          }
-          reportQueued = !!(callNotes || callNotesFileId);
-          const sourceChannel = sourceKind === 'new' && b.source_channel ? String(b.source_channel).trim() : null;
-          const resumeSource = sourceKind === 'new' && b.resume_source ? String(b.resume_source).trim() : null;
-          await env.DB.prepare(
-            `INSERT INTO applications
-               (id, created_at, job_slug, job_title, name, email, phone,
-                resume_file_id, resume_url, note, status, consent_at,
-                interview_state, handled_by, handled_note,
-                consultant_call_notes, call_report_pending, call_notes_file_id, source_channel, resume_source)
-             VALUES (?,?,?,?,?,?,?,?,?,?,'new',?,'not_started',?,?,?,?,?,?,?)`
-          ).bind(appId, now, jobSlug, job.title, src.name || null, email || null, phone || null,
-                 resumeFileId, src.resume_url || null, consentNote, now,
-                 b.by || null, `顧問手動送出，未透過阿財面談（${b.by || '顧問'}）`,
-                 callNotes || null, reportQueued ? 1 : 0, callNotesFileId, sourceChannel, resumeSource).run();
-          if (sourceKind === 'sourced' && !src.converted_application_id) {
-            await env.DB.prepare(
-              `UPDATE sourced_candidates SET converted_application_id=? WHERE id=?`
-            ).bind(appId, sourceId).run();
-          }
-        }
-
-        if (job.company_id) {
-          await env.DB.prepare(
-            `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
-             VALUES (?,?,?,?,?,?)`
-          ).bind(uid(), appId, job.company_id, b.by || null, now, '顧問手動新增（未透過阿財面談）').run();
-          // ⚠️ 2026-08-31 補：這裡本來只寫 candidate_forwards，沒有對應的 placements
-          // 列——「我的案子」板（/admin/pipeline board）的「客戶手上」「快成交」兩關
-          // 全部只讀 placements，且「等我看報告」一旦顧問決定推不推之後就會把這筆
-          // 濾掉。三關疊起來的結果：手動新增的人選一旦被決定（或本來就沒有報告
-          // 要決定），就從「我的案子」整個消失，顧問想改名字/聯絡方式都找不到卡片
-          // 可以點——這是周丞恩（原打成吳丞恩）事件的真正成因。這裡補一筆
-          // stage='SUBMITTED' 的 placements，讓它跟正常送件走的是同一套後續流程
-          // （之後透過階段下拉選單改階段，也是走 syncPlacementForManualStage
-          // 更新同一筆，不會重複）。
-          const existingPl = await env.DB.prepare(
-            `SELECT id FROM placements WHERE application_id=? AND client_id=? LIMIT 1`
-          ).bind(appId, job.company_id).first();
-          if (!existingPl) {
-            await env.DB.prepare(
-              `INSERT INTO placements (application_id, candidate_name, job_slug, job_title, client_name, stage, client_id, stage_since, created_at, updated_at)
-               VALUES (?,?,?,?,?, 'SUBMITTED', ?, ?, ?, ?)`
-            ).bind(appId, src.name || null, jobSlug, job.title,
-                   (await env.DB.prepare(`SELECT display_name FROM client_companies WHERE id=?`).bind(job.company_id).first() || {}).display_name || '未命名客戶',
-                   job.company_id, now.slice(0, 10), now, now).run();
-          }
-        }
-
-        if (b.initial_stage) {
-          await applyManualStage(env, { application_id: appId, stage: b.initial_stage,
-            note: '手動新增時直接設定', by: b.by || null, company_id: job.company_id || null });
-        }
-
-        return json(request, { ok: true, application_id: appId, created, report_queued: reportQueued,
-          company_linked: !!job.company_id,
-          message: job.company_id ? null : '這個職缺還沒連到客戶名單，這筆紀錄目前只會在內部看得到，不會出現在客戶 portal' });
+        const result = await doManualForward(env, b);
+        return json(request, result.body, result.status);
       }
 
       // ── 接觸紀錄 ──
@@ -10312,6 +10402,14 @@ export default {
                   call_summary_md=COALESCE(?, call_summary_md)
              WHERE id=?`
         ).bind(newNote.slice(0, 4000), text || null, fileId, callSummaryMd, b.application_id).run();
+        // 2026-09-01 加：同時記一筆進 candidate_notes（type=電洽紀錄），純粹附加，
+        // 不影響上面那套既有的 AI 產報告流程——這筆只是給人選卡片的④電洽內容區塊
+        // 跟⑥歷史時間軸用，讓每一次電洽都是一筆獨立、可篩選類型的紀錄，不用去解析
+        // note 欄位裡累積的長文字。
+        await env.DB.prepare(
+          `INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by)
+           VALUES (?, ?, '電洽紀錄', ?, ?, ?)`
+        ).bind(uid(), b.application_id, callSummaryMd || text || '（附檔，內容由 AI 整理中）', now, b.by || null).run();
         return json(request, { ok: true, report_queued: true, call_summary_md: callSummaryMd });
       }
 
@@ -10353,6 +10451,148 @@ export default {
         await env.DB.prepare(`UPDATE applications SET call_summary_md=? WHERE id=?`)
           .bind(callSummaryMd, b.application_id).run();
         return json(request, { ok: true, call_summary_md: callSummaryMd });
+      }
+
+      // 2026-09-01 加：人選卡片改版——③顧問備註區塊，顧問自己選類型（評估／
+      // 聯繫紀錄／客戶回饋／其他）寫一條紀錄，不是單一文字欄位覆蓋，累積成一條
+      // 一條的清單。跟④電洽內容共用同一張 candidate_notes 表，差別只在 type。
+      if (p === '/admin/application/notes' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.application_id) return json(request, { ok: false, error: '缺 application_id' }, 400);
+        const content = String(b.content || '').trim();
+        if (!content) return json(request, { ok: false, error: '請填內容' }, 400);
+        const type = String(b.type || '其他').slice(0, 20);
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(uid(), b.application_id, type, content.slice(0, 2000), now, b.by || null).run();
+        return json(request, { ok: true });
+      }
+
+      // 2026-09-01 加：人選卡片改版——整張卡一次拿齊，前端不用打好幾支 API
+      // 才拼得出畫面。回傳：基本資料、推薦紀錄（各自的職缺/公司/進度）、
+      // 顧問備註+電洽紀錄清單、給每個推薦客戶各自的備註、還有把這幾種來源
+      // 兜起來的歷史時間軸（⑥），一次全部給前端，前端只管排版跟篩選。
+      if (p.startsWith('/admin/application/') && p.endsWith('/card') && request.method === 'GET') {
+        const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/card'.length));
+        const app = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(appId).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        delete app.chat_token;
+        const report = await env.DB.prepare(
+          `SELECT id, consultant_decision FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(appId).first();
+        const { results: appts } = await env.DB.prepare(
+          `SELECT stage, status, confirmed_slot FROM interview_appointments
+            WHERE application_id=? ORDER BY stage ASC, created_at ASC`
+        ).bind(appId).all();
+        const { results: fwdRows } = await env.DB.prepare(
+          `SELECT cf.company_id, cc.display_name AS company_name, cf.forwarded_at,
+                  cf.manual_stage, cf.client_interview_labels, cf.client_note,
+                  cf.client_rejected_at, cf.client_reject_reason,
+                  cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason,
+                  COALESCE(cf.job_slug, ?) AS job_slug, j.title AS job_title
+             FROM candidate_forwards cf
+             JOIN client_companies cc ON cc.id = cf.company_id
+             LEFT JOIN jobs j ON j.slug = COALESCE(cf.job_slug, ?)
+            WHERE cf.application_id = ? ORDER BY cf.forwarded_at ASC`
+        ).bind(app.job_slug, app.job_slug, appId).all();
+        const jobStageKeysMap = await getJobStageKeysMap(env, (fwdRows || []).map((f) => f.job_slug));
+        const forwards = (fwdRows || []).map((f) => {
+          let labels = {};
+          try { labels = JSON.parse(f.client_interview_labels || '{}'); } catch { labels = {}; }
+          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels, jobStageKeysMap[f.job_slug]);
+          return {
+            company_id: f.company_id, company_name: f.company_name, job_slug: f.job_slug, job_title: f.job_title,
+            forwarded_at: f.forwarded_at, client_note: f.client_note,
+            client_rejected_at: f.client_rejected_at, client_reject_reason: f.client_reject_reason,
+            advisor_not_recommended_at: f.advisor_not_recommended_at, advisor_not_recommended_reason: f.advisor_not_recommended_reason,
+            stage_key: info.effective_key,
+            stage_label: info.effective_key ? (info.steps.find((s) => s.key === info.effective_key) || {}).lb : '尚未安排面試',
+            steps: info.steps,
+          };
+        });
+        const { results: notes } = await env.DB.prepare(
+          `SELECT id, type, content, created_at, created_by FROM candidate_notes
+            WHERE application_id=? ORDER BY created_at DESC`
+        ).bind(appId).all();
+        // ⑥ 歷史時間軸：顧問備註/電洽紀錄（candidate_notes）＋推薦紀錄（candidate_forwards
+        // 建立時間）＋客戶婉拒／顧問不推薦（candidate_forwards 的時間戳欄位）兜在一起，
+        // 前端只管依 type 篩選跟排序顯示，不用自己合併好幾個來源。
+        const timeline = [];
+        (notes || []).forEach((n) => timeline.push({ time: n.created_at, type: n.type === '電洽紀錄' ? '電洽紀錄' : '顧問備註', detail: (n.type !== '電洽紀錄' ? '[' + n.type + '] ' : '') + n.content }));
+        // 2026-09-01 加：⑥ 之前完全沒有把「跟阿財面談」這件事本身放進時間軸——
+        // 一個剛完訪、還沒被顧問留備註、也還沒推薦給任何客戶的人選，時間軸會是
+        // 空的，看起來像什麼都沒發生過，實際上面談紀錄整個在別的區塊（初篩報告）。
+        if (app.interview_started_at) timeline.push({ time: app.interview_started_at, type: '阿財面談', detail: '開始與阿財面談' });
+        if (app.interview_ended_at) timeline.push({ time: app.interview_ended_at, type: '阿財面談', detail: '完成與阿財面談' });
+        if (report && app.created_at) timeline.push({ time: app.created_at, type: '阿財面談', detail: '建立應徵紀錄' });
+        forwards.forEach((f) => {
+          timeline.push({ time: f.forwarded_at, type: '推薦紀錄', detail: `推薦給 ${f.company_name}・${f.job_title || f.job_slug}` });
+          if (f.client_rejected_at) timeline.push({ time: f.client_rejected_at, type: '客戶婉拒', detail: `${f.company_name}婉拒「${f.job_title || f.job_slug}」，原因：${f.client_reject_reason || '（未填）'}` });
+          if (f.advisor_not_recommended_at) timeline.push({ time: f.advisor_not_recommended_at, type: '客戶婉拒', detail: `顧問標記不推薦給${f.company_name}「${f.job_title || f.job_slug}」，原因：${f.advisor_not_recommended_reason || '（未填）'}` });
+        });
+        timeline.sort((a, b2) => (a.time < b2.time ? 1 : -1));
+        return json(request, { ok: true, application: app, forwards, notes: notes || [], timeline });
+      }
+
+      // 2026-09-01 加：發應徵連結給他——讓「正式應徵」／「顧問履歷庫」的人選
+      // 重新跟阿財面談一次。原本的 chat_token 一旦 interview_state='done' 就
+      // 永久鎖死（/chat/:token/send 會回 409），/admin/resend-interview-link
+      // 只是重寄同一個已經鎖死的 token，對這種情況完全沒用。這裡仿照 /apply
+      // 建立應徵紀錄那段邏輯，另外開一筆新的 applications（保留舊資料/舊報告
+      // 不動），產生一個全新、乾淨的 chat_token 給顧問拿去發。
+      if (p.startsWith('/admin/application/') && p.endsWith('/resend-interview-link') && request.method === 'POST') {
+        const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/resend-interview-link'.length));
+        const b = await request.json().catch(() => ({}));
+        const orig = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(appId).first();
+        if (!orig) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const jobSlug = String(b.job_slug || orig.job_slug || '').trim();
+        if (!jobSlug) return json(request, { ok: false, error: '缺職缺' }, 400);
+        const job = await env.DB.prepare(`SELECT slug, title FROM jobs WHERE slug=?`).bind(jobSlug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+
+        const now = nowTaipei();
+        const newId = uid();
+        const chatToken = [...crypto.getRandomValues(new Uint8Array(24))]
+          .map((x) => x.toString(16).padStart(2, '0')).join('');
+        await env.DB.prepare(
+          `INSERT INTO applications
+             (id, created_at, job_slug, job_title, name, email, phone,
+              expected_salary, available_date, location_ok,
+              resume_file_id, resume_url, note, status, consent_at,
+              interview_mode, interview_state, chat_token, handled_by, handled_note)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'pending_assessment',?, 'now','not_started',?,?,?)`
+        ).bind(newId, now, jobSlug, job.title, orig.name, orig.email, orig.phone,
+               orig.expected_salary, orig.available_date, orig.location_ok,
+               orig.resume_file_id, orig.resume_url,
+               `顧問重新發送面談連結，沿用原應徵資料（原紀錄 ${appId}）`,
+               orig.consent_at || now, chatToken, b.by || null,
+               `由顧問手動重新發送面談連結（${b.by || '顧問'}）`).run();
+
+        return json(request, {
+          ok: true, application_id: newId, chat_token: chatToken,
+          url: `https://step1ne.com/interview/?t=${chatToken}`,
+        });
+      }
+
+      // 2026-09-01 加：人選卡片改版——⑤給推薦客戶的備註，每一筆推薦紀錄各自
+      // 一格，寫的是「這位人選給這家客戶看的補充說明」，跟推薦紀錄一對一存在
+      // candidate_forwards.client_note（既有欄位，本來只在客戶portal那邊顯示，
+      // 現在顧問後台也能直接編輯）。
+      if (p === '/admin/candidate-forwards/client-note' && request.method === 'POST') {
+        const b = await request.json().catch(() => ({}));
+        if (!b.application_id || !b.company_id) {
+          return json(request, { ok: false, error: '缺 application_id 或 company_id' }, 400);
+        }
+        const row = await env.DB.prepare(
+          `SELECT id FROM candidate_forwards WHERE application_id=? AND company_id=?`
+        ).bind(b.application_id, b.company_id).first();
+        if (!row) return json(request, { ok: false, error: '找不到這筆推薦紀錄' }, 404);
+        await env.DB.prepare(
+          `UPDATE candidate_forwards SET client_note=? WHERE application_id=? AND company_id=?`
+        ).bind(String(b.client_note || '').trim().slice(0, 1000) || null, b.application_id, b.company_id).run();
+        return json(request, { ok: true });
       }
 
       // ── 人才池批次指派負責顧問 ──
@@ -10968,7 +11208,7 @@ export default {
           return json(request, { ok: false, error: '缺 application_id 或 company_id' }, 400);
         }
         const report = await env.DB.prepare(
-          `SELECT consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
+          `SELECT id, consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
         ).bind(b.application_id).first();
         // ⚠️ 2026-09-01 修：原本「沒有報告」跟「有報告但顧問決定不推」共用同一個
         // 擋法，結果變成廖若辰那種真實案例的死路——這個人根本沒有阿財面談報告
@@ -10985,12 +11225,28 @@ export default {
         const company = await env.DB.prepare(`SELECT id, display_name FROM client_companies WHERE id = ?`)
           .bind(b.company_id).first();
         if (!company) return json(request, { ok: false, error: '找不到這家客戶' }, 404);
+        // 2026-09-01 加：job_slug 讓每一筆推薦紀錄自己記自己的職缺，不再共用
+        // application 本身唯一的那一個——同一位人選可以同時推薦給 A 客戶的甲
+        // 職缺、B 客戶的乙職缺。沒傳就照舊落回 application 自己的 job_slug
+        // （相容舊呼叫端，不強迫每個地方都要改）。
+        const app = await env.DB.prepare(`SELECT job_slug FROM applications WHERE id = ?`)
+          .bind(b.application_id).first();
+        const jobSlug = String(b.job_slug || (app && app.job_slug) || '').trim() || null;
         const now = nowTaipei();
         await env.DB.prepare(
-          `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).bind(uid(), b.application_id, b.company_id, b.by || null, now, b.note || null).run();
-        return json(request, { ok: true, company: company.display_name, forwarded_at: now });
+          `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note, job_slug)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(uid(), b.application_id, b.company_id, b.by || null, now, b.note || null, jobSlug).run();
+        // 2026-09-01 加：按下推薦本身就是顧問明確做的決定，不該還要求顧問回頭
+        // 到報告畫面再按一次「推薦」——沒有報告（廖若辰那種手動新增、還沒面談的
+        // 案例）或報告還沒下決定，這裡順便補上，「等我決定」分頁才會正確把這人
+        // 選移走、客戶那邊的「顧問階段」才會正確顯示已完成。已經有明確決定的
+        // （不管是 forwarded 還是別的）不覆蓋，尊重顧問原本在報告畫面做的決定。
+        if (report && !report.consultant_decision) {
+          await env.DB.prepare(`UPDATE reports SET consultant_decision='forwarded', decided_at=? WHERE id=?`)
+            .bind(now, report.id).run();
+        }
+        return json(request, { ok: true, company: company.display_name, forwarded_at: now, job_slug: jobSlug });
       }
 
       // 誤按「追加推薦」給錯客戶時可以撤銷——只刪 candidate_forwards 這筆連結，
@@ -11066,18 +11322,25 @@ export default {
       // 不用再靠猜。
       if (p.startsWith('/admin/candidate-forwards/') && request.method === 'GET') {
         const appId = decodeURIComponent(p.slice('/admin/candidate-forwards/'.length));
-        const { results } = await env.DB.prepare(
-          `SELECT cf.company_id, cc.display_name, cf.forwarded_at,
-                  cf.manual_stage, cf.client_interview_labels
-             FROM candidate_forwards cf JOIN client_companies cc ON cc.id = cf.company_id
-            WHERE cf.application_id = ? ORDER BY cf.forwarded_at DESC`
-        ).bind(appId).all();
-        // 2026-08-26 加：每一家客戶的面試進度是各自獨立的，這裡把每家目前
-        // 走到哪一關一起帶回去，顧問後台的人選卡片才能一眼看到
-        // 「律准：第二階段／弘昌：錄取」，不用一家一家點進去查。
         const app = await env.DB.prepare(
           `SELECT id, job_slug, interview_started_at, interview_ended_at FROM applications WHERE id = ?`
         ).bind(appId).first();
+        const { results } = await env.DB.prepare(
+          `SELECT cf.company_id, cc.display_name, cf.forwarded_at,
+                  cf.manual_stage, cf.client_interview_labels,
+                  COALESCE(cf.job_slug, ?) AS job_slug,
+                  j.title AS job_title
+             FROM candidate_forwards cf
+             JOIN client_companies cc ON cc.id = cf.company_id
+             LEFT JOIN jobs j ON j.slug = COALESCE(cf.job_slug, ?)
+            WHERE cf.application_id = ? ORDER BY cf.forwarded_at DESC`
+        ).bind(app && app.job_slug, app && app.job_slug, appId).all();
+        // 2026-08-26 加：每一家客戶的面試進度是各自獨立的，這裡把每家目前
+        // 走到哪一關一起帶回去，顧問後台的人選卡片才能一眼看到
+        // 「律准：第二階段／弘昌：錄取」，不用一家一家點進去查。
+        // 2026-09-01 改：一位人選現在可以推薦給不同客戶的不同職缺，每筆推薦
+        // 各自的職缺輪數設定可能不一樣（A家職缺只有一階段、B家職缺有兩階段），
+        // 不能再共用同一份 jobStageKeys，要一筆一筆各自查各自職缺的設定。
         const report = await env.DB.prepare(
           `SELECT consultant_decision FROM reports WHERE application_id = ? ORDER BY created_at DESC LIMIT 1`
         ).bind(appId).first();
@@ -11085,11 +11348,11 @@ export default {
           `SELECT stage, status, confirmed_slot FROM interview_appointments
             WHERE application_id = ? ORDER BY stage ASC, created_at ASC`
         ).bind(appId).all();
-        const cfListJobStageKeys = await getJobStageKeys(env, app && app.job_slug);
+        const cfListJobStageKeysMap = await getJobStageKeysMap(env, (results || []).map((f) => f.job_slug));
         const forwards = (results || []).map((f) => {
           let labels = {};
           try { labels = JSON.parse(f.client_interview_labels || '{}'); } catch { labels = {}; }
-          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels, cfListJobStageKeys);
+          const info = resolveStage({ ...app, manual_stage: f.manual_stage }, report, appts || [], null, labels, cfListJobStageKeysMap[f.job_slug]);
           return {
             ...f,
             stage_key: info.effective_key,
