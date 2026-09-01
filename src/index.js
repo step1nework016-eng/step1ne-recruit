@@ -1407,13 +1407,17 @@ function resolveStage(app, report, appts, placement, roundLabels) {
   };
 }
 
-// 客戶 portal 可以直接用這支通用端點設的階段子集——只剩「錄取」「備選」。
-// stage1~stage4（面試輪次）2026-08-25 改走專用的 add-interview-round 端點
-// （自動累加輪次＋記錄面談類型，不給客戶跳著選）；screening／confirm 是
-// Step1ne 推薦給客戶「之前」的內部流程，客戶看不到意義；onboard（報到）跟
-// care（到職關懷）維持顧問專用，不開放客戶。跟 /admin/set-manual-stage
-// 給顧問用的完整 STAGE_INDEX 不同，顧問仍然可以設全部 9 個 key。
-const CLIENT_SETTABLE_STAGES = ['offer', 'backup'];
+// 客戶 portal 可以直接用這支通用端點設的階段子集。
+// 2026-09-01 改：Jacky 要求「人選進度」表格從「用人單位」欄位往後（面試階段／
+// 錄取／報到）都要能讓企業自己在表格上用下拉選單直接操作，不用另外點開人選
+// 彈窗——stage1~stage3、offer、onboard 都補進來。add-interview-round（記面談
+// 類型、自動累加輪次）繼續保留給彈窗裡想細記「這輪是誰談的」的人用，兩條路
+// 殊途同歸都是呼叫 applyManualStage()，不會有兩套進度打架。
+// screening／confirm 是 Step1ne 推薦給客戶「之前」的內部流程，客戶看不到意義，
+// 繼續不開放；care（到職關懷）是報到後的內部追蹤，也不開放。
+// 跟 /admin/set-manual-stage 給顧問用的完整 STAGE_INDEX 不同，顧問仍然可以設
+// 全部 9 個 key。
+const CLIENT_SETTABLE_STAGES = ['stage1', 'stage2', 'stage3', 'offer', 'onboard', 'backup'];
 
 // 面談輪次類型的顯示名稱——客戶在 portal 每新增一輪面試時選其中一種。
 const INTERVIEW_ROUND_TYPE_LABEL = { hr: '人資面談', manager: '用人單位主管面談' };
@@ -1439,7 +1443,7 @@ const INTERVIEW_ROUND_TYPE_LABEL = { hr: '人資面談', manager: '用人單位�
 // placements 沒有 (application_id, client_id) 的唯一鍵，一個 application
 // 本來就可能被推給多家客戶、各自一筆 placements——這裡用這兩欄手動查找
 // 既有列，找不到才新開一筆，不會誤觸到別家客戶的紀錄。
-async function syncPlacementForManualStage(env, { application_id, company_id, stage }) {
+async function syncPlacementForManualStage(env, { application_id, company_id, stage, onboard_date }) {
   if (!company_id) return;
   let mapped = null;
   if (['stage1', 'stage2', 'stage3', 'stage4'].includes(stage)) mapped = 'INTERVIEWING';
@@ -1447,7 +1451,10 @@ async function syncPlacementForManualStage(env, { application_id, company_id, st
   else return; // care / backup / screening / confirm / null（清除）—— 不動 placements
 
   const now = nowTaipei();
-  const onboardDate = stage === 'onboard' ? now.slice(0, 10) : null;
+  // 2026-09-01 加：報到日期原本一律填「今天」，但用人單位回填報到通常是先講好
+  // 「預計幾號到職」，不是今天才報到——改成優先吃呼叫端傳進來的日期，沒帶才退回
+  // 今天（顧問後台舊的呼叫方式沒帶這個參數，行為不變）。
+  const onboardDate = stage === 'onboard' ? (onboard_date || now.slice(0, 10)) : null;
   let existing = await env.DB.prepare(
     `SELECT id FROM placements WHERE application_id=? AND client_id=? LIMIT 1`
   ).bind(application_id, company_id).first();
@@ -1491,7 +1498,7 @@ async function syncPlacementForManualStage(env, { application_id, company_id, st
          (company && company.display_name) || '未命名客戶', mapped, company_id, onboardDate).run();
 }
 
-async function applyManualStage(env, { application_id, stage, note, by, company_id }) {
+async function applyManualStage(env, { application_id, stage, note, by, company_id, onboard_date }) {
   const now = nowTaipei();
   if (company_id) {
     await env.DB.prepare(
@@ -1499,7 +1506,7 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
         WHERE application_id=? AND company_id=?`
     ).bind(stage, stage ? (note || null) : null, stage ? (by || null) : null,
            stage ? now : null, application_id, company_id).run();
-    await syncPlacementForManualStage(env, { application_id, company_id, stage });
+    await syncPlacementForManualStage(env, { application_id, company_id, stage, onboard_date });
     // 候選人 LINE 看到的是「所有客戶裡最靠前的那一關」——他不需要知道
     // 自己同時在幾家手上，但也不該看到比實際落後的進度。
     const { results: all } = await env.DB.prepare(
@@ -3374,9 +3381,13 @@ export default {
           const visibleSteps = stageInfo.steps.filter((s) => s.key !== 'screening' && s.key !== 'care');
           const confirmStep = visibleSteps.find((s) => s.key === 'confirm');
           const restSteps = visibleSteps.filter((s) => s.key !== 'confirm');
-          const matched = { key: 'matched', lb: '已推薦給客戶', done: stageInfo.effective_index >= stage1Idx, now: stageInfo.effective_index < stage1Idx };
+          // 2026-09-01 改：Jacky 要這兩格改名——「顧問確認中」→「顧問階段」，
+          // 「已推薦給客戶」→「用人單位」（這格现在也是企業自己按「推進／不推進」
+          // 的欄位，原本的名字聽起來像顧問單方面的動作紀錄，改成企業自己一看就懂
+          // 這格是他們要處理的）。
+          const matched = { key: 'matched', lb: '用人單位', done: stageInfo.effective_index >= stage1Idx, now: stageInfo.effective_index < stage1Idx };
           const steps = [
-            confirmStep ? { ...confirmStep, lb: '顧問確認中' } : null,
+            confirmStep ? { ...confirmStep, lb: '顧問階段' } : null,
             matched,
             ...restSteps,
           ].filter(Boolean);
@@ -3398,7 +3409,7 @@ export default {
               ? { key: 'rejected', lb: '已婉拒' }
               : stageInfo.effective_index >= stage1Idx
                 ? { key: stageInfo.effective_key, lb: (steps.find((s) => s.key === stageInfo.effective_key) || {}).lb }
-                : { key: null, lb: '已推薦給客戶' },
+                : { key: null, lb: '用人單位' },
             client_rejected_at: row.client_rejected_at || null,
             client_reject_reason: row.client_reject_reason || null,
             interview_rounds_used: Object.keys(roundLabels).length,
@@ -3438,22 +3449,26 @@ export default {
         // 不是看 j.company_id（同一個人選可能被推薦給好幾家客戶，j.company_id 只認得
         // 「原本應徵的那家」）。
         // 面試輪次也是每家客戶各自獨立的——A 家談到第三輪，不代表 B 家也是。
+        // ⚠️ 2026-09-01 改：這裡原本是 INNER JOIN reports——顧問手動新增、從沒
+        // 產出過報告的人選（跟 /admin/forward-candidate 那次「羅生門」死路同一種
+        // 情境）完全查不到列，客戶在 portal 上會被擋「找不到這位人選」。
+        // candidate_forwards 這張表本身存在就是「有沒有正式推薦給這家客戶」的
+        // 唯一真相（跟 /admin/forward-candidate 註解同一個原則），不用再靠
+        // reports.consultant_decision 覆核一次；改成 LEFT JOIN，report 沒有就是
+        // NULL，不擋流程。
         const row = await env.DB.prepare(
           `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
                   cf.client_interview_labels, r.consultant_decision,
                   cf.id AS forward_id
              FROM candidate_forwards cf
              JOIN applications a ON a.id = cf.application_id
-             JOIN reports r ON r.id = (
+             LEFT JOIN reports r ON r.id = (
                    SELECT id FROM reports WHERE application_id = a.id
                    ORDER BY created_at DESC LIMIT 1)
             WHERE cf.application_id = ? AND cf.company_id = ?`
         ).bind(applicationId, company.id).first();
         if (!row) {
           return json(request, { ok: false, error: '找不到這位人選' }, 404);
-        }
-        if (row.consultant_decision !== 'forwarded') {
-          return json(request, { ok: false, error: '這位人選還沒有正式推派' }, 400);
         }
 
         let roundLabels = {};
@@ -3490,10 +3505,17 @@ export default {
         if (!CLIENT_SETTABLE_STAGES.includes(stage)) {
           return json(request, { ok: false, error: '不合法的階段代碼' }, 400);
         }
+        // 報到要有預計報到日期，不能含糊地套「今天」——多半是先講好日期、人還沒到。
+        if (stage === 'onboard' && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.onboard_date || ''))) {
+          return json(request, { ok: false, error: '請填寫預計報到日期（YYYY-MM-DD）' }, 400);
+        }
 
         // 安全檢查：這個 application 必須有 candidate_forwards 明確推薦給這家公司，
         // 不能靠猜 application_id 打到別家公司的資料——也不能只看 j.company_id，
         // 一個人選可能同時被推薦給好幾家客戶（見 /admin/forward-candidate）。
+        // ⚠️ 2026-09-01 改：同 add-interview-round 那支的理由——INNER JOIN reports
+        // 會把從沒產出過報告的人選（顧問手動新增、直接推薦）擋在外面，candidate_forwards
+        // 存在本身就已經證明「正式推薦給這家客戶」，不需要再靠 reports 表覆核。
         const row = await env.DB.prepare(
           `SELECT a.id AS application_id, a.name AS candidate_name, a.job_slug,
                   a.interview_started_at, a.interview_ended_at,
@@ -3501,16 +3523,13 @@ export default {
                   cf.client_interview_labels, r.consultant_decision
              FROM candidate_forwards cf
              JOIN applications a ON a.id = cf.application_id
-             JOIN reports r ON r.id = (
+             LEFT JOIN reports r ON r.id = (
                    SELECT id FROM reports WHERE application_id = a.id
                    ORDER BY created_at DESC LIMIT 1)
             WHERE cf.application_id = ? AND cf.company_id = ?`
         ).bind(applicationId, company.id).first();
         if (!row) {
           return json(request, { ok: false, error: '找不到這位人選' }, 404);
-        }
-        if (row.consultant_decision !== 'forwarded') {
-          return json(request, { ok: false, error: '這位人選還沒有正式推派' }, 400);
         }
 
         // 防止客戶手滑倒退：新階段不能比目前實際顯示的階段還早。
@@ -3532,7 +3551,7 @@ export default {
 
         const result = await applyManualStage(env, {
           application_id: applicationId, stage, note: b.note, by: `client:${company.id}`,
-          company_id: company.id,
+          company_id: company.id, onboard_date: b.onboard_date || null,
         });
         notify(env,
           `📋 ${company.display_name} 回填了人選進度：${row.candidate_name}（${row.job_slug}）→ ` +
@@ -10829,7 +10848,7 @@ export default {
         // 不帶就是動「整體進度」（人選還沒推給任何人的階段，例如阿財初審/顧問確認）。
         const result = await applyManualStage(env, {
           application_id: b.application_id, stage, note: b.note, by: b.by,
-          company_id: b.company_id || null,
+          company_id: b.company_id || null, onboard_date: b.onboard_date || null,
         });
         return json(request, { ok: true, ...result });
       }
