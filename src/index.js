@@ -8552,7 +8552,9 @@ export default {
       if (p === '/admin/sourced/status' && request.method === 'POST') {
         let b;
         try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        const ok = ['new', 'shortlisted', 'contacted', 'replied', 'rejected', 'converted'];
+        // 2026-09-01 加 'standby'（預備區）：談過、目前沒缺，先養著之後再問意願，
+        // 跟 'rejected'（真的不考慮了）是不同語意，不能共用一個狀態值。
+        const ok = ['new', 'shortlisted', 'contacted', 'replied', 'standby', 'rejected', 'converted'];
         if (!b.id || !ok.includes(b.status)) return json(request, { ok: false, error: '參數錯誤' }, 400);
         // 「不合適」一定要說為什麼——不然這個按鈕就只是把人藏起來，學不到東西。
         // 用固定選項而不是自由輸入：自由文字每個人寫法不同，
@@ -9039,7 +9041,8 @@ export default {
             // 正常、預期中的資料形狀，不是這個職缺對應的那家客戶就一定只有一筆。
             env.DB.prepare(
               `SELECT cf.company_id, cf.manual_stage, cf.manual_stage_note, cf.client_note,
-                      cf.line_id_given, cf.forwarded_at, cc.display_name AS company_name
+                      cf.line_id_given, cf.forwarded_at, cc.display_name AS company_name,
+                      cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason
                  FROM candidate_forwards cf LEFT JOIN client_companies cc ON cc.id = cf.company_id
                 WHERE cf.application_id=? ORDER BY cf.forwarded_at ASC`
             ).bind(a.id).all(),
@@ -9066,6 +9069,8 @@ export default {
               manual_stage_note: f.manual_stage_note, client_note: f.client_note,
               line_id_given: f.line_id_given, closed,
               steps: stageInfo.steps, effective_index: stageInfo.effective_index,
+              advisor_not_recommended_at: f.advisor_not_recommended_at || null,
+              advisor_not_recommended_reason: f.advisor_not_recommended_reason || null,
             };
           }));
           const primaryPlacement = placements[0] || null;
@@ -9153,9 +9158,15 @@ export default {
         // 差別只是這裡要把它們塞進同一份 cards 陣列、同一套卡片形狀。
         const srcOwnerSql = isUn ? ` AND owner IS NULL` : (isFiltered ? ` AND owner = ?` : '');
         const srcBind = (isFiltered && !isUn) ? [owner] : [];
-        const [toContactRes, waitingRes] = await Promise.all([
+        // 2026-09-01 加：status 補進 SELECT 跟卡片——本來只回傳 tab（待開發接觸／
+        // 等對方回兩種），shortlisted 跟 replied 雖然都落在「待開發接觸」這個 tab，
+        // 但對顧問來說是完全不同的兩件事（還沒聯繫 vs 對方已回信換你判斷），
+        // 前端要分清楚就得看到真正的 status，不能只看 tab。
+        // 同時加第三種：status='standby'（預備區）——談過但現在沒缺，先養著、
+        // 之後有新職缺再回頭找，跟「不合適」不一樣，不該永久消失。
+        const [toContactRes, waitingRes, standbyRes] = await Promise.all([
           env.DB.prepare(
-            `SELECT id, name, email, phone, headline, job_slug, owner, source, created_at,
+            `SELECT id, name, email, phone, headline, job_slug, owner, source, created_at, status,
                     invite_token, invite_job_slug, invite_at
                FROM sourced_candidates
               WHERE converted_application_id IS NULL
@@ -9163,20 +9174,27 @@ export default {
               ORDER BY created_at ASC LIMIT 200`
           ).bind(...srcBind).all(),
           env.DB.prepare(
-            `SELECT id, name, email, phone, headline, job_slug, owner, source, created_at,
+            `SELECT id, name, email, phone, headline, job_slug, owner, source, created_at, status,
                     invite_token, invite_job_slug, invite_at
                FROM sourced_candidates
               WHERE converted_application_id IS NULL AND status = 'contacted'${srcOwnerSql}
               ORDER BY created_at ASC LIMIT 200`
           ).bind(...srcBind).all(),
+          env.DB.prepare(
+            `SELECT id, name, email, phone, headline, job_slug, owner, source, created_at, status,
+                    invite_token, invite_job_slug, invite_at
+               FROM sourced_candidates
+              WHERE converted_application_id IS NULL AND status = 'standby'${srcOwnerSql}
+              ORDER BY created_at DESC LIMIT 200`
+          ).bind(...srcBind).all(),
         ]);
         const ownerNames = {};
-        if (toContactRes.results?.length || waitingRes.results?.length) {
+        if (toContactRes.results?.length || waitingRes.results?.length || standbyRes.results?.length) {
           const { results: consRows } = await env.DB.prepare(`SELECT id, display_name FROM consultants`).all();
           (consRows || []).forEach((c) => { ownerNames[c.id] = c.display_name; });
         }
         const sourcedCard = (r, tab) => ({
-          application_id: null, sourced_id: r.id, kind: 'sourced', tab,
+          application_id: null, sourced_id: r.id, kind: 'sourced', tab, status: r.status,
           name: r.name, email: r.email, phone: r.phone,
           job_slug: r.job_slug, job_title: r.headline || r.job_slug || '（主動開發，尚未定職缺）',
           client_name: '（尚未推送客戶）', owner: r.owner, owner_name: ownerNames[r.owner] || null,
@@ -9189,6 +9207,7 @@ export default {
         });
         cards.push(...(toContactRes.results || []).map((r) => sourcedCard(r, 'to_contact')));
         cards.push(...(waitingRes.results || []).map((r) => sourcedCard(r, 'waiting_reply')));
+        cards.push(...(standbyRes.results || []).map((r) => sourcedCard(r, 'standby')));
 
         return json(request, { ok: true, cards });
       }
@@ -10867,6 +10886,31 @@ export default {
         const r = await env.DB.prepare(
           `UPDATE candidate_forwards SET ${sets.join(', ')} WHERE application_id=? AND company_id=?`
         ).bind(...bind).run();
+        if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆推薦紀錄' }, 404);
+        return json(request, { ok: true });
+      }
+
+      // 2026-09-01 加：顧問對「這個人選推給這家客戶這個職缺」按不推薦——
+      // 掛在 candidate_forwards 這一筆（application_id + company_id），不是整個
+      // 人選、也不是整份面談報告（那是 /admin/decide-report 管的，語意不一樣）。
+      // 標記本身不擋這個人選之後被重新推薦（同一組合可以再開一筆新的
+      // candidate_forwards，見 /admin/forward-candidate），也不擋推去別家客戶——
+      // 只是誠實記錄「這一組合，顧問看過，沒推薦」，企業用人單位需求表讀到
+      // 這個標記時顯示「考慮過，顧問不推薦」，不是把人選整個藏起來。
+      if (p === '/admin/pipeline/forward-decision' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.application_id || !b.company_id) return json(request, { ok: false, error: '缺 application_id 或 company_id' }, 400);
+        const notRecommended = !!b.not_recommended;
+        if (notRecommended && !String(b.reason || '').trim()) {
+          return json(request, { ok: false, error: '請填不推薦的原因' }, 400);
+        }
+        const now = nowTaipei();
+        const r = await env.DB.prepare(
+          `UPDATE candidate_forwards
+              SET advisor_not_recommended_at = ?, advisor_not_recommended_reason = ?
+            WHERE application_id = ? AND company_id = ?`
+        ).bind(notRecommended ? now : null, notRecommended ? String(b.reason).trim() : null,
+               b.application_id, b.company_id).run();
         if (!r.meta || !r.meta.changes) return json(request, { ok: false, error: '找不到這筆推薦紀錄' }, 404);
         return json(request, { ok: true });
       }
