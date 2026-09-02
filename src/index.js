@@ -802,25 +802,25 @@ async function ncSend(env, chatId, threadId, text, replyMarkup) {
 // /admin/application/call-note（附加不覆蓋，時間戳記自動記錄「現在」），
 // 不是 manual-forward（那支是建新卡片，會重複）。
 async function ncSubmitMerge(env, sess, chatId, threadId, who) {
+  // 2026-09-02 修：原本用 fetch() 打自己這個 Worker 的公開網址（self-fetch），
+  // 會被 Cloudflare error 1042 擋掉，回應不是合法 JSON，crd.error 永遠是
+  // undefined，顧問只看到「❌ 整合失敗：不知道為什麼」（Phoebe 上傳廖若辰履歷
+  // 準備整合進舊紀錄時實測撞到）。改成跟 doManualForward 同一套做法，直接
+  // in-process 呼叫 doCallNote()，不再繞出去打自己的網址。
   try {
-    const cr = await fetch('https://step1ne-recruit-api.aiagentg888.workers.dev/admin/application/call-note', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
-      body: JSON.stringify({
-        application_id: sess.data.existing_application_id,
-        text: sess.data.transcript || '',
-        by: who,
-        ...(sess.data.resume_b64
-          ? { file_b64: sess.data.resume_b64, file_name: sess.data.resume_name, file_mime: sess.data.resume_mime }
-          : {}),
-      }),
+    const r = await doCallNote(env, {
+      application_id: sess.data.existing_application_id,
+      text: sess.data.transcript || '',
+      by: who,
+      ...(sess.data.resume_b64
+        ? { file_b64: sess.data.resume_b64, file_name: sess.data.resume_name, file_mime: sess.data.resume_mime }
+        : {}),
     });
-    const crd = await cr.json().catch(() => ({}));
-    if (crd.ok) {
+    if (r.body.ok) {
       await ncSend(env, chatId, threadId,
         `✅ 已整合進 ${sess.data.name} 的既有紀錄，這次電洽內容記錄在現在這個時間點，不會蓋掉之前的。正式報告會重新產生（約5分鐘，需本機排程在跑）。`);
     } else {
-      await ncSend(env, chatId, threadId, `❌ 整合失敗：${crd.error || '不知道為什麼'}`);
+      await ncSend(env, chatId, threadId, `❌ 整合失敗：${r.body.error || '不知道為什麼'}`);
     }
   } catch (e) {
     await ncSend(env, chatId, threadId, '❌ 連線失敗，麻煩按「🆕 開始新增人選」重新來一次。');
@@ -1675,6 +1675,75 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
   return { manual_stage: stage, manual_stage_at: stage ? now : null };
 }
 
+// 電洽內容補在既有人選卡片上的核心邏輯——抽成獨立函式讓「/admin/application/
+// call-note」這支 HTTP 路由跟 Telegram webhook（ncSubmitMerge，「同名舊紀錄，
+// 整合進去」那條路徑）都能直接呼叫。2026-09-02 修：跟 doManualForward 同一個
+// 理由——ncSubmitMerge 原本用 fetch() 打自己這個 Worker 的公開網址，被
+// Cloudflare error 1042（self-fetch 防迴圈機制）擋掉，導致「整合進舊紀錄」
+// 一直失敗、還只顯示看不懂的「❌ 整合失敗：不知道為什麼」（Phoebe 實測撞到）。
+// 改成直接 in-process 呼叫這個函式。回傳 { status, body }，跟 doManualForward
+// 同一套慣例。
+async function doCallNote(env, b) {
+  if (!b.application_id) return { status: 400, body: { ok: false, error: '缺 application_id' } };
+  const text = String(b.text || '').trim();
+  if (!text && !b.file_b64) return { status: 400, body: { ok: false, error: '請至少填文字或附一個檔案' } };
+  const app = await env.DB.prepare(`SELECT note FROM applications WHERE id=?`).bind(b.application_id).first();
+  if (!app) return { status: 404, body: { ok: false, error: '找不到這位人選' } };
+  const now = nowTaipei();
+  let fileId = null;
+  if (b.file_b64) {
+    const saved = await saveUpload(env, { b64: b.file_b64, name: b.file_name, mime: b.file_mime }, now);
+    if (saved && saved.tooBig) return { status: 400, body: { ok: false, error: '檔案太大，請壓縮後再上傳' } };
+    if (saved) fileId = saved.fileId;
+  }
+  // 累積進 note 欄位當看得到的歷史（跟 Phase 1 demo 的「時間軸」概念一致），
+  // 真正餵給 AI 的是 consultant_call_notes（排程處理完會被清空重填下一輪）。
+  const stamp = `[${now} 電洽內容・${b.by || '顧問'}]\n${text || '（附檔，內容由 AI 整理中）'}`;
+  const newNote = app.note ? app.note + '\n\n' + stamp : stamp;
+
+  // ⚠️ 2026-09-01 加：Jacky 送出電洽內容後在畫面上完全看不到東西——正式的
+  // 初篩報告要等本機排程（~5分鐘，還得本機常駐程式在跑）才會出現，
+  // 顧問送出後乾等看不到任何回饋，會以為系統壞了（周丞恩那次真實發生過）。
+  // 這裡用 Workers AI（env.AI，秒級回應，不用等本機）先產一份「重點彙整」
+  // 存起來，送出當下就有東西可以看；正式報告還是走本機那套完整流程
+  // （要交叉比對職缺/履歷），兩條路徑並行，不是取代關係。
+  // ⚠️ 2026-09-01 補：上面那句「只有純文字才能做」原本沒做完——顧問單純拖檔案
+  // 上傳（沒打字）時 text 是空的，即時彙整整段跳過，畫面上只留「附檔，內容由
+  // AI整理中」這句空話，顧問等到天荒地老都不會出現東西（Jacky 這裡實際卡住的
+  // 就是這個情境）。用 env.AI.toMarkdown 把附件先轉成文字再餵給同一支彙整，
+  // 這樣拖檔案跟打字兩條路都能秒出重點；toMarkdown 認不得的格式或轉換失敗就
+  // 放棄即時彙整（不擋主流程），本機排程那份完整報告一樣會照跑。
+  let textForAi = text;
+  if (!textForAi && b.file_b64) {
+    try {
+      const bytes = Uint8Array.from(atob(b.file_b64), (c) => c.charCodeAt(0));
+      const md = await env.AI.toMarkdown([
+        { name: b.file_name || 'upload', blob: new Blob([bytes], { type: b.file_mime || 'application/octet-stream' }) },
+      ]);
+      const extracted = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+      if (extracted) textForAi = extracted;
+    } catch (e) {
+      textForAi = '';
+    }
+  }
+  const callSummaryMd = await summarizeCallNotes(env, textForAi);
+
+  await env.DB.prepare(
+    `UPDATE applications SET note=?, consultant_call_notes=?, call_report_pending=1, call_notes_file_id=?,
+            call_summary_md=COALESCE(?, call_summary_md)
+       WHERE id=?`
+  ).bind(newNote.slice(0, 4000), text || null, fileId, callSummaryMd, b.application_id).run();
+  // 2026-09-01 加：同時記一筆進 candidate_notes（type=電洽紀錄），純粹附加，
+  // 不影響上面那套既有的 AI 產報告流程——這筆只是給人選卡片的④電洽內容區塊
+  // 跟⑥歷史時間軸用，讓每一次電洽都是一筆獨立、可篩選類型的紀錄，不用去解析
+  // note 欄位裡累積的長文字。
+  await env.DB.prepare(
+    `INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by)
+     VALUES (?, ?, '電洽紀錄', ?, ?, ?)`
+  ).bind(uid(), b.application_id, callSummaryMd || text || '（附檔，內容由 AI 整理中）', now, b.by || null).run();
+  return { status: 200, body: { ok: true, report_queued: true, call_summary_md: callSummaryMd } };
+}
+
 // 手動新增應徵紀錄的核心邏輯——抽成獨立函式讓「/admin/pipeline/manual-forward」
 // 這支 HTTP 路由跟 Telegram webhook 都能直接呼叫。2026-09-01 修：TG bot 原本是
 // 用 fetch() 打自己這個 Worker 的公開網址（self-fetch）來呼叫這支端點，結果被
@@ -1706,10 +1775,16 @@ async function doManualForward(env, b) {
     let newEmail = String(b.email || '').trim();
     const newPhone = String(b.phone || '').trim();
     if (!newName) return { status: 400, body: { ok: false, error: '請填姓名' } };
-    if (!newEmail && !newPhone) {
-      return { status: 400, body: { ok: false, error: '至少要填 Email 或電話其中一個，才能識別本人' } };
+    // 2026-09-02 改：Jacky 要求 Email／電話都改選填——顧問電洽當下可能對方
+    // 沒空講、或忘了問，不該卡住整個建檔流程。都沒填的話用一個帶亂數的
+    // 佔位 email（跟原本「只有電話沒 email」時的佔位寫法同一套慣例），人選
+    // 卡片那邊改用「有沒有真的電話／有沒有非佔位 email」判斷要不要顯示
+    // 「記得填寫聯絡方式」提醒，不會因為卡在這裡建不了檔。
+    if (!newEmail) {
+      newEmail = newPhone
+        ? `phone-${newPhone.replace(/\D/g, '')}@no-email.step1ne.local`
+        : `no-contact-${uid()}@no-email.step1ne.local`;
     }
-    if (!newEmail) newEmail = `phone-${newPhone.replace(/\D/g, '')}@no-email.step1ne.local`;
     src = { name: newName, email: newEmail, phone: newPhone, resume_file_id: null, resume_url: null };
   } else if (sourceKind === 'sourced') {
     src = await env.DB.prepare(`SELECT * FROM sourced_candidates WHERE id=?`).bind(sourceId).first();
@@ -1719,7 +1794,9 @@ async function doManualForward(env, b) {
   if (!src) return { status: 404, body: { ok: false, error: '找不到這個人選' } };
   const email = String(src.email || '').trim();
   const phone = String(src.phone || '').trim();
-  if (!email && !phone) return { status: 400, body: { ok: false, error: '這個人選沒有 email 也沒有電話，沒辦法建應徵紀錄（至少要有一個可以識別本人的聯絡方式）' } };
+  // 2026-09-02 改：拿掉「沒有 email 也沒有電話就整個擋下來」的硬性檢查——
+  // 這裡的 src 通常是舊有人選庫/主動開發的紀錄，本來就可能還沒補齊聯絡方式，
+  // 一樣改成放行、靠人選卡片的提醒讓顧問之後補。
   if (!String(src.name || '').trim()) {
     return { status: 400, body: { ok: false, error: '這個人選沒有姓名，請先在人選卡片補上姓名再建應徵紀錄' } };
   }
@@ -5127,7 +5204,12 @@ export default {
                 return new Response('ok');
               }
               await ncSetSession(env, rm2.chat.id, rm2.from.id, 'contact', sess.data);
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '履歷收到了。電話或 Email（填一個就好）？');
+              // 2026-09-02 改：電話／Email 改選填——顧問電洽當下對方可能沒空講、
+              // 或忘了問，不該卡住整個建檔流程，加一顆跳過按鈕。之後人選卡片會
+              // 提醒補聯絡方式（見 doManualForward 的佔位 email 判斷）。
+              await ncSend(env, rm2.chat.id, callIntakeTopic, '履歷收到了。電話或 Email（填一個就好，沒有也可以先跳過）？', {
+                inline_keyboard: [[{ text: '沒有聯絡方式，先跳過', callback_data: 'nc_contact_skip' }]],
+              });
               return new Response('ok');
             }
             if (sess.step === 'contact' && String(rm2.text || '').trim()) {
@@ -9125,8 +9207,14 @@ export default {
         if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
           return json(request, { ok: false, error: 'LINE 金鑰未設定' }, 503);
         }
-        // LINE 的統計要隔天才結算，抓前天的最穩（抓今天多半回 status: unready）
-        const d = new Date(Date.now() - 2 * 86400000);
+        // LINE 的統計要隔天才結算，抓前天的最穩（抓今天多半回 status: unready）。
+        // ⚠️ 2026-09-02 加 days_ago：followers/blocks 是「累積總數」（LINE 官方
+        // 文件定義，從帳號建立以來的總量，只會增不會減），不是當天新增量。
+        // 顧問想看「最近一週加了幾人、被封鎖幾人」，只要抓兩個時間點的累積數
+        // 相減就是那段期間的真實新增量——這支端點本來就已經是照 date 查單一
+        // 快照，直接讓呼叫端指定 days_ago 就能兩次呼叫拼出趨勢，不用另開端點。
+        const daysAgo = Math.max(2, Math.min(90, parseInt(url.searchParams.get('days_ago'), 10) || 2));
+        const d = new Date(Date.now() - daysAgo * 86400000);
         const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
         try {
           const r = await fetch(`https://api.line.me/v2/bot/insight/followers?date=${ymd}`,
@@ -10680,66 +10768,14 @@ export default {
       // 才寫得進去——已經存在的人選想補一次電訪紀錄完全沒有入口，這支端點補上。
       // 同一個人可能被打過好幾次電話，所以每次呼叫是「追加」，不是「覆蓋」：
       // 舊的電訪內容會保留在 note 欄位當歷史紀錄，新的一段接在後面觸發重新產報告。
+      // 2026-09-02 改：核心邏輯抽成 doCallNote()（跟 doManualForward 同一個
+      // 理由——TG bot 的 ncSubmitMerge() 原本用 fetch() 打自己這個 Worker 的
+      // 公開網址，被 Cloudflare error 1042 擋掉，導致「同一人整合進舊紀錄」
+      // 這條路徑一直失敗、還顯示看不懂的「不知道為什麼」），這裡改成呼叫共用函式。
       if (p === '/admin/application/call-note' && request.method === 'POST') {
         let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-        if (!b.application_id) return json(request, { ok: false, error: '缺 application_id' }, 400);
-        const text = String(b.text || '').trim();
-        if (!text && !b.file_b64) return json(request, { ok: false, error: '請至少填文字或附一個檔案' }, 400);
-        const app = await env.DB.prepare(`SELECT note FROM applications WHERE id=?`).bind(b.application_id).first();
-        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
-        const now = nowTaipei();
-        let fileId = null;
-        if (b.file_b64) {
-          const saved = await saveUpload(env, { b64: b.file_b64, name: b.file_name, mime: b.file_mime }, now);
-          if (saved && saved.tooBig) return json(request, { ok: false, error: '檔案太大，請壓縮後再上傳' }, 400);
-          if (saved) fileId = saved.fileId;
-        }
-        // 累積進 note 欄位當看得到的歷史（跟 Phase 1 demo 的「時間軸」概念一致），
-        // 真正餵給 AI 的是 consultant_call_notes（排程處理完會被清空重填下一輪）。
-        const stamp = `[${now} 電洽內容・${b.by || '顧問'}]\n${text || '（附檔，內容由 AI 整理中）'}`;
-        const newNote = app.note ? app.note + '\n\n' + stamp : stamp;
-
-        // ⚠️ 2026-09-01 加：Jacky 送出電洽內容後在畫面上完全看不到東西——正式的
-        // 初篩報告要等本機排程（~5分鐘，還得本機常駐程式在跑）才會出現，
-        // 顧問送出後乾等看不到任何回饋，會以為系統壞了（周丞恩那次真實發生過）。
-        // 這裡用 Workers AI（env.AI，秒級回應，不用等本機）先產一份「重點彙整」
-        // 存起來，送出當下就有東西可以看；正式報告還是走本機那套完整流程
-        // （要交叉比對職缺/履歷），兩條路徑並行，不是取代關係。
-        // ⚠️ 2026-09-01 補：上面那句「只有純文字才能做」原本沒做完——顧問單純拖檔案
-        // 上傳（沒打字）時 text 是空的，即時彙整整段跳過，畫面上只留「附檔，內容由
-        // AI整理中」這句空話，顧問等到天荒地老都不會出現東西（Jacky 這裡實際卡住的
-        // 就是這個情境）。用 env.AI.toMarkdown 把附件先轉成文字再餵給同一支彙整，
-        // 這樣拖檔案跟打字兩條路都能秒出重點；toMarkdown 認不得的格式或轉換失敗就
-        // 放棄即時彙整（不擋主流程），本機排程那份完整報告一樣會照跑。
-        let textForAi = text;
-        if (!textForAi && b.file_b64) {
-          try {
-            const bytes = Uint8Array.from(atob(b.file_b64), (c) => c.charCodeAt(0));
-            const md = await env.AI.toMarkdown([
-              { name: b.file_name || 'upload', blob: new Blob([bytes], { type: b.file_mime || 'application/octet-stream' }) },
-            ]);
-            const extracted = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
-            if (extracted) textForAi = extracted;
-          } catch (e) {
-            textForAi = '';
-          }
-        }
-        const callSummaryMd = await summarizeCallNotes(env, textForAi);
-
-        await env.DB.prepare(
-          `UPDATE applications SET note=?, consultant_call_notes=?, call_report_pending=1, call_notes_file_id=?,
-                  call_summary_md=COALESCE(?, call_summary_md)
-             WHERE id=?`
-        ).bind(newNote.slice(0, 4000), text || null, fileId, callSummaryMd, b.application_id).run();
-        // 2026-09-01 加：同時記一筆進 candidate_notes（type=電洽紀錄），純粹附加，
-        // 不影響上面那套既有的 AI 產報告流程——這筆只是給人選卡片的④電洽內容區塊
-        // 跟⑥歷史時間軸用，讓每一次電洽都是一筆獨立、可篩選類型的紀錄，不用去解析
-        // note 欄位裡累積的長文字。
-        await env.DB.prepare(
-          `INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by)
-           VALUES (?, ?, '電洽紀錄', ?, ?, ?)`
-        ).bind(uid(), b.application_id, callSummaryMd || text || '（附檔，內容由 AI 整理中）', now, b.by || null).run();
-        return json(request, { ok: true, report_queued: true, call_summary_md: callSummaryMd });
+        const r = await doCallNote(env, b);
+        return json(request, r.body, r.status);
       }
 
       // ⚠️ 2026-09-01 加：補上面那個 bug 修好之前，已經卡在「有附件、沒有即時彙整」
