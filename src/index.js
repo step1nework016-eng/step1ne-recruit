@@ -134,6 +134,42 @@ const FAQ_COMPANY = [
     a: '候選人與企業的資料都僅用於本次媒合，不會提供給第三方或另作他用。' },
 ];
 
+// 2026-09-02 加：求職者圖文選單改版，最下面「第一次使用流程」5步驟圖
+// (找職缺→阿財自助面試→顧問媒合→企業面試→錄取通知) Jacky 要做成點下去
+// 會跳出自動教學訊息，不是純示意圖——跟「常見問題」按鈕同一套 postback
+// 手法，不用連到網頁。
+const HOWTO_STEPS = [
+  ['🔍', '找職缺', '到職缺專區看目前開放的機會，找到想投的就直接應徵'],
+  ['🤖', '阿財自助面試', '線上跟 AI 顧問阿財聊一聊，了解你的背景、初步初篩，不用等真人時間'],
+  ['🤝', '顧問媒合', '面談內容會給真人顧問看過，覺得適合就會幫你推薦給企業'],
+  ['🏢', '企業面試', '企業有興趣的話，會由顧問幫你安排面試時間、對接細節'],
+  ['✅', '錄取通知', '確定錄取後，顧問會協助你跟企業對齊到職日與相關安排'],
+];
+function howtoFlex() {
+  return { type: 'flex', altText: '第一次使用 Step1ne？5 步驟帶你看', contents: { type: 'bubble',
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '第一次使用 Step1ne？', weight: 'bold', size: 'md' },
+        { type: 'text', text: '從找職缺到錄取，大概是這樣的流程：', size: 'sm', color: '#8993a8', margin: 'sm' },
+        ...HOWTO_STEPS.map(([ic, title, desc], i) => ({
+          type: 'box', layout: 'horizontal', margin: 'md', spacing: 'sm',
+          contents: [
+            { type: 'text', text: ic, flex: 0, size: 'lg' },
+            { type: 'box', layout: 'vertical', flex: 1,
+              contents: [
+                { type: 'text', text: (i + 1) + '. ' + title, weight: 'bold', size: 'sm', wrap: true },
+                { type: 'text', text: desc, size: 'xs', color: '#8993a8', wrap: true, margin: 'xs' },
+              ] },
+          ],
+        })),
+      ] },
+    footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px',
+      contents: [
+        { type: 'button', style: 'primary', color: '#a67c3d', height: 'sm',
+          action: { type: 'uri', label: '去找職缺', uri: 'https://step1ne.com/jobs/?utm_source=line&utm_medium=richmenu&utm_campaign=citizen-recruiter-menu&utm_content=howto' } },
+      ] } } };
+}
+
 function faqRoleFlex() {
   return { type: 'flex', altText: '請問您是求職者還是企業窗口？', contents: { type: 'bubble',
     body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
@@ -294,7 +330,11 @@ const SERVICE_LINE = { dispatch: '人力派遣', direct: '正職代招', executi
  * ⚠️ 每一步都要有自己的按鈕。純網址只是按鈕被信箱擋掉時的備用，
  * 所以壓成灰色小字——把一串網址丟給候選人不算給了行動點。
  */
-async function sendMail(env, to, subject, lines, cta) {
+// attachments（可選，2026-09-02 加）：[{ filename, content }]，content 是
+// base64 字串——目前只給人選客製表單用（連結是「上傳填完檔案」的入口，
+// 但人選要先拿到「空白表單長什麼樣子」才能填，不附檔案等於叫人選填一份
+// 他們沒看過的東西）。Resend 原生支援 attachments 欄位，不用自己組 MIME。
+async function sendMail(env, to, subject, lines, cta, attachments) {
   if (!env.RESEND_API_KEY || !to) return false;
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const steps = Array.isArray(cta) ? cta : null;
@@ -381,6 +421,7 @@ async function sendMail(env, to, subject, lines, cta) {
           `\n地址：臺北市內湖區康寧路三段 54 之 7 號 3 樓` +
           `\n（這封信由系統自動發送，請勿直接回覆）`,
         html,
+        ...(attachments && attachments.length ? { attachments } : {}),
       }),
     });
     return r.ok;
@@ -1700,7 +1741,7 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
   if (!jobSlug) return;
   try {
     const { results: forms } = await env.DB.prepare(
-      `SELECT id, name FROM job_forms WHERE job_slug=?`
+      `SELECT id, name, template_file_id FROM job_forms WHERE job_slug=?`
     ).bind(jobSlug).all();
     if (!forms || !forms.length) return;
     const app = await env.DB.prepare(`SELECT name, email FROM applications WHERE id=?`).bind(applicationId).first();
@@ -1727,13 +1768,22 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
              hasRealEmail ? 'sent' : 'pending', hasRealEmail ? now : null, now).run();
       if (!hasRealEmail) continue; // 沒有真的 email，顧問卡片上會顯示「待補聯絡方式」，之後補了 email 再手動重寄
       const link = `https://step1ne.com/form/?t=${token}`;
+      // 2026-09-02 修：Jacky 實測發現信裡沒附空白表單本體——人選只收到一個
+      // 「上傳填完檔案」的連結，但根本沒看過表單長什麼樣子，沒辦法填。
+      // 有掛範本檔的話當附件一起寄出去。
+      let attachments = null;
+      if (form.template_file_id) {
+        const tf = await fileB64(env, form.template_file_id);
+        if (tf) attachments = [{ filename: tf.filename, content: tf.content }];
+      }
       await sendMail(env, app.email,
         `請填寫「${form.name}」－ ${job ? job.title : ''}`,
         [
           `${app.name || '您好'}：`,
-          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，麻煩點下方按鈕填寫「${form.name}」，請於 2 天內完成上傳，謝謝配合！`,
+          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，這封信附上「${form.name}」，麻煩填寫完成後點下方按鈕上傳，請於 2 天內完成，謝謝配合！`,
         ],
-        { url: link, text: `填寫${form.name}` }
+        { url: link, text: `上傳填完的${form.name}` },
+        attachments
       ).catch(() => {});
     }
   } catch (e) { /* 表單觸發是附加功能，失敗不影響推薦給客戶這個核心動作 */ }
@@ -2699,6 +2749,11 @@ async function handleLineEvent(env, ev) {
     // 按鈕繞回同一份清單。
     if (data === 'faq_start') {
       return lineReplyMessages(env, ev.replyToken, [faqRoleFlex()]);
+    }
+    // 2026-09-02 加：求職者圖文選單「第一次使用流程」按鈕，同一套 postback
+    // 手法，跳出教學卡片，不連到網頁。
+    if (data === 'howto_start') {
+      return lineReplyMessages(env, ev.replyToken, [howtoFlex()]);
     }
     if (data.startsWith('faq_role:')) {
       const role = data.slice('faq_role:'.length);
@@ -6940,7 +6995,7 @@ export default {
       if (request.method === 'GET') {
         if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
         const sub = await env.DB.prepare(
-          `SELECT cfs.status, cfs.submitted_at, jf.name AS form_name, a.name AS candidate_name,
+          `SELECT cfs.status, cfs.submitted_at, jf.name AS form_name, jf.template_file_id, a.name AS candidate_name,
                   cc.display_name AS company_name, j.title AS job_title
              FROM candidate_form_submissions cfs
              JOIN job_forms jf ON jf.id = cfs.job_form_id
@@ -6954,6 +7009,7 @@ export default {
           ok: true, status: sub.status, submitted_at: sub.submitted_at,
           form_name: sub.form_name, candidate_name: sub.candidate_name,
           company_name: sub.company_name || '用人單位', job_title: sub.job_title || '',
+          has_template: !!sub.template_file_id,
         });
       }
       if (request.method === 'POST') {
@@ -6977,6 +7033,27 @@ export default {
         return json(request, { ok: true });
       }
       return json(request, { ok: false, error: 'not found' }, 404);
+    }
+
+    // 空白表單下載：/form/template?t=<token>——信件本身已經附檔了，這支是
+    // 保險，人選信件附件不見／想再看一次空白表單長怎樣時，網頁上也能重下載。
+    if (p === '/form/template' && request.method === 'GET') {
+      const token = url.searchParams.get('t') || '';
+      if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
+      const sub = await env.DB.prepare(
+        `SELECT jf.template_file_id FROM candidate_form_submissions cfs
+           JOIN job_forms jf ON jf.id = cfs.job_form_id WHERE cfs.token = ?`
+      ).bind(token).first();
+      if (!sub || !sub.template_file_id) return json(request, { ok: false, error: '沒有空白表單可以下載' }, 404);
+      const file = await fileB64(env, sub.template_file_id);
+      if (!file) return json(request, { ok: false, error: '找不到檔案' }, 404);
+      return new Response(Uint8Array.from(atob(file.content), (c) => c.charCodeAt(0)), {
+        headers: {
+          'content-type': file.mime || 'application/octet-stream',
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename || 'form')}`,
+          ...cors(request),
+        },
+      });
     }
 
     if (p.startsWith('/chat/')) {
@@ -9302,7 +9379,7 @@ export default {
       if (p.startsWith('/admin/candidate-form-submissions/') && p.endsWith('/resend') && request.method === 'POST') {
         const id = decodeURIComponent(p.slice('/admin/candidate-form-submissions/'.length, -'/resend'.length));
         const sub = await env.DB.prepare(
-          `SELECT cfs.*, jf.name AS form_name, a.name AS candidate_name, a.email, cc.display_name AS company_name, j.title AS job_title
+          `SELECT cfs.*, jf.name AS form_name, jf.template_file_id, a.name AS candidate_name, a.email, cc.display_name AS company_name, j.title AS job_title
              FROM candidate_form_submissions cfs
              JOIN job_forms jf ON jf.id = cfs.job_form_id
              JOIN applications a ON a.id = cfs.application_id
@@ -9318,13 +9395,19 @@ export default {
         await env.DB.prepare(`UPDATE candidate_form_submissions SET status='sent', sent_at=? WHERE id=?`)
           .bind(now, id).run();
         const link = `https://step1ne.com/form/?t=${sub.token}`;
+        let resendAttachments = null;
+        if (sub.template_file_id) {
+          const tf = await fileB64(env, sub.template_file_id);
+          if (tf) resendAttachments = [{ filename: tf.filename, content: tf.content }];
+        }
         const sent = await sendMail(env, sub.email,
           `請填寫「${sub.form_name}」－ ${sub.job_title || ''}`,
           [
             `${sub.candidate_name || '您好'}：`,
-            `再次提醒您，麻煩點下方按鈕填寫「${sub.form_name}」（${sub.company_name || '用人單位'}），請於 2 天內完成上傳，謝謝配合！`,
+            `再次提醒您，這封信附上「${sub.form_name}」（${sub.company_name || '用人單位'}），麻煩填寫完成後點下方按鈕上傳，請於 2 天內完成，謝謝配合！`,
           ],
-          { url: link, text: `填寫${sub.form_name}` }
+          { url: link, text: `上傳填完的${sub.form_name}` },
+          resendAttachments
         );
         return json(request, { ok: sent, error: sent ? undefined : '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' });
       }
