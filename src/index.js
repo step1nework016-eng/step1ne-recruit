@@ -7214,12 +7214,19 @@ export default {
         // 職缺的客戶」標出來方便快選，但清單仍然回傳全部——同一位人選可能適合
         // 別家客戶的類似職缺，不該因為職缺沒對上就選不到。
         const forJob = (url.searchParams.get('for_job') || '').trim();
+        // 2026-09-02 加：hidden_from_consultants——Jacky 要求把特定客戶（目前是
+        // 台灣美光、帆宣系統科技）先從顧問看得到的地方藏起來，這支端點是唯一
+        // 來源（客戶清單、推薦給客戶下拉、報告頁客戶選單全部共用這一支），
+        // 只要這裡濾掉，三個地方會一起隱藏，不用各自處理。之後要恢復能見度，
+        // 把 client_companies.hidden_from_consultants 改回 0 即可。
         const { results } = await env.DB.prepare(
           `SELECT c.id, c.display_name, c.contact_email, c.contact_name, c.portal_token, c.created_at, c.last_emailed_at,
                   c.relation, c.relation_note, c.via_client, c.aliases,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) AS job_count,
                   (SELECT COUNT(*) FROM jobs WHERE company_id = c.id AND status = 'pending_review') AS pending_count
-             FROM client_companies c ORDER BY c.display_name`
+             FROM client_companies c
+            WHERE COALESCE(c.hidden_from_consultants, 0) = 0
+            ORDER BY c.display_name`
         ).all();
         let companies = results || [];
         if (forJob) {
