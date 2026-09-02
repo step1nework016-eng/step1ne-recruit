@@ -5043,8 +5043,33 @@ export default {
             return new Response('ok');
           }
           if (sess) {
-            if (sess.step === 'transcript' && String(rm2.text || '').trim()) {
-              sess.data.transcript = rm2.text.trim();
+            // 2026-09-02 加：原本只認 rm2.text，顧問直接傳 PDF/圖片附件（例如已經
+            // 整理好的電洽逐字稿檔案）時 rm2.text 是空的，整個 if 直接跳過，
+            // 顧問看起來就是「傳了沒反應」（Phoebe 實測撞到的情境）。改成文字跟
+            // 附件都收，附件用 env.AI.toMarkdown 轉成文字，跟 /admin/application/
+            // call-note 那支既有的附件轉文字邏輯同一套做法，不重新發明。
+            if (sess.step === 'transcript' && (String(rm2.text || '').trim() || rm2.document)) {
+              let transcriptText = String(rm2.text || '').trim();
+              if (!transcriptText && rm2.document) {
+                try {
+                  const fr = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${rm2.document.file_id}`);
+                  const fd = await fr.json();
+                  if (fd.ok) {
+                    const fileUrl = `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${fd.result.file_path}`;
+                    const fileResp = await fetch(fileUrl);
+                    const buf = await fileResp.arrayBuffer();
+                    const md = await env.AI.toMarkdown([
+                      { name: rm2.document.file_name || 'upload', blob: new Blob([buf], { type: rm2.document.mime_type || 'application/octet-stream' }) },
+                    ]);
+                    transcriptText = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+                  }
+                } catch (e) { transcriptText = ''; }
+                if (!transcriptText) {
+                  await ncSend(env, rm2.chat.id, callIntakeTopic, '這個檔案讀不出文字內容，麻煩直接貼逐字稿文字，或換一個檔案再試一次。');
+                  return new Response('ok');
+                }
+              }
+              sess.data.transcript = transcriptText;
               await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
               await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。這位人選姓名？（先問名字是為了查有沒有舊紀錄，同一個人不會建重複）');
               return new Response('ok');
@@ -5136,7 +5161,7 @@ export default {
           if (cq2.data === 'nc_begin') {
             await ans2();
             await ncSetSession(env, chatId, cq2.from.id, 'transcript', {});
-            await ncSend(env, chatId, threadId, '請貼上這通電洽的逐字稿（一大串文字都可以，直接貼上來）。');
+            await ncSend(env, chatId, threadId, '請貼上這通電洽的逐字稿（一大串文字都可以，直接貼上來），或直接傳一個檔案（PDF／圖片／Word 都可以）。');
             return new Response('ok');
           }
 
