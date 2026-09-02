@@ -1931,30 +1931,41 @@ async function summarizeCallNotes(env, text) {
 // (從 applications+reports 取資料) 跟「主動開發」的人選 (從 sourced_candidates
 // 取資料，通常還沒面談過、報告內容多半是空的) 共用同一份排版邏輯，只是
 // 餵進來的欄位來源不同。
-function buildClientFormalHtml({ name, jobTitle, clientName, rows, reasons, risks, positioning, photoB64 }) {
+// 2026-09-02 改版，比照參考範本（陳其寬_人選推薦報告.pdf）：
+// - 配色從金色改藍色
+// - 核心條件對應改成「編號＋粗體小標＋段落」（不是單純條列一句話）
+// - 新增「補充說明」「我方建議」兩個獨立區塊
+// - 檔名規則：{應徵職缺}-{人選姓名}-{客戶公司名稱}-德仁管理顧問公司
+//   （HTML 的 <title> 就是瀏覽器「另存為PDF」預設檔名，設對這裡就好，
+//   不用額外處理下載邏輯）
+function buildClientFormalHtml({ name, jobTitle, clientName, rows, coreFit, supplementary, recommendation, photoB64 }) {
   const eHtml = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const photoHtml = photoB64 ? `<img src="${photoB64}" alt="大頭貼">` : '';
   const now = nowTaipei().slice(0, 10);
   const watermark = `Step1ne 德仁管理顧問｜${eHtml(name)} 人選推薦報告｜內部整理，經人選同意後提供貴公司參考，未經同意不得轉予第三方`;
+  const fileTitle = [jobTitle, name, clientName, '德仁管理顧問公司'].filter(Boolean).join('-');
   return `<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
-<title>${eHtml(name)}_人選推薦報告</title>
+<title>${eHtml(fileTitle)}</title>
 <style>
 @page{size:A4;margin:14mm}
 body{font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:#23262d;font-size:13px;line-height:1.7;margin:0}
 .watermark{font-size:10px;color:#8a8d95;border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:14px}
-h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 6px}
-.jobtitle{text-align:center;font-weight:700;font-size:14px;margin:0 0 4px}
+h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 6px;color:#1a5c96}
+.jobtitle{text-align:center;font-weight:700;font-size:14px;margin:0 0 4px;color:#1a5c96}
 .meta{text-align:center;color:#6b6f78;font-size:12px;margin:0 0 18px}
-h2{font-size:14px;border-bottom:2px solid #a67c3d;color:#a67c3d;padding-bottom:4px;margin:22px 0 10px}
+h2{font-size:14px;border-bottom:2px solid #1a5c96;color:#1a5c96;padding-bottom:4px;margin:22px 0 10px}
 table.basics{width:100%;border-collapse:collapse;table-layout:fixed}
-table.basics td{border:1px solid #ddd;padding:8px 12px;vertical-align:top}
-table.basics td.k{width:110px;font-weight:700;background:#faf8f3}
-.photobox{float:right;width:110px;height:140px;border:1px solid #ddd;margin-left:10px;overflow:hidden;background:#f4f1ea}
+table.basics td{border:1px solid #ccd9e5;padding:8px 12px;vertical-align:top}
+table.basics td.k{width:110px;font-weight:700;background:#eef4fa;color:#1a5c96}
+.photobox{float:right;width:110px;height:140px;border:1px solid #ccd9e5;margin-left:10px;overflow:hidden;background:#eef4fa}
 .photobox img{width:100%;height:100%;object-fit:cover}
-ol.cond{padding-left:20px}
-ol.cond li{margin-bottom:10px}
+ol.cond{padding-left:20px;list-style:none;counter-reset:cond}
+ol.cond li{margin-bottom:12px;counter-increment:cond}
+ol.cond li b{display:block;color:#1a5c96;margin-bottom:2px}
+ol.cond li b:before{content:counter(cond) ". "}
 ul.notes{padding-left:20px}
+ul.notes li{margin-bottom:6px}
 .rec{white-space:pre-wrap}
 </style>
 <body>
@@ -1966,11 +1977,70 @@ ul.notes{padding-left:20px}
 ${photoHtml ? `<div class="photobox">${photoHtml}</div>` : ''}
 <table class="basics">${rows.map(([k, v]) => `<tr><td class="k">${eHtml(k)}</td><td>${eHtml(v)}</td></tr>`).join('')}</table>
 <div style="clear:both"></div>
-${positioning ? `<h2>整體定位</h2><p>${eHtml(positioning)}</p>` : ''}
-${reasons.length ? `<h2>核心條件對應</h2><ol class="cond">${reasons.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ol>` : ''}
-${risks.length ? `<h2>補充說明</h2><ul class="notes">${risks.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ul>` : ''}
+${(coreFit && coreFit.length) ? `<h2>核心條件對應</h2><ol class="cond">${coreFit.map((c) => `<li><b>${eHtml(c.title)}</b>${eHtml(c.body)}</li>`).join('')}</ol>` : ''}
+${(supplementary && supplementary.length) ? `<h2>補充說明（履歷未載之正面資訊）</h2><ul class="notes">${supplementary.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ul>` : ''}
+${recommendation ? `<h2>我方建議</h2><p class="rec">${eHtml(recommendation)}</p>` : ''}
 <div class="watermark" style="border-top:1px solid #eee;border-bottom:none;margin-top:24px;padding-top:6px">${watermark}</div>
 </body></html>`;
+}
+
+// 2026-09-02 加：AI 讀電洽逐字稿＋履歷全文，合併整理成客戶版履歷需要的
+// 深度內容（核心條件對應／補充說明／我方建議），比照參考範本
+// （陳其寬_人選推薦報告.pdf）的寫法跟深度。之前是直接抄阿財面談報告
+// 的 content_json（那是不同用途產生的資料，很多人選根本沒有這份、或內容
+// 太單薄），現在改成每次產生客戶版履歷都重新讀原始素材現場整理，資料
+// 來源更直接、也不受「有沒有跟阿財面談過」限制。
+async function synthesizeClientReport(env, { name, callNotes, resumeText, existingReportMd }) {
+  const source = [
+    resumeText ? `【履歷全文】\n${resumeText.slice(0, 6000)}` : '',
+    callNotes ? `【電洽逐字稿／筆記】\n${callNotes.slice(0, 6000)}` : '',
+    existingReportMd ? `【既有初篩報告（可能是阿財面談產出，供補充參考）】\n${existingReportMd.slice(0, 3000)}` : '',
+  ].filter(Boolean).join('\n\n');
+  if (!source) return null;
+  const prompt = `你是獵頭顧問的助理，要把下面這位人選的履歷跟電洽逐字稿整理成一份「給用人企業客戶看」的正式人選推薦報告內容。
+
+規則：
+- 只寫查得到根據的內容，不要編造履歷或逐字稿裡沒提到的事實。
+- 語氣正面、客觀陳述事實，不要出現「不推薦」「顧問懷疑」這類內部判斷用語。
+- 不要出現候選人目前/接案收入、其他機會/offer細節、人格測驗分數這類不該給客戶看的內容。
+- 「核心條件對應」要像績效面談摘要一樣，依電訪跟履歷實際談到的重點分成 4~7 點，每點一個簡短小標＋一段 100~200 字的敘述（可以包含：學習意願與職務理解、轉職動機、穩定度與抗壓力、學經歷背景、薪資接受度、到職彈性、工作模式接受度等面向，只寫有談到的，沒談到的不要硬湊）。
+- 「補充說明」是履歷本身沒寫、但電訪過程中觀察到的正面資訊（例如跨文化溝通能力、職涯決策成熟度等），列 2~4 點，每點一句話。
+- 「我方建議」是顧問對客戶的整體推薦結論，2~3 段，總結人選適合度跟後續建議（例如儘速安排面談）。
+- 「現況」「相關經驗」「交通工具」各是履歷基本資料表格要用的一行文字（現況＝目前工作狀態一句話；相關經驗＝跟這個職缺相關的經驗程度一句話；交通工具＝有寫才填，沒有就空字串）。
+
+用下面這個 JSON 格式直接輸出，不要加任何說明文字、不要用 markdown code block 包起來：
+{"current_state":"...","related_experience":"...","transportation":"...","core_fit":[{"title":"...","body":"..."}],"supplementary":["...","..."],"recommendation":"..."}
+
+人選姓名：${name}
+
+${source}`;
+  let ai = null;
+  try {
+    // ⚠️ 2026-09-02 修：預設 max_tokens 太小，4~7點核心條件對應+補充說明+
+    // 我方建議這種篇幅的JSON常常輸出到一半被截斷變成不合法JSON
+    // （實測噴 "Unterminated string in JSON"）。拉高到 3000。
+    ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [
+        { role: 'system', content: '你是專業獵頭顧問助理，只輸出繁體中文，只輸出合法JSON，不要加任何前後說明文字。' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 3000,
+    });
+    const respField = ai && (ai.response !== undefined ? ai.response : ai.result);
+    const raw = typeof respField === 'string' ? respField.trim() : JSON.stringify(respField);
+    const jsonText = raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+    const parsed = typeof respField === 'object' && respField !== null ? respField : JSON.parse(jsonText);
+    return {
+      current_state: parsed.current_state || null,
+      related_experience: parsed.related_experience || null,
+      transportation: parsed.transportation || null,
+      core_fit: Array.isArray(parsed.core_fit) ? parsed.core_fit.filter((c) => c && c.title && c.body) : [],
+      supplementary: Array.isArray(parsed.supplementary) ? parsed.supplementary.filter(Boolean) : [],
+      recommendation: parsed.recommendation || null,
+    };
+  } catch (e) {
+    return null; // AI整理失敗不擋主流程，退回顧問手動填的欄位
+  }
 }
 
 
@@ -10880,41 +10950,69 @@ export default {
           client_named: job && job.client_named,
           client_name: clientRow ? clientRow.display_name : '（未綁客戶）',
         };
-        const report = await env.DB.prepare(
-          `SELECT content_json FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
-        ).bind(appId).first();
+        const [report, fullApp] = await Promise.all([
+          env.DB.prepare(`SELECT content_json, content_md FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`).bind(appId).first(),
+          env.DB.prepare(`SELECT consultant_call_notes, resume_file_id FROM applications WHERE id=?`).bind(appId).first(),
+        ]);
         let data = {};
         try { data = report && report.content_json ? JSON.parse(report.content_json) : {}; } catch { data = {}; }
         const basics = (data && typeof data.basics === 'object' && data.basics) || {};
         const clientNamed = app.client_named;
         const name = clientDisplayName(app.name, clientNamed);
         const anon = isAnonymous(clientNamed);
-        const txt = (v) => scrubForClient(v);
-        const fc = data.for_client || {};
+
+        // 2026-09-02 加：現場讀電洽逐字稿＋履歷全文，讓 AI 現整理出核心條件對應／
+        // 補充說明／我方建議，不再只是照抄阿財面談報告的 content_json（那份很多
+        // TG手動新增的人選根本沒有，或內容太單薄，跟參考範本的深度差很多）。
+        let resumeText = '';
+        if (fullApp && fullApp.resume_file_id) {
+          try {
+            const rf = await fileB64(env, fullApp.resume_file_id);
+            if (rf) {
+              const bytes = Uint8Array.from(atob(rf.content), (c) => c.charCodeAt(0));
+              const md = await env.AI.toMarkdown([{ name: rf.filename, blob: new Blob([bytes], { type: rf.mime }) }]);
+              resumeText = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+            }
+          } catch (e) { resumeText = ''; }
+        }
+        const synth = await synthesizeClientReport(env, {
+          name: app.name,
+          callNotes: fullApp ? fullApp.consultant_call_notes : null,
+          resumeText,
+          existingReportMd: report ? report.content_md : null,
+        });
+
+        const currentState = (synth && synth.current_state) || String(b.current_state || '').trim() || null;
+        const relatedExp = (synth && synth.related_experience) || String(b.related_experience || '').trim() || null;
+        const transport = (synth && synth.transportation) || String(b.transportation || '').trim() || null;
 
         const rows = [
           ['姓名', name],
-          ['現況', String(b.current_state || '').trim().slice(0, 300) || null],
+          ['現況', currentState ? scrubForClient(currentState).slice(0, 300) : null],
           ['現居地', basics.residence || null],
           ['學歷', basics.education || null],
           ['出生年月', anon ? null : (basics.age || null)],
           ['兵役', basics.military || null],
           ['語言', basics.languages || null],
-          ['相關經驗', String(b.related_experience || '').trim().slice(0, 300) || null],
-          ['交通工具', String(b.transportation || '').trim().slice(0, 200) || null],
+          ['相關經驗', relatedExp ? scrubForClient(relatedExp).slice(0, 300) : null],
+          ['交通工具', transport ? scrubForClient(transport).slice(0, 200) : null],
           ['期望待遇', app.expected_salary || null],
           ['可到職', app.available_date || null],
         ].filter(([, v]) => v);
 
-        const reasons = (fc.reasons || []).map(txt).filter(Boolean);
-        const risks = (fc.risks_to_disclose || []).map(txt).filter(Boolean);
-        const positioning = txt(data.one_liner);
+        const coreFit = (synth && synth.core_fit && synth.core_fit.length)
+          ? synth.core_fit.map((c) => ({ title: scrubForClient(c.title), body: scrubForClient(c.body) })).filter((c) => c.title && c.body)
+          : [];
+        const supplementary = (synth && synth.supplementary && synth.supplementary.length)
+          ? synth.supplementary.map((s) => scrubForClient(s)).filter(Boolean)
+          : [];
+        const recommendation = (synth && synth.recommendation) ? scrubForClient(synth.recommendation) : null;
 
         const html = buildClientFormalHtml({
           name, jobTitle: app.job_full_title || app.job_title || '', clientName: app.client_name || '',
-          rows, reasons, risks, positioning, photoB64: b.photo_b64 || null,
+          rows, coreFit, supplementary, recommendation, photoB64: b.photo_b64 || null,
         });
-        return json(request, { ok: true, html });
+        return json(request, { ok: true, html, ai_synthesized: !!synth });
       }
 
       // 2026-09-02 加：「主動開發」的人選也要能做客戶版履歷。這批人選在
@@ -10948,7 +11046,7 @@ export default {
         const srcId = decodeURIComponent(p.slice('/admin/sourced/'.length, -'/client-formal-report'.length));
         const b = await request.json().catch(() => ({}));
         const src = await env.DB.prepare(
-          `SELECT name, headline, company, location, skills, job_slug
+          `SELECT name, headline, company, location, skills, job_slug, bio, note, resume_file_id
              FROM sourced_candidates WHERE id = ?`
         ).bind(srcId).first();
         if (!src) return json(request, { ok: false, error: '找不到這位人選' }, 404);
@@ -10956,23 +11054,53 @@ export default {
           ? ((await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(src.job_slug).first()) || {}).title
           : null;
         const name = src.name || '候選人';
+
+        // 2026-09-02 加：跟正式應徵那邊同一套——現場讀履歷全文＋既有筆記
+        // （bio／note，主動開發沒有電洽逐字稿，用這兩個代替），讓 AI 現整理
+        // 核心條件對應／補充說明／我方建議。多半還沒面談過，內容會比較單薄，
+        // 是合理的（沒收集到的東西不能硬編）。
+        let resumeText = '';
+        if (src.resume_file_id) {
+          try {
+            const rf = await fileB64(env, src.resume_file_id);
+            if (rf) {
+              const bytes = Uint8Array.from(atob(rf.content), (c) => c.charCodeAt(0));
+              const md = await env.AI.toMarkdown([{ name: rf.filename, blob: new Blob([bytes], { type: rf.mime }) }]);
+              resumeText = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+            }
+          } catch (e) { resumeText = ''; }
+        }
+        const callNotesEquiv = [src.bio, src.note].filter(Boolean).join('\n\n');
+        const synth = await synthesizeClientReport(env, { name, callNotes: callNotesEquiv, resumeText, existingReportMd: null });
+
+        const currentState = (synth && synth.current_state) || String(b.current_state || '').trim() || null;
+        const relatedExp = (synth && synth.related_experience) || String(b.related_experience || '').trim() || (src.skills ? `技能／經驗：${src.skills}` : null);
+        const transport = (synth && synth.transportation) || String(b.transportation || '').trim() || null;
+
         const rows = [
           ['姓名', name],
-          ['現況', String(b.current_state || '').trim().slice(0, 300) || null],
+          ['現況', currentState ? scrubForClient(currentState).slice(0, 300) : null],
           ['現居地', src.location || null],
           ['現職', [src.company, src.headline].filter(Boolean).join('・') || null],
-          ['相關經驗', String(b.related_experience || '').trim().slice(0, 300) || null],
-          ['交通工具', String(b.transportation || '').trim().slice(0, 200) || null],
+          ['相關經驗', relatedExp ? scrubForClient(relatedExp).slice(0, 300) : null],
+          ['交通工具', transport ? scrubForClient(transport).slice(0, 200) : null],
           ['期望待遇', String(b.expected_salary || '').trim().slice(0, 100) || null],
           ['可到職', String(b.available_date || '').trim().slice(0, 100) || null],
         ].filter(([, v]) => v);
-        const risks = src.skills ? [`技能／經驗：${scrubForClient(src.skills)}`] : [];
+
+        const coreFit = (synth && synth.core_fit && synth.core_fit.length)
+          ? synth.core_fit.map((c) => ({ title: scrubForClient(c.title), body: scrubForClient(c.body) })).filter((c) => c.title && c.body)
+          : [];
+        const supplementary = (synth && synth.supplementary && synth.supplementary.length)
+          ? synth.supplementary.map((s) => scrubForClient(s)).filter(Boolean)
+          : [];
+        const recommendation = (synth && synth.recommendation) ? scrubForClient(synth.recommendation) : null;
 
         const html = buildClientFormalHtml({
           name, jobTitle: jobTitle || '（尚未鎖定職缺）', clientName: '（尚未推薦給客戶）',
-          rows, reasons: [], risks, positioning: null, photoB64: b.photo_b64 || null,
+          rows, coreFit, supplementary, recommendation, photoB64: b.photo_b64 || null,
         });
-        return json(request, { ok: true, html });
+        return json(request, { ok: true, html, ai_synthesized: !!synth });
       }
 
       // 2026-09-01 加：人選卡片改版——⑤給推薦客戶的備註，每一筆推薦紀錄各自
