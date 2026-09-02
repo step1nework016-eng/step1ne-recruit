@@ -11797,10 +11797,34 @@ export default {
                WHERE a.interview_state='done' AND COALESCE(j.interview_language,'')!=''
                  AND a.lang_verified_at IS NULL) AS lang_missing`);
 
-        // 漏斗：以 pipeline_events 為準（顧問實際記的），不是 applications.status
-        const funnel = await all(
-          `SELECT stage, COUNT(DISTINCT application_id) n FROM pipeline_events
-            WHERE event='pass' OR event IS NULL GROUP BY stage`);
+        // ⚠️ 2026-09-02 全面重寫：原本讀 pipeline_events（「顧問手動記錄的進度
+        // 事件」），查證發現這張表全站零寫入，35 筆全部是 8/6 同一個時間點的
+        // 舊測試資料——這張漏斗圖已經僵住快一個月，顯示的是死資料，不是「顧問
+        // 沒記」。改成直接從 applications／reports／placements 這三張隨時都在
+        // 寫入的表即時算，不需要任何人手動記錄一筆——跟 /portal/:token/jobs/
+        // :slug/funnel（客戶 portal 那張漏斗，同一套邏輯，一直穩定在跑）完全
+        // 同款算法，只是這裡不加 job_slug 篩選，是全公司總覽版。
+        const [fApplied, fInterviewed, fPassed, fClientStage, fOffered, fOnboard] = await Promise.all([
+          one(`SELECT COUNT(*) n FROM applications`),
+          one(`SELECT COUNT(*) n FROM applications WHERE interview_started_at IS NOT NULL`),
+          one(`SELECT COUNT(DISTINCT r.application_id) n FROM reports r
+                WHERE r.consultant_decision='forwarded'`),
+          one(`SELECT COUNT(DISTINCT p.application_id) n FROM placements p
+                WHERE UPPER(p.stage) IN
+                  ('SUBMITTED','CLIENT_INTERVIEW','INTERVIEWING','INTERVIEW','AWAITING_CLIENT_FEEDBACK','INTERVIEW_COMPLETED')
+                  AND p.onboard_date IS NULL`),
+          one(`SELECT COUNT(DISTINCT p.application_id) n FROM placements p
+                WHERE UPPER(p.stage) IN ('OFFER','OFFER_ACCEPTED','HIRED','PLACED') AND p.onboard_date IS NULL`),
+          one(`SELECT COUNT(DISTINCT p.application_id) n FROM placements p WHERE p.onboard_date IS NOT NULL`),
+        ]);
+        const funnel = [
+          { stage: 'applied', n: fApplied.n },
+          { stage: 'interviewed', n: fInterviewed.n },
+          { stage: 'consultant_review', n: fPassed.n },
+          { stage: 'client_stage', n: fClientStage.n },
+          { stage: 'offered', n: fOffered.n },
+          { stage: 'onboard', n: fOnboard.n },
+        ];
 
         const verdicts = await all(
           `SELECT consultant_call AS k, COUNT(*) n FROM applications
