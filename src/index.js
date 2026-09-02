@@ -1687,6 +1687,58 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
   return { manual_stage: stage, manual_stage_at: stage ? now : null };
 }
 
+// 2026-09-02 加：人選客製表單——起點是弘昌 BIM 工程師案要收「用人事資料表」，
+// 做成通用機制：職缺底下掛表單範本（job_forms），顧問把人選推薦給某家客戶時
+// （不管是走 doManualForward、/admin/decide-report 的「轉給客戶」、還是
+// /admin/forward-candidate 的「追加推薦」，三個地方都會建立 candidate_forwards
+// 這筆關係），如果這個職缺有掛表單，自動生一筆填寫紀錄＋寄一封帶專屬連結的信
+// 給人選。三個呼叫端都在「candidate_forwards 這筆關係真的是新建立的」之後
+// （INSERT OR IGNORE 的 changes>0）才呼叫這裡，避免同一家公司按第二次推薦、
+// 或系統重試時重複寄信。刻意包一層 try/catch、永遠不拋出——這是錦上添花的
+// 通知功能，不能因為寄信失敗就讓「推薦給客戶」這個核心動作跟著失敗。
+async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
+  if (!jobSlug) return;
+  try {
+    const { results: forms } = await env.DB.prepare(
+      `SELECT id, name FROM job_forms WHERE job_slug=?`
+    ).bind(jobSlug).all();
+    if (!forms || !forms.length) return;
+    const app = await env.DB.prepare(`SELECT name, email FROM applications WHERE id=?`).bind(applicationId).first();
+    if (!app) return;
+    const company = await env.DB.prepare(`SELECT display_name FROM client_companies WHERE id=?`).bind(companyId).first();
+    const job = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(jobSlug).first();
+    const hasRealEmail = !!(app.email && !/@no-email\.step1ne\.local$/i.test(String(app.email).trim()));
+    const now = nowTaipei();
+    for (const form of forms) {
+      // 同一份表單、同一位人選、同一家客戶只會生一筆——重複呼叫（例如同一家
+      // 公司被重複觸發）不會疊出好幾筆填寫紀錄跟好幾封信。
+      const existing = await env.DB.prepare(
+        `SELECT id FROM candidate_form_submissions WHERE job_form_id=? AND application_id=? AND company_id=?`
+      ).bind(form.id, applicationId, companyId).first();
+      if (existing) continue;
+      const token = [...crypto.getRandomValues(new Uint8Array(24))]
+        .map((x) => x.toString(16).padStart(2, '0')).join('');
+      const subId = uid();
+      await env.DB.prepare(
+        `INSERT INTO candidate_form_submissions
+           (id, job_form_id, application_id, company_id, token, status, sent_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(subId, form.id, applicationId, companyId, token,
+             hasRealEmail ? 'sent' : 'pending', hasRealEmail ? now : null, now).run();
+      if (!hasRealEmail) continue; // 沒有真的 email，顧問卡片上會顯示「待補聯絡方式」，之後補了 email 再手動重寄
+      const link = `https://step1ne.com/form/?t=${token}`;
+      await sendMail(env, app.email,
+        `請填寫「${form.name}」－ ${job ? job.title : ''}`,
+        [
+          `${app.name || '您好'}：`,
+          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，麻煩點下方按鈕填寫「${form.name}」，請於 2 天內完成上傳，謝謝配合！`,
+        ],
+        { url: link, text: `填寫${form.name}` }
+      ).catch(() => {});
+    }
+  } catch (e) { /* 表單觸發是附加功能，失敗不影響推薦給客戶這個核心動作 */ }
+}
+
 // 電洽內容補在既有人選卡片上的核心邏輯——抽成獨立函式讓「/admin/application/
 // call-note」這支 HTTP 路由跟 Telegram webhook（ncSubmitMerge，「同名舊紀錄，
 // 整合進去」那條路徑）都能直接呼叫。2026-09-02 修：跟 doManualForward 同一個
@@ -1878,10 +1930,13 @@ async function doManualForward(env, b) {
   }
 
   if (job.company_id) {
-    await env.DB.prepare(
+    const cfr = await env.DB.prepare(
       `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
        VALUES (?,?,?,?,?,?)`
     ).bind(uid(), appId, job.company_id, b.by || null, now, '顧問手動新增（未透過阿財面談）').run();
+    if (cfr.meta && cfr.meta.changes) {
+      await triggerJobForms(env, { applicationId: appId, companyId: job.company_id, jobSlug, by: b.by });
+    }
     const existingPl = await env.DB.prepare(
       `SELECT id FROM placements WHERE application_id=? AND client_id=? LIMIT 1`
     ).bind(appId, job.company_id).first();
@@ -4016,7 +4071,24 @@ export default {
           }
           return out;
         };
-        const [placementRowsAll, apptRowsAll] = rowAppIds.length
+        // 表單這支要多綁一個 company.id（跟 application_id 清單分開兩種參數），
+        // portalBatchAll 只支援單一種 ids 清單綁定，這裡就不硬塞進去，直接寫
+        // 自己的批次迴圈，公司 id 一樣走 bind()，不做字串拼接。
+        const formSubBatch = async (ids) => {
+          const out = [];
+          for (const ids2 of portalChunk(ids, 100)) {
+            if (!ids2.length) continue;
+            const ph = Array.from({ length: ids2.length }, () => '?').join(',');
+            const { results } = await env.DB.prepare(
+              `SELECT cfs.id, cfs.application_id, cfs.status, cfs.submitted_at, cfs.submitted_file_id, jf.name AS form_name
+                 FROM candidate_form_submissions cfs JOIN job_forms jf ON jf.id = cfs.job_form_id
+                WHERE cfs.company_id = ? AND cfs.application_id IN (${ph})`
+            ).bind(company.id, ...ids2).all();
+            out.push(...(results || []));
+          }
+          return out;
+        };
+        const [placementRowsAll, apptRowsAll, formSubRowsAll] = rowAppIds.length
           ? await Promise.all([
               portalBatchAll((n) => `SELECT application_id, stage, onboard_date, candidate_care_log, updated_at FROM placements
                   WHERE application_id IN (${Array.from({ length: n }, () => '?').join(',')})
@@ -4024,12 +4096,19 @@ export default {
               portalBatchAll((n) => `SELECT application_id, stage, status, confirmed_slot FROM interview_appointments
                   WHERE application_id IN (${Array.from({ length: n }, () => '?').join(',')})
                   ORDER BY application_id, stage ASC, created_at ASC`, rowAppIds),
+              // 2026-09-02 加：人選客製表單狀態，只挑這家客戶自己的（company_id 篩死），
+              // 同一人選推給別家客戶的表單不該在這裡看得到。
+              formSubBatch(rowAppIds),
             ])
-          : [[], []];
+          : [[], [], []];
         const placementByApp = new Map();
         for (const pl of placementRowsAll) if (!placementByApp.has(pl.application_id)) placementByApp.set(pl.application_id, pl);
         const apptsByApp = new Map();
         for (const ap of apptRowsAll) { if (!apptsByApp.has(ap.application_id)) apptsByApp.set(ap.application_id, []); apptsByApp.get(ap.application_id).push(ap); }
+        const formsByApp = new Map();
+        for (const fs of formSubRowsAll) { if (!formsByApp.has(fs.application_id)) formsByApp.set(fs.application_id, []); formsByApp.get(fs.application_id).push({
+          id: fs.id, form_name: fs.form_name, status: fs.status, submitted_at: fs.submitted_at, has_file: !!fs.submitted_file_id,
+        }); }
         const perRow = (rows || []).map((row) => ({
           row, placement: placementByApp.get(row.application_id) || null, appts: apptsByApp.get(row.application_id) || [],
         }));
@@ -4097,9 +4176,41 @@ export default {
             client_note: row.client_note || null,
             has_resume: !!(row.resume_file_id || row.resume_url),
             has_client_report: !!row.content_client_md,
+            forms: formsByApp.get(row.application_id) || [],
           });
         }
         return json(request, { ok: true, candidates });
+      }
+
+      // GET /portal/:token/candidates/:applicationId/form/:submissionId — 客戶下載
+      // 人選填完的表單。跟 /resume 同一套擁有權檢查：這個 submission 一定要屬於
+      // 「這個人選＋這家公司」，不能靠猜 id 打到別家客戶的檔案。
+      if (parts.length === 5 && parts[1] === 'candidates' && parts[3] === 'form' && request.method === 'GET') {
+        const applicationId = parts[2];
+        const submissionId = parts[4];
+        const sub = await env.DB.prepare(
+          `SELECT submitted_file_id FROM candidate_form_submissions
+            WHERE id=? AND application_id=? AND company_id=?`
+        ).bind(submissionId, applicationId, company.id).first();
+        if (!sub || !sub.submitted_file_id) return json(request, { ok: false, error: '還沒有填寫完成的檔案' }, 404);
+        const file = await env.DB.prepare(
+          `SELECT filename, mime, content_b64, chunks FROM files WHERE id=?`
+        ).bind(sub.submitted_file_id).first();
+        if (!file) return json(request, { ok: false, error: '找不到檔案' }, 404);
+        let b64 = file.content_b64 || '';
+        if (!b64 && file.chunks) {
+          const { results: parts3 } = await env.DB.prepare(
+            `SELECT b64 FROM file_chunks WHERE file_id=? ORDER BY idx ASC`
+          ).bind(sub.submitted_file_id).all();
+          b64 = (parts3 || []).map((c) => c.b64).join('');
+        }
+        if (!b64) return json(request, { ok: false, error: '檔案讀取失敗' }, 500);
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        return new Response(bin, { headers: {
+          'content-type': file.mime || 'application/octet-stream',
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename || 'form')}`,
+          'cache-control': 'private, no-store',
+        } });
       }
 
       // POST /portal/:token/candidates/:applicationId/add-interview-round — 客戶
@@ -6819,6 +6930,55 @@ export default {
         return json(request, { ok: true, url: target });
       }
 
+    // ── 人選客製表單填寫頁：/form/?t=<token> ──
+    // 2026-09-02 加。網址帶的 token 本身就是憑證（Jacky 確認不用另外加身份
+    // 驗證），公開、不用 ADMIN_TOKEN。⚠️ 這裡刻意用 query string（?t=）不是
+    // /chat/:token 那種 path 型態——跟 form/index.html 前端頁面的呼叫方式
+    // 對齊（同一套 URL 拼法錯了會直接讀不到 token，缺少連結，親自測過才抓到）。
+    if (p === '/form' || p === '/form/') {
+      const token = url.searchParams.get('t') || '';
+      if (request.method === 'GET') {
+        if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
+        const sub = await env.DB.prepare(
+          `SELECT cfs.status, cfs.submitted_at, jf.name AS form_name, a.name AS candidate_name,
+                  cc.display_name AS company_name, j.title AS job_title
+             FROM candidate_form_submissions cfs
+             JOIN job_forms jf ON jf.id = cfs.job_form_id
+             JOIN applications a ON a.id = cfs.application_id
+             LEFT JOIN client_companies cc ON cc.id = cfs.company_id
+             LEFT JOIN jobs j ON j.slug = jf.job_slug
+            WHERE cfs.token = ?`
+        ).bind(token).first();
+        if (!sub) return json(request, { ok: false, error: '這個連結不存在，或已經失效' }, 404);
+        return json(request, {
+          ok: true, status: sub.status, submitted_at: sub.submitted_at,
+          form_name: sub.form_name, candidate_name: sub.candidate_name,
+          company_name: sub.company_name || '用人單位', job_title: sub.job_title || '',
+        });
+      }
+      if (request.method === 'POST') {
+        if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
+        const b = await request.json().catch(() => ({}));
+        if (!b.file_b64) return json(request, { ok: false, error: '請選擇要上傳的檔案' }, 400);
+        const sub = await env.DB.prepare(
+          `SELECT id, status FROM candidate_form_submissions WHERE token = ?`
+        ).bind(token).first();
+        if (!sub) return json(request, { ok: false, error: '這個連結不存在，或已經失效' }, 404);
+        // 送出即失效（一次性連結，Jacky 確認）——已經填過的再點同一個連結，
+        // 只會看到「已經完成」，不會讓他又送一次覆蓋掉前一份。
+        if (sub.status === 'submitted') return json(request, { ok: false, error: '這份表單已經填寫完成了' }, 400);
+        const now = nowTaipei();
+        const saved = await saveUpload(env, { b64: b.file_b64, name: b.file_name, mime: b.file_mime }, now);
+        if (saved && saved.tooBig) return json(request, { ok: false, error: '檔案太大，請壓縮後再上傳' }, 400);
+        if (!saved) return json(request, { ok: false, error: '上傳失敗，請重試' }, 500);
+        await env.DB.prepare(
+          `UPDATE candidate_form_submissions SET status='submitted', submitted_at=?, submitted_file_id=? WHERE id=?`
+        ).bind(now, saved.fileId, sub.id).run();
+        return json(request, { ok: true });
+      }
+      return json(request, { ok: false, error: 'not found' }, 404);
+    }
+
     if (p.startsWith('/chat/')) {
       const seg = p.split('/').filter(Boolean); // ['chat', token, action?]
       const token = seg[1] || '';
@@ -9095,6 +9255,97 @@ export default {
 
       // 更新分類。⚠️ 客戶對象一改，三個連動欄位要一起改，
       // 不能讓顧問一個一個設——漏設一個就是隱私外洩。
+      // ── 人選客製表單：職缺底下的表單範本管理 ──
+      // 2026-09-02 加。job_forms 掛在職缺（job_slug）底下，一個職缺可以掛多份。
+      // 只是「上傳、列出、刪除」，真正觸發寄送是在 triggerJobForms()（推薦給
+      // 客戶那三個地方共用），不是這裡。
+      if (p === '/admin/job-forms' && request.method === 'GET') {
+        const jobSlug = (url.searchParams.get('job_slug') || '').trim();
+        if (!jobSlug) return json(request, { ok: false, error: '缺 job_slug' }, 400);
+        const { results } = await env.DB.prepare(
+          `SELECT id, name, template_file_id, created_by, created_at FROM job_forms
+            WHERE job_slug=? ORDER BY created_at DESC`
+        ).bind(jobSlug).all();
+        return json(request, { ok: true, forms: results || [] });
+      }
+      if (p === '/admin/job-forms' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        const jobSlug = String(b.job_slug || '').trim();
+        const name = String(b.name || '').trim();
+        if (!jobSlug) return json(request, { ok: false, error: '缺 job_slug' }, 400);
+        if (!name) return json(request, { ok: false, error: '請填表單名稱' }, 400);
+        const job = await env.DB.prepare(`SELECT slug FROM jobs WHERE slug=?`).bind(jobSlug).first();
+        if (!job) return json(request, { ok: false, error: '找不到這個職缺' }, 404);
+        let templateFileId = null;
+        if (b.file_b64) {
+          const saved = await saveUpload(env, { b64: b.file_b64, name: b.file_name, mime: b.file_mime }, nowTaipei());
+          if (saved && saved.tooBig) return json(request, { ok: false, error: '檔案太大，請壓縮後再上傳' }, 400);
+          if (saved) templateFileId = saved.fileId;
+        }
+        const id = uid();
+        await env.DB.prepare(
+          `INSERT INTO job_forms (id, job_slug, name, template_file_id, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(id, jobSlug, name, templateFileId, b.by || null, nowTaipei()).run();
+        return json(request, { ok: true, id });
+      }
+      if (p.startsWith('/admin/job-forms/') && p.endsWith('/delete') && request.method === 'POST') {
+        const id = decodeURIComponent(p.slice('/admin/job-forms/'.length, -'/delete'.length));
+        await env.DB.prepare(`DELETE FROM job_forms WHERE id=?`).bind(id).run();
+        return json(request, { ok: true });
+      }
+
+      // 人選填寫紀錄——顧問卡片上「重新寄送」用。涵蓋兩種情境：①原本沒有
+      // 真的 email（佔位信箱），顧問補上 email 後手動觸發第一次寄送；
+      // ②信寄過但人選說沒收到／連結搞丟，重新寄一次同一個連結。已經填完的
+      // （status='submitted'）不給重寄，避免搞混「這是舊的還是新的填寫」。
+      if (p.startsWith('/admin/candidate-form-submissions/') && p.endsWith('/resend') && request.method === 'POST') {
+        const id = decodeURIComponent(p.slice('/admin/candidate-form-submissions/'.length, -'/resend'.length));
+        const sub = await env.DB.prepare(
+          `SELECT cfs.*, jf.name AS form_name, a.name AS candidate_name, a.email, cc.display_name AS company_name, j.title AS job_title
+             FROM candidate_form_submissions cfs
+             JOIN job_forms jf ON jf.id = cfs.job_form_id
+             JOIN applications a ON a.id = cfs.application_id
+             LEFT JOIN client_companies cc ON cc.id = cfs.company_id
+             LEFT JOIN jobs j ON j.slug = jf.job_slug
+            WHERE cfs.id=?`
+        ).bind(id).first();
+        if (!sub) return json(request, { ok: false, error: '找不到這筆填寫紀錄' }, 404);
+        if (sub.status === 'submitted') return json(request, { ok: false, error: '這位人選已經填完了，不能重寄' }, 400);
+        const hasRealEmail = !!(sub.email && !/@no-email\.step1ne\.local$/i.test(String(sub.email).trim()));
+        if (!hasRealEmail) return json(request, { ok: false, error: '這位人選還沒有可用的 Email，請先在人選卡片補上' }, 400);
+        const now = nowTaipei();
+        await env.DB.prepare(`UPDATE candidate_form_submissions SET status='sent', sent_at=? WHERE id=?`)
+          .bind(now, id).run();
+        const link = `https://step1ne.com/form/?t=${sub.token}`;
+        const sent = await sendMail(env, sub.email,
+          `請填寫「${sub.form_name}」－ ${sub.job_title || ''}`,
+          [
+            `${sub.candidate_name || '您好'}：`,
+            `再次提醒您，麻煩點下方按鈕填寫「${sub.form_name}」（${sub.company_name || '用人單位'}），請於 2 天內完成上傳，謝謝配合！`,
+          ],
+          { url: link, text: `填寫${sub.form_name}` }
+        );
+        return json(request, { ok: sent, error: sent ? undefined : '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' });
+      }
+
+      // 顧問下載人選填完的表單——跟 /admin/resume/ 同一套做法。
+      if (p.startsWith('/admin/candidate-form-submissions/') && p.endsWith('/download') && request.method === 'GET') {
+        const id = decodeURIComponent(p.slice('/admin/candidate-form-submissions/'.length, -'/download'.length));
+        const sub = await env.DB.prepare(
+          `SELECT submitted_file_id FROM candidate_form_submissions WHERE id=?`).bind(id).first();
+        if (!sub || !sub.submitted_file_id) return json(request, { ok: false, error: '還沒有填寫完成的檔案' }, 404);
+        const file = await fileB64(env, sub.submitted_file_id);
+        if (!file) return json(request, { ok: false, error: '找不到檔案' }, 404);
+        return new Response(Uint8Array.from(atob(file.content), (c) => c.charCodeAt(0)), {
+          headers: {
+            'content-type': file.mime || 'application/octet-stream',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename || 'form')}`,
+            ...cors(request),
+          },
+        });
+      }
+
       if (p.startsWith('/admin/jobs/') && request.method === 'POST') {
         const slug = decodeURIComponent(p.slice('/admin/jobs/'.length));
         let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
@@ -10034,7 +10285,7 @@ export default {
 
         const trackerJobStageKeysMap = await getJobStageKeysMap(env, (apps || []).map((a) => a.job_slug));
 
-        const [reportRows, forwardRowsAll, apptRowsAll, noCoPlacementRows, coPlacementRows] = appIds.length
+        const [reportRows, forwardRowsAll, apptRowsAll, noCoPlacementRows, coPlacementRows, formSubRowsAll] = appIds.length
           ? await Promise.all([
               batchAll((n) => `SELECT application_id, id, content_md, consultant_decision, created_at FROM reports
                 WHERE application_id IN ${inClause(n)} ORDER BY application_id, created_at DESC`, appIds),
@@ -10052,8 +10303,14 @@ export default {
               batchAll((n) => `SELECT application_id, client_id, stage, onboard_date, updated_at FROM placements
                 WHERE application_id IN ${inClause(n)} AND client_id IS NOT NULL
                 ORDER BY application_id, client_id, updated_at DESC`, appIds),
+              // 2026-09-02 加：人選客製表單狀態，一併批次撈起來，掛在各家客戶
+              // 自己的 placement 卡片底下（見下面 forms: ... 那行）。
+              batchAll((n) => `SELECT cfs.id, cfs.application_id, cfs.company_id, cfs.status, cfs.sent_at,
+                      cfs.submitted_at, cfs.submitted_file_id, jf.name AS form_name
+                 FROM candidate_form_submissions cfs JOIN job_forms jf ON jf.id = cfs.job_form_id
+                WHERE cfs.application_id IN ${inClause(n)}`, appIds),
             ])
-          : [[], [], [], [], []];
+          : [[], [], [], [], [], []];
 
         // 「每個 application 最新一筆」的挑法統一用同一招：來源已經 ORDER BY ... DESC，
         // 用 Map 只留第一次看到的那筆（Map.set 只在 key 不存在時才寫）。
@@ -10068,6 +10325,15 @@ export default {
         for (const pl of coPlacementRows) {
           const key = pl.application_id + '|' + pl.client_id;
           if (!placementByAppCompany.has(key)) placementByAppCompany.set(key, pl);
+        }
+        const formSubsByAppCompany = new Map();
+        for (const fs of formSubRowsAll) {
+          const key = fs.application_id + '|' + fs.company_id;
+          if (!formSubsByAppCompany.has(key)) formSubsByAppCompany.set(key, []);
+          formSubsByAppCompany.get(key).push({
+            id: fs.id, form_name: fs.form_name, status: fs.status,
+            sent_at: fs.sent_at, submitted_at: fs.submitted_at, has_file: !!fs.submitted_file_id,
+          });
         }
 
         const detail = (apps || []).map((a) => {
@@ -10094,6 +10360,7 @@ export default {
               job_title: a.job_full_title || a.job_title, forwarded_at: f.forwarded_at,
               manual_stage_note: f.manual_stage_note, client_note: f.client_note,
               line_id_given: f.line_id_given, closed,
+              forms: formSubsByAppCompany.get(a.id + '|' + f.company_id) || [],
               steps: stageInfo.steps, effective_index: stageInfo.effective_index,
               advisor_not_recommended_at: f.advisor_not_recommended_at || null,
               advisor_not_recommended_reason: f.advisor_not_recommended_reason || null,
@@ -11514,7 +11781,10 @@ export default {
 
         const now = await one(
           `SELECT
-             (SELECT COUNT(*) FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','pending_review')) AS jobs_open,
+             -- 2026-09-02 修：原本沒排除 client_draft（客戶還沒核准公開的職缺草稿），
+             -- 跟其他頁面（/admin/jobs 的下拉、顧問社群的職缺清單）篩選邏輯對不起來，
+             -- 「在辦職缺」會比實際能應徵的職缺數多算。
+             (SELECT COUNT(*) FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','pending_review','client_draft')) AS jobs_open,
              (SELECT COUNT(*) FROM applications) AS cands,
              (SELECT COUNT(*) FROM applications WHERE created_at >= datetime('now','+8 hours','-7 days')) AS new7,
              (SELECT COUNT(*) FROM applications WHERE interview_state='done') AS done,
@@ -11846,10 +12116,13 @@ export default {
             // 追加推薦給其他客戶就呼叫 /admin/forward-candidate，不會互相蓋掉
             // （UNIQUE(application_id, company_id)，同一家公司按第二次不會重複）。
             if (app && app.company_id) {
-              await env.DB.prepare(
+              const cfr2 = await env.DB.prepare(
                 `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note)
                  VALUES (?, ?, ?, ?, ?, ?)`
               ).bind(uid(), b.app_id, app.company_id, b.by || null, now, b.note || null).run();
+              if (cfr2.meta && cfr2.meta.changes) {
+                await triggerJobForms(env, { applicationId: b.app_id, companyId: app.company_id, jobSlug: app.job_slug, by: b.by });
+              }
             }
           }
         }
@@ -11892,10 +12165,13 @@ export default {
           .bind(b.application_id).first();
         const jobSlug = String(b.job_slug || (app && app.job_slug) || '').trim() || null;
         const now = nowTaipei();
-        await env.DB.prepare(
+        const cfr3 = await env.DB.prepare(
           `INSERT OR IGNORE INTO candidate_forwards (id, application_id, company_id, forwarded_by, forwarded_at, note, job_slug)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         ).bind(uid(), b.application_id, b.company_id, b.by || null, now, b.note || null, jobSlug).run();
+        if (cfr3.meta && cfr3.meta.changes) {
+          await triggerJobForms(env, { applicationId: b.application_id, companyId: b.company_id, jobSlug, by: b.by });
+        }
         // 2026-09-01 加：按下推薦本身就是顧問明確做的決定，不該還要求顧問回頭
         // 到報告畫面再按一次「推薦」——沒有報告（廖若辰那種手動新增、還沒面談的
         // 案例）或報告還沒下決定，這裡順便補上，「等我決定」分頁才會正確把這人
