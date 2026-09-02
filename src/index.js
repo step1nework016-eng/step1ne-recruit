@@ -3649,6 +3649,35 @@ export default {
         return json(request, { ok: true, slug, updated_at: now });
       }
 
+      // 2026-09-02 加：DELETE /portal/:token/jobs/:slug — 客戶自己刪掉一個
+      // 職缺（例如打錯字建了一筆測試用的「111」，之前只能「結束招募」，
+      // 職缺還是留在清單裡）。⚠️ 安全底線：只要這個職缺已經有任何一筆
+      // applications（真的有人應徵過），一律擋下來，不准客戶自己刪——
+      // 那代表底下可能已經有正在跑的人選紀錄，誤刪會連帶弄丟顧問手上的
+      // 進度資料，這種情況只能由顧問後台人工處理。沒有任何應徵紀錄
+      // （通常是剛建立的草稿或誤建）才真的允許刪除。
+      if (parts.length === 3 && parts[1] === 'jobs' && request.method === 'DELETE') {
+        const slug = parts[2];
+        const owned = await env.DB.prepare(
+          `SELECT slug, title FROM jobs WHERE slug = ? AND company_id = ?`
+        ).bind(slug, company.id).first();
+        if (!owned) return json(request, { ok: false, error: '找不到這個職缺，或不屬於這個公司入口' }, 404);
+        const appCount = await env.DB.prepare(
+          `SELECT COUNT(*) AS n FROM applications WHERE job_slug = ?`
+        ).bind(slug).first();
+        if (appCount && appCount.n > 0) {
+          return json(request, {
+            ok: false,
+            error: `這個職缺已經有 ${appCount.n} 位人選應徵過，不能自己刪除——請聯繫顧問處理，避免弄丟人選進度紀錄。`,
+          }, 400);
+        }
+        await env.DB.prepare(`DELETE FROM jobs WHERE slug = ?`).bind(slug).run();
+        notify(env,
+          `🗑️ ${company.display_name} 自己刪除了職缺「${owned.title || slug}」（刪除前確認沒有任何應徵紀錄）`,
+          { message_thread_id: THREAD.intake }).catch(() => {});
+        return json(request, { ok: true, slug });
+      }
+
       // POST /portal/:token/jobs — 企業客戶自己新增職缺。
       // 2026-08-25 改：不再一建立就丟進 pending_review 只填得了標題——
       // 建的是 status='client_draft'，客戶可以自己把 51 個欄位填完（或用
