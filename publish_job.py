@@ -131,7 +131,8 @@ def upsert_d1(j):
     D.d1(f"""INSERT INTO jobs (slug,title,client_name,employment,salary_min,salary_max,
              salary_unit,locations,status,years_min,must_skills,notes,cv_mode,updated_at)
         VALUES ({q(j['slug'])},{q(j['title'])},{q(j.get('client_name'))},{q(emp)},
-             {j.get('salary_min') or 'NULL'},{j.get('salary_max') or 'NULL'},'MONTH',
+             {q(j.get('salary_min')) if j.get('salary_min') else 'NULL'},
+             {q(j.get('salary_max')) if j.get('salary_max') else 'NULL'},'MONTH',
              {q(j.get('locations'))},'open',{j.get('years_min') if j.get('years_min') is not None else 'NULL'},
              {q(j.get('must_skills'))},{q(j.get('notes'))},{q(j.get('cv_mode'))},datetime('now'))
         ON CONFLICT(slug) DO UPDATE SET title=excluded.title, client_name=excluded.client_name,
