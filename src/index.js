@@ -1747,17 +1747,24 @@ async function doManualForward(env, b) {
     reportQueued = !!(callNotes || callNotesFileId);
     const sourceChannel = (sourceKind === 'new' || sourceKind === 'sourced') && b.source_channel ? String(b.source_channel).trim() : null;
     const resumeSource = (sourceKind === 'new' || sourceKind === 'sourced') && b.resume_source ? String(b.resume_source).trim() : null;
+    const callSummaryMd = await summarizeCallNotes(env, callNotes);
     await env.DB.prepare(
       `INSERT INTO applications
          (id, created_at, job_slug, job_title, name, email, phone,
           resume_file_id, resume_url, note, status, consent_at,
           interview_state, handled_by, handled_note, owner,
-          consultant_call_notes, call_report_pending, call_notes_file_id, source_channel, resume_source)
-       VALUES (?,?,?,?,?,?,?,?,?,?,'new',?,'not_started',?,?,?,?,?,?,?,?)`
+          consultant_call_notes, call_report_pending, call_notes_file_id, source_channel, resume_source, call_summary_md)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'new',?,'not_started',?,?,?,?,?,?,?,?,?)`
     ).bind(appId, now, jobSlug, job.title, src.name || null, email || null, phone || null,
            resumeFileId, src.resume_url || null, consentNote, now,
            b.by || null, `顧問手動送出，未透過阿財面談（${b.by || '顧問'}）`, b.owner || null,
-           callNotes || null, reportQueued ? 1 : 0, callNotesFileId, sourceChannel, resumeSource).run();
+           callNotes || null, reportQueued ? 1 : 0, callNotesFileId, sourceChannel, resumeSource, callSummaryMd).run();
+    if (callSummaryMd) {
+      await env.DB.prepare(
+        `INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by)
+         VALUES (?, ?, '電洽紀錄', ?, ?, ?)`
+      ).bind(uid(), appId, callSummaryMd, now, b.by || null).run();
+    }
     if (sourceKind === 'sourced' && !src.converted_application_id) {
       await env.DB.prepare(
         `UPDATE sourced_candidates SET converted_application_id=? WHERE id=?`
@@ -1897,6 +1904,73 @@ function anonName(fullName) {
 }
 function clientDisplayName(fullName, clientNamed) {
   return isAnonymous(clientNamed) ? anonName(fullName) : (fullName || '候選人');
+}
+
+// 電訪筆記即時彙整——抽成共用函式，讓「顧問後台📞記錄新的通話」跟「TG電洽
+// 新增人選」兩條路都能用同一套邏輯即時產生 call_summary_md（人選卡片④電洽
+// 內容區塊顯示的AI整理重點）。2026-09-02 發現：TG那條路只存了原始逐字稿、
+// 設 call_report_pending=1 讓本機排程之後產完整報告，但完全沒呼叫這段AI摘要，
+// 導致 TG 新增的人選就算完整報告已經跑完，電洽內容那格還是顯示「尚未記錄過
+// 通話」——因為前端那格讀的是 call_summary_md，不是 report_md。
+async function summarizeCallNotes(env, text) {
+  if (!text) return null;
+  try {
+    const ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [
+        { role: 'system', content: '你是獵頭顧問的助理，把顧問打的電訪筆記整理成重點條列，不要新增筆記裡沒提到的資訊，沒提到的欄位就寫「未提及」。用繁體中文回答，直接輸出，不要開場白。' },
+        { role: 'user', content: `請把下面這段電訪筆記整理成這六個標題各一段（每段2-3行以內）：\n重點狀況\n求職需求\n期望薪資\n離職原因\n優勢與劣勢\n顧問可再確認／可主動告知客戶的部分\n\n電訪筆記：\n${text.slice(0, 4000)}` },
+      ],
+    });
+    return (ai && (ai.response || ai.result)) ? String(ai.response || ai.result).trim() : null;
+  } catch (e) {
+    return null; // 即時彙整失敗不擋主流程，本機排程的正式報告照樣會跑
+  }
+}
+
+// 客戶版履歷 HTML 組裝——抽成共用函式，讓「正式應徵／顧問履歷庫」的人選
+// (從 applications+reports 取資料) 跟「主動開發」的人選 (從 sourced_candidates
+// 取資料，通常還沒面談過、報告內容多半是空的) 共用同一份排版邏輯，只是
+// 餵進來的欄位來源不同。
+function buildClientFormalHtml({ name, jobTitle, clientName, rows, reasons, risks, positioning, photoB64 }) {
+  const eHtml = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const photoHtml = photoB64 ? `<img src="${photoB64}" alt="大頭貼">` : '';
+  const now = nowTaipei().slice(0, 10);
+  const watermark = `Step1ne 德仁管理顧問｜${eHtml(name)} 人選推薦報告｜內部整理，經人選同意後提供貴公司參考，未經同意不得轉予第三方`;
+  return `<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
+<title>${eHtml(name)}_人選推薦報告</title>
+<style>
+@page{size:A4;margin:14mm}
+body{font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:#23262d;font-size:13px;line-height:1.7;margin:0}
+.watermark{font-size:10px;color:#8a8d95;border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:14px}
+h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 6px}
+.jobtitle{text-align:center;font-weight:700;font-size:14px;margin:0 0 4px}
+.meta{text-align:center;color:#6b6f78;font-size:12px;margin:0 0 18px}
+h2{font-size:14px;border-bottom:2px solid #a67c3d;color:#a67c3d;padding-bottom:4px;margin:22px 0 10px}
+table.basics{width:100%;border-collapse:collapse;table-layout:fixed}
+table.basics td{border:1px solid #ddd;padding:8px 12px;vertical-align:top}
+table.basics td.k{width:110px;font-weight:700;background:#faf8f3}
+.photobox{float:right;width:110px;height:140px;border:1px solid #ddd;margin-left:10px;overflow:hidden;background:#f4f1ea}
+.photobox img{width:100%;height:100%;object-fit:cover}
+ol.cond{padding-left:20px}
+ol.cond li{margin-bottom:10px}
+ul.notes{padding-left:20px}
+.rec{white-space:pre-wrap}
+</style>
+<body>
+<div class="watermark">${watermark}</div>
+<h1>人 選 推 薦 報 告</h1>
+<div class="jobtitle">${eHtml(jobTitle || '')}</div>
+<div class="meta">${eHtml(clientName || '')} ｜ Step1ne 德仁管理顧問有限公司 ｜ ${now}</div>
+<h2>人選基本資料</h2>
+${photoHtml ? `<div class="photobox">${photoHtml}</div>` : ''}
+<table class="basics">${rows.map(([k, v]) => `<tr><td class="k">${eHtml(k)}</td><td>${eHtml(v)}</td></tr>`).join('')}</table>
+<div style="clear:both"></div>
+${positioning ? `<h2>整體定位</h2><p>${eHtml(positioning)}</p>` : ''}
+${reasons.length ? `<h2>核心條件對應</h2><ol class="cond">${reasons.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ol>` : ''}
+${risks.length ? `<h2>補充說明</h2><ul class="notes">${risks.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ul>` : ''}
+<div class="watermark" style="border-top:1px solid #eee;border-bottom:none;margin-top:24px;padding-top:6px">${watermark}</div>
+</body></html>`;
 }
 
 
@@ -10509,20 +10583,7 @@ export default {
             textForAi = '';
           }
         }
-        let callSummaryMd = null;
-        if (textForAi) {
-          try {
-            const ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-              messages: [
-                { role: 'system', content: '你是獵頭顧問的助理，把顧問打的電訪筆記整理成重點條列，不要新增筆記裡沒提到的資訊，沒提到的欄位就寫「未提及」。用繁體中文回答，直接輸出，不要開場白。' },
-                { role: 'user', content: `請把下面這段電訪筆記整理成這六個標題各一段（每段2-3行以內）：\n重點狀況\n求職需求\n期望薪資\n離職原因\n優勢與劣勢\n顧問可再確認／可主動告知客戶的部分\n\n電訪筆記：\n${textForAi.slice(0, 4000)}` },
-              ],
-            });
-            callSummaryMd = (ai && (ai.response || ai.result)) ? String(ai.response || ai.result).trim() : null;
-          } catch (e) {
-            callSummaryMd = null; // 即時彙整失敗不擋主流程，正式報告排程照樣會跑
-          }
-        }
+        const callSummaryMd = await summarizeCallNotes(env, textForAi);
 
         await env.DB.prepare(
           `UPDATE applications SET note=?, consultant_call_notes=?, call_report_pending=1, call_notes_file_id=?,
@@ -10709,16 +10770,40 @@ export default {
       // 這三格，回傳 null 讓顧問自己在彈窗手動補——不要用其他欄位瞎猜著填。
       if (p.startsWith('/admin/application/') && p.endsWith('/client-formal-prefill') && request.method === 'GET') {
         const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/client-formal-prefill'.length));
+        // ⚠️ 2026-09-02 修：原本只 JOIN a.job_slug（application 建立當下的那個，
+        // TG「暫時沒有推薦的職缺」流程一律是 'unspecified'），完全沒看
+        // candidate_forwards——顧問後來在①目前進度真的推薦給某家客戶／職缺之後，
+        // 這裡還是顯示「尚未指定職缺」「未綁客戶」。改成優先抓 candidate_forwards
+        // 的 job_slug／company_id，沒有才退回 applications 自己的。
+        // ⚠️ 2026-09-02 再修：一個人選可以同時推薦給好幾家客戶，各自獨立進度——
+        // 原本寫死抓「最新一筆」，顧問想幫「非最新那家」做客戶版履歷完全沒辦法。
+        // 加 ?company_id= 讓前端指定要哪一筆；沒帶就退回最新一筆（維持舊行為），
+        // 同時把全部候選（forwards）都回傳，前端才能畫出選單。
+        const wantCompanyId = (url.searchParams.get('company_id') || '').trim();
+        const { results: fwdOptions } = await env.DB.prepare(
+          `SELECT cf.company_id, cf.job_slug, cc.display_name AS client_name, j.title AS job_title, cf.forwarded_at
+             FROM candidate_forwards cf
+             LEFT JOIN client_companies cc ON cc.id = cf.company_id
+             LEFT JOIN jobs j ON j.slug = cf.job_slug
+            WHERE cf.application_id = ? ORDER BY cf.forwarded_at DESC`
+        ).bind(appId).all();
+        const forwards = (fwdOptions || []).map((f) => ({
+          company_id: f.company_id, client_name: f.client_name || '（未知客戶）',
+          job_slug: f.job_slug, job_title: f.job_title || f.job_slug,
+        }));
+        const chosen = wantCompanyId ? forwards.find((f) => f.company_id === wantCompanyId) : forwards[0];
         const app = await env.DB.prepare(
-          `SELECT a.name, a.job_slug, a.job_title, a.expected_salary, a.available_date,
-                  j.title AS job_full_title, j.client_named, j.company_id,
-                  cc.display_name AS client_name
-             FROM applications a
-             LEFT JOIN jobs j ON j.slug = a.job_slug
-             LEFT JOIN client_companies cc ON cc.id = j.company_id
-            WHERE a.id = ?`
+          `SELECT a.name, a.expected_salary, a.available_date, a.job_slug, a.job_title
+             FROM applications a WHERE a.id = ?`
         ).bind(appId).first();
         if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const jobSlug = (chosen && chosen.job_slug) || app.job_slug;
+        const job = jobSlug
+          ? await env.DB.prepare(`SELECT title, client_named, company_id FROM jobs WHERE slug=?`).bind(jobSlug).first()
+          : null;
+        app.job_full_title = (chosen && chosen.job_title) || (job && job.title) || app.job_title;
+        app.client_name = (chosen && chosen.client_name) || '（未綁客戶）';
+        app.client_named = job && job.client_named;
         const report = await env.DB.prepare(
           `SELECT content_json FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
         ).bind(appId).first();
@@ -10751,6 +10836,9 @@ export default {
           risks: (fc.risks_to_disclose || []).map(txt).filter(Boolean),
           // 這三格面談規格沒收集，前端要顯示成必填的手動輸入格，不要留空值就直接印
           current_state: null, related_experience: null, transportation: null,
+          // 這個人選全部的推薦紀錄（可能推薦給好幾家客戶），前端用來畫「幫哪家
+          // 客戶做」的選單；selected_company_id 是這次回傳資料實際對應的那一筆。
+          forwards, selected_company_id: chosen ? chosen.company_id : null,
         });
       }
 
@@ -10761,16 +10849,37 @@ export default {
       if (p.startsWith('/admin/application/') && p.endsWith('/client-formal-report') && request.method === 'POST') {
         const appId = decodeURIComponent(p.slice('/admin/application/'.length, -'/client-formal-report'.length));
         const b = await request.json().catch(() => ({}));
-        const app = await env.DB.prepare(
-          `SELECT a.name, a.job_slug, a.job_title, a.expected_salary, a.available_date,
-                  j.title AS job_full_title, j.client_named, j.company_id,
-                  cc.display_name AS client_name
-             FROM applications a
-             LEFT JOIN jobs j ON j.slug = a.job_slug
-             LEFT JOIN client_companies cc ON cc.id = j.company_id
-            WHERE a.id = ?`
+        // 跟 prefill 同一個修法：優先抓 candidate_forwards 的 job_slug／
+        // company_id，不要只看 applications 建立當下那個；body 可以帶
+        // company_id 指定要幫「哪一家」客戶做（一個人選可能推薦給好幾家），
+        // 沒帶就退回最新一筆。
+        const wantCompanyId = String(b.company_id || '').trim();
+        const fwdQuery = wantCompanyId
+          ? env.DB.prepare(
+              `SELECT company_id, job_slug FROM candidate_forwards WHERE application_id=? AND company_id=? LIMIT 1`
+            ).bind(appId, wantCompanyId)
+          : env.DB.prepare(
+              `SELECT company_id, job_slug FROM candidate_forwards WHERE application_id=? ORDER BY forwarded_at DESC LIMIT 1`
+            ).bind(appId);
+        const chosenFwd = await fwdQuery.first();
+        const appBase = await env.DB.prepare(
+          `SELECT name, expected_salary, available_date, job_slug, job_title FROM applications WHERE id=?`
         ).bind(appId).first();
-        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        if (!appBase) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const jobSlug = (chosenFwd && chosenFwd.job_slug) || appBase.job_slug;
+        const job = jobSlug
+          ? await env.DB.prepare(`SELECT title, client_named, company_id FROM jobs WHERE slug=?`).bind(jobSlug).first()
+          : null;
+        const companyId = (chosenFwd && chosenFwd.company_id) || (job && job.company_id) || null;
+        const clientRow = companyId
+          ? await env.DB.prepare(`SELECT display_name FROM client_companies WHERE id=?`).bind(companyId).first()
+          : null;
+        const app = {
+          ...appBase,
+          job_full_title: (job && job.title) || appBase.job_title,
+          client_named: job && job.client_named,
+          client_name: clientRow ? clientRow.display_name : '（未綁客戶）',
+        };
         const report = await env.DB.prepare(
           `SELECT content_json FROM reports WHERE application_id=? ORDER BY created_at DESC LIMIT 1`
         ).bind(appId).first();
@@ -10782,8 +10891,6 @@ export default {
         const anon = isAnonymous(clientNamed);
         const txt = (v) => scrubForClient(v);
         const fc = data.for_client || {};
-        const eHtml = (s) => String(s == null ? '' : s)
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
         const rows = [
           ['姓名', name],
@@ -10802,47 +10909,69 @@ export default {
         const reasons = (fc.reasons || []).map(txt).filter(Boolean);
         const risks = (fc.risks_to_disclose || []).map(txt).filter(Boolean);
         const positioning = txt(data.one_liner);
-        const photoHtml = b.photo_b64
-          ? `<img src="${b.photo_b64}" alt="大頭貼">`
-          : '';
-        const now = nowTaipei().slice(0, 10);
-        const watermark = `Step1ne 德仁管理顧問｜${eHtml(name)} 人選推薦報告｜內部整理，經人選同意後提供貴公司參考，未經同意不得轉予第三方`;
 
-        const html = `<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
-      <title>${eHtml(name)}_人選推薦報告</title>
-      <style>
-      @page{size:A4;margin:14mm}
-      body{font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;color:#23262d;font-size:13px;line-height:1.7;margin:0}
-      .watermark{font-size:10px;color:#8a8d95;border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:14px}
-      h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 6px}
-      .jobtitle{text-align:center;font-weight:700;font-size:14px;margin:0 0 4px}
-      .meta{text-align:center;color:#6b6f78;font-size:12px;margin:0 0 18px}
-      h2{font-size:14px;border-bottom:2px solid #a67c3d;color:#a67c3d;padding-bottom:4px;margin:22px 0 10px}
-      table.basics{width:100%;border-collapse:collapse;table-layout:fixed}
-      table.basics td{border:1px solid #ddd;padding:8px 12px;vertical-align:top}
-      table.basics td.k{width:110px;font-weight:700;background:#faf8f3}
-      .photobox{float:right;width:110px;height:140px;border:1px solid #ddd;margin-left:10px;overflow:hidden;background:#f4f1ea}
-      .photobox img{width:100%;height:100%;object-fit:cover}
-      ol.cond{padding-left:20px}
-      ol.cond li{margin-bottom:10px}
-      ul.notes{padding-left:20px}
-      .rec{white-space:pre-wrap}
-      </style>
-      <body>
-      <div class="watermark">${watermark}</div>
-      <h1>人 選 推 薦 報 告</h1>
-      <div class="jobtitle">${eHtml(app.job_full_title || app.job_title || '')}</div>
-      <div class="meta">${eHtml(app.client_name || '')} ｜ Step1ne 德仁管理顧問有限公司 ｜ ${now}</div>
-      <h2>人選基本資料</h2>
-      ${photoHtml ? `<div class="photobox">${photoHtml}</div>` : ''}
-      <table class="basics">${rows.map(([k, v]) => `<tr><td class="k">${eHtml(k)}</td><td>${eHtml(v)}</td></tr>`).join('')}</table>
-      <div style="clear:both"></div>
-      ${positioning ? `<h2>整體定位</h2><p>${eHtml(positioning)}</p>` : ''}
-      ${reasons.length ? `<h2>核心條件對應</h2><ol class="cond">${reasons.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ol>` : ''}
-      ${risks.length ? `<h2>補充說明</h2><ul class="notes">${risks.map((r) => `<li>${eHtml(r)}</li>`).join('')}</ul>` : ''}
-      <div class="watermark" style="border-top:1px solid #eee;border-bottom:none;margin-top:24px;padding-top:6px">${watermark}</div>
-      </body></html>`;
+        const html = buildClientFormalHtml({
+          name, jobTitle: app.job_full_title || app.job_title || '', clientName: app.client_name || '',
+          rows, reasons, risks, positioning, photoB64: b.photo_b64 || null,
+        });
+        return json(request, { ok: true, html });
+      }
 
+      // 2026-09-02 加：「主動開發」的人選也要能做客戶版履歷。這批人選在
+      // sourced_candidates 表，通常還沒被阿財面談過（沒有 reports/content_json
+      // 可以抄），基本上除了姓名/現職/現居地/技能之外，其餘欄位（現況／相關
+      // 經驗／交通工具／學歷／兵役／語言／期望待遇／可到職）全部要顧問手動填。
+      if (p.startsWith('/admin/sourced/') && p.endsWith('/client-formal-prefill') && request.method === 'GET') {
+        const srcId = decodeURIComponent(p.slice('/admin/sourced/'.length, -'/client-formal-prefill'.length));
+        const src = await env.DB.prepare(
+          `SELECT name, headline, company, location, skills, job_slug
+             FROM sourced_candidates WHERE id = ?`
+        ).bind(srcId).first();
+        if (!src) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const jobTitle = src.job_slug
+          ? ((await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(src.job_slug).first()) || {}).title
+          : null;
+        return json(request, {
+          ok: true,
+          name: src.name || '候選人', anonymous: false,
+          job_title: jobTitle || '（尚未鎖定職缺）', client_name: '（尚未推薦給客戶）',
+          residence: src.location || null,
+          age: null, education: null, languages: null, certificates: null, military: null,
+          expected_salary: null, available_date: null,
+          positioning: [src.headline, src.company].filter(Boolean).join('・') || null,
+          reasons: [], risks: src.skills ? [`技能／經驗：${src.skills}`] : [],
+          current_state: null, related_experience: null, transportation: null,
+        });
+      }
+
+      if (p.startsWith('/admin/sourced/') && p.endsWith('/client-formal-report') && request.method === 'POST') {
+        const srcId = decodeURIComponent(p.slice('/admin/sourced/'.length, -'/client-formal-report'.length));
+        const b = await request.json().catch(() => ({}));
+        const src = await env.DB.prepare(
+          `SELECT name, headline, company, location, skills, job_slug
+             FROM sourced_candidates WHERE id = ?`
+        ).bind(srcId).first();
+        if (!src) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        const jobTitle = src.job_slug
+          ? ((await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(src.job_slug).first()) || {}).title
+          : null;
+        const name = src.name || '候選人';
+        const rows = [
+          ['姓名', name],
+          ['現況', String(b.current_state || '').trim().slice(0, 300) || null],
+          ['現居地', src.location || null],
+          ['現職', [src.company, src.headline].filter(Boolean).join('・') || null],
+          ['相關經驗', String(b.related_experience || '').trim().slice(0, 300) || null],
+          ['交通工具', String(b.transportation || '').trim().slice(0, 200) || null],
+          ['期望待遇', String(b.expected_salary || '').trim().slice(0, 100) || null],
+          ['可到職', String(b.available_date || '').trim().slice(0, 100) || null],
+        ].filter(([, v]) => v);
+        const risks = src.skills ? [`技能／經驗：${scrubForClient(src.skills)}`] : [];
+
+        const html = buildClientFormalHtml({
+          name, jobTitle: jobTitle || '（尚未鎖定職缺）', clientName: '（尚未推薦給客戶）',
+          rows, reasons: [], risks, positioning: null, photoB64: b.photo_b64 || null,
+        });
         return json(request, { ok: true, html });
       }
 
