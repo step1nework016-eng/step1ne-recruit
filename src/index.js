@@ -827,6 +827,18 @@ async function ncSubmitMerge(env, sess, chatId, threadId, who) {
   }
 }
 
+// 2026-09-02 加：「電話或 Email 填好了」跟「按了跳過」兩條路徑，接下來都是
+// 問要指派給哪位顧問，抽成共用函式，兩邊都呼叫同一份，不用各自維護一份
+// consultants 查詢跟按鈕組字。
+async function ncAskOwner(env, chatId, threadId, userId, sessData) {
+  const { results: consultants } = await env.DB.prepare(
+    `SELECT id, display_name FROM consultants WHERE is_active=1 ORDER BY display_name`).all();
+  await ncSetSession(env, chatId, userId, 'owner', sessData);
+  const ownerRows = (consultants || []).map((c) => ([{ text: c.display_name, callback_data: 'nc_owner:' + c.id }]));
+  ownerRows.push([{ text: '未指派', callback_data: 'nc_owner:' }]);
+  await ncSend(env, chatId, threadId, '這位人選要指派給哪位顧問？', { inline_keyboard: ownerRows });
+}
+
 // 待審核通知：附履歷 + 按鈕，讓顧問在 Telegram 上直接核准/婉拒，不用開網頁後台。
 // 回傳送出的 Telegram message_id，之後 callback 要編輯同一則訊息把按鈕拿掉。
 async function notifyScreening(env, app, job) {
@@ -5215,16 +5227,7 @@ export default {
             if (sess.step === 'contact' && String(rm2.text || '').trim()) {
               const v = rm2.text.trim();
               if (v.includes('@')) sess.data.email = v; else sess.data.phone = v;
-              // 2026-09-01 加：指派負責顧問——原本這個流程建出來的人選 owner
-              // 永遠是 NULL，顧問人選追蹤那邊的「全部顧問／Jacky／Phoebe」篩選
-              // 完全篩不到這批人。改成動態讀 consultants 表（is_active=1），
-              // 新增或停用顧問不用改這裡的程式碼。
-              const { results: consultants } = await env.DB.prepare(
-                `SELECT id, display_name FROM consultants WHERE is_active=1 ORDER BY display_name`).all();
-              await ncSetSession(env, rm2.chat.id, rm2.from.id, 'owner', sess.data);
-              const ownerRows = (consultants || []).map((c) => ([{ text: c.display_name, callback_data: 'nc_owner:' + c.id }]));
-              ownerRows.push([{ text: '未指派', callback_data: 'nc_owner:' }]);
-              await ncSend(env, rm2.chat.id, callIntakeTopic, '這位人選要指派給哪位顧問？', { inline_keyboard: ownerRows });
+              await ncAskOwner(env, rm2.chat.id, callIntakeTopic, rm2.from.id, sess.data);
               return new Response('ok');
             }
           }
@@ -5285,7 +5288,14 @@ export default {
               return new Response('ok');
             }
             await ncSetSession(env, chatId, cq2.from.id, 'contact', sess.data);
-            await ncSend(env, chatId, threadId, '好，電話或 Email（填一個就好）？');
+            await ncSend(env, chatId, threadId, '好，電話或 Email（填一個就好，沒有也可以先跳過）？', {
+              inline_keyboard: [[{ text: '沒有聯絡方式，先跳過', callback_data: 'nc_contact_skip' }]],
+            });
+            return new Response('ok');
+          }
+          if (cq2.data === 'nc_contact_skip') {
+            await ans2();
+            await ncAskOwner(env, chatId, threadId, cq2.from.id, sess.data);
             return new Response('ok');
           }
           if (cq2.data.startsWith('nc_owner:')) {
