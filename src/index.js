@@ -7090,18 +7090,26 @@ export default {
           `SELECT line_user_id, state, phone, email, application_ids, created_at, bound_at, updated_at
              FROM line_bindings ORDER BY updated_at DESC LIMIT 500`
         ).all();
-        const rows = [];
-        for (const r of results || []) {
-          const ids = safeJsonArray(r.application_ids);
-          let apps = [];
-          if (ids.length) {
-            const placeholders = ids.map(() => '?').join(',');
-            const { results: appRows } = await env.DB.prepare(
-              `SELECT id, name, job_slug, job_title FROM applications WHERE id IN (${placeholders})`
-            ).bind(...ids).all();
-            apps = appRows || [];
-          }
-          rows.push({
+        const bindingIds = (results || []).map((r) => safeJsonArray(r.application_ids));
+        // ⚠️ 2026-09-01 修：原本對「每一筆」binding 各自查一次 applications，
+        // 500 筆 binding 就是 500 次查詢——跟 tracker／portal candidates 同一種
+        // N+1，只是規模較小、當時稽核漏掉。改成先把所有 binding 用到的
+        // application_id 收集成一個去重集合，一次（分批）撈齊，再用 Map 分回
+        // 各自的 binding，查詢次數從「O(binding數)」降到固定幾次。
+        const allIds = Array.from(new Set(bindingIds.flat()));
+        const appByIdChunk = (arr, size) => { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; };
+        const appRowsAll = [];
+        for (const ids2 of appByIdChunk(allIds, 100)) {
+          if (!ids2.length) continue;
+          const { results: appRows } = await env.DB.prepare(
+            `SELECT id, name, job_slug, job_title FROM applications WHERE id IN (${ids2.map(() => '?').join(',')})`
+          ).bind(...ids2).all();
+          appRowsAll.push(...(appRows || []));
+        }
+        const appById = new Map(appRowsAll.map((a) => [a.id, a]));
+        const rows = (results || []).map((r, i) => {
+          const apps = bindingIds[i].map((id) => appById.get(id)).filter(Boolean);
+          return {
             line_user_id: r.line_user_id,
             state: r.state,
             phone: r.phone,
@@ -7111,8 +7119,8 @@ export default {
             created_at: r.created_at,
             updated_at: r.updated_at,
             applications: apps.map((a) => ({ id: a.id, job_slug: a.job_slug, job_title: a.job_title })),
-          });
-        }
+          };
+        });
         return json(request, { ok: true, bindings: rows });
       }
 
@@ -10110,42 +10118,60 @@ export default {
         }
         if (!rows.length) return json(request, { ok: true, history: [] });
 
-        const history = [];
-        for (const row of rows.slice(0, 20)) {
-          const hApp = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(row.id).first();
-          if (!hApp) continue;
-          const hJob = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(hApp.job_slug).first();
-          const hReport = await env.DB.prepare(
-            `SELECT consultant_decision FROM reports WHERE application_id=?
-              ORDER BY created_at DESC LIMIT 1`).bind(hApp.id).first();
-          const { results: hForwards } = await env.DB.prepare(
-            `SELECT cf.company_id, cf.forwarded_at, cf.manual_stage, cf.client_interview_labels,
-                    cc.display_name AS company_name
-               FROM candidate_forwards cf LEFT JOIN client_companies cc ON cc.id = cf.company_id
-              WHERE cf.application_id=? ORDER BY cf.forwarded_at ASC`).bind(hApp.id).all();
-          const { results: hPlacements } = await env.DB.prepare(
-            `SELECT * FROM placements WHERE application_id=?`).bind(hApp.id).all();
-          const { results: hAppts } = await env.DB.prepare(
-            `SELECT stage, status, confirmed_slot FROM interview_appointments
-              WHERE application_id=?`).bind(hApp.id).all();
+        // ⚠️ 2026-09-01 修：原本對「每一筆」重複應徵紀錄各自序列 await 6 支查詢
+        // （最多 20 筆＝約 120 次查詢，含迴圈內的 getJobStageKeys 更多），是這次
+        // D1 額度稽核抓到的第三個 N+1。改成先收集這批 application_id，批次撈齊
+        // 6 種資料，查詢次數從「O(重複筆數)」降到固定 6 次左右。
+        const hIds = rows.slice(0, 20).map((r) => r.id);
+        const inList = (n) => `(${Array.from({ length: n }, () => '?').join(',')})`;
+        const [hAppRows, hReportRows, hForwardRows, hPlacementRows, hApptRows] = await Promise.all([
+          env.DB.prepare(`SELECT * FROM applications WHERE id IN ${inList(hIds.length)}`).bind(...hIds).all().then((r) => r.results || []),
+          env.DB.prepare(`SELECT application_id, consultant_decision, created_at FROM reports
+              WHERE application_id IN ${inList(hIds.length)} ORDER BY application_id, created_at DESC`).bind(...hIds).all().then((r) => r.results || []),
+          env.DB.prepare(`SELECT cf.application_id, cf.company_id, cf.forwarded_at, cf.manual_stage, cf.client_interview_labels,
+                  cc.display_name AS company_name
+             FROM candidate_forwards cf LEFT JOIN client_companies cc ON cc.id = cf.company_id
+            WHERE cf.application_id IN ${inList(hIds.length)} ORDER BY cf.application_id, cf.forwarded_at ASC`).bind(...hIds).all().then((r) => r.results || []),
+          env.DB.prepare(`SELECT * FROM placements WHERE application_id IN ${inList(hIds.length)}`).bind(...hIds).all().then((r) => r.results || []),
+          env.DB.prepare(`SELECT application_id, stage, status, confirmed_slot FROM interview_appointments
+            WHERE application_id IN ${inList(hIds.length)}`).bind(...hIds).all().then((r) => r.results || []),
+        ]);
+        const hJobSlugs = Array.from(new Set(hAppRows.map((a) => a.job_slug).filter(Boolean)));
+        const hJobRows = hJobSlugs.length
+          ? (await env.DB.prepare(`SELECT slug, title FROM jobs WHERE slug IN ${inList(hJobSlugs.length)}`).bind(...hJobSlugs).all()).results || []
+          : [];
+        const hJobTitleBySlug = new Map(hJobRows.map((j) => [j.slug, j.title]));
+        const hJobStageKeysMap = await getJobStageKeysMap(env, hJobSlugs);
+        const groupByApp = (list) => { const m = new Map(); for (const x of list) { if (!m.has(x.application_id)) m.set(x.application_id, []); m.get(x.application_id).push(x); } return m; };
+        const hReportByApp = new Map(); for (const r of hReportRows) if (!hReportByApp.has(r.application_id)) hReportByApp.set(r.application_id, r);
+        const hForwardsByApp = groupByApp(hForwardRows);
+        const hPlacementsByApp = groupByApp(hPlacementRows);
+        const hApptsByApp = groupByApp(hApptRows);
 
-          if ((hForwards || []).length) {
-            const hJobStageKeys = await getJobStageKeys(env, hApp.job_slug);
+        const history = [];
+        for (const hApp of hAppRows) {
+          const hReport = hReportByApp.get(hApp.id) || null;
+          const hForwards = hForwardsByApp.get(hApp.id) || [];
+          const hPlacements = hPlacementsByApp.get(hApp.id) || [];
+          const hAppts = hApptsByApp.get(hApp.id) || [];
+          const jobTitle = hJobTitleBySlug.get(hApp.job_slug) || hApp.job_slug;
+          if (hForwards.length) {
+            const hJobStageKeys = hJobStageKeysMap[hApp.job_slug];
             for (const f of hForwards) {
               let lbs = {}; try { lbs = JSON.parse(f.client_interview_labels || '{}'); } catch { lbs = {}; }
-              const pm = (hPlacements || []).find((x) => x.job_slug === hApp.job_slug) || (hPlacements || [])[0] || null;
+              const pm = hPlacements.find((x) => x.job_slug === hApp.job_slug) || hPlacements[0] || null;
               const info = resolveStage({ ...hApp, manual_stage: f.manual_stage },
-                { consultant_decision: hReport ? hReport.consultant_decision : null }, hAppts || [], pm, lbs, hJobStageKeys);
+                { consultant_decision: hReport ? hReport.consultant_decision : null }, hAppts, pm, lbs, hJobStageKeys);
               const cur = info.effective_index >= 0 ? info.steps[info.effective_index] : null;
               history.push({ application_id: hApp.id, job_slug: hApp.job_slug,
-                job_title: hJob ? hJob.title : hApp.job_slug, applied_at: hApp.created_at,
+                job_title: jobTitle, applied_at: hApp.created_at,
                 company_name: f.company_name, forwarded_at: f.forwarded_at,
                 stage_label: cur ? cur.lb : null,
                 consultant_decision: hReport ? hReport.consultant_decision : null });
             }
           } else {
             history.push({ application_id: hApp.id, job_slug: hApp.job_slug,
-              job_title: hJob ? hJob.title : hApp.job_slug, applied_at: hApp.created_at,
+              job_title: jobTitle, applied_at: hApp.created_at,
               company_name: null, forwarded_at: null, stage_label: null,
               consultant_decision: hReport ? hReport.consultant_decision : null });
           }
