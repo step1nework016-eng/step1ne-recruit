@@ -11580,6 +11580,14 @@ export default {
       if (p === '/admin/social-post-queue' && request.method === 'GET') {
         // 2026-08-18 改：來源換成 social_post_queue（一個職缺多筆排隊紀錄），
         // 欄位名稱刻意跟舊版一樣，前端「一鍵發文」頁面不用改。
+        // ⚠️ 2026-09-02 加 limit 參數：原本寫死 LIMIT 30，是為了「排隊列表」
+        // （8秒輪詢一次，只需要看最近在跑什麼）夠用就好，故意設小。但「成效
+        // 儀表板」的顧問排行／一週七天熱力圖也是直接拿這支的資料在算——
+        // 8個帳號一起發文，30筆很快就被洗掉，Phoebe這種發文量大的顧問，
+        // 舊資料整個從清單消失，熱力圖上明明真的發過文的日子變成空白「—」，
+        // 顧問還以為是系統漏記錄。8秒輪詢那邊維持預設30（不想讓那支變重），
+        // 成效儀表板改用大上限的呼叫方式。
+        const qLimit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit'), 10) || 30));
         const { results } = await env.DB.prepare(
           `SELECT q.job_slug AS slug, j.title, q.status AS social_post_status,
                   q.requested_at AS social_post_at, q.url AS social_post_url,
@@ -11594,8 +11602,8 @@ export default {
              JOIN jobs j ON j.slug = q.job_slug
              LEFT JOIN social_accounts sa ON sa.id = q.account_id
             ORDER BY q.requested_at DESC
-            LIMIT 30`
-        ).all();
+            LIMIT ?`
+        ).bind(qLimit).all();
         return json(request, { ok: true, queue: results || [] });
       }
 
