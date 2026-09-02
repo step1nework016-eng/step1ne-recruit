@@ -1770,19 +1770,27 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
       const link = `https://step1ne.com/form/?t=${token}`;
       // 2026-09-02 修：Jacky 實測發現信裡沒附空白表單本體——人選只收到一個
       // 「上傳填完檔案」的連結，但根本沒看過表單長什麼樣子，沒辦法填。
-      // 有掛範本檔的話當附件一起寄出去。
+      // 有掛範本檔的話當附件一起寄出去，而且要拆成兩個明確步驟講清楚
+      // 「先下載填寫、填完再上傳」，不能只丟一顆按鈕讓人選自己猜順序。
       let attachments = null;
+      let templateLink = null;
       if (form.template_file_id) {
         const tf = await fileB64(env, form.template_file_id);
-        if (tf) attachments = [{ filename: tf.filename, content: tf.content }];
+        if (tf) { attachments = [{ filename: tf.filename, content: tf.content }]; templateLink = `https://step1ne.com/form/template?t=${token}`; }
       }
+      const cta = templateLink
+        ? [
+            { title: '第一步：下載並填寫表單', body: '這封信已經附上「' + form.name + '」，打不開附件的話也可以點下方按鈕下載。', url: templateLink, text: '下載空白表單' },
+            { title: '第二步：填寫完成後上傳', body: '表單填好之後，點下方按鈕上傳給我們。', url: link, text: `上傳填完的${form.name}` },
+          ]
+        : { url: link, text: `上傳填完的${form.name}` };
       await sendMail(env, app.email,
         `請填寫「${form.name}」－ ${job ? job.title : ''}`,
         [
           `${app.name || '您好'}：`,
-          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，這封信附上「${form.name}」，麻煩填寫完成後點下方按鈕上傳，請於 2 天內完成，謝謝配合！`,
+          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，請依下面步驟完成「${form.name}」，請於 2 天內完成，謝謝配合！`,
         ],
-        { url: link, text: `上傳填完的${form.name}` },
+        cta,
         attachments
       ).catch(() => {});
     }
@@ -9408,17 +9416,24 @@ export default {
           .bind(now, id).run();
         const link = `https://step1ne.com/form/?t=${sub.token}`;
         let resendAttachments = null;
+        let resendTemplateLink = null;
         if (sub.template_file_id) {
           const tf = await fileB64(env, sub.template_file_id);
-          if (tf) resendAttachments = [{ filename: tf.filename, content: tf.content }];
+          if (tf) { resendAttachments = [{ filename: tf.filename, content: tf.content }]; resendTemplateLink = `https://step1ne.com/form/template?t=${sub.token}`; }
         }
+        const resendCta = resendTemplateLink
+          ? [
+              { title: '第一步：下載並填寫表單', body: '這封信已經附上「' + sub.form_name + '」，打不開附件的話也可以點下方按鈕下載。', url: resendTemplateLink, text: '下載空白表單' },
+              { title: '第二步：填寫完成後上傳', body: '表單填好之後，點下方按鈕上傳給我們。', url: link, text: `上傳填完的${sub.form_name}` },
+            ]
+          : { url: link, text: `上傳填完的${sub.form_name}` };
         const sent = await sendMail(env, sub.email,
           `請填寫「${sub.form_name}」－ ${sub.job_title || ''}`,
           [
             `${sub.candidate_name || '您好'}：`,
-            `再次提醒您，這封信附上「${sub.form_name}」（${sub.company_name || '用人單位'}），麻煩填寫完成後點下方按鈕上傳，請於 2 天內完成，謝謝配合！`,
+            `再次提醒您，請依下面步驟完成「${sub.form_name}」（${sub.company_name || '用人單位'}），請於 2 天內完成，謝謝配合！`,
           ],
-          { url: link, text: `上傳填完的${sub.form_name}` },
+          resendCta,
           resendAttachments
         );
         return json(request, { ok: sent, error: sent ? undefined : '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' });
