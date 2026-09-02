@@ -9442,6 +9442,45 @@ export default {
         return json(request, { ok: true, status: sub.status });
       }
 
+      // 2026-09-02 加：顧問代為上傳——人選是在系統這個功能上線前用其他管道
+      // （電話、LINE、當面）就已經把填好的用人事資料表給顧問了，不用走一次
+      // 「寄連結、叫人選重新上傳」那套流程，顧問直接把手上已經有的檔案傳進
+      // 系統，用人單位那邊立刻看得到、可以下載——結果對客戶端來說跟人選自己
+      // 上傳完全一樣，只是省了人選那一步。沒有填寫紀錄的話（not_sent）就地
+      // 生一筆直接標記完成；已經有紀錄（pending/sent）的話就地更新成完成，
+      // 不會因為狀態不同就要求顧問走不同路徑。
+      if (p === '/admin/candidate-form-submissions/upload' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.application_id || !b.company_id || !b.job_form_id || !b.file_b64) {
+          return json(request, { ok: false, error: '缺 application_id / company_id / job_form_id / 檔案' }, 400);
+        }
+        const owns = await env.DB.prepare(
+          `SELECT 1 FROM candidate_forwards WHERE application_id=? AND company_id=?`
+        ).bind(b.application_id, b.company_id).first();
+        if (!owns) return json(request, { ok: false, error: '這位人選還沒有推薦給這家客戶' }, 400);
+        const now = nowTaipei();
+        const saved = await saveUpload(env, { b64: b.file_b64, name: b.file_name, mime: b.file_mime }, now);
+        if (saved && saved.tooBig) return json(request, { ok: false, error: '檔案太大，請壓縮後再上傳' }, 400);
+        if (!saved) return json(request, { ok: false, error: '上傳失敗，請重試' }, 500);
+        const existing = await env.DB.prepare(
+          `SELECT id FROM candidate_form_submissions WHERE job_form_id=? AND application_id=? AND company_id=?`
+        ).bind(b.job_form_id, b.application_id, b.company_id).first();
+        if (existing) {
+          await env.DB.prepare(
+            `UPDATE candidate_form_submissions SET status='submitted', submitted_at=?, submitted_file_id=? WHERE id=?`
+          ).bind(now, saved.fileId, existing.id).run();
+        } else {
+          const token = [...crypto.getRandomValues(new Uint8Array(24))]
+            .map((x) => x.toString(16).padStart(2, '0')).join('');
+          await env.DB.prepare(
+            `INSERT INTO candidate_form_submissions
+               (id, job_form_id, application_id, company_id, token, status, sent_at, submitted_at, submitted_file_id, created_at)
+             VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?)`
+          ).bind(uid(), b.job_form_id, b.application_id, b.company_id, token, now, now, saved.fileId, now).run();
+        }
+        return json(request, { ok: true });
+      }
+
       // 人選填寫紀錄——顧問卡片上「重新寄送」用。涵蓋兩種情境：①原本沒有
       // 真的 email（佔位信箱），顧問補上 email 後手動觸發第一次寄送；
       // ②信寄過但人選說沒收到／連結搞丟，重新寄一次同一個連結。已經填完的
