@@ -1500,8 +1500,15 @@ function resolveStage(app, report, appts, placement, roundLabels, jobStageKeys) 
     //   顧問下「婉拒／不推薦」→ 不推進（獨立的第三態，不是「進行中」也不是
     //     「已完成」，這關本身不算過——是在下面 confirm.decision 這個原始值
     //     另外標記，讓客戶端 render 三態，這裡的 ok 只負責「有沒有過關」）
-    { key: 'confirm', lb: '顧問確認', ok: !!(report && report.consultant_decision === 'forwarded'),
-      decision: (report && report.consultant_decision) || null },
+    // ⚠️ 2026-09-02 再改：已經正式推薦（consultant_decision='forwarded'）之後，
+    // 顧問還有第二個「不推薦」動作——針對「這個人選＋這家客戶」這組合按
+    // 「標不推薦（這家客戶這個職缺）」（/admin/pipeline/forward-decision，寫
+    // candidate_forwards.advisor_not_recommended_at），不是整份報告重新決定。
+    // 這個標記如果有，要蓋過原本的 forwarded，一樣顯示不推進——不然客戶
+    // portal 會一直顯示「已完成」，即使顧問後來已經表態不推薦這個配對。
+    { key: 'confirm', lb: '顧問確認',
+      ok: !!(report && report.consultant_decision === 'forwarded') && !(app && app.advisor_not_recommended_at),
+      decision: (app && app.advisor_not_recommended_at) ? 'rejected' : ((report && report.consultant_decision) || null) },
   ];
   const s1 = latestByStage(1);
   steps.push({ key: 'stage1', lb: '第一階段', ok: !!(s1 && s1.status === 'confirmed') });
@@ -3877,7 +3884,8 @@ export default {
                   cf.client_interview_labels, cf.line_id_given, cf.client_note,
                   cf.client_rejected_at, cf.client_reject_reason, cf.client_advanced_at,
                   j.title AS job_title, j.client_named,
-                  r.id AS report_id, r.content_client_md, r.consultant_decision, cf.forwarded_at
+                  r.id AS report_id, r.content_client_md, r.consultant_decision, cf.forwarded_at,
+                  cf.advisor_not_recommended_at, cf.advisor_not_recommended_reason
              FROM candidate_forwards cf
              JOIN applications a ON a.id = cf.application_id
              JOIN jobs j ON j.slug = COALESCE(cf.job_slug, a.job_slug)
