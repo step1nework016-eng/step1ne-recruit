@@ -9316,6 +9316,15 @@ export default {
         // 第一次存檔（之前從沒存過、也沒有收件單底稿）才需要檢查——這種職缺
         // 唯一的內容來源是線上頁面本身，重新產生前一定要確認頁面不是客製版面，
         // 不然「改個薪資」會把手刻的區塊整段砍掉，而且不會有任何警告。
+        // ⚠️ 2026-09-02 修：這裡原本只拿 scraped 來做 mismatch 檢查、確認完
+        // 就把整包掃出來的內容丟掉，spec 還是空的——下面套用 fields 時就變成
+        // 「這次只改了什麼欄位，jd_spec_json 就只剩什麼欄位」，其餘欄位（工作
+        // 內容、必要條件、加分條件、為什麼選擇這個機會⋯）全部消失，執仁頁面
+        // 重新產生後整頁被清空。真實案例：主管特助（日本常駐）只是要刪一句
+        // 「已內含 20 小時固定加班費」，結果整頁只剩標題跟一句話。
+        // 修法：確認不是客製版面（或已經 confirm_mismatch）之後，把掃到的
+        // 內容當成 spec 的起點，顧問這次改的欄位再蓋上去——這樣「只改一個
+        // 欄位」才會真的只改那一個欄位，不會殃及其他沒動過的內容。
         if (!hadSaved && !Object.keys(spec).length) {
           const scraped = await scrapeLiveJobPage(slug);
           if (scraped && scraped.mismatched && !b.confirm_mismatch) {
@@ -9323,6 +9332,7 @@ export default {
               mismatched: true, extraSections: scraped.extraSections,
               message: `這個職缺頁不是用標準樣板做的，多了：${scraped.extraSections.join('、')}。存檔會用標準樣板整頁重新產生，這些內容會不見。確定要繼續請再送一次並帶 confirm_mismatch。` }, 409);
           }
+          if (scraped && scraped.spec) spec = scraped.spec;
         }
         const fields = b.fields || {};
         const changed = [];
@@ -10484,7 +10494,7 @@ export default {
 
         const trackerJobStageKeysMap = await getJobStageKeysMap(env, (apps || []).map((a) => a.job_slug));
 
-        const [reportRows, forwardRowsAll, apptRowsAll, noCoPlacementRows, coPlacementRows, formSubRowsAll] = appIds.length
+        const [reportRows, forwardRowsAll, apptRowsAll, noCoPlacementRows, coPlacementRows, formSubRowsAll, clientFormalRowsAll] = appIds.length
           ? await Promise.all([
               batchAll((n) => `SELECT application_id, id, content_md, consultant_decision, created_at FROM reports
                 WHERE application_id IN ${inClause(n)} ORDER BY application_id, created_at DESC`, appIds),
@@ -10508,8 +10518,12 @@ export default {
                       cfs.submitted_at, cfs.submitted_file_id, jf.name AS form_name
                  FROM candidate_form_submissions cfs JOIN job_forms jf ON jf.id = cfs.job_form_id
                 WHERE cfs.application_id IN ${inClause(n)}`, appIds),
+              // 2026-09-02 加：客戶版履歷存檔狀態，掛在各家客戶自己的
+              // placement 卡片底下（見下面 client_formal_report: ... 那行）。
+              batchAll((n) => `SELECT id, source_id, company_id, generated_at FROM client_formal_reports
+                WHERE kind='application' AND source_id IN ${inClause(n)}`, appIds),
             ])
-          : [[], [], [], [], [], []];
+          : [[], [], [], [], [], [], []];
 
         // 2026-09-02 加：這個職缺實際掛了哪些表單（不分有沒有已經寄給任何
         // 人選）——用來補「這個人選這家客戶還沒觸發過表單」的情況。表單
@@ -10551,6 +10565,10 @@ export default {
             sent_at: fs.sent_at, submitted_at: fs.submitted_at, has_file: !!fs.submitted_file_id,
           });
         }
+        const clientFormalByAppCompany = new Map();
+        for (const r of clientFormalRowsAll) {
+          clientFormalByAppCompany.set(r.source_id + '|' + r.company_id, { id: r.id, generated_at: r.generated_at });
+        }
 
         const detail = (apps || []).map((a) => {
           const report = reportByApp.get(a.id) || null;
@@ -10585,6 +10603,7 @@ export default {
               manual_stage_note: f.manual_stage_note, client_note: f.client_note,
               line_id_given: f.line_id_given, closed,
               forms: [...existingSubs, ...notYetSent],
+              client_formal_report: clientFormalByAppCompany.get(a.id + '|' + f.company_id) || null,
               steps: stageInfo.steps, effective_index: stageInfo.effective_index,
               advisor_not_recommended_at: f.advisor_not_recommended_at || null,
               advisor_not_recommended_reason: f.advisor_not_recommended_reason || null,
@@ -10724,6 +10743,18 @@ export default {
           const { results: consRows } = await env.DB.prepare(`SELECT id, display_name FROM consultants`).all();
           (consRows || []).forEach((c) => { ownerNames[c.id] = c.display_name; });
         }
+        // 2026-09-02 加：主動開發人選的客戶版履歷存檔狀態，跟正式應徵那邊
+        // 同一張表（client_formal_reports），這批人選不分客戶，company_id
+        // 固定用 '__none__' 佔位。
+        const allSourcedIds = [...(toContactRes.results || []), ...(waitingRes.results || []), ...(standbyRes.results || [])].map((r) => r.id);
+        const sourcedFormalByCandId = new Map();
+        if (allSourcedIds.length) {
+          const ph = allSourcedIds.map(() => '?').join(',');
+          const { results: cfrRows } = await env.DB.prepare(
+            `SELECT id, source_id, generated_at FROM client_formal_reports WHERE kind='sourced' AND company_id='__none__' AND source_id IN (${ph})`
+          ).bind(...allSourcedIds).all();
+          (cfrRows || []).forEach((r) => { sourcedFormalByCandId.set(r.source_id, { id: r.id, generated_at: r.generated_at }); });
+        }
         const sourcedCard = (r, tab) => ({
           application_id: null, sourced_id: r.id, kind: 'sourced', tab, status: r.status,
           name: r.name, email: r.email, phone: r.phone,
@@ -10732,6 +10763,7 @@ export default {
           source_channel: r.source || '主動開發', resume_file_id: null, resume_extra_files: null,
           consultant_note: null, ai_done: false, evaluated: false, pushed: false, closed: null,
           hard_gate: false, decision: null, report_id: null, report_md: null,
+          client_formal_report: sourcedFormalByCandId.get(r.id) || null,
           steps: [], effective_index: -1, placements: [], extra_placements: [], dup_notice: null,
           invite_token: r.invite_token || null, invite_job_slug: r.invite_job_slug || null, invite_at: r.invite_at || null,
           created_at: r.created_at,
@@ -11627,7 +11659,31 @@ export default {
           name, jobTitle: app.job_full_title || app.job_title || '', clientName: app.client_name || '',
           rows, coreFit, supplementary, recommendation, photoB64: b.photo_b64 || null,
         });
-        return json(request, { ok: true, html, ai_synthesized: !!synth });
+        // 2026-09-02 加：存檔——原本每次都要重新生成，顧問卡片上完全看不到
+        // 「上次做過了沒」。改成存進 client_formal_reports，同一個人選＋同一家
+        // 客戶重新產生就地覆蓋（這份是「目前最新狀態」，不留歷史版本）。
+        const genNow = nowTaipei();
+        let reportRowId = null;
+        if (companyId) {
+          reportRowId = uid();
+          await env.DB.prepare(
+            `INSERT INTO client_formal_reports (id, kind, source_id, company_id, html, generated_at, generated_by)
+             VALUES (?, 'application', ?, ?, ?, ?, ?)
+             ON CONFLICT(kind, source_id, company_id) DO UPDATE SET
+               html=excluded.html, generated_at=excluded.generated_at, generated_by=excluded.generated_by`
+          ).bind(reportRowId, appId, companyId, html, genNow, b.by || null).run();
+        }
+        return json(request, { ok: true, html, ai_synthesized: !!synth, generated_at: genNow });
+      }
+
+      // 2026-09-02 加：客戶版履歷下載/預覽——存檔之後，卡片上的「已完成」
+      // 狀態靠這支端點拿回 HTML。跟原本產生當下 return 的 html 是同一份，
+      // 只是這裡是「拿舊的」，不會重新跑一次 AI。
+      if (p.startsWith('/admin/client-formal-reports/') && request.method === 'GET') {
+        const id = decodeURIComponent(p.slice('/admin/client-formal-reports/'.length));
+        const row = await env.DB.prepare(`SELECT html FROM client_formal_reports WHERE id=?`).bind(id).first();
+        if (!row) return json(request, { ok: false, error: '找不到這份報告' }, 404);
+        return json(request, { ok: true, html: row.html });
       }
 
       // 2026-09-02 加：「主動開發」的人選也要能做客戶版履歷。這批人選在
@@ -11715,7 +11771,18 @@ export default {
           name, jobTitle: jobTitle || '（尚未鎖定職缺）', clientName: '（尚未推薦給客戶）',
           rows, coreFit, supplementary, recommendation, photoB64: b.photo_b64 || null,
         });
-        return json(request, { ok: true, html, ai_synthesized: !!synth });
+        // 2026-09-02 加：跟正式應徵那邊同一套存檔邏輯。主動開發的人選還沒
+        // 推薦給任何客戶，用固定的 '__none__' 當 company_id 佔位——這批人選
+        // 本來就不分公司（一份報告，不是每家客戶各自一份）。
+        const genNow2 = nowTaipei();
+        const reportRowId2 = uid();
+        await env.DB.prepare(
+          `INSERT INTO client_formal_reports (id, kind, source_id, company_id, html, generated_at, generated_by)
+           VALUES (?, 'sourced', ?, '__none__', ?, ?, ?)
+           ON CONFLICT(kind, source_id, company_id) DO UPDATE SET
+             html=excluded.html, generated_at=excluded.generated_at, generated_by=excluded.generated_by`
+        ).bind(reportRowId2, srcId, html, genNow2, b.by || null).run();
+        return json(request, { ok: true, html, ai_synthesized: !!synth, generated_at: genNow2 });
       }
 
       // 2026-09-01 加：人選卡片改版——⑤給推薦客戶的備註，每一筆推薦紀錄各自
@@ -12771,220 +12838,13 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
-    // ── 排程行事曆：今天該發的，送去產稿 ──
-    // 顧問在行事曆上排「8/29 由 DR 發 BIM 工程師」，到那天這裡把它塞進
-    // social_post_queue（status 留 NULL），本機的 social_post_agent.py 每 2 分鐘
-    // 掃一次就會撿走、產稿、推 Telegram 給顧問按確認。
-    // ⚠️ 這裡只負責「把排程變成待產稿」，不會自己發文——發文一律要人按確認。
-    try {
-      const { results: due } = await env.DB.prepare(
-        `SELECT id, post_date, job_slug, account_id FROM social_schedule
-          WHERE status='planned' AND post_date <= date('now','+8 hours')
-          ORDER BY post_date LIMIT 20`).all();
-      for (const d of due || []) {
-        // 到期這一刻再檢查一次職缺還開著。排程可能是一週前排的，
-        // 中間客戶結束招募了，那就不該再發。
-        const job = await env.DB.prepare(
-          `SELECT COALESCE(status,'open') AS status FROM jobs WHERE slug=?`).bind(d.job_slug).first();
-        if (!job || job.status === 'closed') {
-          await env.DB.prepare(`UPDATE social_schedule SET status='cancelled', updated_at=? WHERE id=?`)
-            .bind(nowTaipei(), d.id).run();
-          continue;
-        }
-        const q = await env.DB.prepare(
-          `INSERT INTO social_post_queue (job_slug, account_id, requested_at) VALUES (?,?,?)`
-        ).bind(d.job_slug, d.account_id, nowTaipei()).run();
-        await env.DB.prepare(
-          `UPDATE social_schedule SET status='queued', queue_id=?, updated_at=? WHERE id=?`
-        ).bind(q.meta && q.meta.last_row_id, nowTaipei(), d.id).run();
-      }
-    } catch (e) { /* 排程轉檔失敗不要影響下面其他排程工作 */ }
-
-    // ⚠️ 2026-08-19 加：LinkedIn 權杖自動續期。
-    // LinkedIn 的 access token 只有 60 天，過期就發不出文——而且是無聲失敗，
-    // 通常等到要發文那天才發現。這裡趕在到期前 14 天就換好。
-    //
-    // 跟 Threads 的續期是同一個目的、不同做法：Threads 那支是本機腳本
-    // （refresh_threads_token.sh，launchd 每週跑），因為它還要同步 wrangler secret；
-    // LinkedIn 的權杖只存在 D1，Worker 自己就能換，不必依賴本機有沒有開機。
-    //
-    // ⚠️ LinkedIn 續期回來不一定會給新的 refresh_token；沒給就沿用舊的，
-    //    不可以覆蓋成 null，否則下一輪就永遠續不了了。
-    try {
-      const { results: expiring } = await env.DB.prepare(
-        `SELECT id, label, refresh_token FROM social_accounts
-          WHERE platform='linkedin' AND is_active=1 AND refresh_token IS NOT NULL
-            AND token_expires_at IS NOT NULL
-            AND token_expires_at <= datetime('now','+8 hours','+14 days')`
-      ).all();
-      for (const acc of (expiring || [])) {
-        try {
-          const r = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
-            method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-              grant_type: 'refresh_token', refresh_token: acc.refresh_token,
-              client_id: env.LINKEDIN_CLIENT_ID, client_secret: env.LINKEDIN_CLIENT_SECRET,
-            }),
-          });
-          const d = await r.json();
-          if (!d.access_token) throw new Error(JSON.stringify(d).slice(0, 200));
-          const expAt = new Date(Date.now() + (Number(d.expires_in) || 5184000) * 1000 + 8 * 3600 * 1000)
-            .toISOString().replace('T', ' ').slice(0, 19);
-          await env.DB.prepare(
-            `UPDATE social_accounts SET access_token=?, refresh_token=?, token_expires_at=? WHERE id=?`
-          ).bind(d.access_token, d.refresh_token || acc.refresh_token, expAt, acc.id).run();
-          await notify(env, `🔄 LinkedIn 權杖已自動續期：${acc.label}\n新的到期日 ${expAt.slice(0, 10)}`,
-            { message_thread_id: THREAD.system });
-        } catch (e) {
-          // 續期失敗要吵——refresh token 也是會過期的（一年），
-          // 到那時只能請顧問重按一次授權，不講就會靜靜地壞掉。
-          await notify(env,
-            `⚠️ LinkedIn 權杖續期失敗：${acc.label}\n${String(e).slice(0, 200)}\n\n`
-            + `請重新授權：\nhttps://step1ne-recruit-api.aiagentg888.workers.dev/linkedin/auth?label=`
-            + encodeURIComponent(String(acc.label).replace(/\s*–\s*LinkedIn$/, '')),
-            { message_thread_id: THREAD.system });
-        }
-      }
-    } catch (e) {
-      await notify(env, `⚠️ LinkedIn 續期檢查失敗：${String(e).slice(0, 200)}`,
-        { message_thread_id: THREAD.system }).catch(() => {});
-    }
-
-    // ⚠️ 2026-08-19 加：發文成效回填（Jacky 問「我們在抓哪個時間點發布成效好」，
-    // 答案是原本根本沒在抓——連實際發布時間都沒存，只存了草稿產生時間）。
-    // 每則貼文在發布後的前 3 天各抓一次 views／likes／replies，之後就不再抓：
-    // Threads 的觸及幾乎都發生在前 48 小時，一直抓只是浪費配額。
-    // 抓回來的數字配上 posted_at，才能回答「幾點發、哪個帳號、哪種職缺有人看」。
-    try {
-      const { results: toMeasure } = await env.DB.prepare(
-        // ⚠️ 2026-08-27 加 platform='threads' 這個條件。原本會把 LinkedIn 的貼文
-        // 也撈進來，然後拿 LinkedIn 的網址去問 graph.threads.net——永遠對不上，
-        // 每 15 分鐘白跑一次，而且因為找不到帳號會退回全域的 Threads 金鑰，
-        // 等於拿 A 帳號的權杖去查 B 平台的貼文。
-        // LinkedIn 個人檔案的貼文本來就沒有公開的成效 API（只有企業專頁的
-        // organizationalEntityShareStatistics 有），所以這裡不是漏做，是做不到。
-        `SELECT q.id, q.url, q.account_id, q.posted_at
-           FROM social_post_queue q
-           JOIN social_accounts a ON a.id = q.account_id AND a.platform = 'threads'
-          WHERE q.status='posted' AND q.url IS NOT NULL
-            AND q.posted_at >= datetime('now','+8 hours','-3 days')
-            AND (q.insights_at IS NULL OR q.insights_at <= datetime('now','+8 hours','-6 hours'))
-          LIMIT 10`
-      ).all();
-      for (const row of (toMeasure || [])) {
-        let token = env.THREADS_ACCESS_TOKEN, userId = env.THREADS_USER_ID;
-        if (row.account_id) {
-          const acc = await env.DB.prepare(
-            `SELECT access_token, platform_user_id FROM social_accounts WHERE id=? AND platform='threads'`
-          ).bind(row.account_id).first();
-          if (acc) { token = acc.access_token; userId = acc.platform_user_id; }
-        }
-        if (!token || !userId) continue;
-        try {
-          // permalink 反查貼文 id——我們存的是給人看的網址，insights 要的是 id
-          const lr = await fetch(`https://graph.threads.net/v1.0/${userId}/threads?` +
-            new URLSearchParams({ fields: 'id,permalink,timestamp', limit: '25', access_token: token }));
-          const ld = await lr.json();
-          const hit = (ld.data || []).find((p) => p.permalink === row.url);
-          if (!hit) continue;
-          const ir = await fetch(`https://graph.threads.net/v1.0/${hit.id}/insights?` +
-            new URLSearchParams({ metric: 'views,likes,replies', access_token: token }));
-          const id2 = await ir.json();
-          const met = {};
-          for (const m of (id2.data || [])) {
-            met[m.name] = (m.values && m.values[0] ? m.values[0].value : (m.total_value || {}).value) || 0;
-          }
-          await env.DB.prepare(
-            `UPDATE social_post_queue SET views=?, likes=?, replies=?, insights_at=datetime('now','+8 hours') WHERE id=?`
-          ).bind(met.views || 0, met.likes || 0, met.replies || 0, row.id).run();
-        } catch { /* 單則抓不到不要影響其他則，下一輪會再試 */ }
-      }
-    } catch (e) {
-      await notify(env, `⚠️ 發文成效回填失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
-    }
-
-    // ⚠️ 2026-08-18 加：Threads 發文「卡在 posting」的自動對帳。
-    // 真實案例：顧問按了「確認發布」，Worker 搶到鎖改成 posting 之後，發文
-    // 途中整個請求被中斷（那天是剛好在部署新版），catch 沒機會跑到、鎖沒解開，
-    // 這則就永遠停在 posting——之後每次按都只回「⏳ 正在發文中」，看起來就像
-    // 按了沒反應。更糟的是其中一則其實已經發到 Threads 上了，只是沒回寫 url、
-    // 也沒通知，等於「發出去了但沒人知道」。
-    // 修法：每次 cron 掃 posting 超過 3 分鐘的（正常串文 30 秒內跑完），拿該
-    // 帳號最近的貼文去比對草稿開頭：
-    //   對得上 → 補回 posted＋permalink，並補一則帶連結的通知（Jacky 要求
-    //            「有發布的一定要通知、要給連結」）。
-    //   對不上 → 解鎖回 drafted 並通知可以重按，不會自動重發（避免重複貼文）。
-    try {
-      const { results: stuck } = await env.DB.prepare(
-        `SELECT q.id, q.job_slug, q.account_id, q.draft, q.tg_message_id, j.title
-           FROM social_post_queue q JOIN jobs j ON j.slug = q.job_slug
-          WHERE q.status = 'posting'
-            AND q.posting_at IS NOT NULL
-            AND q.posting_at <= datetime('now','+8 hours','-3 minutes')
-          LIMIT 10`
-      ).all();
-      for (const row of (stuck || [])) {
-        let token = env.THREADS_ACCESS_TOKEN, userId = env.THREADS_USER_ID;
-        if (row.account_id) {
-          const acc = await env.DB.prepare(
-            `SELECT access_token, platform_user_id FROM social_accounts WHERE id = ? AND platform='threads'`
-          ).bind(row.account_id).first();
-          if (acc) { token = acc.access_token; userId = acc.platform_user_id; }
-        }
-        // 比對用：把空白換行都拿掉取前 30 字，Threads 回傳的 text 是主文全文，
-        // 開頭一定跟草稿第一段一致（草稿超過 500 字會被切成串文，但第一則的
-        // 開頭不變）。
-        const norm = (t) => String(t || '').replace(/\s+/g, '').slice(0, 30);
-        let permalink = null;
-        if (token && userId) {
-          try {
-            const r = await fetch(
-              `https://graph.threads.net/v1.0/${userId}/threads?` +
-              new URLSearchParams({ fields: 'id,text,permalink', limit: '10', access_token: token })
-            );
-            const d = await r.json();
-            const hit = (d.data || []).find((p) => norm(p.text) === norm(row.draft));
-            if (hit) permalink = hit.permalink || null;
-            if (hit && !permalink) permalink = '（已發布，但查不到連結，請到 Threads 上確認）';
-          } catch { /* 查不到就當作沒發，走解鎖那條，不會重發 */ }
-        }
-        // 有原始審核訊息就回覆它（forum 群組會自動落回同一個主題）；
-        // 沒有的話退到系統回報主題，才不會掉到 General 裡沒人看到。
-        const tgTail = row.tg_message_id
-          ? { reply_to_message_id: row.tg_message_id }
-          : { message_thread_id: THREAD.system };
-        if (permalink) {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
-            .bind(permalink.startsWith('http') ? permalink : null, row.id).run();
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, ...tgTail,
-              text: `✅ 補通知｜${row.title}\n\n這則其實已經發到 Threads 上了，只是當時發文流程中途被中斷，沒有回寫紀錄也沒通知。\n\n▪️ 貼文連結：\n${permalink}`,
-            }),
-          }).catch(() => {});
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, message_id: row.tg_message_id,
-              reply_markup: { inline_keyboard: [[{ text: '✅ 已發到 Threads（補登）', callback_data: 'noop' }]] },
-            }),
-          }).catch(() => {});
-        } else {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='drafted', posting_at=NULL WHERE id=?`)
-            .bind(row.id).run();
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: env.TG_CHAT_ID, ...tgTail,
-              text: `⚠️ 這則發文中途斷掉了，確認沒有發出去｜${row.title}\n\n已經解鎖，可以重新按上面那顆「確認發布」。（沒有自動重發，避免重複貼文）`,
-            }),
-          }).catch(() => {});
-        }
-      }
-    } catch (e) {
-      await notify(env, `⚠️ 發文對帳失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
-    }
+    // 2026-09-02 拆分Phase 1：這裡原本有4段社群發文／LinkedIn相關的背景排程
+    // （排程行事曆轉發文、LinkedIn權杖續期、發文成效回填、Threads貼文卡住對帳），
+    // 已經搬到獨立的 step1ne-social-worker 專案，用它自己的cron跑，共用同一個D1。
+    // 搬走的理由：這4段本來就跟這裡其餘的候選人/顧問通知邏輯完全不相關，
+    // 卻擠在同一個cron裡搶CPU／D1讀取量。程式碼在
+    // ~/工作流程技能包/step1ne-social-worker/src/index.js，要改那4段邏輯要去那邊改，
+    // 不要在這裡加回來。
 
     // 2026-08-13 加：阿財初審結束後的「1-1 顧問初審確認」，改成兩則不同時機的訊息
     // （Jacky 明確要求，不要用單一個「3 天」預設值）：
