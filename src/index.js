@@ -6996,12 +6996,13 @@ export default {
         if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
         const sub = await env.DB.prepare(
           `SELECT cfs.status, cfs.submitted_at, jf.name AS form_name, jf.template_file_id, a.name AS candidate_name,
-                  cc.display_name AS company_name, j.title AS job_title
+                  cc.display_name AS company_name, j.title AS job_title, cf.line_id_given
              FROM candidate_form_submissions cfs
              JOIN job_forms jf ON jf.id = cfs.job_form_id
              JOIN applications a ON a.id = cfs.application_id
              LEFT JOIN client_companies cc ON cc.id = cfs.company_id
              LEFT JOIN jobs j ON j.slug = jf.job_slug
+             LEFT JOIN candidate_forwards cf ON cf.application_id = cfs.application_id AND cf.company_id = cfs.company_id
             WHERE cfs.token = ?`
         ).bind(token).first();
         if (!sub) return json(request, { ok: false, error: '這個連結不存在，或已經失效' }, 404);
@@ -7010,14 +7011,19 @@ export default {
           form_name: sub.form_name, candidate_name: sub.candidate_name,
           company_name: sub.company_name || '用人單位', job_title: sub.job_title || '',
           has_template: !!sub.template_file_id,
+          line_id_given: sub.line_id_given || '',
         });
       }
       if (request.method === 'POST') {
         if (!token) return json(request, { ok: false, error: '缺少連結' }, 400);
         const b = await request.json().catch(() => ({}));
         if (!b.file_b64) return json(request, { ok: false, error: '請選擇要上傳的檔案' }, 400);
+        // 2026-09-02 加：Jacky 要求這個連結順便收 LINE 帳號（給用人單位安排
+        // 面談用），必填——不是另外開一格選填，是跟表單檔案一起擋，沒填不能送出。
+        const lineId = String(b.line_id || '').trim();
+        if (!lineId) return json(request, { ok: false, error: '請填寫 LINE 帳號' }, 400);
         const sub = await env.DB.prepare(
-          `SELECT id, status FROM candidate_form_submissions WHERE token = ?`
+          `SELECT id, status, application_id, company_id FROM candidate_form_submissions WHERE token = ?`
         ).bind(token).first();
         if (!sub) return json(request, { ok: false, error: '這個連結不存在，或已經失效' }, 404);
         // 送出即失效（一次性連結，Jacky 確認）——已經填過的再點同一個連結，
@@ -7030,6 +7036,12 @@ export default {
         await env.DB.prepare(
           `UPDATE candidate_form_submissions SET status='submitted', submitted_at=?, submitted_file_id=? WHERE id=?`
         ).bind(now, saved.fileId, sub.id).run();
+        // 2026-09-02 加：LINE 帳號直接寫進 candidate_forwards.line_id_given——
+        // 這是既有欄位（顧問後台、客戶 portal 早就在讀），不是另開一個新地方，
+        // 用人單位那邊會自動看到，不用顧問手動謄一次。
+        await env.DB.prepare(
+          `UPDATE candidate_forwards SET line_id_given=? WHERE application_id=? AND company_id=?`
+        ).bind(lineId, sub.application_id, sub.company_id).run();
         return json(request, { ok: true });
       }
       return json(request, { ok: false, error: 'not found' }, 404);
