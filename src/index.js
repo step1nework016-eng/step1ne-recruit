@@ -1776,7 +1776,7 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
       let templateLink = null;
       if (form.template_file_id) {
         const tf = await fileB64(env, form.template_file_id);
-        if (tf) { attachments = [{ filename: tf.filename, content: tf.content }]; templateLink = `https://step1ne.com/form/template?t=${token}`; }
+        if (tf) { attachments = [{ filename: tf.filename, content: tf.content }]; templateLink = `https://step1ne-recruit-api.aiagentg888.workers.dev/form/template?t=${token}`; }
       }
       const cta = templateLink
         ? [
@@ -9419,7 +9419,7 @@ export default {
         let resendTemplateLink = null;
         if (sub.template_file_id) {
           const tf = await fileB64(env, sub.template_file_id);
-          if (tf) { resendAttachments = [{ filename: tf.filename, content: tf.content }]; resendTemplateLink = `https://step1ne.com/form/template?t=${sub.token}`; }
+          if (tf) { resendAttachments = [{ filename: tf.filename, content: tf.content }]; resendTemplateLink = `https://step1ne-recruit-api.aiagentg888.workers.dev/form/template?t=${sub.token}`; }
         }
         const resendCta = resendTemplateLink
           ? [
