@@ -1737,12 +1737,18 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
 // （INSERT OR IGNORE 的 changes>0）才呼叫這裡，避免同一家公司按第二次推薦、
 // 或系統重試時重複寄信。刻意包一層 try/catch、永遠不拋出——這是錦上添花的
 // 通知功能，不能因為寄信失敗就讓「推薦給客戶」這個核心動作跟著失敗。
-async function triggerJobForms(env, { applicationId, companyId, jobSlug, by }) {
+// onlyFormId（2026-09-02 加）：不傳就照舊「這個職缺掛的表單全部觸發」
+// （推薦給客戶那三個入口用）；傳了就只處理這一份——給人選卡片「立即寄送」
+// 按鈕用，因為那些人選是這個表單功能上線「之前」就已經推薦過去的舊資料，
+// 不會再有新的 candidate_forwards INSERT 事件可以掛，需要一個手動補觸發
+// 的入口，但又不想每次補觸發就把這個職缺底下所有表單全部重寄一次。
+async function triggerJobForms(env, { applicationId, companyId, jobSlug, by, onlyFormId }) {
   if (!jobSlug) return;
   try {
-    const { results: forms } = await env.DB.prepare(
+    const { results: allForms } = await env.DB.prepare(
       `SELECT id, name, template_file_id FROM job_forms WHERE job_slug=?`
     ).bind(jobSlug).all();
+    const forms = onlyFormId ? (allForms || []).filter((f) => f.id === onlyFormId) : allForms;
     if (!forms || !forms.length) return;
     const app = await env.DB.prepare(`SELECT name, email FROM applications WHERE id=?`).bind(applicationId).first();
     if (!app) return;
@@ -7050,6 +7056,24 @@ export default {
         await env.DB.prepare(
           `UPDATE candidate_forwards SET line_id_given=? WHERE application_id=? AND company_id=?`
         ).bind(lineId, sub.application_id, sub.company_id).run();
+        // 2026-09-02 加：Jacky 要求人選填完表單要通知顧問，不是靜靜躺在系統
+        // 裡等顧問自己想到要去看。跟其他「有人做了動作，顧問要知道」的通知
+        // 放同一個主題（顧問人選回報區）。放在資料庫更新之後、回應之前——
+        // 通知失敗（TG 掛掉）不該讓人選看到「送出失敗」，人選端的體驗優先。
+        const info = await env.DB.prepare(
+          `SELECT a.name AS candidate_name, jf.name AS form_name, cc.display_name AS company_name
+             FROM candidate_form_submissions cfs
+             JOIN applications a ON a.id = cfs.application_id
+             JOIN job_forms jf ON jf.id = cfs.job_form_id
+             LEFT JOIN client_companies cc ON cc.id = cfs.company_id
+            WHERE cfs.id = ?`
+        ).bind(sub.id).first();
+        if (info) {
+          notify(env,
+            `📋 ${info.candidate_name} 已填完「${info.form_name}」（${info.company_name || '用人單位'}），LINE：${lineId}`,
+            { message_thread_id: THREAD.report }
+          ).catch(() => {});
+        }
         return json(request, { ok: true });
       }
       return json(request, { ok: false, error: 'not found' }, 404);
@@ -9392,6 +9416,32 @@ export default {
         return json(request, { ok: true });
       }
 
+      // 2026-09-02 加：人選卡片上「立即寄送」——給表單功能上線「之前」就
+      // 已經推薦過去的舊人選用。這些人選的 candidate_forwards 早就存在，
+      // 不會再觸發一次 INSERT 事件，triggerJobForms() 掛在 forward 事件上
+      // 的自動觸發永遠碰不到他們，需要一個手動補寄的入口。
+      if (p === '/admin/candidate-form-submissions/trigger' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+        if (!b.application_id || !b.company_id || !b.job_form_id) {
+          return json(request, { ok: false, error: '缺 application_id / company_id / job_form_id' }, 400);
+        }
+        const owns = await env.DB.prepare(
+          `SELECT 1 FROM candidate_forwards WHERE application_id=? AND company_id=?`
+        ).bind(b.application_id, b.company_id).first();
+        if (!owns) return json(request, { ok: false, error: '這位人選還沒有推薦給這家客戶，不能寄表單' }, 400);
+        const app = await env.DB.prepare(`SELECT job_slug FROM applications WHERE id=?`).bind(b.application_id).first();
+        if (!app) return json(request, { ok: false, error: '找不到這位人選' }, 404);
+        await triggerJobForms(env, {
+          applicationId: b.application_id, companyId: b.company_id, jobSlug: app.job_slug,
+          by: b.by, onlyFormId: b.job_form_id,
+        });
+        const sub = await env.DB.prepare(
+          `SELECT status FROM candidate_form_submissions WHERE job_form_id=? AND application_id=? AND company_id=?`
+        ).bind(b.job_form_id, b.application_id, b.company_id).first();
+        if (!sub) return json(request, { ok: false, error: '寄送失敗，請確認這個職缺有掛這份表單' }, 500);
+        return json(request, { ok: true, status: sub.status });
+      }
+
       // 人選填寫紀錄——顧問卡片上「重新寄送」用。涵蓋兩種情境：①原本沒有
       // 真的 email（佔位信箱），顧問補上 email 後手動觸發第一次寄送；
       // ②信寄過但人選說沒收到／連結搞丟，重新寄一次同一個連結。已經填完的
@@ -10415,12 +10465,29 @@ export default {
                 ORDER BY application_id, client_id, updated_at DESC`, appIds),
               // 2026-09-02 加：人選客製表單狀態，一併批次撈起來，掛在各家客戶
               // 自己的 placement 卡片底下（見下面 forms: ... 那行）。
-              batchAll((n) => `SELECT cfs.id, cfs.application_id, cfs.company_id, cfs.status, cfs.sent_at,
+              batchAll((n) => `SELECT cfs.id, cfs.job_form_id, cfs.application_id, cfs.company_id, cfs.status, cfs.sent_at,
                       cfs.submitted_at, cfs.submitted_file_id, jf.name AS form_name
                  FROM candidate_form_submissions cfs JOIN job_forms jf ON jf.id = cfs.job_form_id
                 WHERE cfs.application_id IN ${inClause(n)}`, appIds),
             ])
           : [[], [], [], [], [], []];
+
+        // 2026-09-02 加：這個職缺實際掛了哪些表單（不分有沒有已經寄給任何
+        // 人選）——用來補「這個人選這家客戶還沒觸發過表單」的情況。表單
+        // 功能上線之前就已經推薦出去的舊人選（例如周丞恩、陳其寬那批），
+        // 不會有 candidate_forwards 的新 INSERT 事件可以掛自動觸發，卡片上
+        // 要能看到「這個職缺其實有表單、但這個人還沒收到」，才有東西可以按。
+        const distinctJobSlugs = [...new Set((apps || []).map((a) => a.job_slug).filter(Boolean))];
+        const jobFormsBySlug = new Map();
+        if (distinctJobSlugs.length) {
+          const { results: jfRows } = await env.DB.prepare(
+            `SELECT id, job_slug, name FROM job_forms WHERE job_slug IN (${distinctJobSlugs.map(() => '?').join(',')})`
+          ).bind(...distinctJobSlugs).all();
+          for (const f of (jfRows || [])) {
+            if (!jobFormsBySlug.has(f.job_slug)) jobFormsBySlug.set(f.job_slug, []);
+            jobFormsBySlug.get(f.job_slug).push({ id: f.id, name: f.name });
+          }
+        }
 
         // 「每個 application 最新一筆」的挑法統一用同一招：來源已經 ORDER BY ... DESC，
         // 用 Map 只留第一次看到的那筆（Map.set 只在 key 不存在時才寫）。
@@ -10441,7 +10508,7 @@ export default {
           const key = fs.application_id + '|' + fs.company_id;
           if (!formSubsByAppCompany.has(key)) formSubsByAppCompany.set(key, []);
           formSubsByAppCompany.get(key).push({
-            id: fs.id, form_name: fs.form_name, status: fs.status,
+            id: fs.id, job_form_id: fs.job_form_id, form_name: fs.form_name, status: fs.status,
             sent_at: fs.sent_at, submitted_at: fs.submitted_at, has_file: !!fs.submitted_file_id,
           });
         }
@@ -10465,12 +10532,20 @@ export default {
               ? 'CLIENT_REJECTED'
               : (placement && /^CLOSED_/.test(String(placement.stage || '').toUpperCase())
                   ? placement.stage.toUpperCase() : null);
+            // 2026-09-02 加：這個職缺掛的表單，如果還沒有這位人選＋這家客戶
+            // 的填寫紀錄，補一個「尚未寄送」的假紀錄（id: null）讓卡片上有
+            // 「立即寄送」可以按——涵蓋表單功能上線前就已經推薦出去的舊人選。
+            const existingSubs = formSubsByAppCompany.get(a.id + '|' + f.company_id) || [];
+            const sentFormIds = new Set(existingSubs.map((s) => s.job_form_id));
+            const notYetSent = (jobFormsBySlug.get(a.job_slug) || [])
+              .filter((jf) => !sentFormIds.has(jf.id))
+              .map((jf) => ({ id: null, job_form_id: jf.id, form_name: jf.name, status: 'not_sent' }));
             return {
               company_id: f.company_id, client_name: f.company_name || '（未知客戶）',
               job_title: a.job_full_title || a.job_title, forwarded_at: f.forwarded_at,
               manual_stage_note: f.manual_stage_note, client_note: f.client_note,
               line_id_given: f.line_id_given, closed,
-              forms: formSubsByAppCompany.get(a.id + '|' + f.company_id) || [],
+              forms: [...existingSubs, ...notYetSent],
               steps: stageInfo.steps, effective_index: stageInfo.effective_index,
               advisor_not_recommended_at: f.advisor_not_recommended_at || null,
               advisor_not_recommended_reason: f.advisor_not_recommended_reason || null,
