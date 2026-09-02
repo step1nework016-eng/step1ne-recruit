@@ -1494,7 +1494,14 @@ function resolveStage(app, report, appts, placement, roundLabels, jobStageKeys) 
     // 但面談其實早就做完了，訊息完全講反。改成「面談已結束」就算這關到了，
     // 不用等顧問下決定——尹緯正這個真實案例撞到的（面談已結束 2 天，訊息卻叫他
     // 去完成面談）。
-    { key: 'confirm', lb: '顧問確認', ok: !!(app && app.interview_ended_at) || !!(report && report.consultant_decision) },
+    // 2026-09-02 改：Jacky 重新定義「顧問階段」三態：
+    //   阿財面談結束、或顧問下「需補問」→ 進行中（維持原狀，不算過關）
+    //   顧問下「推薦給客戶」→ 已完成（唯一讓這關真的算過的動作）
+    //   顧問下「婉拒／不推薦」→ 不推進（獨立的第三態，不是「進行中」也不是
+    //     「已完成」，這關本身不算過——是在下面 confirm.decision 這個原始值
+    //     另外標記，讓客戶端 render 三態，這裡的 ok 只負責「有沒有過關」）
+    { key: 'confirm', lb: '顧問確認', ok: !!(report && report.consultant_decision === 'forwarded'),
+      decision: (report && report.consultant_decision) || null },
   ];
   const s1 = latestByStage(1);
   steps.push({ key: 'stage1', lb: '第一階段', ok: !!(s1 && s1.status === 'confirmed') });
@@ -1523,7 +1530,9 @@ function resolveStage(app, report, appts, placement, roundLabels, jobStageKeys) 
   const effIdx = Math.max(autoIdx, manualStepIdx);
 
   return {
-    steps: steps.map((s, i) => ({ key: s.key, lb: roundLabels[s.key] || s.lb, done: i < effIdx, now: i === effIdx })),
+    // decision 只有 confirm 這一關會帶到，其餘關卡是 undefined，不影響既有消費者
+    // （不會多一個 key 出來，JSON 序列化時 undefined 欄位本來就會被跳過）。
+    steps: steps.map((s, i) => ({ key: s.key, lb: roundLabels[s.key] || s.lb, done: i < effIdx, now: i === effIdx, decision: s.decision })),
     effective_key: effIdx >= 0 ? steps[effIdx].key : null,
     effective_index: effIdx,
     manual_active: manualStepIdx > autoIdx,   // 手動指定目前正在「頂著」畫面，自動資料還沒追上
