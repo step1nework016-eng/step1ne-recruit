@@ -4046,8 +4046,33 @@ export default {
           const spSess = await ncSession(env, spRow.chat.id, spRow.from.id);
           const spText = String(spRow.text || '').trim();
           const spThreadId = spRow.message_thread_id;
+          const urlMatch = spText.match(THREADS_URL_RE);
 
-          // 話題文最後一步：等顧問打字回覆主題描述
+          // ⚠️ 2026-09-03 修：貼錯網址、緊接著貼對的網址糾正——原本這裡要求
+          // 「沒有流程正在進行中」才會回應，貼第一則問完「這篇是哪一種？」
+          // 還沒點按鈕時，第二則網址會被完全無視，顧問看起來像 bot 不理人
+          // （真實案例：Anna 帳號那筆，先貼到帳號頁網址，緊接著貼對的貼文
+          // 網址，後面那則完全沒反應）。改成：新網址一律蓋掉舊流程重新問，
+          // 不管原本卡在哪一步——「貼新網址」本身就是最明確的糾正意圖，
+          // 不需要顧問先手動取消上一筆。
+          if (urlMatch) {
+            const account = await findAccountByThread(spThreadId);
+            if (account) {
+              const resolvedUrl = await resolveThreadsUrl(urlMatch[0]);
+              const replacedNote = spSess ? '（換成這則，剛剛那則不處理了）\n' : '';
+              await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_choose_type',
+                { url: resolvedUrl, accountId: account.id, accountLabel: account.label });
+              await ncSend(env, spRow.chat.id, spThreadId, `${replacedNote}這篇是哪一種？（帳號：${account.label}）`, {
+                inline_keyboard: [[
+                  { text: '📋 這是職缺文', callback_data: 'sp_type_job' },
+                  { text: '💬 這是話題／時事文', callback_data: 'sp_type_topic' },
+                ]],
+              });
+              return new Response('ok');
+            }
+          }
+
+          // 話題文最後一步：等顧問打字回覆主題描述（不是網址才會走到這裡）
           if (spSess && spSess.step === 'sp_await_label' && spText) {
             const label = spText.slice(0, 200);
             await env.DB.prepare(
@@ -4057,24 +4082,6 @@ export default {
             await ncClearSession(env, spRow.chat.id, spRow.from.id);
             await ncSend(env, spRow.chat.id, spThreadId, `✅ 已匯入成效追蹤（話題：${label}）`);
             return new Response('ok');
-          }
-
-          // 新訊息帶Threads網址、這個房間對應一個發文帳號、而且沒有其他流程正在進行中
-          const urlMatch = spText.match(THREADS_URL_RE);
-          if (urlMatch && !spSess) {
-            const account = await findAccountByThread(spThreadId);
-            if (account) {
-              const resolvedUrl = await resolveThreadsUrl(urlMatch[0]);
-              await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_choose_type',
-                { url: resolvedUrl, accountId: account.id, accountLabel: account.label });
-              await ncSend(env, spRow.chat.id, spThreadId, `這篇是哪一種？（帳號：${account.label}）`, {
-                inline_keyboard: [[
-                  { text: '📋 這是職缺文', callback_data: 'sp_type_job' },
-                  { text: '💬 這是話題／時事文', callback_data: 'sp_type_topic' },
-                ]],
-              });
-              return new Response('ok');
-            }
           }
         }
 
