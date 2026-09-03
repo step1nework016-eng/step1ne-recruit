@@ -4105,18 +4105,37 @@ export default {
           }
 
           if (spCq.data === 'sp_type_job') {
-            const { results: openJobs } = await env.DB.prepare(
-              `SELECT slug, title FROM jobs WHERE status='open' ORDER BY title LIMIT 24`
+            // 2026-09-03 修：① status 原本只認 'open'，漏了 'active'（例如日本主管特助
+            // 那筆），跟客戶匯入 job_slug 一樣要對齊 social_post_agent.py 已經在用的
+            // 「open/active 都算開放中」這個判斷，不要各自維護一份標準。
+            // ② 24 個職缺全部平鋪成一排按鈕滑到底才找得到，改成先選客戶收斂範圍，
+            // 遊戲橘子集團一家就佔10個，混在一起很難找。
+            const { results: companies } = await env.DB.prepare(
+              `SELECT c.id, c.display_name, COUNT(*) as n FROM jobs j
+                 JOIN client_companies c ON c.id = j.company_id
+                WHERE j.status IN ('open','active') GROUP BY c.id ORDER BY c.display_name`
             ).all();
-            if (!openJobs || !openJobs.length) {
+            if (!companies || !companies.length) {
               await spAns();
               await ncSend(env, spChatId, spThreadId2, '目前沒有開放中的職缺，改用話題方式匯入：請打字回覆這篇在談什麼主題。');
               await ncSetSession(env, spChatId, spCq.from.id, 'sp_await_label', sess.data);
               return new Response('ok');
             }
             await spAns();
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_company', sess.data);
+            const coRows = companies.map((c) => ([{ text: `${c.display_name}（${c.n}）`, callback_data: `sp_co:${c.id}` }]));
+            await ncSend(env, spChatId, spThreadId2, '這篇是哪個客戶？', { inline_keyboard: coRows });
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sp_co:')) {
+            const companyId = spCq.data.slice('sp_co:'.length);
+            const { results: coJobs } = await env.DB.prepare(
+              `SELECT slug, title FROM jobs WHERE company_id=? AND status IN ('open','active') ORDER BY title`
+            ).bind(companyId).all();
+            await spAns();
             await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_job', sess.data);
-            const rows = openJobs.map((j) => ([{ text: j.title || j.slug, callback_data: `sp_job:${j.slug}` }]));
+            const rows = (coJobs || []).map((j) => ([{ text: j.title || j.slug, callback_data: `sp_job:${j.slug}` }]));
             await ncSend(env, spChatId, spThreadId2, '這篇是哪個職缺？', { inline_keyboard: rows });
             return new Response('ok');
           }
