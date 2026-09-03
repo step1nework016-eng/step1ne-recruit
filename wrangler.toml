@@ -19,3 +19,11 @@ crons = ["*/15 * * * *"]
 # 也不必把候選人的錄音送到第三方——音檔在同一個帳號裡處理完就好。
 [ai]
 binding = "AI"
+
+# 2026-09-03加：履歷/上傳檔案改用R2物件儲存（原本存D1的files/file_chunks，
+# 一份履歷要切好幾個chunk塞進SQLite，既佔空間又慢）。三個Worker
+# （這裡＋step1ne-public-worker＋step1ne-backoffice-worker）都要綁同一個桶，
+# 因為saveResume/saveUpload/fileB64這三支函式在三邊都各自複製了一份。
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "step1ne-files"

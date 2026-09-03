@@ -29,7 +29,7 @@ import os, sys, json, uuid, subprocess, tempfile, base64, time, re, argparse, da
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LOCK = '/tmp/step1ne-portal-import.lock'
-MODEL = 'claude-opus-5'
+MODEL = 'claude-sonnet-5'
 TIMEOUT_SEC = 240
 
 sys.path.insert(0, HERE)

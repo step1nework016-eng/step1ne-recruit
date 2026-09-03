@@ -222,6 +222,59 @@ def public_part(text):
     return '\n'.join(out).strip() or None
 
 
+def shorten_location(loc):
+    """社群貼文的地點只寫到路名就好，不要完整門牌／樓層。
+
+    ⚠️ 2026-08-xx 真實案例：DR 那則復健科診所護理師貼文把完整地址
+    「台北市內湖區瑞光路337號7樓」整段寫進去公開發布了——診所的精確門牌號
+    對外曝光，Jacky 事後要求「內湖區瑞光路」這個顆粒度即可，之後一律照這個
+    規則，不要再逐字帶入 jobs.locations 的完整地址。
+
+    只在程式層做，不能只靠 prompt 指示模型「地址寫短一點」——模型不會每次
+    都穩定照做，門牌這種可以曝光地點精確度的資訊，要用確定性的規則擋掉。
+    """
+    if not loc:
+        return loc
+    out = []
+    for part in re.split(r'[、，,／/]', str(loc)):
+        s = part.strip()
+        if not s:
+            continue
+        s = re.sub(r'^[^市]{1,3}市', '', s)          # 去掉最前面的「OO市」
+        m = re.match(r'^(.*?(?:路|街|大道|道))', s)   # 保留到路名為止，門牌號以下丟棄
+        out.append(m.group(1) if m else s)
+    return '、'.join(out) if out else loc
+
+
+# ⚠️ 2026-09-03 加：光縮短 jobs.locations 這個結構化欄位不夠——真實事故顯示
+# 模型會從 public_page_text() 整段掃過去的公開頁文字裡，另外撿到完整地址
+# （含門牌／樓層）寫進貼文，因為網站頁面本來就是給候選人看完整地址的，
+# 那段文字原封不動被當素材餵給模型。這支直接在「文字」層面找出「行政區+
+# 路名+門牌號」這個模式整段替換掉，只留「行政區+路名」，跟 mask_client_names()
+# 抓客戶名稱同一個做法——不能只在結構化欄位擋，來源文字沒擋住的話，模型永遠
+# 有機會從別的地方撿到不該寫的細節。
+_TW_CITY = ('台北市|臺北市|新北市|桃園市|台中市|臺中市|台南市|臺南市|高雄市|基隆市|新竹市|嘉義市|'
+            '新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|屏東縣|宜蘭縣|花蓮縣|台東縣|臺東縣|澎湖縣|金門縣|連江縣')
+_ADDR_NUM_RE = re.compile(
+    rf'(?:{_TW_CITY})?'
+    r'([^\s，,。、／/：:（）()]{1,6}(?:區|鄉|鎮)[^\s，,。、／/：:（）()]{1,12}(?:路|街|大道|道))'
+    # ⚠️ 網站頁面 HTML 轉純文字後，數字跟「號／樓」之間常常留有空白
+    # （來源 HTML 是分開的標籤，例如「337」「號」各自一個 <span>），
+    # 每個間隔都要容許 \s*，不然像「瑞光路 337 號 7 樓」這種真實格式會漏網。
+    r'\s*(?:[0-9一二三四五六七八九十]{1,3}\s*段)?\s*(?:\d+\s*巷)?\s*(?:\d+\s*弄)?'
+    r'\s*\d+\s*號\s*(?:\d+\s*樓)?\s*(?:之\s*\d+)?'
+)
+
+
+def strip_address_numbers(text):
+    """把文字裡任何「OO市OO區OO路N號N樓」型態的完整地址，整段換成只留
+    「OO區OO路」——用在 public_page_text() 的輸出（來源端過濾）跟最終產出
+    的貼文文字（輸出端再擋一次，防模型從別的地方撿到或憑常識腦補出完整地址）。"""
+    if not text:
+        return text
+    return _ADDR_NUM_RE.sub(r'\1', text)
+
+
 def format_job_requirement(job):
     """把 jobs 資料表的欄位轉成技能包要的「用人需求」文字塊。
 
@@ -268,7 +321,7 @@ def format_job_requirement(job):
     # （client_named=1 的案子網站頁面可以具名，社群還是不行）。
     # 所以這裡整條規則拿掉，job.get('client_name') 永遠不會進到這個函式的輸出。
     add('職稱', job.get('title'))
-    add('工作地點', job.get('locations'))
+    add('工作地點', shorten_location(job.get('locations')))
     add('聘僱性質', as_text(job.get('employment')))
     # 2026-08-19 加：這個缺的貼文切角。
     # ⚠️ 這是白名單裡唯一的自由文字欄位，所以定義要很窄：
@@ -287,7 +340,7 @@ def format_job_requirement(job):
     add('團隊規模', job.get('team_size'))
     # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
     #    路徑——公開頁是 client_named=1、網站上本來就具名的，社群不行。
-    page = mask_client_names(public_page_text(job.get('slug') or ''))
+    page = strip_address_numbers(mask_client_names(public_page_text(job.get('slug') or '')))
     if page:
         lines.append('\n【公開職缺頁上已經寫出來的內容——這是我們自己對外刊的文字，'
                      '可以直接引用、改寫，工作內容與福利請以這裡為準。'
@@ -418,7 +471,156 @@ def extract_post(raw):
 def generate_draft(job, account_id):
     prompt = skill(account_id) + '\n\n' + format_job_requirement(job) + WRAP_INSTRUCTION
     raw = run_claude(prompt)
-    return raw, extract_post(raw) if raw else None
+    post = extract_post(raw) if raw else None
+    # 輸出端再擋一次完整地址——來源端（format_job_requirement）已經擋過，
+    # 這裡是保底：萬一模型從其他管道（自己的常識、標題裡的地名）拼出完整
+    # 門牌，還是要在真正存進 draft 之前擋下來。
+    return raw, strip_address_numbers(post) if post else None
+
+
+# ⚠️ 2026-09-03 加：話題／時事討論類貼文，跟職缺招募文是兩種東西——SKILL.md
+# 整份是「職缺情報｜」這個固定格式的招募文模板，套在話題文上完全文不對題
+# （模型會被迫硬套「工作內容」「招募資訊」那些欄位）。話題類型改用這份更
+# 開放的角色框架，實際切入方向來自 topic_prompts.body（Jacky／Phoebe 自己
+# 寫的話題簡報），語氣則來自顧問在「顧問與話題設定」指派的 style_prompts。
+TOPIC_BASE_PROMPT = (
+    '你是資深獵頭顧問，同時具備社群行銷總監的內容判斷力，正在幫「全民獵才」'
+    '的社群帳號寫一則 Threads 貼文。\n\n'
+    '這次不是職缺招募文，是一般性的話題／時事討論貼文，目的是引發追蹤者討論、'
+    '建立帳號的專業形象，不是直接導向應徵。\n\n'
+    '硬性規則：\n'
+    '1. 全篇繁體中文（台灣用語）。\n'
+    '2. 不准提及任何客戶公司名稱——除非下面的話題切入方向裡明確提供了一個'
+    '「已公開報導、可以引用的案例」（例如新聞報導過的公司名），否則一律不要'
+    '自己編造或帶入任何公司名稱。\n'
+    '3. 不用「超棒」「絕佳機會」這類推銷語氣，維持專業但不生硬的口吻。\n'
+    '4. 篇幅比照 Threads 一般貼文長度（不是長文章），抓重點講，不要寫成完整的部落格文章。\n'
+)
+
+
+def _topic_by_id(topic_id):
+    rows = d1(f"SELECT * FROM topic_prompts WHERE id={q(topic_id)}")
+    return rows[0] if rows else None
+
+
+def _style_by_id(style_id):
+    if not style_id:
+        return None
+    rows = d1(f"SELECT * FROM style_prompts WHERE id={q(style_id)}")
+    return rows[0] if rows else None
+
+
+def _consultant_style_for_topic(account_id):
+    """依帳號查出人名（跟前端「顧問社群」頁面 nm()／personName() 同一套
+    「取 dash 前面」邏輯），再查這位顧問在「顧問與話題設定」裡幫話題類型
+    指定的風格。查不到就回 None，退回 TOPIC_BASE_PROMPT 本身的語氣，
+    不會因為沒設定就整支失敗。"""
+    if not account_id:
+        return None
+    acc = d1(f"SELECT label FROM social_accounts WHERE id={q(account_id)}")
+    if not acc:
+        return None
+    name = re.split(r'[-–—]', acc[0]['label'])[0].strip()
+    rows = d1(f"SELECT topic_style_id FROM consultant_content_settings WHERE consultant={q(name)}")
+    if not rows or not rows[0].get('topic_style_id'):
+        return None
+    return _style_by_id(rows[0]['topic_style_id'])
+
+
+def format_topic_requirement(topic, style_row):
+    """話題內容是 Jacky／Phoebe 自己寫的策略簡報，不是使用者輸入或客戶欄位，
+    不用像 format_job_requirement() 那樣白名單過濾——但風格提示詞跟話題內容
+    一樣要接在 TOPIC_BASE_PROMPT 後面，當成這次產稿的明確指示。"""
+    parts = [f"【這次話題的切入方向】\n{topic['body']}"]
+    if style_row:
+        parts.append(f"【這則貼文要用的語氣風格：{style_row['name']}】\n{style_row['body']}")
+    return '\n\n'.join(parts)
+
+
+def generate_draft_topic(topic, style_row):
+    prompt = TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row) + WRAP_INSTRUCTION
+    raw = run_claude(prompt)
+    post = extract_post(raw) if raw else None
+    return raw, strip_address_numbers(post) if post else None
+
+
+def process_topic(queue_row, topic):
+    """跟 process_job() 對齊的話題類型版本——沒有職缺欄位可以填，草稿產出、
+    客戶名稱稽核、Telegram 審核通知、tg_message_id 回寫整套流程一致，只差
+    在素材來源跟基底 prompt。刻意不跟 process_job() 共用同一份稽核／重產
+    邏輯——兩邊各自獨立一份，改一邊不會不小心動到另一邊已經穩定在跑的流程。"""
+    qid = queue_row['id']
+    title = topic['name']
+    account_id = queue_row.get('account_id')
+    style_row = _consultant_style_for_topic(account_id)
+    try:
+        log(f'{title}（話題）：產生貼文草稿中…')
+        raw, post = generate_draft_topic(topic, style_row)
+        if not raw or not post:
+            log(f'❌ {title}：claude 沒有回東西')
+            return
+
+        hits = audit_client_names(post)
+        if hits:
+            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，重產一次')
+            raw2, post2 = generate_draft_topic(topic, style_row)
+            hits2 = audit_client_names(post2 or '')
+            if post2 and not hits2:
+                raw, post, hits = raw2, post2, []
+            else:
+                hits = hits2 or hits
+                if post2:
+                    raw, post = raw2, post2
+        if hits:
+            log(f'🚫 {title}：重產後仍有客戶名稱 {hits}，不自動送審')
+            d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
+            tg_with_buttons(
+                f'🚫 <b>{title}</b>（話題）的社群草稿出現客戶公司名稱，已擋下來沒有送審。\n'
+                f'命中：{"、".join(hits)}\n\n'
+                f'社群一律不提客戶名稱。下面這份要用的話請自己改掉再發：\n\n{post}',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
+            return
+
+        d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted' WHERE id={qid}")
+
+        end_idx = raw.find(POST_END)
+        analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
+        thread = TG_THREAD_SOCIAL
+        acct_label = ''
+        if account_id:
+            acc = d1(f"SELECT label, tg_thread_id FROM social_accounts WHERE id={q(account_id)}")
+            if acc:
+                acct_label = acc[0].get('label') or ''
+                if acc[0].get('tg_thread_id'):
+                    thread = int(acc[0]['tg_thread_id'])
+                else:
+                    log(f'⚠️ 帳號「{acct_label}」沒有設定 tg_thread_id，'
+                        f'這則通知會送到共用主題 {TG_THREAD_SOCIAL}')
+        msg_id = tg_with_buttons(
+            f"📱 全民獵才貼文草稿（💬 話題）\n"
+            f"帳號：{acct_label or '（未指定帳號）'}\n"
+            f"話題：{title}\n"
+            + (f"風格：{style_row['name']}\n" if style_row else '')
+            + f"\n── 以下會被公開發布 ──\n{post}\n\n"
+            f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
+            [
+                {'text': '✅ 確認發布', 'callback_data': f'soc_approve:{qid}'},
+                {'text': '🔄 重新產一次', 'callback_data': f'soc_regen:{qid}'},
+                {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'},
+            ],
+            thread,
+        )
+        if msg_id:
+            d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))} WHERE id={qid}")
+            log(f'✅ {title}：草稿已送出審核')
+        else:
+            log(f'❌ {title}：草稿已產生但 Telegram 通知沒送出，'
+                f'請去 consultant/social-post/ 頁面手動審核（queue id={qid}）')
+    except Exception as e:
+        log(f'❌ {title}（話題）產生草稿失敗：{e}')
 
 
 def process_job(queue_row, job, repost=False):
@@ -567,10 +769,24 @@ def main():
 
     queue_rows = d1("SELECT * FROM social_post_queue WHERE status IS NULL ORDER BY requested_at ASC")
     if not queue_rows:
-        log('沒有需要產貼文的新職缺')
+        log('沒有需要產貼文的新職缺／話題')
         return
     jobs_cache = {}
+    topics_cache = {}
     for qrow in queue_rows:
+        # 2026-09-03 加：話題類型的排隊紀錄靠 topic_id 分辨。job_slug 這時候
+        # 存的是「💬 描述文字」，只給列表顯示跟 /go/ 點擊歸因用，不是真職缺
+        # slug，不能拿去查 jobs 表（查了一定落空，之前就是這樣被完全略過）。
+        if qrow.get('topic_id'):
+            tid = qrow['topic_id']
+            if tid not in topics_cache:
+                topics_cache[tid] = _topic_by_id(tid)
+            topic = topics_cache[tid]
+            if not topic:
+                log(f'⚠️ 排隊紀錄 {qrow["id"]} 指向不存在的話題 id={tid}，跳過')
+                continue
+            process_topic(qrow, topic)
+            continue
         slug = qrow['job_slug']
         if slug not in jobs_cache:
             jobs_cache[slug] = _job_by_slug(slug)

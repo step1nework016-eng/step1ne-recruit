@@ -159,3 +159,124 @@ owner：phoebe
 
 [09:30:46]   建立待辦：吳秉洋｜BIM 工程師（無經驗可・正職）｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
 [09:30:46] 本輪：新增待辦 1 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 25 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 25 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:35] 本輪：新增待辦 0 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 26 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 26 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:27] 本輪：新增待辦 0 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 27 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 27 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:40] 本輪：新增待辦 0 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 28 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 28 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:32] 本輪：新增待辦 0 筆，發出通知 4 則
+Traceback (most recent call last):
+  File "/Users/user/工作流程技能包/step1ne-recruit/placement_tracker.py", line 303, in <module>
+    main()
+    ~~~~^^
+  File "/Users/user/工作流程技能包/step1ne-recruit/placement_tracker.py", line 295, in main
+    tick(dry_run=False)
+    ~~~~^^^^^^^^^^^^^^^
+  File "/Users/user/工作流程技能包/step1ne-recruit/placement_tracker.py", line 235, in tick
+    rows = d1("SELECT * FROM placements WHERE COALESCE(is_test_data,0)=0")
+  File "/Users/user/工作流程技能包/step1ne-recruit/interview_daemon.py", line 227, in d1
+    return d1_raw(sql).get('results', [])
+           ~~~~~~^^^^^
+  File "/Users/user/工作流程技能包/step1ne-recruit/interview_daemon.py", line 169, in d1_raw
+    raise RuntimeError((r.stderr or r.stdout)[-300:])
+RuntimeError: pgrade to a paid plan or wait until tomorrow (midnight UTC) to continue. See https://developers.cloudflare.com/d1/platform/limits/ for more details. [code: 7500]"
+      }
+    ],
+    "kind": "error",
+    "name": "APIError",
+    "code": 7500,
+    "accountTag": "152230d6e033b12cfe55d748188c65e0"
+  }
+}
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜張博州｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 30 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 30 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:43]   建立待辦：[測試]防重複B｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:30:58]   建立待辦：[測試]履歷上限｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:30:58] 本輪：新增待辦 2 筆，發出通知 4 則
