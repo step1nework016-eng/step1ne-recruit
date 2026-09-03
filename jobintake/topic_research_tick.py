@@ -201,8 +201,8 @@ def main():
             body_parts.append('⚠️ ' + '；'.join(data['warnings']))
         body = '\n'.join(body_parts)
 
-        ins = d1_raw(f"INSERT INTO topic_prompts (name, body, created_at, category) "
-                     f"VALUES ({q(name)}, {q(body)}, datetime('now','+8 hours'), {q('AI研究')})")
+        ins = d1_raw(f"INSERT INTO topic_prompts (name, body, created_at, updated_at, category) "
+                     f"VALUES ({q(name)}, {q(body)}, datetime('now','+8 hours'), datetime('now','+8 hours'), {q('AI研究')})")
         # last_row_id 要從「這次 INSERT 呼叫自己回傳的 meta」拿，不能另外開一次
         # SELECT last_insert_rowid()——wrangler d1 execute 每次呼叫都是新連線，
         # 跨呼叫查 last_insert_rowid() 拿到的不會是剛剛那筆。
