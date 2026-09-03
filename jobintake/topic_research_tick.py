@@ -201,8 +201,15 @@ def main():
             body_parts.append('⚠️ ' + '；'.join(data['warnings']))
         body = '\n'.join(body_parts)
 
-        ins = d1_raw(f"INSERT INTO topic_prompts (name, body, created_at, updated_at, category) "
-                     f"VALUES ({q(name)}, {q(body)}, datetime('now','+8 hours'), datetime('now','+8 hours'), {q('AI研究')})")
+        # ⚠️ 2026-09-03 修：category 這欄本來就是「一鍵發文」話題下拉選單在用的
+        # 分類（general／ai），跟「這則是不是AI自動研究產生的」是兩件事，
+        # 一開始誤把 category 寫成 'AI研究'，會讓這筆話題在那個下拉選單裡
+        # 完全選不到（category 對不上 general/ai 任何一個）。這裡的話題是
+        # 一般時事討論（不是針對阿財面談的話題），category 用 'general' 才對；
+        # 「AI自動產的」改記在獨立的 source 欄位，不跟 category 混在一起。
+        ins = d1_raw(f"INSERT INTO topic_prompts (name, body, created_at, updated_at, category, source) "
+                     f"VALUES ({q(name)}, {q(body)}, datetime('now','+8 hours'), datetime('now','+8 hours'), "
+                     f"{q('general')}, {q('ai_research')})")
         # last_row_id 要從「這次 INSERT 呼叫自己回傳的 meta」拿，不能另外開一次
         # SELECT last_insert_rowid()——wrangler d1 execute 每次呼叫都是新連線，
         # 跨呼叫查 last_insert_rowid() 拿到的不會是剛剛那筆。
