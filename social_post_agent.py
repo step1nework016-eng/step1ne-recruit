@@ -196,6 +196,24 @@ def audit_client_names(text):
     return [x for x in client_name_terms() if _term_pattern(x).search(t)]
 
 
+# 2026-09-03 加：社群貼文是對外發布的出口，跟網站發布、阿財面談一樣要自動
+# 擋掉就業服務法第5條的歧視性條件（年齡/性別/婚育/國籍/宗教等）——不是靠
+# 顧問審核時人工看出來，是在草稿產生後就自動掃、掃到就擋下不送審，
+# 跟 audit_client_names() 同一個防線層級、同一套 block→通知顧問 的處理方式。
+LAW5_WORDS = [
+    '性別', '男性', '女性', '男生', '女生', '限男', '限女',
+    '幾歲', '年齡', '歲以下', '歲以上',
+    '已婚', '未婚', '懷孕', '生育',
+    '國籍', '外籍', '原住民',
+    '身心障礙', '殘障', '宗教', '政黨', '容貌', '長相', '星座', '血型',
+]
+
+
+def audit_law5(text):
+    t = text or ''
+    return [w for w in LAW5_WORDS if w in t]
+
+
 # 標記「以下只給顧問看」的寫法。salary_note 這一欄實務上被當成
 # 「顧問對人選的完整口徑說明」在用，裡面同時裝著可以講的話跟絕對不能講的
 # 數字（例如 BIM 那筆：對外一律面議，但備註裡完整寫著 40,833–50,167 與
@@ -584,6 +602,30 @@ def process_topic(queue_row, topic):
             )
             return
 
+        law5 = audit_law5(post)
+        if law5:
+            log(f'⚠️ {title}（話題）：草稿出現禁刊字眼 {law5}，重產一次')
+            raw2, post2 = generate_draft_topic(topic, style_row)
+            law5_2 = audit_law5(post2 or '')
+            if post2 and not law5_2:
+                raw, post, law5 = raw2, post2, []
+            else:
+                law5 = law5_2 or law5
+                if post2:
+                    raw, post = raw2, post2
+        if law5:
+            log(f'🚫 {title}（話題）：重產後仍有禁刊字眼 {law5}，不自動送審')
+            d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
+            tg_with_buttons(
+                f'🚫 <b>{title}</b>（話題）的社群草稿出現就業服務法第5條禁刊字眼，已擋下來沒有送審。\n'
+                f'命中：{"、".join(law5)}\n\n'
+                f'下面這份要用的話請自己改掉再發：\n\n{post}',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
+            return
+
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted' WHERE id={qid}")
 
         end_idx = raw.find(POST_END)
@@ -661,6 +703,32 @@ def process_job(queue_row, job, repost=False):
                 f'🚫 <b>{title}</b> 的社群草稿出現客戶公司名稱，已擋下來沒有送審。\n'
                 f'命中：{"、".join(hits)}\n\n'
                 f'社群一律不提客戶名稱（網站頁面可以具名是另一回事）。'
+                f'下面這份要用的話請自己改掉再發：\n\n{post}',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
+            return
+
+        # ── 就業服務法第5條稽核（第三道防線）──
+        # 邏輯跟上面客戶名稱那段一致：重產一次，還有就擋下不送審，交給顧問處理。
+        law5 = audit_law5(post)
+        if law5:
+            log(f'⚠️ {title}：草稿出現禁刊字眼 {law5}，重產一次')
+            raw2, post2 = generate_draft(job, account_id)
+            law5_2 = audit_law5(post2 or '')
+            if post2 and not law5_2:
+                raw, post, law5 = raw2, post2, []
+            else:
+                law5 = law5_2 or law5
+                if post2:
+                    raw, post = raw2, post2
+        if law5:
+            log(f'🚫 {title}：重產後仍有禁刊字眼 {law5}，不自動送審')
+            d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
+            tg_with_buttons(
+                f'🚫 <b>{title}</b> 的社群草稿出現就業服務法第5條禁刊字眼，已擋下來沒有送審。\n'
+                f'命中：{"、".join(law5)}\n\n'
                 f'下面這份要用的話請自己改掉再發：\n\n{post}',
                 [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
                  {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],

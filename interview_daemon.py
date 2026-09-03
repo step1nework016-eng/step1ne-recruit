@@ -1950,6 +1950,14 @@ def report_to_json(report, ctx, name='', app_id=None):
         if hit:
             # 不自動改寫——顧問要看到模型原本寫了什麼，才知道這份能不能信
             log(f'⚠️ {name} 結構化報告出現不該有的判斷字眼 {hit}，請人工看一下 content_json')
+        # 2026-09-03 加：這裡的 prompt 把整個 job dict（含顧問備註 notes）
+        # 原文塞進去，law5_hits() 原本只掃阿財對候選人講的話（見上面
+        # handle() 那段），沒掃過這份結構化報告——報告本身雖然是顧問先看，
+        # 但走的是客戶版/顧問版兩份輸出（見report_two_versions_spec），
+        # 第5條字眼不該從這裡漏進客戶版。同樣不自動改寫，只警告。
+        law5 = law5_hits(blob)
+        if law5:
+            log(f'⚠️ {name} 結構化報告出現就業服務法第5條字眼 {law5}，請人工看一下 content_json')
         return blob
     except Exception as e:
         log(f'⚠️ {name} 結構化報告產生失敗，content_json 存 NULL'
