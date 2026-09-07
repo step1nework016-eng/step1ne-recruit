@@ -29,11 +29,12 @@ import json, os, re, subprocess, sys, time, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
-SITE = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+SITE = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 LOCK = '/tmp/step1ne-jdregen.lock'
 
 sys.path.insert(0, HERE)
 import draft_job as DJ  # noqa: E402  借用 tg_send／_esc
+import slug_promote as SP  # noqa: E402  暫存網址轉正
 
 
 def log(m):
@@ -103,6 +104,29 @@ def build_spec(job, saved_spec):
     return spec
 
 
+def promote_slug_if_needed(job, saved):
+    """pending- 暫存網址在發布前轉成語意 slug。轉不成就不發布。
+
+    2026-09-07 查到 6 筆職缺就是帶著 `pending-co_802bdd6b-...` 這種暫存代號
+    公開在架上的——因為整條上架鏈路（客戶建缺 → 顧問核准 → AI 擬稿 →
+    重產頁面 → 部署）沒有任何一步負責換掉它。這裡就是那一步：
+    publish_job.py 是最後一道門（它會直接拒絕 pending- 開頭的 slug），
+    這裡是**唯一**該把它換掉的地方。
+    """
+    slug = job['slug']
+    if not SP.is_pending(slug):
+        return slug, None
+    new_slug, err = SP.promote(slug, saved.get('slug_suggestion'), d1, d1)
+    if err:
+        return slug, err
+    log(f'🔤 網址轉正：{slug} → {new_slug}')
+    DJ.tg_send(
+        f'🔤 <b>職缺網址已轉正</b>　{DJ._esc(job.get("title") or new_slug)}\n'
+        f'{DJ._esc(slug)} → <code>{DJ._esc(new_slug)}</code>（發布前轉，沒有對外過的舊網址）',
+        [], new_slug)
+    return new_slug, None
+
+
 def process_one(job):
     slug = job['slug']
     saved = {}
@@ -113,6 +137,16 @@ def process_one(job):
             log(f'⚠️ {slug} 的 jd_spec_json 壞掉，無法解析')
             mark_done(slug, error='jd_spec_json 壞掉（不是合法 JSON），需要人工檢查')
             return
+
+    slug, slug_err = promote_slug_if_needed(job, saved)
+    if slug_err:
+        log(f'⛔ 不發布：{slug_err}')
+        mark_done(job['slug'], error=slug_err)
+        DJ.tg_send(
+            f'⛔ <b>職缺沒有上架</b>　{DJ._esc(job.get("title") or job["slug"])}\n'
+            f'{DJ._esc(slug_err)}', [], job['slug'])
+        return
+    job = {**job, 'slug': slug}
 
     spec = build_spec(job, saved)
     for need in ('title', 'page_title', 'description'):

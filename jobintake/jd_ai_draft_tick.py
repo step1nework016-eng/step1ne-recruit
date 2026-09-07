@@ -107,6 +107,19 @@ def build_prompt(facts, client_named):
 3. 資料不足的欄位就不要輸出那個 key，不要編造。
 
 輸出 JSON 的欄位（能填的才填，缺資料就不要那個 key）：
+- slug：這個職缺的網址代號。**一定要有**，只能用小寫英文字母、數字與連字號
+  （例如 ehs-engineer-yunlin、engineering-design-engineer-hsinchu）。
+  寫法是「職務英文 + 工作地點英文」，3～60 個字元，不要放公司名稱，
+  不要用底線、不要中文、不要 pending 開頭。
+- industry：產業別短標籤，兩段以內用「・」分隔（例如「營建工程・高科技廠房」）。
+  這會顯示在職缺列表卡上，看得出是哪個產業就好，不要寫成一句話。
+- track：職缺分類，只能是 senior（中高階，年薪百萬等級的主管與專業職）、
+  general（一般正職僱用）、dispatch（人力派遣）三選一。判斷不出來就不要輸出這個 key。
+- cat：產業領域代號，只能從這個清單選一個：finance（財務會計）、it（資訊軟體）、
+  operations（營運供應鏈）、construction（營建工程）、semiconductor（半導體電子）、
+  overseas（海外外派）、service（客服行政）、hospitality（餐旅接待）。
+  ⚠️ 選不出來就不要輸出這個 key——填錯會把職缺歸到錯誤的篩選分類，
+  比留空更糟（職安衛工程師被歸到「客服・行政」就是這樣來的）。
 - title：職缺名稱
 - subtitle：一句話副標
 - description：SEO用一段話簡述（100字內）
@@ -168,6 +181,12 @@ def process_one(row):
         log(f'❌ AI 回傳格式不是合法 JSON：{out[:200]}')
         d1(f"UPDATE jobs SET jd_needs_ai_draft=0 WHERE slug={q(slug)}")
         return
+    # AI 給的 slug 是「建議」不是「決定」——這一輪還不能改網址，
+    # 真正轉正在發布前由 jd_regen_tick.py 做（要先確認沒有對外過、沒撞名）。
+    # 這裡只把它存起來，slug 欄位維持現況，免得這支自己把資料改壞。
+    suggestion = spec.pop('slug', None)
+    if suggestion:
+        spec['slug_suggestion'] = suggestion
     spec['slug'] = slug
     spec_json = json.dumps(spec, ensure_ascii=False)
     d1(f"UPDATE jobs SET jd_spec_json={q(spec_json)}, jd_regen_pending=1, "

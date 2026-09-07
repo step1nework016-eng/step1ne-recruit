@@ -20,7 +20,7 @@
 import os, sys, json, re, argparse, subprocess, importlib.util, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SITE = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+SITE = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview_daemon.py'))
 D = importlib.util.module_from_spec(spec); spec.loader.exec_module(D)
 spec2 = importlib.util.spec_from_file_location('bg', os.path.join(HERE, 'jobtpl', 'body_gen.py'))
@@ -144,15 +144,64 @@ def upsert_d1(j):
              updated_at=datetime('now')""")
 
 
+EMPLOYMENT_LABEL = {'FULL_TIME': '正職', 'PART_TIME': '兼職', 'CONTRACTOR': '承攬',
+                    'TEMPORARY': '派遣', 'INTERN': '實習', 'PER_DIEM': '日薪'}
+
+
+def _money(n):
+    n = int(n)
+    if n % 10000 == 0:
+        return f'{n // 10000} 萬'
+    if n % 1000 == 0:
+        return f'{n / 10000:g} 萬'
+    return f'{n:,} 元'
+
+
+def card_meta(j):
+    """列表卡的條件標籤。規格有 card_meta 就用它（那是編輯自己寫的），
+    沒有就從薪資／僱用型態／地點推——後台自動上架的規格從來就沒有
+    card_meta，結果 2026-09-07 全站 35 張卡片有 28 張是空的。
+    ⚠️ 只放規格裡真的有的東西，缺就少一格，不要為了填滿而編。"""
+    if j.get('card_meta'):
+        return list(j['card_meta'])
+    out = []
+    lo, hi = j.get('salary_min'), j.get('salary_max')
+    unit = {'MONTH': '月薪', 'YEAR': '年薪', 'HOUR': '時薪', 'DAY': '日薪'}.get(j.get('salary_unit') or 'MONTH', '月薪')
+    if lo and hi and int(lo) != int(hi):
+        a, b = _money(lo), _money(hi)
+        for sfx in (' 萬', ' 元'):
+            if a.endswith(sfx) and b.endswith(sfx):
+                a = a[: -len(sfx)]
+                break
+        out.append(f'{unit} {a}–{b}')
+    elif lo or hi:
+        out.append(f'{unit} {_money(lo or hi)}以上')
+    emp = j.get('employment') or []
+    if isinstance(emp, str):
+        emp = [emp]
+    labels = [EMPLOYMENT_LABEL[e] for e in emp if e in EMPLOYMENT_LABEL]
+    if labels:
+        out.append('／'.join(dict.fromkeys(labels)))
+    loc = (j.get('locations') or '').strip()
+    if loc:
+        out.append(loc.split('、')[0].split(',')[0].strip())
+    return out
+
+
 def update_list(j):
     """職缺列表卡。已存在就取代，不存在就插在第一張卡之前（新的排前面）。"""
     p = os.path.join(SITE, 'jobs', 'index.html'); s = open(p, encoding='utf-8').read()
-    card = (f'<a class="job" href="/jobs/{j["slug"]}/" data-track="{j.get("track","dispatch")}" '
-            f'data-cat="{j.get("cat","service")}"> '
+    desc = j.get('card_desc') or j.get('intro') or j.get('description', '')
+    # ⚠️ track／cat 沒給就留空，不要套預設值。
+    # 舊版預設是 track="dispatch" cat="service"，結果 2026-09-03 後台上架的
+    # 六筆正職工程職缺全部被歸到「派遣・客服行政」的篩選條件底下——
+    # 留空只是不出現在產業篩選裡（「全部」還是看得到），套錯值是把人導到錯的分類。
+    card = (f'<a class="job" href="/jobs/{j["slug"]}/" data-track="{j.get("track","")}" '
+            f'data-cat="{j.get("cat","")}"> '
             f'<div class="job-industry">{j.get("industry","")}</div> '
             f'<h2 class="job-title">{j["title"]}</h2> '
-            f'<div class="job-meta">{"".join(f"<span>{t}</span>" for t in j.get("card_meta", []))}</div> '
-            f'<p class="job-desc">{j.get("card_desc") or j.get("intro","")}</p> '
+            f'<div class="job-meta">{"".join(f"<span>{t}</span>" for t in card_meta(j))}</div> '
+            f'<p class="job-desc">{desc}</p> '
             f'<span class="job-more">查看職缺詳情 →</span> </a>')
     i = s.find(f'href="/jobs/{j["slug"]}/"')
     if i > 0:
@@ -162,6 +211,23 @@ def update_list(j):
         st = s.find('<a class="job"')
         s = s[:st] + card + s[st:]
     open(p, 'w', encoding='utf-8').write(s)
+
+
+def backfill_card(slug):
+    """規格補不齊的欄位，改從剛寫出去的內頁撈（JobPosting schema ＋ meta description）。
+
+    為什麼要多這一步：規格是上游給的，上游會漏；內頁是這支自己剛產出來的，
+    一定有資料。scripts/gen_job_cards.py 就是做這件事的，直接呼叫它，
+    不要在這裡再抄一份會慢慢長歪的解析邏輯。
+    """
+    gen = os.path.join(SITE, 'scripts', 'gen_job_cards.py')
+    if not os.path.exists(gen):
+        return
+    r = subprocess.run([sys.executable, gen, '--slug', slug],
+                       cwd=SITE, capture_output=True, text=True)
+    for line in (r.stdout or '').splitlines():
+        if line.strip().startswith(('補', '⚠️', '❌')):
+            print('  ' + line.strip())
 
 
 def update_sitemap(j):
@@ -190,21 +256,46 @@ def update_applyjson(j):
 
 
 def check_duplicate(j):
-    """職缺建立有好幾條互不相通的路（用人需求表 portal／招募形式評估工具／這支
-    Telegram 自建職缺流程），沒有人會互相檢查撞名——律准的「資深職業安全衛生
-    工程師」就是這樣重複建了兩筆。這裡在真的寫入前先查一次：同一個客戶
-    （client_name 文字相符）＋同樣的職稱，卻是不同的 slug，就是撞名，
-    印出來讓顧問自己決定要不要繼續（不自動擋死，怕誤判卡住正常流程）。
+    """上架前比對既有職缺標題，撞名就擋下來。
+
+    2026-09-07 Jacky 明確確認：**Step1ne 目前不存在「同一職缺不同客戶」的
+    情況，所以出現重複職稱就是錯的。** 原本這裡只比對「同一個 client_name」，
+    所以 2026-09-03 後台上架的「資深職業安全衛生工程師」跟 08-26 既有的
+    /jobs/ehs-engineer-yunlin/ 撞名沒被擋住，兩筆同時開著。
+
+    風險不只 SEO 互搶：同名職缺會讓阿財可能拿錯 JD 去面談候選人
+    （step1ne-job-posting 技能包早就寫過這條）。
+
+    ⚠️ 改成硬擋（sys.exit），不是印出來讓人自己判斷——上一版是「印出來
+    讓顧問決定」，實際結果是自動化流程沒有人在看那行字，照樣上架。
+    真的要重複就加 --force。
     """
-    client_name = j.get('client_name')
     title = (j.get('title') or '').strip()
-    if not client_name or not title:
+    if not title:
         return None
     row = D.d1(
-        f"SELECT slug, status FROM jobs WHERE trim(client_name)={D.q(client_name.strip())} "
-        f"AND trim(title)={D.q(title)} AND status != 'closed' AND slug != {D.q(j['slug'])} LIMIT 1"
+        f"SELECT slug, status, client_name FROM jobs WHERE trim(title)={D.q(title)} "
+        f"AND status != 'closed' AND slug != {D.q(j['slug'])} LIMIT 1"
     )
     return row[0] if row else None
+
+
+PENDING_SLUG = re.compile(r'^pending-')
+
+
+def check_slug_promoted(j):
+    """暫存網址不得對外公開。
+
+    客戶在 portal 自建職缺時，Worker 給的是 `pending-<company_id>-<hash>`
+    這種暫時代號（step1ne-backoffice-worker/src/index.js 的 POST /portal/:token/jobs）。
+    2026-09-07 查到有 6 筆就這樣公開在架上，網址長成
+    /jobs/pending-co_802bdd6b-3b807a75/——對候選人不可讀，對 Google 也沒有語意。
+
+    轉正的地方在 jobintake/jd_regen_tick.py（發布前），這裡是最後一道門：
+    沒轉正就不准產頁面。要處理既有那 6 筆（需要 301，不能直接改網址）
+    才用 --allow-pending-slug。
+    """
+    return bool(PENDING_SLUG.match(j.get('slug') or ''))
 
 
 def main():
@@ -213,6 +304,8 @@ def main():
     ap.add_argument('--dry', action='store_true', help='只產頁面到 /tmp，不動網站也不動 D1')
     ap.add_argument('--deploy', action='store_true', help='產完直接 git push 部署')
     ap.add_argument('--force', action='store_true', help='忽略撞名警告，強制繼續')
+    ap.add_argument('--allow-pending-slug', action='store_true',
+                    help='允許用還沒轉正的 pending- 暫存網址產頁面（只有處理既有那幾筆時才用）')
     a = ap.parse_args()
 
     j = json.load(open(a.spec_json, encoding='utf-8'))
@@ -220,11 +313,18 @@ def main():
         if not j.get(k):
             sys.exit(f'缺少必要欄位：{k}')
 
+    # --dry 只寫到 /tmp、不碰網站也不碰 D1，那不算「公開」，不擋。
     if not a.dry:
+        if check_slug_promoted(j) and not a.allow_pending_slug:
+            sys.exit(f"⚠️ 這個職缺的網址還是暫存代號（{j['slug']}），未轉正不得公開。\n"
+                     f"   正常流程會在 jd_regen_tick.py 發布前轉成語意 slug；"
+                     f"真的要用暫存網址產頁面請加 --allow-pending-slug。")
         dup = check_duplicate(j)
         if dup and not a.force:
-            sys.exit(f"⚠️ 疑似撞名：同一個客戶已經有一筆「{j['title']}」了（slug={dup['slug']}）。"
-                      f"確認不是重複職缺的話，加 --force 繼續。")
+            sys.exit(f"⚠️ 撞名：已經有一筆「{j['title']}」了（slug={dup['slug']}"
+                     f"／狀態 {dup.get('status')}／客戶 {dup.get('client_name') or '未填'}）。\n"
+                     f"   Step1ne 不存在同一職缺不同客戶的情況，重複職稱通常代表建重複了——"
+                     f"請顧問先確認要留哪一筆（另一筆關掉），或加 --force 強制繼續。")
 
     html = render_page(j)
     if a.dry:
@@ -237,12 +337,24 @@ def main():
     open(os.path.join(d, 'index.html'), 'w', encoding='utf-8').write(html)
     print(f"✅ 職缺頁　jobs/{j['slug']}/index.html　{len(html)} 字")
     update_list(j);      print('✅ 職缺列表卡')
+    backfill_card(j['slug'])
     update_sitemap(j);   print('✅ sitemap')
     update_applyjson(j); print('✅ apply/jobs.json')
     upsert_d1(j);        print('✅ D1 jobs')
 
+    # 2026-09-07 加：部署設定介面第一版——這個帳號名稱原本寫死是 Jacky 本人，
+    # 換一台機器/換一個人跑這支腳本，GitHub帳號不會自動跟著換。改成先查
+    # site_settings 有沒有設定值，沒有就照舊用 'jacky6658' 當預設，行為不變。
+    gh_user = 'jacky6658'
+    try:
+        rows = D.d1("SELECT value FROM site_settings WHERE key='github_publish_user'")
+        if rows and rows[0].get('value'):
+            gh_user = rows[0]['value']
+    except Exception:
+        pass  # 查不到就用預設值，不擋主流程
+
     if a.deploy:
-        subprocess.run(['gh', 'auth', 'switch', '-u', 'jacky6658'], capture_output=True)
+        subprocess.run(['gh', 'auth', 'switch', '-u', gh_user], capture_output=True)
         subprocess.run(['git', 'add', '-A'], cwd=SITE, check=True)
         subprocess.run(['git', 'commit', '-q', '-m',
                         f"上架職缺：{j['title']}（{j['slug']}）\n\n由 publish_job.py 產出，"
@@ -251,8 +363,8 @@ def main():
                            capture_output=True, text=True)
         print('✅ 已部署' if r.returncode == 0 else f'❌ 部署失敗：{r.stderr[-300:]}')
     else:
-        print('\n（尚未部署。確認沒問題後：cd ~/下載項目/step1ne-stopgap-site && '
-              'gh auth switch -u jacky6658 && git add -A && git commit && git push deploy HEAD:main）')
+        print(f'\n（尚未部署。確認沒問題後：cd ~/claude-projects/step1ne-stopgap-site && '
+              f'gh auth switch -u {gh_user} && git add -A && git commit && git push deploy HEAD:main）')
 
 
 if __name__ == '__main__':
