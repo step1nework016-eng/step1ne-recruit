@@ -899,10 +899,18 @@ def main():
     # 排進來、還沒產過草稿的紀錄；同時維持原本「自動掃描」的行為：開放中
     # 但從來沒被排過（不論哪個帳號）的舊職缺，自動補一筆沒指定帳號的紀錄
     # （退回 Jacky／預設帳號），不用顧問手動一個一個排。
+    # ⚠️ 兩種 slug 不是真職缺，掃到會產出沒有內容的貼文草稿：
+    #  ・unspecified：應徵表單「不確定，請顧問幫我評估」與電洽新增用的佔位缺，
+    #    標題是「尚未指定職缺（電洽新增但暫無適合職缺）」，沒有職稱／地點／內容。
+    #    2026-09-08 真的發生過：自動掃描把它當成新職缺，推了一則
+    #    「資料不足以產出貼文」的草稿到 TG 要顧問審核，純粹是噪音。
+    #  ・pending-…：後台上架但 slug 還沒轉正的，網址之後會改，
+    #    現在發出去的連結會失效。
     never_queued = d1(
         "SELECT j.slug FROM jobs j "
         "LEFT JOIN social_post_queue q ON q.job_slug = j.slug "
-        "WHERE j.status IN ('open','active') AND q.id IS NULL"
+        "WHERE j.status IN ('open','active') AND q.id IS NULL "
+        "AND j.slug <> 'unspecified' AND j.slug NOT LIKE 'pending-%'"
     )
     for r in never_queued:
         d1(f"INSERT INTO social_post_queue (job_slug, account_id, requested_at) "
