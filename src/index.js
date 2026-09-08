@@ -4855,7 +4855,10 @@ export default {
             //   ② 沒有「回覆自己」的串接概念，窗口連結直接接在本文最後
             //   ③ 發文是一次呼叫，沒有 Threads 那種「先建 container 再 publish」
             if (platform === 'linkedin') {
-              const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`;
+              // ⚠️ 一定要帶 q=<queue_id>：只有 c（顧問）+ j（職缺）的話，同一個人
+              // 發同一個缺發過多次時，/go/resolve 只能猜「最新那一篇」，舊貼文
+              // 帶來的點擊會全部被算到新貼文頭上。總點擊數是準的，但各篇排名不準。
+              const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
               const body = `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
               const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
                 method: 'POST',
@@ -4990,8 +4993,10 @@ export default {
               // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
               // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
               // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
+              // ⚠️ q=<queue_id> 一定要帶——沒帶的話同帳號同職缺發過多次時，
+              // 點擊只能猜最新那一篇，舊貼文的成效會被吃掉。
               const goLink = row.account_id
-                ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`
+                ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`
                 : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
               await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
               await env.DB.prepare(`UPDATE social_post_queue SET has_external_link=1 WHERE id=?`).bind(qid).run();
