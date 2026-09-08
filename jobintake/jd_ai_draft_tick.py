@@ -70,22 +70,50 @@ def q(v):
     return "'" + str(v).replace("'", "''") + "'"
 
 
+# ── 什麼可以印在公開網頁上，什麼只給顧問口頭講 ──
+# 2026-09-08 加。在此之前這裡是「客戶用人需求表的欄位整包丟給 AI，
+# 讓它自己決定要寫什麼」——包含客戶窗口的姓名與電話、用人主管、
+# 保護名單、合約條款。全站 34 個職缺頁實際掃過沒有洩漏，但那是靠 AI
+# 每次剛好沒寫出來，不是設計上擋住的。
+#
+# Jacky 2026-09-08：「這種東西本來就不該顯示，而是有顧問在電話去講」。
+# 分界就照這句話：**候選人決定要不要投遞需要知道的**才公開，
+# **屬於談判、內部作業、合約層級的**一律留給顧問講。
+#
+# ⚠️ 加新欄位時要主動歸類。不確定就放 CONSULTANT_ONLY——
+#    少寫一句話頂多資訊不足，寫錯一句是把客戶的窗口電話公開在網路上。
+CONSULTANT_ONLY = [
+    'client_contact_name',      # 客戶窗口姓名
+    'client_contact_phone',     # 客戶窗口電話
+    'hiring_manager',           # 用人主管
+    'off_limits_note',          # 保護名單／禁挖
+    'client_screen_conditions',  # 客戶私下的篩選條件（常含年齡、性別等不能寫的偏好）
+    'contract_terms_note',      # 合約條款——寫在網頁上就成了對候選人的承諾
+    'hiring_reason',            # 徵人原因（常常是「誰離職了」）
+    'dispatch_client',          # 派遣的真正用人客戶
+]
+
 FACT_FIELDS = [
-    'client_name', 'title', 'client_intro', 'hiring_manager', 'years_min', 'must_skills',
-    'client_screen_conditions', 'faq_notes', 'salary_note',
+    'client_name', 'title', 'client_intro', 'years_min', 'must_skills',
+    'faq_notes', 'salary_note',
     'salary_min', 'salary_max', 'salary_unit', 'locations', 'employment', 'onboard_by',
     'team_size', 'interview_rounds', 'interview_stage_config', 'interview_who', 'has_test',
-    'client_contact_name', 'client_contact_phone', 'headcount', 'work_mode',
+    'headcount', 'work_mode',
     'work_hours', 'leave_policy', 'employment_period', 'overtime_policy',
-    'hiring_reason', 'urgency', 'main_duties', 'reports_to', 'leads_team',
+    'urgency', 'main_duties', 'reports_to', 'leads_team',
     'education_level', 'required_conditions', 'language_requirement',
     'nice_to_have_skills', 'preferred_background', 'personality_traits',
     'salary_tier_table', 'salary_structure_note', 'benefits_detail',
-    'dispatch_to_permanent_policy', 'off_limits_note',
-    'dispatch_client', 'department', 'work_environment_ratio', 'attendance_method',
-    'interview_process', 'dispatch_range', 'contract_terms_note', 'overtime_detail',
+    'dispatch_to_permanent_policy',
+    'department', 'work_environment_ratio', 'attendance_method',
+    'interview_process', 'dispatch_range', 'overtime_detail',
     'onboarding_prep_note',
 ]
+
+# 防呆：兩張清單不可以有交集，改動時漏刪一邊就會被擋下來
+assert not (set(FACT_FIELDS) & set(CONSULTANT_ONLY)), \
+    '同一個欄位不能同時是「可公開」與「只給顧問」'
+
 
 
 def build_prompt(facts, client_named):
@@ -188,6 +216,12 @@ def process_one(row):
     if suggestion:
         spec['slug_suggestion'] = suggestion
     spec['slug'] = slug
+    spec, leaks = scrub_consultant_only(spec, row)
+    if leaks:
+        # 有攔到就一定要讓人知道——不然會以為 AI 本來就很乖
+        log(f'⚠️ {slug}：AI 產出裡出現只給顧問的內容，已移除 {len(leaks)} 段')
+        for k, v in leaks:
+            log(f'    {k} = {v}')
     spec_json = json.dumps(spec, ensure_ascii=False)
     d1(f"UPDATE jobs SET jd_spec_json={q(spec_json)}, jd_regen_pending=1, "
        f"jd_needs_ai_draft=0, jd_updated_at=datetime('now','+8 hours'), "
@@ -195,12 +229,80 @@ def process_one(row):
     log(f'✅ 完成，已交給重產排程：{slug}')
 
 
+
+def _leaves(node):
+    """數一個節點底下有幾段文字，用來判斷清理後有沒有缺角。"""
+    if isinstance(node, dict):
+        return sum(_leaves(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(_leaves(x) for x in node)
+    return 1 if isinstance(node, str) else 0
+
+
+def scrub_consultant_only(spec, row):
+    """輸出端攔截：只給顧問的內容不准出現在成品裡。
+
+    白名單只擋「不餵給 AI」，擋不住 AI 從別的欄位推出來，或客戶把窗口電話
+    順手打在 faq_notes 裡。這裡拿實際欄位值比對 AI 的產出，命中就拿掉。
+
+    ⚠️ 只拿掉「中招的那一小段」，不要整個容器砍掉——初版把整份
+       why 陣列都刪了（因為其中一則含窗口姓名），連乾淨的六個賣點一起消失。
+       是自己寫測試才發現的。
+    ⚠️ 只比對「夠長、夠特別」的值。hiring_manager 填「無」這種拿去全文比對，
+       會把所有含「無」的句子都殺光。
+    """
+    hits = []
+
+    def dirty(text):
+        t = str(text)
+        for k in CONSULTANT_ONLY:
+            v = str(row.get(k) or '').strip()
+            if len(v) < 4 or v in ('無', 'N/A', 'na', '不限', 'None'):
+                continue
+            if v in t:
+                hits.append((k, v[:30]))
+                return True
+        return False
+
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if isinstance(v, str):
+                    if dirty(v):
+                        continue          # 只丟這一個欄位
+                    out[k] = v
+                else:
+                    out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            out = []
+            for x in node:
+                if isinstance(x, str):
+                    if dirty(x):
+                        continue          # 只丟這一則
+                    out.append(x)
+                else:
+                    cleaned = walk(x)
+                    # ⚠️ 一則裡面只要有任何一段被拿掉，整則就丟掉。
+                    #    留半截會變成「只有標題沒有內文」「只有問題沒有答案」，
+                    #    看起來像頁面壞了，比少一則更糟。
+                    if cleaned and _leaves(cleaned) == _leaves(x):
+                        out.append(cleaned)
+            return out
+        return node
+
+    return walk(spec), hits
+
+
 def main():
     if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < 600:
         return
     open(LOCK, 'w').write(str(os.getpid()))
     try:
-        cols = ', '.join(FACT_FIELDS)
+        # ⚠️ 查詢要連 CONSULTANT_ONLY 一起撈：那些欄位不會餵給 AI（只給
+        #    FACT_FIELDS），但輸出端的攔截需要拿實際值去比對 AI 的產出。
+        cols = ', '.join(FACT_FIELDS + CONSULTANT_ONLY)
         rows = d1(f"SELECT slug, client_named, {cols} FROM jobs "
                   f"WHERE jd_needs_ai_draft = 1 ORDER BY jd_updated_at ASC LIMIT 1")
         if not rows:
