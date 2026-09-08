@@ -167,7 +167,11 @@ def card_meta(j):
     out = []
     lo, hi = j.get('salary_min'), j.get('salary_max')
     unit = {'MONTH': '月薪', 'YEAR': '年薪', 'HOUR': '時薪', 'DAY': '日薪'}.get(j.get('salary_unit') or 'MONTH', '月薪')
-    if lo and hi and int(lo) != int(hi):
+    # 2026-09-07 Jacky 定的規則：
+    #   月薪 → 一律只寫下限「N 萬起，依經歷面議」，不寫上限。
+    #          寫死區間會變成談薪的天花板，而且實際待遇本來就依經歷核定。
+    #   年薪 → 才寫區間（高階職缺的年薪區間是招募資訊的一部分）。
+    if unit == '年薪' and lo and hi and int(lo) != int(hi):
         a, b = _money(lo), _money(hi)
         for sfx in (' 萬', ' 元'):
             if a.endswith(sfx) and b.endswith(sfx):
@@ -175,7 +179,11 @@ def card_meta(j):
                 break
         out.append(f'{unit} {a}–{b}')
     elif lo or hi:
-        out.append(f'{unit} {_money(lo or hi)}以上')
+        base = lo or hi
+        if unit == '月薪':
+            out.append(f'{unit} {_money(base)}起，依經歷面議')
+        else:
+            out.append(f'{unit} {_money(base)}以上')
     emp = j.get('employment') or []
     if isinstance(emp, str):
         emp = [emp]
