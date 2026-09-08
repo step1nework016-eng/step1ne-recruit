@@ -132,8 +132,17 @@ def process_one(req_row):
                          'client_named': client_named, 'ai_disclosure': job[0]['ai_disclosure'],
                          'client_relation': client_relation})
 
+    # 2026-09-08 加：顧問在「製作客戶版履歷」彈窗勾了哪些區塊。
+    # 沒帶就是 None＝全部照預設（硬條件仍然預設關閉）。
+    show = None
+    if req_row.get('show_json'):
+        try:
+            show = json.loads(req_row['show_json'])
+        except Exception:
+            show = None      # 壞掉就當沒勾，不要因此整份做不出來
+
     try:
-        html = deliver.build_client_html(data, meta)
+        html = deliver.build_client_html(data, meta, show=show)
     except Exception as e:
         D.d1(f"UPDATE client_report_requests SET status='error', error={D.q(f'組HTML失敗：{e}')}, "
              f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
@@ -163,7 +172,7 @@ def process_one(req_row):
 
 
 def tick():
-    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json FROM client_report_requests "
                 "WHERE status='pending' ORDER BY requested_at ASC LIMIT 5")
     for row in rows:
         try:
