@@ -899,19 +899,20 @@ def main():
     # 排進來、還沒產過草稿的紀錄；同時維持原本「自動掃描」的行為：開放中
     # 但從來沒被排過（不論哪個帳號）的舊職缺，自動補一筆沒指定帳號的紀錄
     # （退回 Jacky／預設帳號），不用顧問手動一個一個排。
-    # ⚠️ 兩種 slug 不是真職缺，掃到會產出沒有內容的貼文草稿：
-    #  ・unspecified：應徵表單「不確定，請顧問幫我評估」與電洽新增用的佔位缺，
-    #    標題是「尚未指定職缺（電洽新增但暫無適合職缺）」，沒有職稱／地點／內容。
-    #    2026-09-08 真的發生過：自動掃描把它當成新職缺，推了一則
-    #    「資料不足以產出貼文」的草稿到 TG 要顧問審核，純粹是噪音。
-    #  ・pending-…：後台上架但 slug 還沒轉正的，網址之後會改，
-    #    現在發出去的連結會失效。
-    never_queued = d1(
-        "SELECT j.slug FROM jobs j "
-        "LEFT JOIN social_post_queue q ON q.job_slug = j.slug "
-        "WHERE j.status IN ('open','active') AND q.id IS NULL "
-        "AND j.slug <> 'unspecified' AND j.slug NOT LIKE 'pending-%'"
-    )
+    # ── 自動補排隊：2026-09-08 停用 ──
+    # 原本這裡會把「開放中但從沒排過的職缺」自動補一筆**沒指定帳號**的排隊紀錄，
+    # 產出草稿推到 TG 等人認領。Jacky 2026-09-08 明確指示：沒有透過後台手動
+    # 設定的自動產文都要停，顧問手動按發文的才留。
+    #
+    # ⚠️ 而且它跟「草稿放超過 3 天自動刪除」會互咬成無限迴圈：
+    #    這裡判斷「從沒排過」用的是 social_post_queue 有沒有那一列，
+    #    清理把列刪掉之後，它就又當成新職缺重新產一次。
+    #    2026-09-08 當天真的發生：早上刪掉 25 筆沒人認領的草稿，
+    #    13:21 這支就一口氣把 9 個職缺重新產了一輪，全部一樣沒人認領。
+    #
+    # 要重開的話，**必須先改成不會跟清理互咬的判斷**（例如清理改成標記
+    # status='expired' 而不是真的刪列），否則同樣的迴圈會再來一次。
+    never_queued = []
     for r in never_queued:
         d1(f"INSERT INTO social_post_queue (job_slug, account_id, requested_at) "
            f"VALUES ({q(r['slug'])}, NULL, datetime('now','+8 hours'))")
