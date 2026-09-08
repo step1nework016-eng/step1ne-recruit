@@ -2875,6 +2875,24 @@ async function handleLineEvent(env, ev) {
             + `應徵表單連結 👇\n${applyUrl}`;
           return lineReply(env, replyToken, msg);
         }
+        // ⚠️ 2026-09-08 修：上面那個 job_title 判斷原本是「查不到職稱就完全
+        // 不回話」。真實事故：候選人 18:55 從 pending-co_802bdd6b-9868182d
+        // 那篇貼文進來、送出預填訊息，那個 slug 是重複匯入產生的孤兒代號、
+        // jobs 表裡查不到，於是系統一個字都沒回，人就這樣晾在那裡。
+        // 候選人主動來問而系統靜默是最糟的結果，所以改成分三種情況：
+        //   ① 真職缺（查得到 job_title）→ 上面那段，照原本推應徵流程
+        //   ② 話題貼文（job_slug 以 💬 開頭，是借位不是真職缺）→ 維持原行為，
+        //      不主動回覆、只默默記歸因，不要對著看話題文的人推應徵
+        //   ③ 查不到職缺、也不是話題貼文 → 這裡：一定要回一則通用訊息，
+        //      把人導去職缺列表，不能卡死
+        const isTopicPost = String(click.job_slug || '').startsWith('💬');
+        if (!binding && !isTopicPost) {
+          const msg = `嗨嗨 👋 感謝您的詢問！\n\n`
+            + `這則貼文的職缺連結有點問題，我這邊沒有抓到對應的職缺 🙏\n\n`
+            + `您可以直接看目前所有開放中的職缺 👇\nhttps://step1ne.com/jobs/\n\n`
+            + `或是直接在這裡回覆您有興趣的職缺名稱，顧問會盡快跟您聯繫 📞`;
+          return lineReply(env, replyToken, msg);
+        }
         text = text.replace(lcMatch[0], '').trim();
       }
     } catch { /* 歸因失敗不能擋掉候選人原本的對話 */ }
