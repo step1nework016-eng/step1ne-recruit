@@ -894,13 +894,52 @@ def timeout_close(c):
             _busy.discard(cid)
 
 
+# ── 阿福掛掉要主動說 ──
+# 2026-09-08 加，跟 interview_daemon 同一套理由：阿財 2026-09-07 晚上連續
+# 兩分鐘查不到資料（搬家後指著已經不存在的舊路徑），log 一直噴錯但沒人知道，
+# 隔天翻 log 才發現。健檢也是候選人在線上等回話的即時流程，同樣要會喊。
+#
+# ⚠️ 連續 3 次（約 24 秒）才推，同一次故障只推一則，恢復再推一則。
+_POLL_FAILS = 0
+_POLL_ALERTED = False
+POLL_FAIL_ALERT_AT = 3
+
+
+def _poll_failed(e):
+    global _POLL_FAILS, _POLL_ALERTED
+    _POLL_FAILS += 1
+    log(f'查詢進行中健檢對談失敗（連續第 {_POLL_FAILS} 次）：{e}')
+    if _POLL_FAILS >= POLL_FAIL_ALERT_AT and not _POLL_ALERTED:
+        _POLL_ALERTED = True
+        try:
+            tg(f'🔴 阿福連不上資料庫，已經連續失敗 {_POLL_FAILS} 次\n\n'
+               f'錯誤：{str(e)[:200]}\n\n'
+               f'現在如果有人在做履歷健檢，阿福不會回話。\n'
+               f'恢復的話我會再推一則。', THREAD_SYSTEM)
+        except Exception:
+            pass
+
+
+def _poll_ok():
+    global _POLL_FAILS, _POLL_ALERTED
+    if _POLL_ALERTED:
+        try:
+            tg(f'🟢 阿福恢復正常了（中間失敗了 {_POLL_FAILS} 次）\n\n'
+               f'那段期間有人在健檢的話，請去看一下他有沒有卡住。', THREAD_SYSTEM)
+        except Exception:
+            pass
+    _POLL_FAILS = 0
+    _POLL_ALERTED = False
+
+
 def tick():
     parse_pending()
     try:
         rows = active_checkups()
     except Exception as e:
-        log(f'查詢進行中健檢對談失敗：{e}')
+        _poll_failed(e)
         return
+    _poll_ok()
 
     expired_rows = expired(rows)
     expired_ids = {r['id'] for r in expired_rows}

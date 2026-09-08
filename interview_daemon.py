@@ -2513,12 +2513,54 @@ def held_too_long(rows):
     return out
 
 
+# ── 阿財掛掉要主動說 ──
+# 2026-09-08 加。2026-09-07 晚上 21:35–21:37 阿財連續兩分鐘查不到資料
+# （搬家後排程還指著舊路徑 /Users/user/工作流程技能包/…，資料夾已經不在了），
+# log 每 8 秒噴一次錯，但**沒有任何人知道**——是隔天翻 log 才發現的。
+# 當下若有候選人在面談，阿財就是不回話，候選人只會覺得系統壞了。
+#
+# ⚠️ 不是失敗一次就叫。網路瞬斷、D1 偶發逾時都很正常，叫了會變狼來了。
+#    連續 3 次（約 24 秒）都失敗才推，而且同一次故障只推一則。
+#    恢復時再推一則，才知道要不要繼續處理。
+_POLL_FAILS = 0
+_POLL_ALERTED = False
+POLL_FAIL_ALERT_AT = 3
+
+
+def _poll_failed(e):
+    global _POLL_FAILS, _POLL_ALERTED
+    _POLL_FAILS += 1
+    log(f'查詢進行中面談失敗（連續第 {_POLL_FAILS} 次）：{e}')
+    if _POLL_FAILS >= POLL_FAIL_ALERT_AT and not _POLL_ALERTED:
+        _POLL_ALERTED = True
+        try:
+            tg(f'🔴 阿財連不上資料庫，已經連續失敗 {_POLL_FAILS} 次\n\n'
+               f'錯誤：{str(e)[:200]}\n\n'
+               f'現在如果有候選人在面談，阿財不會回話。\n'
+               f'恢復的話我會再推一則。', THREAD_SYSTEM)
+        except Exception:
+            pass
+
+
+def _poll_ok():
+    global _POLL_FAILS, _POLL_ALERTED
+    if _POLL_ALERTED:
+        try:
+            tg(f'🟢 阿財恢復正常了（中間失敗了 {_POLL_FAILS} 次）\n\n'
+               f'那段期間有候選人在面談的話，請去看一下他有沒有卡住。', THREAD_SYSTEM)
+        except Exception:
+            pass
+    _POLL_FAILS = 0
+    _POLL_ALERTED = False
+
+
 def tick():
     try:
         rows = active_sessions()
     except Exception as e:
-        log(f'查詢進行中面談失敗：{e}')
+        _poll_failed(e)
         return
+    _poll_ok()
 
     # 進場通知放最前面：這件事跟回話、收尾都無關，而且顧問越早知道越有用。
     notify_started(rows)
