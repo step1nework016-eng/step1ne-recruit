@@ -32,7 +32,41 @@ def env_with_cf():
     return env
 
 
+# ── D1 走 HTTP，不再每次查詢都開一個 node ──
+# 2026-09-08 加。原本每查一次就 subprocess 一個 `npx wrangler d1 execute`，
+# npx 再拉起 node，一次約 100MB＋冷啟動。這支 daemon 每 8 秒輪詢一次，
+# 三支 daemon 加起來一分鐘要開快 30 次 node——8GB 的機器負載衝到 17、
+# 交換檔吃掉 5GB。改成直接打 D1 REST API，同樣的查詢不開任何子行程。
+# HTTP 失敗一律退回原本的 wrangler：面談是候選人正在等的即時流程，
+# 寧可慢也不能斷。
+try:
+    import d1_http as _D1H
+except Exception:
+    _D1H = None
+_D1H_WARNED = False
+
+
+def _d1_http_try(sql):
+    """成功回傳結果 dict，不能用就回 None（讓呼叫端走 wrangler）。"""
+    global _D1H_WARNED
+    if not (_D1H and _D1H.available()):
+        return None
+    try:
+        return _D1H.query(sql)
+    except Exception as e:
+        if not _D1H_WARNED:
+            _D1H_WARNED = True
+            try:
+                log(f'D1 HTTP 失敗，改用 wrangler（只提醒這一次）：{e}')
+            except Exception:
+                pass
+        return None
+
+
 def d1(sql):
+    _h = _d1_http_try(sql)
+    if _h is not None:
+        return _h.get('results', [])
     r = subprocess.run(
         ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json',
          f'--command={sql}'],
