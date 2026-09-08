@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每日話題研究——headhunter-social-content-skill 技能包的本地執行器。
 
-技能包本體在 ~/工作流程技能包/recruiting-workflow/headhunter-social-content-skill/
+技能包本體在 ~/claude-projects/工作流程技能包/recruiting-workflow/headhunter-social-content-skill/
 （2026-09-03 Jacky 給的 zip，六個 workflow 都驗收過，見該資料夾的 VALIDATION.md）。
 這支只接手該技能包 references/telegram-integration-todo.md 點名要做但還沒做的
 「串進既有 AI Agent 系統」那一步。
@@ -38,7 +38,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
 SKILL_DIR = os.path.expanduser(
-    '~/工作流程技能包/recruiting-workflow/headhunter-social-content-skill')
+    '~/claude-projects/工作流程技能包/recruiting-workflow/headhunter-social-content-skill')
 DB = 'step1ne-recruit'
 MODEL = 'claude-sonnet-5'
 TIMEOUT = 600

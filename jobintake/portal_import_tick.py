@@ -62,7 +62,7 @@ FIELD_LABELS = {
     'headcount': '需求人數', 'work_mode': '辦公型態',
     'work_hours': '上班時間', 'leave_policy': '休假方式', 'employment_period': '工作期間',
     'overtime_policy': '加班情形',
-    'hiring_reason': '招募原因', 'urgency': '急迫程度',
+    'hiring_reason': '招募原因', 'hiring_reason_note': '招募原因補充說明（例如是哪個專案）', 'urgency': '急迫程度',
     'main_duties': '主要工作職責', 'reports_to': '直接匯報對象', 'leads_team': '是否帶團隊',
     'education_level': '學歷要求', 'required_conditions': '必備條件', 'language_requirement': '語言能力',
     'nice_to_have_skills': '加分技能／經驗', 'preferred_background': '偏好背景',

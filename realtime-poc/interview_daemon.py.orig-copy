@@ -388,7 +388,7 @@ def notify_candidate(app_id, abandoned):
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過候選人通知信')
         req = urllib.request.Request(
-            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/interview-done',
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/interview-done',
             data=json.dumps({'id': app_id, 'abandoned': bool(abandoned)}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
                      # Cloudflare 會擋掉 Python-urllib 的預設 UA，一定要換掉
@@ -418,7 +418,7 @@ def save_report(app_id, content_md, content_json):
             log('找不到 RECRUIT_ADMIN_TOKEN，報告存不進去')
             return None
         req = urllib.request.Request(
-            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/report-ingest',
+            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/report-ingest',
             data=json.dumps({'application_id': app_id, 'content_md': content_md,
                               'content_json': content_json}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
@@ -591,25 +591,6 @@ def push_report_files(app_id, name, job_slug):
 #
 # ⚠️ 整段是「附加價值」，不是面談的一部分。任何一步失敗都只記 log，
 #    絕對不可以讓面談收尾流程掛掉——finish() 那邊也再包一層 try/except。
-def _client_named_from_relation(relation):
-    """把 client_companies.relation（客戶關係，公司層級的單一事實來源）換算成
-    deliver.py 要的 client_named／client_relation。
-
-    ⚠️ 2026-09-04 抓到的坑：jobs.client_named／jobs.client_relation 是每個
-    職缺各自存一份的「複本」，跟 client_companies.relation 這個真正的事實
-    來源脫鉤——同一個客戶（築樂國際開發）底下4個職缺，只有1個複本正確標成
-    已簽約，其餘3個還是預設的匿名值，孫悅推薦到其中一個漏標的職缺，報告就
-    被錯誤匿名化了。正確做法是永遠拿 client_companies.relation 換算，
-    不要相信 jobs 表上那份可能沒同步更新的複本。
-    """
-    r = relation or ''
-    if r == 'signed':
-        return 1, 'signed'
-    if r == 'private':
-        return 0, 'private'
-    return 0, 'unsigned'  # negotiating / prospect / end_client / 空值，一律當作還沒簽約
-
-
 def _delivery_meta(app_id, name, job_slug, abandoned):
     """把樣板需要、但 content_json 裡沒有的欄位補齊。
 
@@ -624,15 +605,12 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
         f"a.resume_url, a.resume_url_note, a.resume_file_id, "
         f"a.disc_d, a.disc_i, a.disc_s, a.disc_c, "
         f"a.interview_started_at, a.interview_ended_at, "
-        f"a.call_summary_client_md, a.call_summary_client_at, "
-        f"j.title AS job_title, j.ai_disclosure, cc.relation AS client_company_relation "
+        f"j.title AS job_title, j.client_named, j.ai_disclosure, j.client_relation "
         f"FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug "
-        f"LEFT JOIN client_companies cc ON cc.id = j.company_id "
         f"WHERE a.id = {q(app_id)}")
     if not rows:
         return meta
     r = rows[0]
-    client_named, client_relation = _client_named_from_relation(r.get('client_company_relation'))
     meta.update({
         'job_title': r.get('job_title') or job_slug,
         # 應徵表單填的社群連結。報告只放連結本身、不做任何評價——
@@ -640,28 +618,16 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
         'social_links': r.get('social_links'),
         # ⚠️ 這兩個是客戶隱私與法遵開關，不要給預設值。
         # deliver.is_anonymous() 對 NULL 一律從嚴當匿名處理。
-        # 2026-09-04 改：一律從 client_companies.relation 換算，不要相信
-        # jobs 表上可能沒同步更新的複本（見 _client_named_from_relation 註解）。
-        'client_named': client_named,
+        'client_named': r.get('client_named'),
         'ai_disclosure': r.get('ai_disclosure'),
         # 客戶對象（signed／unsigned／private）。private＝朋友私人協助，
         # 客戶版報告不可以有任何 Step1ne 品牌痕跡，見 deliver._branding()。
-        'client_relation': client_relation,
+        'client_relation': r.get('client_relation'),
         'expected_salary': r.get('expected_salary'),
         'available_date': r.get('available_date'),
         'location_ok': r.get('location_ok'),
         'disc': {'d': r.get('disc_d'), 'i': r.get('disc_i'),
                  's': r.get('disc_s'), 'c': r.get('disc_c')},
-        # 顧問電洽補充：顧問確認過的客戶安全版（deliver._callup() 用）。
-        # 面談剛結束當下這兩欄一定是空的（還沒打電話），自動投遞那次
-        # 本來就不該有這段，跟規格「不會有電洽版，保留不動」一致。
-        'call_summary_client': r.get('call_summary_client_md'),
-        'call_summary_at': r.get('call_summary_client_at'),
-        # 2026-09-04 加：interview_started_at 是空的代表這個人選從沒真的跟AI
-        # 阿財開始過面談——Jacky確認過這是允許的正常流程（純顧問電洽也可以），
-        # 但報告樣板原本無條件都寫「已完成AI結構化初步面談」，會把顧問電洽
-        # 問到的內容誤標成AI面談問到的。deliver.py要靠這個欄位挑對的說法。
-        'has_real_interview': bool(r.get('interview_started_at')),
     })
     if r.get('resume_file_id'):
         meta['resume'] = {'kind': 'file', 'filename': None}
@@ -1017,7 +983,7 @@ SCHEMA_HINT = """
 
 
 SKILL_PATH = os.path.expanduser(
-    '~/claude-projects/工作流程技能包/recruiting-workflow/interview-conductor/SKILL.md')
+    '~/工作流程技能包/recruiting-workflow/interview-conductor/SKILL.md')
 
 
 def skill(section, job=None):
@@ -1625,7 +1591,6 @@ REPORT_JSON_SPEC = r'''
     "residence": "居住地，縣市＋區。履歷或表單沒寫就填 null",
     "commute_note": "從居住地到職缺地點的距離／通勤可行性，一句話。算不出來就 null",
     "age": "年齡，例如「41 歲（1985/2 生）」。⚠️ 只抄履歷上寫的，不准從畢業年份推算，沒寫填 null",
-    "gender": "性別，只抄履歷／表單上他自己填的，沒寫填 null",
     "education": "最高學歷（學校＋科系），沒寫填 null",
     "languages": "語言能力，含證照等級，沒寫填 null",
     "certificates": "證照／駕照，沒寫填 null",
@@ -1645,7 +1610,7 @@ REPORT_JSON_SPEC = r'''
   "work_history": [
     {"employer": "公司名或（未具名）", "role": "", "duration": "",
      "source": "履歷|口述|未提供", "nature": "雇主|接案客戶",
-     "note": "面談中針對這段經歷實際問到、確認到的內容，沒問到就空字串。⚠️ 開頭要依內容加對應標籤：離職原因該段是本人目前這份工作，且面談問到想動機時填「離職原因：...」；這段之前有空窗且面談問到原因時填「入職前空窗說明：...」；面談中確認/驗證到這段工作實際做過什麼（技能、經驗、案例）時填「過往經歷與技能驗證：...」；都不屬於這幾類但面談有問到相關內容，才不加標籤直接寫。沒問到的不要編。"}
+     "note": ""}
   ],
   "resume_vs_spoken": [
     {"item": "年資", "resume_says": "", "candidate_says": "",
@@ -1668,13 +1633,6 @@ REPORT_JSON_SPEC = r'''
      "depth": "具體|籠統|未談到",
      "note": "只寫可查證的事實，例如「說得出專案規模與工具」「講不出遇過的問題」"}
   ],
-  "language_verification": {
-    "required_language": "職缺要求驗證的語言，例如「日文」；職缺沒有要求就填 null",
-    "tested": true,
-    "verdict": "通過|不通過|未測試",
-    "how": "口說|文字|null",
-    "evidence": "他當場用該語言回答的原話一句，沒測就空字串"
-  },
   "fit_scores": {
     "dimensions": [
       {"name": "硬條件符合度", "score": 0, "evidence": "", "note": ""},
@@ -1689,21 +1647,12 @@ REPORT_JSON_SPEC = r'''
     "assessment": [{"trait": "S 穩定型", "score": 9,
                     "verified": "面談印證|未觀察到|不一致", "evidence": ""}],
     "communication_style": "",
-    "engagement": "一句人話，例如「全程專注，沒有中途離開」",
-    "axis_notes": [
-      "內斂↔外向這一軸的判斷依據，一句話，引用他實際的說話方式或原話，不要用形容詞空泛帶過",
-      "重執行細節↔重整體策略這一軸的判斷依據，一句話",
-      "需要明確指示↔自主推進這一軸的判斷依據，一句話",
-      "條件導向↔認同導向這一軸的判斷依據，一句話（通常從離職動機或選擇這份工作的原因來判斷）"
-    ]
+    "engagement": "一句人話，例如「全程專注，沒有中途離開」"
   },
   "candidate_questions": [{"question": "", "answered": true, "note": ""}],
   "for_client": {
     "reasons": ["三點"], "risks_to_disclose": ["要主動揭露的"],
-    "suggested_questions": ["建議客戶面試追問"],
-    "job_fit_pros": ["針對『這個職缺』的優勢，2~3點，每點一句話，要跟職缺內容掛勾，不是泛泛的優點"],
-    "job_fit_cons": ["針對『這個職缺』需要留意的地方，2~3點，每點一句話，同樣要跟職缺內容掛勾"],
-    "trait_one_liner": "把特質與風格四軸的整體結論濃縮成一句話，講清楚這個人適合怎樣的工作方式、跟這個職缺搭不搭"
+    "suggested_questions": ["建議客戶面試追問"]
   },
   "consultant_followups": ["顧問還要自己追問的事，有幾件寫幾件"]
 }
@@ -1721,9 +1670,8 @@ REPORT_JSON_RULES = (
     '3. `hard_conditions` 每一筆的 `evidence_source` 一定要填，不可留空——\n'
     '   顧問要知道每一條依據是哪裡來的。真的不知道就填「未確認」。\n'
     '4. 就業服務法第 5 條的保護特徵（年齡、性別、婚姻、生育、國籍…）：\n'
-    '   **年齡、性別、居住地寫進 `basics`（2026-09-04 Jacky 決定客戶版也要有性別），\n'
-    '   其餘（婚姻、生育、國籍…）一律不要出現在任何欄位。**\n'
-    '   ⚠️ `basics` 只抄履歷或應徵表單上他自己填的，**不准從畢業年份推算年齡、不准用姓名猜性別**，\n'
+    '   **年齡與居住地寫進 `basics`，其餘一律不要出現在任何欄位。**\n'
+    '   ⚠️ `basics` 只抄履歷或應徵表單上他自己填的，**不准從畢業年份推算年齡**，\n'
     '   沒寫就填 null。這一區只做事實揭露，**不准出現在任何判斷句裡**——\n'
     '   不准寫「年齡偏大可能不適合」這種。\n'
     '   純文字報告裡若有「需顧問評估的客戶條件」那一段，該段的內容不要搬進 JSON。\n'
@@ -1755,25 +1703,6 @@ REPORT_JSON_RULES = (
     '    這場已經問清楚的不要再寫進來；真的沒有就給空陣列，那是好事不是漏寫。\n'
     '    ⚠️ 尤其專業題庫上線後，很多原本要顧問補問的專業問題阿財當場就問完了，\n'
     '    這一欄本來就該變短。\n'
-    '14. `observations.axis_notes` **一定要四句都填**，依序對應：內斂↔外向、\n'
-    '    重執行細節↔重整體策略、需要明確指示↔自主推進、條件導向↔認同導向。\n'
-    '    每句是「你為什麼覺得他落在這一軸的哪一邊」的具體依據，盡量引用他\n'
-    '    實際的說話方式或原話（例如「回答普遍簡短，平均一句15字內」），\n'
-    '    不要寫「他看起來比較內向」這種你自己的形容詞，那是結論不是依據。\n'
-    '    這四句會直接印在客戶版報告的光譜圖底下，是唯一佐證那個點為什麼\n'
-    '    落在那裡的文字，四軸缺一句，那一軸在客戶版就會是啞巴的一個點。\n'
-    '15. `for_client.job_fit_pros`／`job_fit_cons`／`trait_one_liner` 都是針對\n'
-    '    「這個人＋這個職缺」的組合寫的，不是泛用的人格優缺點——同一個人格特質\n'
-    '    放到不同職缺，優勢劣勢會不一樣。要具體點出跟這個職缺的哪個要求有關，\n'
-    '    不要寫「個性穩定」這種放哪個職缺都成立的空話。\n'
-    '16. ⚠️ `language_verification`：職缺有要求外語時（見【職缺與客戶】那段），\n'
-    '    這欄一定要填。2026-09-07 Jacky 明確拍板：**用打字回答外語一樣算通過**，\n'
-    '    不是只有語音才算——判斷標準是「他有沒有在那一題當場、獨立用該語言給出\n'
-    '    有實質內容的回答」（不是照抄題目、不是查完翻譯軟體才回），不看他是打字\n'
-    '    還是錄音回的。符合就 `verdict` 填「通過」、`how` 據實填「口說」或「文字」；\n'
-    '    他答不出來或明顯迴避才填「不通過」；那一題因為故障、跳過、忘記問而根本\n'
-    '    沒發生，才填「未測試」——這三種是完全不同的情況，不要混著判斷。\n'
-    '    職缺沒有外語要求，整欄照 SPEC 的 null／預設值處理，不要自己編一個語言出來測。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -1846,7 +1775,7 @@ def _normalize_report_json(obj):
     #    但這裡沒接，結果 content_json 裡永遠是 null。加欄位時兩邊都要改。
     bsc = obj.get('basics') if isinstance(obj.get('basics'), dict) else {}
     out['basics'] = {k: (s(bsc.get(k)) or None) for k in
-                     ('residence', 'commute_note', 'age', 'gender', 'education',
+                     ('residence', 'commute_note', 'age', 'education',
                       'languages', 'certificates', 'military')}
     out['basics']['source'] = s(bsc.get('source')) or '履歷／應徵表單，非面談詢問'
 
@@ -1894,14 +1823,9 @@ def _normalize_report_json(obj):
         assess.append({'trait': s(a.get('trait')), 'score': score,
                        'verified': s(a.get('verified')) or '未觀察到',
                        'evidence': s(a.get('evidence'))})
-    axis_notes_raw = arr(ob.get('axis_notes'))
-    axis_notes = [s(x) or None for x in axis_notes_raw[:4]]
-    while len(axis_notes) < 4:
-        axis_notes.append(None)
     out['observations'] = {'assessment': assess,
                            'communication_style': s(ob.get('communication_style')),
-                           'engagement': s(ob.get('engagement')),
-                           'axis_notes': axis_notes}
+                           'engagement': s(ob.get('engagement'))}
 
     out['candidate_questions'] = [
         {'question': s(c.get('question')), 'answered': bool(c.get('answered')),
@@ -1910,9 +1834,7 @@ def _normalize_report_json(obj):
 
     fc = obj.get('for_client') if isinstance(obj.get('for_client'), dict) else {}
     out['for_client'] = {k: [s(x) for x in arr(fc.get(k)) if s(x)]
-                         for k in ('reasons', 'risks_to_disclose', 'suggested_questions',
-                                   'job_fit_pros', 'job_fit_cons')}
-    out['for_client']['trait_one_liner'] = s(fc.get('trait_one_liner'))
+                         for k in ('reasons', 'risks_to_disclose', 'suggested_questions')}
 
     # 到職障礙的逐條結果。這一段跟專業能力無關，是「他到底能不能來上班」——
     # 顧問看報告時最常被燙到的就是這裡：人選很好、談完了，才發現簽證下不來。
@@ -1930,19 +1852,6 @@ def _normalize_report_json(obj):
          'depth': s(f.get('depth')) if s(f.get('depth')) in ('具體', '籠統', '未談到') else '未談到',
          'note': s(f.get('note'))}
         for f in arr(obj.get('expertise_findings')) if isinstance(f, dict)]
-
-    # 2026-09-07 加：職缺要求外語時，這欄是「有沒有真的驗過」的唯一結構化依據。
-    # ⚠️ 這個欄位存在的理由：finish() 會直接讀這裡的 verdict 決定要不要把
-    # applications.lang_verified_at 標記成已驗證——欄位名/值域改了，finish()
-    # 那段判斷邏輯要一起改，不然又會變回「怎麼測都測不出通過」的舊 bug。
-    lv = obj.get('language_verification') if isinstance(obj.get('language_verification'), dict) else {}
-    out['language_verification'] = {
-        'required_language': s(lv.get('required_language')) or None,
-        'tested': bool(lv.get('tested')),
-        'verdict': s(lv.get('verdict')) if s(lv.get('verdict')) in ('通過', '不通過', '未測試') else '未測試',
-        'how': s(lv.get('how')) if s(lv.get('how')) in ('口說', '文字') else None,
-        'evidence': s(lv.get('evidence')),
-    }
 
     # ── 六維度適配評分 ──
     # 2026-08-19 加。原本報告只有 verdict 四選一（值得轉／資訊不足／硬條件不符／
@@ -2142,21 +2051,6 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     # 失敗就是 None → 存 NULL，純文字報告照存，不影響下面任何一步。
     report_json = report_to_json(report, ctx, name, app_id=app_id)
 
-    # 2026-09-07 加：這是 lang_verified_at 唯一會被寫入的地方——之前整支
-    # 系統只會「讀」這個欄位（收尾時拿來決定要不要跳警告），但完全沒有任何
-    # 程式碼會「寫」它，所以只要職缺有外語要求，警告一定會跳，不管候選人
-    # 面談中表現得多好（真實案例：林怡瑩用打字回了兩段完整日文問答，阿財
-    # 當場也認可了，但因為沒人寫這個欄位，警告照樣誤報成「沒收到驗證紀錄」）。
-    # Jacky 2026-09-07 拍板：打字回答跟語音一樣算數，判斷交給
-    # report_json.language_verification（阿財自己在收尾產報告時填的欄位），
-    # 不是看有沒有語音檔。
-    try:
-        lv = (report_json or {}).get('language_verification') or {}
-        if lv.get('verdict') == '通過':
-            d1(f"UPDATE applications SET lang_verified_at=datetime('now','+8 hours') WHERE id={q(app_id)}")
-    except Exception as ex:
-        log(f'（寫入 lang_verified_at 失敗，不影響交付：{ex}）')
-
     rid = save_report(app_id, report, report_json)
     if not rid:
         tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
@@ -2192,22 +2086,12 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
                 f"LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = {q(app_id)}")
         if jl and (jl[0].get('interview_language') or '').strip() and not jl[0].get('lang_verified_at'):
             lang = jl[0]['interview_language']
-            # 2026-09-07 改：這裡不再假設「一定是語音沒收到」——現在的判斷依據是
-            # report_json.language_verification，區分「不通過」（真的答不出來／
-            # 迴避）跟「未測試」（那一題根本沒發生，故障/跳過/忘記問）是兩種
-            # 完全不同的狀況，訊息要講清楚是哪一種，不要都講成「沒收到驗證紀錄」。
-            lv = (report_json or {}).get('language_verification') or {}
-            verdict = lv.get('verdict')
-            if verdict == '不通過':
-                detail = (f'這場**有測**，但候選人{lang}回答不出來或明顯迴避'
-                          f'{"（" + lv.get("evidence") + "）" if lv.get("evidence") else ""}。')
-            else:
-                detail = (f'這場**沒有測到**（可能是故障、跳過，或忘記問），'
-                          f'不是候選人答得不好——報告裡的{lang}相關描述只有證照與自述，沒有實測佐證。')
-            tg(f'🚨 {name}（{job_slug}）這場的 **{lang}實測沒有通過驗證**。\n\n'
-               f'{detail}\n'
-               f'⚠️ 送客戶前請先補驗或在推薦時講清楚。\n\n'
-               f'補驗連結（候選人單獨錄一段，不用重開整場面談；打字回答也算數）：\n'
+            tg(f'🚨 {name}（{job_slug}）這場的 **{lang}實測沒有完成**。\n\n'
+               f'這個職缺把 {lang} 列為面談要驗的能力，但這場沒有收到任何語音驗證紀錄'
+               f'（可能是故障、跳過，或候選人沒錄）。\n'
+               f'⚠️ 報告裡的{lang}相關描述**只有證照與自述**，沒有實測佐證，'
+               f'送客戶前請先補驗或在推薦時講清楚。\n\n'
+               f'補驗連結（候選人單獨錄一段，不用重開整場面談）：\n'
                f'https://step1ne.com/interview/?t={jl[0].get("chat_token") or ""}',
                THREAD_POOL)
     except Exception as ex:

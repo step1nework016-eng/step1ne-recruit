@@ -8,7 +8,7 @@
 的顧問帳號動態代換（每個職缺的摘要內容不分顧問，只有 LINE 連結因人
 而異，沒必要每個顧問各存一份幾乎一樣的內容）。
 
-範本在 ~/工作流程技能包/recruiting-workflow/candidate-inquiry-summary/
+範本在 ~/claude-projects/工作流程技能包/recruiting-workflow/candidate-inquiry-summary/
 SKILL.md（Jacky 提供，2026-09-03）——嚴格照裡面的格式、保密規則、
 禁止事項執行，不自己加規則。
 
@@ -45,7 +45,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
 SKILL_PATH = os.path.expanduser(
-    '~/工作流程技能包/recruiting-workflow/candidate-inquiry-summary/SKILL.md')
+    '~/claude-projects/工作流程技能包/recruiting-workflow/candidate-inquiry-summary/SKILL.md')
 DB = 'step1ne-recruit'
 MODEL = 'claude-sonnet-5'
 TIMEOUT = 180
@@ -134,6 +134,26 @@ def build_prompt(job):
 「{{{{LINE_LINK}}}}」這個佔位符原樣保留（含大括號），我會在顧問實際
 複製使用時，依當下是哪位顧問動態換成他自己的連結——你不知道會是誰，
 不要猜。
+
+⚠️ 原始資料裡有些欄位（尤其 salary_note）寫的是給你的內部口徑指示，
+不是要你逐條講給候選人聽的內容——那是顧問寫給你的備註（例如標了
+【】的段落、「不要對候選人講」這類文字），你只需要照著那些限制去
+「精簡改寫」，不能因為原始資料寫得詳細就跟著輸出很長。整篇輸出仍要
+嚴格照 SKILL.md 的固定格式與長度（10-20秒可讀完），不能變成好幾段的
+完整說明。
+
+⚠️ 薪資如果原始資料沒有寫死金額或明確區間（例如寫「業主未公告」「顧問
+初談了解條件後再確認」這類流程描述），輸出就只寫「依學經歷面議」或
+「依經驗核定，實際待遇面談時談」這種一句話帶過，不要把「顧問會先了解
+你的條件」「顧問會怎麼問」這種議薪的過程步驟寫進候選人看的訊息裡——
+候選人不需要在這則訊息就知道議薪怎麼進行，講太細反而像在預告等一下
+要盤問他。
+
+⚠️ 這則訊息的目的只有一個：讓候選人秒懂職缺重點、有興趣就用 LINE
+找顧問聊。**絕對不要在文案裡向候選人提出任何問題**（例如問期望薪資、
+問方便聯絡時間、問有沒有相關經驗）——就算原始資料裡寫「要主動問
+候選人」，那是指顧問後續電訪時要問的事，不是這則第一輪訊息的內容。
+輸出結尾就是固定的面試流程說明＋LINE連結，中間不能夾雜任何提問句。
 
 以下是這個職缺的原始資料：
 

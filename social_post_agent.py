@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
 
 SKILL_PATH = os.path.expanduser(
-    '~/工作流程技能包/recruiting-workflow/social-recruiting-post/SKILL.md')
+    '~/claude-projects/工作流程技能包/recruiting-workflow/social-recruiting-post/SKILL.md')
 
 # 貼文用的模型——這是一次性、非即時的工作，用跟阿財/阿福一樣的模型即可，
 # 不需要另外挑更貴或更快的。
@@ -496,6 +496,32 @@ def generate_draft(job, account_id):
     return raw, strip_address_numbers(post) if post else None
 
 
+# ⚠️ 2026-09-03 加：職缺文的「純CTA型／對話討論型」不是 SKILL.md 那套
+# 「職缺情報｜」固定欄位格式——是 BIM_THREADS_PLAYBOOK.md 定案的公式化寫法
+# （數字反直覺／身份切割／真實轉述…），結構完全不同，不能套 skill(account_id)
+# 那條路。這裡另外組一版 prompt：用「一鍵發文」選的那個 style_prompts 當
+# 主要寫作指示，職缺事實資料附在後面當「素材」而不是硬性欄位清單。
+#
+# CTA_KEYWORD 目前還沒有職缺專屬的關鍵字欄位（下一步才接），先讓模型自己
+# 挑一個好記、跟這個職缺有關的詞（通常是地點或職稱關鍵字），不要空著或
+# 留下未替換的 {{CTA_KEYWORD}} 字樣。
+def generate_draft_job_styled(job, style_row):
+    facts = format_job_requirement(job)
+    style_body = style_row['body'].replace(
+        '{{CTA_KEYWORD}}',
+        '（你自己想一個好記、跟這個職缺有關的關鍵字，通常是地點或職稱裡的一個詞，例如地名或職稱簡稱）'
+    )
+    prompt = (
+        style_body
+        + '\n\n【這個職缺的原始資料——自由運用，挑對這篇公式有幫助的部分即可，'
+          '不用照抄成清單格式，也不用全部用到】\n' + facts
+        + WRAP_INSTRUCTION
+    )
+    raw = run_claude(prompt)
+    post = extract_post(raw) if raw else None
+    return raw, strip_address_numbers(post) if post else None
+
+
 # ⚠️ 2026-09-03 加：話題／時事討論類貼文，跟職缺招募文是兩種東西——SKILL.md
 # 整份是「職缺情報｜」這個固定格式的招募文模板，套在話題文上完全文不對題
 # （模型會被迫硬套「工作內容」「招募資訊」那些欄位）。話題類型改用這份更
@@ -545,6 +571,20 @@ def _consultant_style_for_topic(account_id):
     return _style_by_id(rows[0]['topic_style_id'])
 
 
+def _recent_posts_for_topic(topic_id, limit=5):
+    """這個話題 id 之前實際產出過的貼文內容——不分有沒有真的發布，
+    只要是這個話題產過的草稿都算，因為就算沒發布，角度也已經被用掉了。
+    2026-09-04 加：解決「同一顧問同一話題重複用，每次都長一樣」的問題。"""
+    if not topic_id:
+        return []
+    rows = d1(
+        f"SELECT draft FROM social_post_queue "
+        f"WHERE topic_id={q(topic_id)} AND draft IS NOT NULL AND draft != '' "
+        f"ORDER BY requested_at DESC LIMIT {int(limit)}"
+    )
+    return [r['draft'] for r in rows if r.get('draft')]
+
+
 def format_topic_requirement(topic, style_row):
     """話題內容是 Jacky／Phoebe 自己寫的策略簡報，不是使用者輸入或客戶欄位，
     不用像 format_job_requirement() 那樣白名單過濾——但風格提示詞跟話題內容
@@ -552,6 +592,18 @@ def format_topic_requirement(topic, style_row):
     parts = [f"【這次話題的切入方向】\n{topic['body']}"]
     if style_row:
         parts.append(f"【這則貼文要用的語氣風格：{style_row['name']}】\n{style_row['body']}")
+
+    # ⚠️ 2026-09-04 加：同一個話題提示詞被重複選用時，原本每次都從同一份
+    # body 重新產，角度骨架幾乎一樣，只是措辭不同——對「要靠 Threads 反覆
+    # 曝光同一個主題（例如AI阿財）建立信任」這種用法完全不夠。查這個話題
+    # 之前實際產過的內容，附進去叫它換角度，不要重複同一個切入點或例子。
+    past = _recent_posts_for_topic(topic.get('id'))
+    if past:
+        listed = '\n\n'.join(f'（第{i+1}篇）{p}' for i, p in enumerate(past))
+        parts.append(
+            '【這個話題之前已經產過的貼文——這次要換一個新角度，不要重複下面的切入點、'
+            '比喻或舉例，就算主題一樣也要找沒講過的面向】\n' + listed
+        )
     return '\n\n'.join(parts)
 
 
@@ -626,7 +678,13 @@ def process_topic(queue_row, topic):
             )
             return
 
-        d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted' WHERE id={qid}")
+        # 2026-09-04 加：Threads觀察系統要比較「話題成效」，得先知道每篇話題文
+        # 屬於哪種角度（category：ai＝AI阿財信任建立／general＝一般互動），
+        # 沒有這個標記，儀表板的分類比較就永遠是空的。
+        mission_tag = {'ai': 'trust_building', 'general': 'engagement'}.get(topic.get('category'), 'general')
+        length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
+        d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
+           f"content_mission={q(mission_tag)}, content_length={q(length_tag)} WHERE id={qid}")
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
@@ -674,9 +732,18 @@ def process_job(queue_row, job, repost=False):
     qid = queue_row['id']
     slug, title = job['slug'], job['title']
     account_id = queue_row.get('account_id')
+    # 2026-09-03 加：一鍵發文選了「純CTA型／對話討論型」哪個公式，會存
+    # style_id——有的話用那套公式化寫法（generate_draft_job_styled），沒有
+    # （原始格式，或排程/舊資料沒選）就退回原本的 skill(account_id)/SKILL.md。
+    style_id = queue_row.get('style_id')
+    style_row = _style_by_id(style_id) if style_id else None
+
+    def gen():
+        return generate_draft_job_styled(job, style_row) if style_row else generate_draft(job, account_id)
+
     try:
-        log(f'{title}（{slug}）：產生貼文草稿中…')
-        raw, post = generate_draft(job, account_id)
+        log(f'{title}（{slug}）：產生貼文草稿中…' + (f'（套用「{style_row["name"]}」）' if style_row else ''))
+        raw, post = gen()
         if not raw or not post:
             log(f'❌ {title}：claude 沒有回東西')
             return
@@ -688,7 +755,7 @@ def process_job(queue_row, job, repost=False):
         hits = audit_client_names(post)
         if hits:
             log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，重產一次')
-            raw2, post2 = generate_draft(job, account_id)
+            raw2, post2 = gen()
             hits2 = audit_client_names(post2 or '')
             if post2 and not hits2:
                 raw, post, hits = raw2, post2, []
@@ -715,7 +782,7 @@ def process_job(queue_row, job, repost=False):
         law5 = audit_law5(post)
         if law5:
             log(f'⚠️ {title}：草稿出現禁刊字眼 {law5}，重產一次')
-            raw2, post2 = generate_draft(job, account_id)
+            raw2, post2 = gen()
             law5_2 = audit_law5(post2 or '')
             if post2 and not law5_2:
                 raw, post, law5 = raw2, post2, []
@@ -739,7 +806,12 @@ def process_job(queue_row, job, repost=False):
         # draft 只存乾淨的文案（會被拿去真的發布）；完整原文（含合規檢查／
         # 附加輸出）只送進 Telegram 給顧問看，不落地存表，顧問要留紀錄的話
         # 自己在 Telegram 裡搜。
-        d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted' WHERE id={qid}")
+        # 2026-09-04 加：Threads觀察系統要比較「哪個公式表現好」，得先知道每篇
+        # 職缺文是用哪套公式寫的（style_row 的 subtype，沒選公式就是預設寫法）。
+        formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
+        length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
+        d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
+           f"content_formula={q(formula_tag)}, content_length={q(length_tag)} WHERE id={qid}")
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
@@ -762,8 +834,9 @@ def process_job(queue_row, job, repost=False):
         msg_id = tg_with_buttons(
             f"📱 全民獵才貼文草稿\n"
             f"帳號：{acct_label or '（未指定帳號）'}\n"
-            f"職缺：{title}{'　（重新產出）' if repost else ''}\n\n"
-            f"── 以下會被公開發布 ──\n{post}\n\n"
+            f"職缺：{title}{'　（重新產出）' if repost else ''}\n"
+            + (f"公式：{style_row['name']}\n" if style_row else '')
+            + f"\n── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
             [
                 {'text': '✅ 確認發布', 'callback_data': f'soc_approve:{qid}'},

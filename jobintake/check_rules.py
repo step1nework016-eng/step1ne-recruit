@@ -24,7 +24,7 @@ import json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
-SITE = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+SITE = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 
 KEYS = ('client_named', 'ai_disclosure', 'brand_mode')
 

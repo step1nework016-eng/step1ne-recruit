@@ -20,7 +20,7 @@
     python3 publish_approved.py --intake <id>    # 只處理指定那一筆
 
 ⚠️ 這支**不會 git push**。產完檔案要不要部署由人決定：
-   cd ~/下載項目/step1ne-stopgap-site && git add -A && git commit && git push deploy HEAD:main
+   cd ~/claude-projects/step1ne-stopgap-site && git add -A && git commit && git push deploy HEAD:main
 """
 import os, sys, json, argparse, subprocess, importlib.util
 import re, uuid, secrets, datetime
@@ -123,7 +123,7 @@ def upsert_extra_columns(spec):
     D.d1(f"UPDATE jobs SET {', '.join(sets)} WHERE slug={D.q(spec['slug'])}")
 
 
-SITE_ROOT = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+SITE_ROOT = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 
 
 def git_push(spec):

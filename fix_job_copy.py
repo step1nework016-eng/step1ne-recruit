@@ -71,7 +71,7 @@ D = _daemon()
 d1, q = D.d1, D.q
 
 
-SITE_REPO = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+SITE_REPO = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 
 
 def page_source(slug):

@@ -132,7 +132,9 @@ details dt{color:var(--ink3)} details dd{margin:0;color:var(--ink2)}
   .two{grid-template-columns:1fr 1fr}
   .jobs{gap:8px}
   .jobs>div{padding:11px 14px}
-  .track{margin:10px 0 14px}
+  /* 2026-09-04 修：同 client.html——.track 在 PDF 裡沒有捲軸，超出頁寬會被
+     直接切斷，「各段實際做了什麼」已是同一份資料的完整版，紙本不需要。 */
+  .track{display:none}
   ol li{margin-bottom:6px}
   .mot{gap:6px 15px}
 }

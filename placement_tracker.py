@@ -233,9 +233,46 @@ def migrate():
 # ────────────────────────────────────────────────────────────
 def tick(dry_run=False):
     rows = d1("SELECT * FROM placements WHERE COALESCE(is_test_data,0)=0")
+
+    # 2026-09-04 加：這支程式自己的 14 態狀態機，跟其他兩個「這個人選已經有
+    # 結論了」的地方是三本沒有互通的帳——查證呂皓宇真實案例才發現：他不是
+    # 客戶在 portal 標不推進（client_rejected_at 是空的），是**顧問自己**
+    # 7/30 就在初篩報告決定不推薦（reports.consultant_decision='rejected'），
+    # 這支程式完全不知道，卡在 AWAITING_CLIENT_FEEDBACK 生生提醒了 31 天。
+    # 兩種「已經有結論」都要查，任一個成立就跳過。
+    rejected_rows = d1("SELECT application_id, company_id FROM candidate_forwards WHERE client_rejected_at IS NOT NULL")
+    rejected_set = {(r['application_id'], r['company_id']) for r in rejected_rows}
+    # 一個人可能有好幾份報告（重新評估過），只看最新一份的決定——早期報告
+    # 寫 rejected、後來改判 forwarded 的話，不能被舊決定卡住。
+    latest_decision = {}
+    for r in d1("""SELECT application_id, consultant_decision, created_at FROM reports
+                   ORDER BY application_id, created_at DESC"""):
+        if r['application_id'] not in latest_decision:
+            latest_decision[r['application_id']] = r['consultant_decision']
+    consultant_rejected_apps = {app_id for app_id, dec in latest_decision.items() if dec == 'rejected'}
+
+    # 同樣道理，把真實的面試階段（manual_stage）跟用人單位在 portal 排的
+    # 實際年月日時分（stage_events）都撈起來，讓提醒文字講得出「現在卡在
+    # 哪、客戶上次排幾點」，不是只講這支程式自己那套粗略的階段名。
+    stage_rows = d1("SELECT application_id, company_id, manual_stage FROM candidate_forwards WHERE manual_stage IS NOT NULL")
+    manual_stage_map = {(r['application_id'], r['company_id']): r['manual_stage'] for r in stage_rows}
+    event_rows = d1("SELECT application_id, company_id, event_at FROM stage_events WHERE event_at IS NOT NULL ORDER BY id DESC")
+    latest_event_map = {}
+    for r in event_rows:
+        key = (r['application_id'], r['company_id'])
+        if key not in latest_event_map:
+            latest_event_map[key] = r['event_at']
+    STAGE_LABEL = {'stage1': '第一階段', 'stage2': '第二階段', 'stage3': '第三階段',
+                   'stage4': '第四階段', 'offer': '錄取', 'onboard': '報到'}
+
     created, notified = 0, []
 
     for r in rows:
+        if (r['application_id'], r.get('client_id')) in rejected_set:
+            continue  # 用人單位已經在 portal 標記不推進，不是卡住，不是這支程式該管的事了
+        if r['application_id'] in consultant_rejected_apps:
+            continue  # 顧問自己在初篩報告就決定不推薦，同樣不是卡住
+
         bucket, days = aging_bucket(r['stage'], r['stage_since'])
         if bucket in (None, 'NORMAL'):
             continue
@@ -245,10 +282,18 @@ def tick(dry_run=False):
                        f"AND status='open' ORDER BY created_at DESC LIMIT 1")
         contact = client_contact_status(r.get('client_id'))
 
+        real_stage = manual_stage_map.get((r['application_id'], r.get('client_id')))
+        progress_note = ''
+        if real_stage:
+            progress_note = f"；目前真實面試階段：{STAGE_LABEL.get(real_stage, real_stage)}"
+            latest_event = latest_event_map.get((r['application_id'], r.get('client_id')))
+            if latest_event:
+                progress_note += f"，用人單位排的時間：{latest_event}"
+
         if bucket in ('FOLLOW_UP_DUE', 'OVERDUE', 'CRITICAL_STALE') and not open_task:
             draft = draft_followup_message(r) if contact == 'VERIFIED' else None
             reason = (f"{r['candidate_name']}｜{r.get('job_title') or r['job_slug']}｜"
-                     f"卡在 {r['stage']} 已 {days} 天")
+                     f"卡在 {r['stage']} 已 {days} 天{progress_note}")
             if not dry_run:
                 d1(f"""INSERT INTO followup_tasks
                        (id, placement_id, created_at, aging_bucket, days_stale, reason,
@@ -260,7 +305,8 @@ def tick(dry_run=False):
 
         if bucket == 'CRITICAL_STALE':
             text = (f"🔴 CRITICAL_STALE｜{r['candidate_name']}｜{r.get('job_title') or r['job_slug']}\n"
-                   f"卡在 {r['stage']} 已 {days} 天，{'聯絡窗口缺失，需要人工先找到人再跟進' if contact=='MISSING' else '請跟進'}\n"
+                   f"卡在 {r['stage']} 已 {days} 天{progress_note}，"
+                   f"{'聯絡窗口缺失，需要人工先找到人再跟進' if contact=='MISSING' else '請跟進'}\n"
                    f"owner：{r.get('owner') or '（未指定）'}")
             if not dry_run:
                 notify('CRITICAL_STALE', text)

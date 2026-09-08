@@ -280,3 +280,30 @@ owner：phoebe
 [09:30:43]   建立待辦：[測試]防重複B｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
 [09:30:58]   建立待辦：[測試]履歷上限｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
 [09:30:58] 本輪：新增待辦 2 筆，發出通知 4 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜呂皓宇｜BIM 工程師（無經驗可・正職）
+卡在 AWAITING_CLIENT_FEEDBACK 已 31 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：phoebe
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜呂皓宇
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:49]   建立待辦：[測試]即時彙整｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:31:03]   建立待辦：[測試]UI驗證｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:31:19]   建立待辦：[測試]合併報告｜BIM 工程師｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:31:35]   建立待辦：[測試]電洽附件摘要｜日本項目財務會計（Finance & Accounting／Project Controller）｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:31:35] 本輪：新增待辦 4 筆，發出通知 2 則
+[09:30:38]   建立待辦：陳亭瑾｜VIP貴賓接待服務員（晚班）｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:30:38] 本輪：新增待辦 1 筆，發出通知 0 則
+[09:30:53] 本輪：新增待辦 0 筆，發出通知 0 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:31:00] 本輪：新增待辦 0 筆，發出通知 1 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:31:15] 本輪：新增待辦 0 筆，發出通知 1 則

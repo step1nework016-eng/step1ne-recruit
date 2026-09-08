@@ -116,7 +116,7 @@ def main():
                 return
             log('  頁面已產出')
             if PUSH_ON_APPROVE:
-                site = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+                site = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
                 subprocess.run(['git', 'add', '-A'], cwd=site, timeout=120)
                 subprocess.run(['git', 'commit', '-q', '-m', f'新增職缺：{title}'], cwd=site, timeout=120)
                 subprocess.run(['git', 'push', '-q', 'deploy', 'main'], cwd=site, timeout=300)

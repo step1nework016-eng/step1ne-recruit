@@ -193,7 +193,7 @@ def check_site_drift(dry):
     ⚠️ status 有 open 跟 active 兩個值意思一樣（歷史遺留，兩個都有程式在讀），
     這裡兩個都當成「應該要在官網上看得到」。
     """
-    site = os.path.expanduser('~/下載項目/step1ne-stopgap-site')
+    site = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
     if not os.path.isdir(site):
         return
     rows = D.d1("SELECT slug, title FROM jobs WHERE COALESCE(status,'open') IN ('open','active')")
@@ -216,7 +216,7 @@ def check_site_drift(dry):
             # 與禁刊過濾流程，不是搬資料而已，亂生一頁比沒有更糟。
             alert(f'「{title}」在官網上不存在',
                   '資料庫狀態是開放招募，但官網沒有這個職缺頁，求職者看不到也應徵不了',
-                  f'跑：cd ~/工作流程技能包/step1ne-recruit && python3 publish_job.py <職缺規格.json>')
+                  f'跑：cd ~/claude-projects/工作流程技能包/step1ne-recruit && python3 publish_job.py <職缺規格.json>')
             continue
         if slug not in apply_slugs:
             missing.append('應徵表單下拉')

@@ -4161,13 +4161,20 @@ export default {
 
           // 話題文最後一步：等顧問打字回覆主題描述（不是網址才會走到這裡）
           if (spSess && spSess.step === 'sp_await_label' && spText) {
+            // 2026-09-08 改：打完主題不再直接寫進去。原本匯入只存網址跟職缺／主題，
+            // 完全沒問寫法，結果 110 篇 Threads 貼文裡有 9 篇是「未標記」——
+            // 顧問自己在 App 上發完才貼網址回來的那些，系統不知道用了什麼寫法，
+            // 成效比較表裡就變成一格比不了的空白。現在比照後台「一鍵發文」的
+            // 三層選擇，匯入時一樣問完再存。
             const label = spText.slice(0, 200);
-            await env.DB.prepare(
-              `INSERT INTO social_post_queue (job_slug, account_id, status, requested_at, posted_at, url)
-               VALUES (?,?,?,?,?,?)`
-            ).bind(`💬 ${label}`, spSess.data.accountId, 'posted', nowTaipei(), nowTaipei(), spSess.data.url).run();
-            await ncClearSession(env, spRow.chat.id, spRow.from.id);
-            await ncSend(env, spRow.chat.id, spThreadId, `✅ 已匯入成效追蹤（話題：${label}）`);
+            await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_pick_mission',
+              { ...spSess.data, label });
+            await ncSend(env, spRow.chat.id, spThreadId, `這篇話題是哪一種？（${label}）`, {
+              inline_keyboard: [[
+                { text: '💼 通用文', callback_data: 'sp_mis:general' },
+                { text: '🤖 AI阿財話題', callback_data: 'sp_mis:ai' },
+              ]],
+            });
             return new Response('ok');
           }
         }
@@ -4227,16 +4234,90 @@ export default {
             return new Response('ok');
           }
 
+          // 匯入的最後一步共用：真正寫進 social_post_queue。
+          // ⚠️ style_id／content_formula／content_mission 一定要一起寫，
+          //    少寫就會變成成效表上比不了的「未標記」。
+          const spFinish = async (row) => {
+            await env.DB.prepare(
+              `INSERT INTO social_post_queue
+                 (job_slug, account_id, status, requested_at, posted_at, url,
+                  style_id, content_formula, content_mission)
+               VALUES (?,?,?,?,?,?,?,?,?)`
+            ).bind(row.jobSlug, sess.data.accountId, 'posted', nowTaipei(), nowTaipei(),
+                   sess.data.url, row.styleId || null, row.formula || null, row.mission || null).run();
+            await ncClearSession(env, spChatId, spCq.from.id);
+            await ncSend(env, spChatId, spThreadId2, `✅ 已匯入成效追蹤\n${row.summary}`);
+          };
+
           if (spCq.data.startsWith('sp_job:')) {
             const slug = spCq.data.slice('sp_job:'.length);
             const job = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(slug).first();
-            await env.DB.prepare(
-              `INSERT INTO social_post_queue (job_slug, account_id, status, requested_at, posted_at, url)
-               VALUES (?,?,?,?,?,?)`
-            ).bind(slug, sess.data.accountId, 'posted', nowTaipei(), nowTaipei(), sess.data.url).run();
             await spAns();
-            await ncClearSession(env, spChatId, spCq.from.id);
-            await ncSend(env, spChatId, spThreadId2, `✅ 已匯入成效追蹤（職缺：${(job && job.title) || slug}）`);
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way',
+              { ...sess.data, slug, jobTitle: (job && job.title) || slug });
+            await ncSend(env, spChatId, spThreadId2,
+              `這篇職缺文用哪一種寫法？（${(job && job.title) || slug}）`, {
+                inline_keyboard: [[
+                  { text: '純CTA型', callback_data: 'sp_way:pure' },
+                  { text: '對話討論型', callback_data: 'sp_way:dialog' },
+                ], [
+                  { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+                ]],
+              });
+            return new Response('ok');
+          }
+
+          // 職缺文｜選寫法類型。純CTA／原始格式選完就結束，
+          // 對話討論型還要再挑是哪一個公式（跟後台表單同一套 style_prompts）。
+          if (spCq.data.startsWith('sp_way:')) {
+            const way = spCq.data.slice('sp_way:'.length);
+            await spAns();
+            if (way === 'dialog') {
+              const { results: styles } = await env.DB.prepare(
+                `SELECT id, name FROM style_prompts WHERE subtype='dialog' ORDER BY id`).all();
+              if (styles && styles.length) {
+                await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_style', sess.data);
+                await ncSend(env, spChatId, spThreadId2, '是哪一個公式？', {
+                  inline_keyboard: styles.map((x) => ([{ text: x.name, callback_data: `sp_sty:${x.id}` }])),
+                });
+                return new Response('ok');
+              }
+              // 公式表空的就不要卡住顧問，當成沒指定公式的對話討論型存下去
+              await spFinish({ jobSlug: sess.data.slug, formula: 'dialog',
+                summary: `職缺：${sess.data.jobTitle}\n寫法：對話討論型（沒有可選的公式）` });
+              return new Response('ok');
+            }
+            if (way === 'pure') {
+              const pure = await env.DB.prepare(
+                `SELECT id FROM style_prompts WHERE subtype='pure' LIMIT 1`).first();
+              await spFinish({ jobSlug: sess.data.slug, styleId: pure && pure.id, formula: 'pure',
+                summary: `職缺：${sess.data.jobTitle}\n寫法：純CTA型` });
+              return new Response('ok');
+            }
+            await spFinish({ jobSlug: sess.data.slug, formula: 'default',
+              summary: `職缺：${sess.data.jobTitle}\n寫法：原始格式` });
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sp_sty:')) {
+            const styleId = spCq.data.slice('sp_sty:'.length);
+            const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=?`).bind(styleId).first();
+            await spAns();
+            await spFinish({ jobSlug: sess.data.slug, styleId, formula: 'dialog',
+              summary: `職缺：${sess.data.jobTitle}\n寫法：${(st && st.name) || '對話討論型'}` });
+            return new Response('ok');
+          }
+
+          // 話題文｜通用文 vs AI阿財話題。存 content_mission，
+          // 對應顧問後台成效頁面 classify() 的判斷（engagement／trust_building）。
+          if (spCq.data.startsWith('sp_mis:')) {
+            const kind = spCq.data.slice('sp_mis:'.length);
+            await spAns();
+            await spFinish({
+              jobSlug: `💬 ${sess.data.label}`,
+              mission: kind === 'ai' ? 'trust_building' : 'engagement',
+              summary: `話題：${sess.data.label}\n種類：${kind === 'ai' ? 'AI阿財話題' : '通用文'}`,
+            });
             return new Response('ok');
           }
         }

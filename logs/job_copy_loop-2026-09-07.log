@@ -1,0 +1,172 @@
+[09:00:00] ① 逐一稽核＋修文案（同一個職缺一次做完，不分開跑）
+backend-engineer-game business-operations-manager cloud-ops-engineer finance-controller-overseas fnb-brand-cs-zhonghe frontend-engineer-game game-phone-cs-zhonghe group-it-head mobile-game-cs-neihu ops-support-engineer-fintech payment-cs-night-zhonghe product-assistant-fintech receptionist-neihu vip-hospitality-attendant executive-assistant-japan-taiwan clinic-nurse-neihu brand-social-video-editor-neihu headhunter-consultant live-streamer-home hakuba-resort-property-manager finance-accounting-insurance-dispatch vip-hospitality-attendant-night bim-engineer-tongluo finance-group-treasury-head-xinyi pending-co_1620c14f-cbe39c49 japan-project-finance-taipei unspecified pending-co_802bdd6b-106ca482 pending-co_802bdd6b-dd0123c6 pending-co_802bdd6b-9ffc1f8d pending-co_802bdd6b-8bd0eb29 pending-co_802bdd6b-3b807a75 pending-co_802bdd6b-64500461
+[09:00:25] backend-engineer-game：稽核中…
+[09:02:41] ✅ backend-engineer-game：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 1 點
+[09:02:52] backend-engineer-game：修文案中…
+[09:04:22] ✅ backend-engineer-game：產出 2 處修正、3 件要人決定
+[09:04:25]    套用：成功 2 處
+✏️ 後端開發工程師（.NET）　已改 2 處並上線
+
+🙋 3 件要你決定：
+・請跟業主確認這個職缺的薪資下限或範圍：若確定不低於新台幣4萬元，可用「月薪不低於新台幣OO萬元起，依經驗面議」呈現；若可能低於4萬元，則需公
+・請工程確認「職缺條件一覽」卡片區塊為何沒有輸出內容，並修復顯示
+・請確認是否要調整區塊順序（屬於版面/HTML結構搬動，這輪文案修改不處理，避免搬動大段HTML破壞標籤配對）
+
+https://step1ne.com/jobs/backend-engineer-game/
+[09:04:37] business-operations-manager：稽核中…
+[09:06:27] ✅ business-operations-manager：建議修改／吸引力 3 點、敏感寫法 0 點、必須擋下 0 點
+[09:06:48] business-operations-manager：修文案中…
+[09:07:54] ✅ business-operations-manager：產出 1 處修正、0 件要人決定
+[09:07:57]    套用：成功 1 處
+[09:07:58] （TG 發送失敗，修正版已存進資料庫）：<urlopen error [Errno 54] Connection reset by peer>
+✏️ 營運發展主管 Business Operations Manager　已改 1 處並上線
+
+https://step1ne.com/jobs/business-operations-manager/
+[09:08:07] cloud-ops-engineer：稽核中…
+[09:10:57] ✅ cloud-ops-engineer：要修文案／吸引力 2 點、敏感寫法 1 點、必須擋下 1 點
+[09:11:07] cloud-ops-engineer：修文案中…
+[09:12:12] ✅ cloud-ops-engineer：產出 1 處修正、2 件要人決定
+[09:12:15]    套用：成功 1 處
+✏️ 雲端維運工程師　已改 1 處並上線
+
+🙋 2 件要你決定：
+・請業主提供此職缺實際起薪下限或區間，確認是否達到新台幣4萬元以上：若未達4萬，需公開最低薪資或區間（不能只寫面議）；若已確認達4萬以上，可維
+・是否要調整「為什麼選擇這個機會」五張卡片的排列順序？這涉及搬動整段HTML區塊，請人工確認調整後標籤配對與版面沒有跑掉。
+
+https://step1ne.com/jobs/cloud-ops-engineer/
+[09:12:26] finance-controller-overseas：稽核中…
+[09:15:47] ✅ finance-controller-overseas：要修文案／吸引力 3 點、敏感寫法 0 點、必須擋下 1 點
+[09:16:08] finance-controller-overseas：修文案中…
+[09:18:33] ✅ finance-controller-overseas：產出 2 處修正、3 件要人決定
+[09:18:53]    套用：成功 2 處
+✏️ 財務主管 Finance Controller　已改 2 處並上線
+
+🙋 3 件要你決定：
+・請跟承辦顧問確認柬埔寨當地廠區實際的產業別（醫療相關製造，還是紡織成衣），才能修正『加分條件』的產業描述，或補一句說明集團旗下涵蓋醫療與其他
+・是否要把『為什麼選擇這個機會』整段搬到工作內容之前？這是大範圍搬動HTML區塊，需要人工確認並排版測試後才能上線，我不會自行搬動
+・是否要把這句免責聲明從『職缺條件一覽』區塊搬到頁面下方？這也是搬動HTML位置，需要人工確認排版後再處理
+
+https://step1ne.com/jobs/finance-controller-overseas/
+[09:19:04] fnb-brand-cs-zhonghe：稽核中…
+[09:21:56] ✅ fnb-brand-cs-zhonghe：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 2 點
+[09:22:14] fnb-brand-cs-zhonghe：修文案中…
+[09:24:12] ✅ fnb-brand-cs-zhonghe：產出 6 處修正、2 件要人決定
+[09:24:29]    套用：成功 6 處
+✏️ 餐飲品牌客服　已改 6 處並上線
+
+🙋 2 件要你決定：
+・是否要調整頁面區塊順序，把『為什麼選擇這個機會』搬到副標正下方？這涉及搬動整段 HTML 區塊，需要工程確認搬動後標籤結構是否正常，我這輪先
+・是否要調整這段但書的位置或樣式？這也牽涉搬動/改動排版區塊，我這輪先不動，請確認後再處理。
+
+https://step1ne.com/jobs/fnb-brand-cs-zhonghe/
+[09:24:42] frontend-engineer-game：稽核中…
+[09:27:06] ✅ frontend-engineer-game：建議修改／吸引力 3 點、敏感寫法 1 點、必須擋下 0 點
+[09:27:25] frontend-engineer-game：修文案中…
+[09:28:37] ✅ frontend-engineer-game：產出 3 處修正、0 件要人決定
+[09:28:40]    套用：成功 2 處、失敗 1 處
+[09:28:40]      ✗ page：頁面原始碼裡找不到那段原文（可能中間夾著 HTML 標籤）
+✏️ 前端開發工程師　已改 2 處並上線
+⚠️ 1 處沒改成功
+
+https://step1ne.com/jobs/frontend-engineer-game/
+[09:28:52] game-phone-cs-zhonghe：稽核中…
+[09:31:28] ✅ game-phone-cs-zhonghe：要修文案／吸引力 3 點、敏感寫法 0 點、必須擋下 2 點
+[09:31:42] game-phone-cs-zhonghe：修文案中…
+[09:33:11] ✅ game-phone-cs-zhonghe：產出 3 處修正、0 件要人決定
+[09:33:14]    套用：成功 3 處
+✏️ 遊戲客服專員（電話／文字客服）　已改 3 處並上線
+
+https://step1ne.com/jobs/game-phone-cs-zhonghe/
+[09:33:22] group-it-head：稽核中…
+[09:35:30] ✅ group-it-head：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 1 點
+[09:35:46] group-it-head：修文案中…
+[09:37:20] ✅ group-it-head：產出 4 處修正、2 件要人決定
+[09:37:22]    套用：成功 4 處
+✏️ 集團資訊主管 Group IT Head　已改 4 處並上線
+
+🙋 2 件要你決定：
+・請跟承辦顧問確認：業主是否真的同意具名招募？若同意，要在條件一覽或工作內容開頭補上『美德醫療（美德相邦集團）』；若業主其實要保密，需把 cl
+・是否要請工程或版面負責人調整區塊順序？若要調整，請安排人工搬移並測試排版，而非在文案修訂時順手搬動。
+
+https://step1ne.com/jobs/group-it-head/
+[09:37:29] mobile-game-cs-neihu：稽核中…
+[09:40:39] ✅ mobile-game-cs-neihu：要修文案／吸引力 2 點、敏感寫法 1 點、必須擋下 1 點
+[09:40:55] mobile-game-cs-neihu：修文案中…
+[09:42:06] ✅ mobile-game-cs-neihu：產出 4 處修正、0 件要人決定
+[09:42:09]    套用：成功 4 處
+✏️ 遊戲客服（早班／中班）　已改 4 處並上線
+
+https://step1ne.com/jobs/mobile-game-cs-neihu/
+[09:42:16] ops-support-engineer-fintech：稽核中…
+[09:44:23] ✅ ops-support-engineer-fintech：要修文案／吸引力 2 點、敏感寫法 0 點、必須擋下 1 點
+[09:44:35] ops-support-engineer-fintech：修文案中…
+[09:46:35] ✅ ops-support-engineer-fintech：產出 2 處修正、1 件要人決定
+[09:46:38]    套用：成功 2 處
+✏️ 維運工程師　已改 2 處並上線
+
+🙋 1 件要你決定：
+・請業主或內部確認這個職缺的實際起薪是否已達新台幣4萬元以上？若未達門檻，需提供具體薪資範圍以便公開揭露；若已達門檻，請提供確認依據，以便補記
+
+https://step1ne.com/jobs/ops-support-engineer-fintech/
+[09:46:46] payment-cs-night-zhonghe：稽核中…
+[09:49:07] ✅ payment-cs-night-zhonghe：建議修改／吸引力 3 點、敏感寫法 0 點、必須擋下 0 點
+[09:49:19] payment-cs-night-zhonghe：修文案中…
+[09:51:18] ✅ payment-cs-night-zhonghe：產出 4 處修正、1 件要人決定
+[09:51:20]    套用：成功 4 處
+✏️ 金流客服　已改 4 處並上線
+
+🙋 1 件要你決定：
+・這個職缺現在還要具名刊登『遊戲橘子集團』嗎？如果要，請確認要把頁面上『大型客服服務中心』改成客戶全名；如果最近改口徑要匿名，麻煩把資料庫 c
+
+https://step1ne.com/jobs/payment-cs-night-zhonghe/
+[09:51:31] product-assistant-fintech：稽核中…
+[09:53:26] ✅ product-assistant-fintech：要修文案／吸引力 3 點、敏感寫法 1 點、必須擋下 1 點
+[09:53:38] product-assistant-fintech：修文案中…
+[09:56:42] ✅ product-assistant-fintech：產出 7 處修正、0 件要人決定
+[09:56:44]    套用：成功 7 處
+✏️ 產品助理　已改 7 處並上線
+
+https://step1ne.com/jobs/product-assistant-fintech/
+[09:56:52] receptionist-neihu：稽核中…
+[09:59:15] ✅ receptionist-neihu：建議修改／吸引力 3 點、敏感寫法 1 點、必須擋下 0 點
+[09:59:27] receptionist-neihu：修文案中…
+[10:00:56] ✅ receptionist-neihu：產出 3 處修正、0 件要人決定
+[10:00:58]    套用：成功 3 處
+✏️ 總機接待　已改 3 處並上線
+
+https://step1ne.com/jobs/receptionist-neihu/
+[10:01:06] vip-hospitality-attendant：稽核中…
+[10:03:02] ✅ vip-hospitality-attendant：要修文案／吸引力 2 點、敏感寫法 1 點、必須擋下 1 點
+[10:03:13] vip-hospitality-attendant：修文案中…
+[10:04:34] ✅ vip-hospitality-attendant：產出 5 處修正、1 件要人決定
+[10:04:47]    套用：成功 5 處
+✏️ VIP貴賓接待服務員　已改 5 處並上線
+
+🙋 1 件要你決定：
+・這個職缺的client_named=1是否代表要揭露具體業主名稱？如果是，請提供正確的業主名稱；如果「私人招待所」就是業主同意公開的稱呼方式
+
+https://step1ne.com/jobs/vip-hospitality-attendant/
+[10:04:55] executive-assistant-japan-taiwan：稽核中…
+[10:07:52] ✅ executive-assistant-japan-taiwan：要修文案／吸引力 3 點、敏感寫法 2 點、必須擋下 0 點
+[10:08:09] executive-assistant-japan-taiwan：修文案中…
+[10:10:55] ✅ executive-assistant-japan-taiwan：產出 8 處修正、1 件要人決定
+[10:11:17]    套用：成功 8 處
+✏️ 主管特助（日本東京／長野白馬）　已改 8 處並上線
+
+🙋 1 件要你決定：
+・是否要請工程或版面人員把『為什麼選擇這個機會』整段搬到頁面最前面？這涉及搬動大段HTML區塊，本輪文案修正不處理版面搬移，避免搬動時弄壞標籤
+
+https://step1ne.com/jobs/executive-assistant-japan-taiwan/
+[10:11:30] clinic-nurse-neihu：稽核中…
+[10:14:05] ✅ clinic-nurse-neihu：建議修改／吸引力 4 點、敏感寫法 0 點、必須擋下 0 點
+[10:14:23] clinic-nurse-neihu：修文案中…
+[10:16:01] ✅ clinic-nurse-neihu：產出 1 處修正、2 件要人決定
+[10:16:04]    套用：成功 1 處
+✏️ 復健科診所護理師　已改 1 處並上線
+
+🙋 2 件要你決定：
+・這一段版面順序要不要調整？搬動大段 HTML 有把標籤弄壞的風險，需要工程或版面負責人確認並動手調整，不是文案內容問題。
+・內湖恆新復健科診所的兼職護理職缺（時薪800–900元、一節班三小時）目前是否還在招募？要不要加進這頁，還是已經有獨立的兼職職缺頁面？
+
+https://step1ne.com/jobs/clinic-nurse-neihu/
+[10:16:11] brand-social-video-editor-neihu：稽核中…

@@ -267,7 +267,7 @@ def render_dom(url):
     現在改用 _system/webview.py，它邊讀邊存、DOM 印完就收工。
     """
     try:
-        sys.path.insert(0, os.path.expanduser('~/工作流程技能包/_system'))
+        sys.path.insert(0, os.path.expanduser('~/claude-projects/工作流程技能包/_system'))
         from webview import _render
     except Exception:
         return ''

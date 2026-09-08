@@ -205,8 +205,69 @@ def _pos(a, b):
     return max(10, min(90, round(50 + 50 * (a - b) / (a + b))))
 
 
+def _evidence_for(data, letter):
+    """從 observations.assessment 找 D／I／S／C 其中一碼的原話證據。
+    沒有這碼、或這碼沒填 evidence，回 None——不要拿別碼的話硬套。
+
+    ⚠️ 2026-09-04 踩到的坑：verified='不一致' 代表面談表現跟這碼的測驗分數
+    對不上（模型自己標的）。光譜圖的點是拿測驗分數算位置，如果拿這種
+    「表現跟分數對不上」的證據去佐證那個位置，寫出來的句子會**反過來**
+    描述跟點的方向相反的行為（分數推去外向，證據卻寫他很安靜）。
+    這種entry要跳過，讓函式往下找別碼的證據，找不到就回None——
+    寧可沒有佐證句，也不要放一句自打嘴巴的話。
+    """
+    for a in ((data.get('observations') or {}).get('assessment') or []):
+        t = str(a.get('trait') or '')
+        if (t.upper().startswith(letter) and a.get('verified') != '不一致'
+                and str(a.get('evidence') or '').strip()):
+            return str(a['evidence']).strip()
+    return None
+
+
+def _axis_captions(data, meta, positions):
+    """四軸各配一句「面談中實際觀察到什麼」，佐證光譜圖的點為什麼落在那裡。
+
+    ⚠️ 2026-09-04 加：客戶版光譜圖原本只有滑桿沒有文字，等於要客戶憑空
+    相信一個點的位置。優先讀 `observations.axis_notes`（模型針對這四軸
+    直接寫的依據，REPORT_JSON_RULES 規則14要求四句都要填）——這是主要
+    來源，可靠涵蓋率高。只有舊報告（改版前產生的、沒有 axis_notes 這個
+    欄位）才退回舊邏輯：從 observations.assessment 的 D/I/S/C 證據反推，
+    這條路涵蓋率天生不齊（一場面談通常只會標到1-2碼的assessment），
+    四軸裡有幾軸抽不到證據就是不顯示，不要硬掰一句空泛的話。
+    """
+    axis_notes = ((data.get('observations') or {}).get('axis_notes') or [])
+    if any(axis_notes):
+        return [(str(n).strip()[:100] if n else None) for n in (list(axis_notes) + [None] * 4)[:4]]
+
+    p0, p1, p2, p3 = positions
+    out = [None, None, None, None]
+
+    # 軸0 內斂↔外向：I 對 C。點偏哪邊就先找那邊的證據，找不到再退回另一邊。
+    out[0] = (_evidence_for(data, 'I') if p0 >= 50 else _evidence_for(data, 'C')) \
+        or _evidence_for(data, 'C') or _evidence_for(data, 'I')
+
+    # 軸1 細節↔策略：D+I 對 C+S。同樣先看點偏哪邊。
+    if p1 >= 50:
+        out[1] = _evidence_for(data, 'D') or _evidence_for(data, 'I')
+    else:
+        out[1] = _evidence_for(data, 'C') or _evidence_for(data, 'S')
+
+    # 軸2 指示↔自主：S 對 D。
+    out[2] = (_evidence_for(data, 'D') if p2 >= 50 else _evidence_for(data, 'S')) \
+        or _evidence_for(data, 'S') or _evidence_for(data, 'D')
+
+    # 軸3 條件↔認同：不是DISC推的，直接引用構成判斷依據的動機原文。
+    mot = data.get('motivation') or {}
+    if p3 >= 50:
+        out[3] = str(mot.get('why_this_role') or data.get('values_basis') or '').strip() or None
+    else:
+        out[3] = str(mot.get('salary_gap') or mot.get('blockers') or mot.get('why_leaving') or '').strip() or None
+
+    return [(c[:80] if c else None) for c in out]
+
+
 def spectrum(data, meta):
-    """回傳 [(左標籤, 右標籤, 百分比), ...]；資料不足回 None。"""
+    """回傳 [(左標籤, 右標籤, 百分比, 觀察佐證或None), ...]；資料不足回 None。"""
     disc = _disc_from(data, meta)
     if not disc:
         return None
@@ -234,7 +295,8 @@ def spectrum(data, meta):
     cond = len(re.findall(r'薪|待遇|條件|福利|制度|通勤|工時', cond_txt))
     rows.append(_pos(ident, cond) if (ident + cond) else 50)
 
-    return [(SPECTRUM_AXES[n][0], SPECTRUM_AXES[n][1], p) for n, p in enumerate(rows)]
+    captions = _axis_captions(data, meta, rows)
+    return [(SPECTRUM_AXES[n][0], SPECTRUM_AXES[n][1], p, captions[n]) for n, p in enumerate(rows)]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -249,18 +311,21 @@ def _branding(meta, phrase):
     其餘（signed／unsigned）→ 照原本掛品牌。
     """
     private = (meta or {}).get('client_relation') == 'private'
+    # 2026-09-04 加：純顧問電洽（沒有真的開始過AI面談）時，「面談紀錄」這個
+    # 說法也不對——那是電洽紀錄，不是面談紀錄，跟上面 phrase 的修正是同一件事。
+    record_kind = '面談紀錄' if meta.get('has_real_interview') else '電洽紀錄'
     if private:
         return {
             'DOC_TITLE': '人選推薦',
             'BRAND_LABEL': '人選推薦',
-            'STAMP_TEXT': (f'本人選已完成<b>{phrase}</b>，上述內容為面談紀錄與應徵資料之摘要整理。'
+            'STAMP_TEXT': (f'本人選已完成<b>{phrase}</b>，上述內容為{record_kind}與應徵資料之摘要整理。'
                            '<br>本摘要不取代候選人本人之履歷與後續面試查證。'),
             'FOOTER': '',
         }
     return {
         'DOC_TITLE': '人選推薦｜Step1ne',
         'BRAND_LABEL': 'STEP1NE 人選推薦',
-        'STAMP_TEXT': (f'本人選已完成 Step1ne 的<b>{phrase}</b>，上述內容為面談紀錄與應徵資料之摘要整理。'
+        'STAMP_TEXT': (f'本人選已完成 Step1ne 的<b>{phrase}</b>，上述內容為{record_kind}與應徵資料之摘要整理。'
                        '<br>本摘要不取代候選人本人之作品集與後續面試查證。'),
         'FOOTER': ('<p class="foot">德仁管理顧問有限公司（Step1ne）　統一編號 85046127<br>'
                    '就業服務許可證：北市就服字第 0363 號</p>'),
@@ -268,12 +333,19 @@ def _branding(meta, phrase):
 
 
 def _nums(meta, current_state):
-    """主視覺下面那排數字。沒填的照實寫「未提供」，**不准編**。"""
+    """主視覺下面那排數字。沒填的照實寫「未提供」，**不准編**。
+    2026-09-04 加：expected_salary/available_date/location_ok 這三欄只從
+    applications 的結構化欄位讀，顧問電洽後如果沒有回填這幾欄，這裡永遠是
+    「未提供」——即使下面「顧問電洽補充」段落其實已經寫了。這會讓客戶以為
+    這幾件事完全沒問過。電洽摘要有內容時，改標「見下方電洽補充」，不是編一個
+    答案，只是換一句更誠實的提示語，指向真的有的內容。"""
+    has_call = bool((meta.get('call_summary_client') or '').strip())
+    fallback = '見下方電洽補充' if has_call else '未提供'
     items = [('期望待遇', meta.get('expected_salary')),
              ('可到職', meta.get('available_date')),
              ('工作地點', meta.get('location_ok')),
              ('目前狀態', current_state)]
-    return ''.join(f'<div>{e(k)}<b>{e(v or "未提供")}</b></div>' for k, v in items)
+    return ''.join(f'<div>{e(k)}<b>{e(v or fallback)}</b></div>' for k, v in items)
 
 
 def _current_state(data):
@@ -301,19 +373,46 @@ def _track(work_history):
     return ''.join(out)
 
 
+_NOTE_LABELS = ('離職原因', '入職前空窗說明', '過往經歷與技能驗證')
+
+
+def _note_html(note):
+    """把 note 開頭的標籤（見 REPORT_JSON_SPEC 的 work_history.note 說明）
+    轉成粗體，其餘原樣照印。沒有標籤前綴就整段照印，不強加標籤。"""
+    for lab in _NOTE_LABELS:
+        prefix = lab + '：'
+        if note.startswith(prefix):
+            return f'<b>{e(prefix)}</b>{e(note[len(prefix):])}'
+    return e(note)
+
+
 def _jobs(work_history, scrub=False):
-    """各段實際做了什麼。**最近的排最上面**（規格明文），所以這裡要倒著跑。"""
+    """工作經歷時間軸。**最近的排最上面**（規格明文）。
+
+    2026-09-04 改：原本這裡跟 `_track()` 是兩段各自獨立的重複顯示（一段
+    橫向時間軸圖、一段直式列表），改成一份合併輸出——垂直時間軸線本身
+    就是這個列表的視覺裝飾（`.track`/`.job` CSS），不再另外畫一次。
+    ⚠️ 同一次改版抓到一個原本就存在的排序bug：`report_to_json()` 產出的
+    `work_history`陣列本來就是最近的排第一筆（索引0），這裡卻用
+    `reversed()` 倒著跑，等於整段輸出變成最舊的排最上面——跟規格「最近排
+    最上面」完全相反。改版前這個bug被上面另一段橫向時間軸（那段沒有
+    reversed，順序是對的）擋在前面沒被注意到；這次合併成一份輸出後
+    整段順序都是這個列表在決定，錯誤才會直接曝光。修法就是不要倒著跑，
+    照陣列原始順序輸出。
+    """
     out = []
-    for w in reversed(work_history):
+    for w in work_history:
         dur = (w.get('duration') or '').strip()
-        s = (f'<s>{e(dur)}</s>' if dur else '<s class="unk">期間未提供</s>')
+        period = f'<div class="period">{e(dur)}</div>' if dur else '<div class="period unk">期間未提供</div>'
+        dim = ' dim' if not dur else ''
         note = w.get('note') or ''
         if scrub:
             note = scrub_for_client(note)
         role = w.get('role') or ''
-        head = e(w.get('employer')) + (f' · {e(role)}' if role else '')
-        body = f'<p>{e(note)}</p>' if note else ''
-        out.append(f'<div><b>{head}</b>{s}{body}</div>')
+        role_html = f'<div class="role">{e(role)}</div>' if role else ''
+        body = f'<p>{_note_html(note)}</p>' if note else ''
+        out.append(f'<div class="job{dim}">{period}<div class="co">{e(w.get("employer"))}</div>'
+                   f'{role_html}{body}</div>')
     return ''.join(out)
 
 
@@ -379,13 +478,20 @@ def _blockers(data, for_client=False):
          '還沒問到': ('#a32b21', '#fdecea'), '他答不出來': ('#a32b21', '#fdecea')}
     out = []
     for f in rows:
-        st = f.get('status') or '還沒問到'
-        col, bg = C.get(st, C['還沒問到'])
+        # 2026-09-04 加：status 明確設成 'no_badge' 代表「已經有問到、有答案，
+        # 但不想套沒問題／有風險這種判定色塊」——跟 status 完全沒填（該顯眼標
+        # 「還沒問到」）是兩件事，不能共用同一個 falsy 判斷，不然會把「問過了」
+        # 誤標成「還沒問到」。
+        raw_st = f.get('status')
+        badge = ''
+        if raw_st != 'no_badge':
+            st = raw_st or '還沒問到'
+            col, bg = C.get(st, C['還沒問到'])
+            badge = (f'<span style="margin-left:8px;font-size:11.5px;font-weight:700;color:{col};'
+                     f'background:{bg};padding:1px 8px;border-radius:10px">{e(st)}</span>')
         out.append(
             f'<div style="border-top:1px solid #e3e7ec;padding:9px 0">'
-            f'<div style="font-size:13px;font-weight:700">{e(f.get("item"))}'
-            f'<span style="margin-left:8px;font-size:11.5px;font-weight:700;color:{col};'
-            f'background:{bg};padding:1px 8px;border-radius:10px">{e(st)}</span></div>'
+            f'<div style="font-size:13px;font-weight:700">{e(f.get("item"))}{badge}</div>'
             + (f'<div style="font-size:12.5px;margin-top:3px">{e(f.get("answer"))}</div>'
                if f.get('answer') else '')
             + (f'<div style="font-size:12px;margin-top:3px;padding-left:10px;'
@@ -493,16 +599,18 @@ def _basics(data, meta, for_client=False):
     而且履歷本來就會跟報告一起寄給客戶（日式履歷書第一頁就印著生年月日），
     報告刻意不寫等於自欺欺人。所以規則是：
       · 只寫履歷／表單上他自己填的（來源那一行會印出來）
-      · 不准從畢業年份推算
+      · 不准從畢業年份推算、不准用姓名猜性別
       · 只做事實揭露，不出現在任何判斷句裡
-    客戶版**匿名時不印年齡**——匿名的用意就是不讓對方在見面前鎖定特定個人，
-    年齡加上經歷組合起來辨識度很高。
+    客戶版**匿名時不印年齡與性別**——匿名的用意就是不讓對方在見面前鎖定特定個人，
+    年齡／性別加上經歷組合起來辨識度很高。
+    2026-09-04 Jacky 決定：客戶版基本資料也要包含性別（原本只有年齡）。
     """
     b = (data.get('basics') or {}) if isinstance(data.get('basics'), dict) else {}
     anon = for_client and is_anonymous(meta)
     items = [('居住地', b.get('residence')),
              ('通勤評估', b.get('commute_note')),
              ('年齡', None if anon else b.get('age')),
+             ('性別', None if anon else b.get('gender')),
              ('學歷', b.get('education')),
              ('語言', b.get('languages')),
              ('證照', b.get('certificates')),
@@ -514,6 +622,24 @@ def _basics(data, meta, for_client=False):
     src = b.get('source') or '履歷／應徵表單，非面談詢問'
     return (f'<div class="basics"><h3>基本資料</h3><div class="bgrid">{rows}</div>'
             f'<p class="bsrc">來源：{e(src)}</p></div>')
+
+
+def _callup(meta):
+    """顧問電洽補充：2026-09-04 新增。
+
+    ⚠️ 資料來源是 `applications.call_summary_client_md`——**不是**
+    `call_summary_md`。後者是顧問自己看的AI草稿（六段格式，其中一段
+    明講「顧問可再確認或告知客戶的部分」，本來就是寫給顧問看的，
+    不能原封不動搬給客戶）。client_md 是顧問過目/確認過的客戶安全版，
+    這裡只負責顯示，不做任何過濾——過濾在產生 client_md 那一步就做完了。
+    沒有這欄資料（沒打過電話，或還沒過顧問確認）就整段不顯示。
+    """
+    text = (meta.get('call_summary_client') or '').strip()
+    if not text:
+        return '', ''
+    when = meta.get('call_summary_at') or ''
+    html = e(text).replace('\n', '<br>')
+    return html, e(when)
 
 
 def build_client_html(data, meta):
@@ -538,7 +664,11 @@ def build_client_html(data, meta):
     fc = data.get('for_client') or {}
     wh = data.get('work_history') or []
 
-    reasons = ''.join(f'<li>{e(txt(r))}</li>' for r in (fc.get('reasons') or []) if txt(r))
+    reason_texts = [txt(r) for r in (fc.get('reasons') or [])]
+    reason_texts = [r for r in reason_texts if r]
+    reasons = ''.join(
+        f'<div class="reason"><span class="num">{n}</span><span>{e(r)}</span></div>'
+        for n, r in enumerate(reason_texts, 1))
     risks = [txt(r) for r in (fc.get('risks_to_disclose') or [])]
     risks = [r for r in risks if r]
     risks_html = ''
@@ -546,6 +676,14 @@ def build_client_html(data, meta):
         lines = '<br>'.join(f'{"①②③④⑤⑥⑦⑧⑨"[n:n+1] or "・"} {e(r)}'
                             for n, r in enumerate(risks))
         risks_html = f'<div class="risk"><b>我們要先跟您說明的事</b><br>{lines}</div>'
+
+    fit_pros = [txt(x) for x in (fc.get('job_fit_pros') or [])]
+    fit_pros = [x for x in fit_pros if x]
+    fit_cons = [txt(x) for x in (fc.get('job_fit_cons') or [])]
+    fit_cons = [x for x in fit_cons if x]
+    fit_pros_html = ''.join(f'<li>{e(x)}</li>' for x in fit_pros)
+    fit_cons_html = ''.join(f'<li>{e(x)}</li>' for x in fit_cons)
+    one_liner_trait = txt(fc.get('trait_one_liner'))
 
     # 作品集連結：規格是「人選給連結 → 網址直接印在報告上（清掉追蹤參數）；
     # 人選給 PDF → 不放連結，註明『履歷另附』」。
@@ -567,23 +705,36 @@ def build_client_html(data, meta):
 
     spec_rows = spectrum(data, meta)
     spec_html = ''.join(
-        f'<div><s>{e(l)}</s><i style="--p:{p}%"></i><u>{e(r)}</u></div>'
-        for l, r, p in (spec_rows or []))
+        f'<div class="axis"><div class="row"><s>{e(l)}</s><i style="--p:{p}%"></i><u>{e(r)}</u></div>'
+        + (f'<div class="cap"><b>💬</b>{e(txt(cap))}</div>' if cap else '') + '</div>'
+        for l, r, p, cap in (spec_rows or []))
     # ⚠️ observations.communication_style **不搬進客戶版**。
     # 那是模型自由書寫的觀察欄，實測內容是「被追問細節時傾向以保密協議帶過而非精確回答」——
     # 那就是規格明文禁止的「我們對他的懷疑」。這種欄位沒有任何正規表示式擋得乾淨，
     # 唯一安全的做法是整欄不搬。顧問版有，顧問看得到。
     spec_note = ''
 
+    # 2026-09-04 改：原本沒問到就整段不顯示，但「他沒有主動提問」本身也是
+    # 一個對客戶有用的事實（demo版本明講這件事），改成沒有時也印一句話，
+    # 不要整段消失。
     asked = ''.join(f'<div class="ask">{e(txt(c.get("question")))}</div>'
                     for c in (data.get('candidate_questions') or []) if txt(c.get('question')))
+    if not asked:
+        asked = '<div class="ask">面談過程中沒有主動提問，對職缺內容與條件皆表示了解，沒有特別疑慮。</div>'
 
-    # AI 揭露看職缺設定。never＝不主動說（不是否認），用中性但屬實的描述。
-    phrase = ('結構化初步面談'
-              if str(meta.get('ai_disclosure') or '').lower() == 'never'
-              else 'AI 結構化初步面談')
+    # 2026-09-04 加：has_real_interview=False 代表這個人選從沒真的開始過
+    # AI阿財面談（純顧問電洽的合法流程），不能再寫「已完成AI結構化初步面談」
+    # ——那會把顧問電洽問到的內容誤標成AI面談問到的，來源不實。
+    if not meta.get('has_real_interview'):
+        phrase = '顧問電話初篩'
+    else:
+        # AI 揭露看職缺設定。never＝不主動說（不是否認），用中性但屬實的描述。
+        phrase = ('結構化初步面談'
+                  if str(meta.get('ai_disclosure') or '').lower() == 'never'
+                  else 'AI 結構化初步面談')
 
     cond_html = _cond(data.get('hard_conditions') or [], with_evidence=False)
+    callup_text, callup_when = _callup(meta)
     tpl = open(os.path.join(TPL_DIR, 'client.html'), encoding='utf-8').read()
     return _render(tpl, {
         'NAME': e(name),
@@ -591,11 +742,12 @@ def build_client_html(data, meta):
         'POSITIONING': e(txt(data.get('one_liner'))),
         'NUMS': _nums(meta, _current_state(data)),
         'BASICS': _basics(data, meta, for_client=True),
+        'CALLUP_TEXT': callup_text,
+        'CALLUP_WHEN': callup_when,
         'REASONS': reasons,
         'SOCIAL': _social(meta),
         'BLOCKERS': _blockers(data, for_client=True),
         'EXPERTISE': _expertise(data, for_client=True),
-        'TRACK': _track(wh),
         'JOBS': _jobs(wh, scrub=True),
         'FACTS': ''.join(facts),
         'COND': cond_html,
@@ -603,7 +755,11 @@ def build_client_html(data, meta):
         'ASKED': asked,
         'SPEC': spec_html,
         'SPEC_NOTE': spec_note,
+        'FIT_PROS': fit_pros_html,
+        'FIT_CONS': fit_cons_html,
+        'ONELINER': e(one_liner_trait),
         'INTERVIEW_PHRASE': e(phrase),
+        'TALK_KIND': '面談' if meta.get('has_real_interview') else '電洽',
         # 客戶對象＝朋友私人協助時，報告不可以有任何 Step1ne 痕跡。
         # Jacky 2026-08-10：「不會有任何 step1ne logo、頁尾德仁管理顧問的標記，
         # 也不會寫 STEP1NE 人選推薦，只會寫人選推薦。」
@@ -618,6 +774,9 @@ def build_client_html(data, meta):
         'cond': bool(cond_html),
         'asked': bool(asked),
         'spectrum': bool(spec_rows),
+        'callup': bool(callup_text),
+        'fit': bool(fit_pros_html or fit_cons_html),
+        'oneliner': bool(one_liner_trait),
     })
 
 
@@ -702,8 +861,9 @@ def build_consultant_html(data, meta):
             files.append(f'<a href="{e(clean_url(u))}">作品集：{e(clean_url(u))}</a>')
 
     spec_rows = spectrum(data, meta)
+    # 顧問版樣板還是舊的3欄格式，caption（第4個值）留給客戶版用，這裡不畫。
     spec_html = ''.join(f'<div><s>{e(l)}</s><i style="--p:{p}%"></i><u>{e(r)}</u></div>'
-                        for l, r, p in (spec_rows or []))
+                        for l, r, p, _cap in (spec_rows or []))
 
     sysrec = ''.join(f'<dt>{e(k)}</dt><dd>{e(v)}</dd>'
                      for k, v in (meta.get('system_record') or {}).items())

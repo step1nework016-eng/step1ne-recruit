@@ -32,8 +32,8 @@ import urllib.request, urllib.parse   # ⚠️ 要在模組層級，函式內 im
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SKILL = os.path.expanduser(
-    '~/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md')
-WORK = os.path.expanduser('~/工作流程技能包/step1ne-recruit/jobintake/work')
+    '~/claude-projects/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md')
+WORK = os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/jobintake/work')
 
 sys.path.insert(0, HERE)
 import publishing_filters as PF          # noqa: E402
@@ -259,7 +259,7 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 
 ## 硬規則
 
-- 不要 git push、不要跑 publish_job.py、不要動 {os.path.expanduser('~/下載項目/step1ne-stopgap-site')} 底下任何檔案。
+- 不要 git push、不要跑 publish_job.py、不要動 {os.path.expanduser('~/claude-projects/step1ne-stopgap-site')} 底下任何檔案。
   你的工作到寫出上面兩個檔案為止。
 - 不要加 FAQPage schema。
 - client_code 不得出現在任何對外欄位。

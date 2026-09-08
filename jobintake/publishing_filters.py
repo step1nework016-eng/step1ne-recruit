@@ -9,7 +9,7 @@
   LLM 負責的是把 JD 改寫得好看（那是它擅長的），
   這支負責的是「有沒有漏掉不該刊的東西」（那需要每次都一樣）。
 
-規則來源：~/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md Phase 2
+規則來源：~/claude-projects/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md Phase 2
 
 用法：
     from publishing_filters import scan, format_report

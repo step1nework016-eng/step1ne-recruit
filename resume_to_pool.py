@@ -37,7 +37,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = 'claude-sonnet-5'
 TIMEOUT = 240
-API = 'https://step1ne-recruit-api.aiagentg888.workers.dev'
+API = 'https://step1ne-backoffice-worker.aiagentg888.workers.dev'
 
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
         'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'

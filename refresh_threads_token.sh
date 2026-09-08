@@ -15,7 +15,7 @@
 # 兩邊才不會兜不起來。
 set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
-cd "$HOME/工作流程技能包/step1ne-recruit"
+cd "$HOME/claude-projects/工作流程技能包/step1ne-recruit"
 
 TOKENS_ENV="$HOME/.config/workflow-os/tokens.env"
 TG_ENV="$HOME/.config/workflow-os/step1ne-tg.env"
@@ -24,7 +24,7 @@ LOG() { echo "[$(date '+%H:%M:%S')] $1"; }
 python3 <<'PYEOF'
 import json, os, subprocess, sys, urllib.request
 
-HERE = os.path.expanduser('~/工作流程技能包/step1ne-recruit')
+HERE = os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit')
 TOKENS_ENV = os.path.expanduser('~/.config/workflow-os/tokens.env')
 TG_ENV = os.path.expanduser('~/.config/workflow-os/step1ne-tg.env')
 

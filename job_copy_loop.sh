@@ -14,9 +14,9 @@
 # 那一段刻意不進閉環——猜錯一次就是把錯的變成唯一版本，之後沒人看得出來。
 
 set -u
-cd "$HOME/工作流程技能包/step1ne-recruit" || exit 1
+cd "$HOME/claude-projects/工作流程技能包/step1ne-recruit" || exit 1
 export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
-LOG="$HOME/工作流程技能包/step1ne-recruit/logs/job_copy_loop-$(date +%Y-%m-%d).log"
+LOG="$HOME/claude-projects/工作流程技能包/step1ne-recruit/logs/job_copy_loop-$(date +%Y-%m-%d).log"
 mkdir -p "$(dirname "$LOG")"
 
 say() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -30,7 +30,7 @@ say() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 say "① 逐一稽核＋修文案（同一個職缺一次做完，不分開跑）"
 python3 - <<'EOF' >> "$LOG" 2>&1
 import importlib.util, os
-sp=importlib.util.spec_from_file_location('d', os.path.expanduser('~/工作流程技能包/step1ne-recruit/interview_daemon.py'))
+sp=importlib.util.spec_from_file_location('d', os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/interview_daemon.py'))
 m=importlib.util.module_from_spec(sp)
 try: sp.loader.exec_module(m)
 except SystemExit: pass
@@ -49,7 +49,7 @@ sleep 90
 say "④ 只驗證剛才改過的那幾個（不要全部重跑，那會多花一小時）"
 CHANGED=$(python3 - <<'EOF'
 import importlib.util, os
-sp=importlib.util.spec_from_file_location('d', os.path.expanduser('~/工作流程技能包/step1ne-recruit/interview_daemon.py'))
+sp=importlib.util.spec_from_file_location('d', os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/interview_daemon.py'))
 m=importlib.util.module_from_spec(sp)
 try: sp.loader.exec_module(m)
 except SystemExit: pass

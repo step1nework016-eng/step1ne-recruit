@@ -38,7 +38,7 @@ THREAD_POOL = 304
 THREAD_SYSTEM = 1360
 
 SKILL_PATH = os.path.expanduser(
-    '~/工作流程技能包/recruiting-workflow/resume-checkup-fu/SKILL.md')
+    '~/claude-projects/工作流程技能包/recruiting-workflow/resume-checkup-fu/SKILL.md')
 
 # ── 阿福一律不帶任何工具（理由跟阿財一樣，見 interview_daemon.py 檔頭：
 #    安全——本人打的字會整段進 prompt，不能讓外部輸入驅動任何工具；
@@ -463,7 +463,7 @@ def upload_report_pdf(cid, name, pdf_path):
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告 PDF 上傳')
         pdf_b64 = base64.b64encode(open(pdf_path, 'rb').read()).decode('ascii')
         req = urllib.request.Request(
-            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-pdf',
+            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/checkup-pdf',
             data=json.dumps({'id': cid, 'name': name, 'pdf_b64': pdf_b64}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
                      'user-agent': 'step1ne-checkup-daemon/1.0'})
@@ -485,7 +485,7 @@ def notify_candidate_system_error(cid):
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過系統錯誤道歉信')
         req = urllib.request.Request(
-            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-system-error',
+            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/checkup-system-error',
             data=json.dumps({'id': cid}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
                      'user-agent': 'step1ne-checkup-daemon/1.0'})
@@ -506,7 +506,7 @@ def notify_candidate_checkup(cid):
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告通知信')
         req = urllib.request.Request(
-            'https://step1ne-recruit-api.aiagentg888.workers.dev/admin/checkup-done',
+            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/checkup-done',
             data=json.dumps({'id': cid}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
                      'user-agent': 'step1ne-checkup-daemon/1.0'})
