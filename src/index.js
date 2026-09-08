@@ -92,6 +92,17 @@ const LINE_URL = 'https://lin.ee/XcSWPzM';
 // 2026-08-12 加。Jacky 之後要換字，改這裡就好，不用去 LINE 後台跟 Worker 兩邊對。
 const LINE_PROGRESS_TRIGGER = '查詢我的面試進度';
 
+// BIM 工程師校園招募加好友連結的預填訊息（2026-09-04 加）。
+// 三張海報素材各自帶不同的字尾（A/B/C），讓後台分得出「這個人是掃哪張海報來的」，
+// 之後才能比較哪張素材換到比較多人加好友——不是三張都用同一句，那樣就白做了 A/B 測試。
+// 連結：https://line.me/R/oaMessage/@930yldgp/?我要應徵BIM工程師A（B、C同理）
+// 改字要連 LINE 連結裡的預填文字一起改，三邊都要一致才對得起來。
+const LINE_BIM_CAMPUS_TRIGGERS = {
+  '🙋我要應徵BIM工程師A': 'campus_bim_v1', // 淺色版
+  '🙋我要應徵BIM工程師B': 'campus_bim_v2', // 科技風
+  '🙋我要應徵BIM工程師C': 'campus_bim_v3', // 原版風格
+};
+
 // 內容定案於 2026-08-14（line_faq_content.md），求職者跟企業窗口分開兩份。
 // 存成陣列而不是去讀 line_faq_content.md：Worker 執行環境沒有檔案系統，
 // 內容改了就直接改這裡，兩邊本來就要保持一致。
@@ -2794,12 +2805,80 @@ async function handleLineEvent(env, ev) {
   const userId = ev.source && ev.source.userId;
   const replyToken = ev.replyToken;
   if (!userId || !replyToken) return;
-  const text = String(ev.message.text || '').trim();
+  let text = String(ev.message.text || '').trim();
   const now = nowTaipei();
 
   let binding = await env.DB.prepare(
     `SELECT * FROM line_bindings WHERE line_user_id = ?`
   ).bind(userId).first();
+
+  // ── 校園招募：加好友連結預填這句話（line.me/R/oaMessage/@930yldgp/?...）──
+  // 2026-09-04 加。跟查進度那套 ask_name/ask_email/ask_phone 狀態機是兩件事，
+  // 獨立處理、不佔用 line_bindings.state，只借用同一張表的 source 欄位做來源歸因。
+  // 三張海報各帶不同字尾（A/B/C），才能比較哪張素材換到比較多人。
+  if (Object.hasOwn(LINE_BIM_CAMPUS_TRIGGERS, text)) {
+    const campusSource = LINE_BIM_CAMPUS_TRIGGERS[text];
+    if (!binding) {
+      await env.DB.prepare(
+        `INSERT INTO line_bindings (line_user_id, state, source, created_at, updated_at)
+         VALUES (?, 'pending_phone', ?, ?, ?)`
+      ).bind(userId, campusSource, now, now).run();
+    } else if (!binding.source) {
+      await env.DB.prepare(
+        `UPDATE line_bindings SET source=?, updated_at=? WHERE line_user_id=?`
+      ).bind(campusSource, now, userId).run();
+    }
+    const applyUrl = `https://step1ne.com/apply/?job=bim-engineer-tongluo&title=${encodeURIComponent('BIM工程師')}`
+      + `&utm_source=line_campus&utm_medium=line`;
+    const msg = `嗨嗨 👋 這是 BIM 工程師的應徵入口 🏗️\n\n`
+      + `流程是：\n1️⃣ 填寫應徵表單 📝\n2️⃣ 跟 AI 阿財完成初步面談 🤖\n3️⃣ 顧問審核通過後會進一步聯繫您 📞\n\n`
+      + `應徵表單連結 👇\n${applyUrl}`;
+    return lineReply(env, replyToken, msg);
+  }
+
+  // ── Threads／LinkedIn 貼文＋職缺社群回覆的 LINE 歸因 ──
+  // 2026-09-04 加。/go/resolve 轉址時會把 [LC<click_id>] 藏進候選人加好友的
+  // 預填訊息尾巴，候選人如果照樣按送出，這則訊息文字裡就帶著這組代碼，從這裡
+  // 回頭查 link_clicks 就知道「這個人是被哪一則貼文／哪次回覆帶進來的」。
+  // 只要文字裡「有」這個代碼就算數，不要求完全比對——候選人常會刪改預填文字，
+  // 前後可能被加了別的字。跟校園招募那組一樣借用 line_bindings.source 記來源，
+  // 兩者用不同代碼前綴（campus_ vs lc）不會互相蓋掉。
+  const lcMatch = text.match(/\[LC(\d+)\]/);
+  if (lcMatch) {
+    try {
+      const click = await env.DB.prepare(
+        `SELECT lc.id, lc.account_id, lc.job_slug, lc.ctx, j.title AS job_title
+           FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug WHERE lc.id=?`
+      ).bind(Number(lcMatch[1])).first();
+      if (click) {
+        const source = `lc${click.id}:${click.account_id}:${click.job_slug}`;
+        if (!binding) {
+          await env.DB.prepare(
+            `INSERT INTO line_bindings (line_user_id, state, source, created_at, updated_at)
+             VALUES (?, 'pending_phone', ?, ?, ?)`
+          ).bind(userId, source, now, now).run();
+        } else if (!binding.source) {
+          await env.DB.prepare(
+            `UPDATE line_bindings SET source=?, updated_at=? WHERE line_user_id=?`
+          ).bind(source, now, userId).run();
+        }
+        await env.DB.prepare(
+          `UPDATE link_clicks SET line_user_id=?, attributed_at=? WHERE id=? AND line_user_id IS NULL`
+        ).bind(userId, now, click.id).run();
+        // 只在「全新候選人」且點的是真的職缺（不是話題貼文那種借位的 job_slug）
+        // 才主動回覆應徵流程；舊候選人或話題貼文一律不打斷，只默默記歸因。
+        if (!binding && click.job_title) {
+          const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
+            + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`;
+          const msg = `嗨嗨 👋 這是「${click.job_title}」的應徵入口\n\n`
+            + `流程是：\n1️⃣ 填寫應徵表單 📝\n2️⃣ 跟 AI 阿財完成初步面談 🤖\n3️⃣ 顧問審核通過後會進一步聯繫您 📞\n\n`
+            + `應徵表單連結 👇\n${applyUrl}`;
+          return lineReply(env, replyToken, msg);
+        }
+        text = text.replace(lcMatch[0], '').trim();
+      }
+    } catch { /* 歸因失敗不能擋掉候選人原本的對話 */ }
+  }
 
   // ⚠️ 2026-08-17 修：三步驟核對卡在 ask_name/ask_email/ask_phone 時，
   // 這支原本會把候選人接下來「任何」訊息都當成核對答案硬吃——真實案例：
@@ -4035,7 +4114,15 @@ export default {
           const clean = (u) => u.split('?')[0];
           if (/threads\.(com|net)\/@[^/]+\/post\//i.test(rawUrl)) return clean(rawUrl);
           try {
-            const r = await fetch(rawUrl, { redirect: 'follow', signal: AbortSignal.timeout(8000) });
+            // ⚠️ 2026-09-08 加 User-Agent：不帶 UA 的話 threads.com 直接回 200
+    // 不給 302，fetch 拿不到真網址，就會落到下面的「保留原始網址」，
+    // 結果 /share/ 短網址被存進資料庫——成效回填抓不到貼文 ID，
+    // 那則貼文的瀏覽數永遠是空的（2026-09-03 有 3 篇就是這樣漏掉的）。
+    const r = await fetch(rawUrl, {
+      redirect: 'follow',
+      headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
+      signal: AbortSignal.timeout(8000),
+    });
             const finalUrl = r.url || rawUrl;
             if (finalUrl.includes('facebook.com/unsupportedbrowser')) return rawUrl;
             return clean(finalUrl);
@@ -4561,8 +4648,10 @@ export default {
         // approve/regen/skip 全部誤判成「找不到這筆排隊紀錄」，三顆按鈕都按不動。
         // COALESCE 讓 row.title 對職缺類型／話題類型都能正常顯示，不用動下面任何一處。
         const row = await env.DB.prepare(
-          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, COALESCE(j.title, q.job_slug) AS title
-             FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug WHERE q.id = ?`
+          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, COALESCE(j.title, q.job_slug) AS title,
+                  COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
+             FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
+             LEFT JOIN social_accounts sa ON sa.id = q.account_id WHERE q.id = ?`
         ).bind(qid).first();
         if (!row) { await answer('❌ 找不到這筆排隊紀錄（可能太舊或已被清除）'); return new Response('ok'); }
         const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
@@ -4808,14 +4897,24 @@ export default {
               lastId = await postOne(chunk, lastId);
               if (!firstId) firstId = lastId;
             }
-            // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
-            // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
-            // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
-            // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
-            const goLink = row.account_id
-              ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`
-              : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
-            await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
+            // 2026-09-03 改：純職缺貼文（topic_id 為空）不再自動加發連結回覆——
+            // Jacky 要求改成留言制 CTA（見 SKILL.md／style_prompts 的
+            // {{CTA_KEYWORD}} 機制），連結由發布端硬加等於把留言制架空。
+            // 話題類型（topic_id 有值）維持原行為不動，範圍只限「純職缺貼文」。
+            // 2026-09-04 加：DR 是唯一例外——這隻帳號的職缺文仍要放連結，
+            // 用 social_accounts.force_link_on_posts 這個帳號層級開關控制，
+            // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
+            if (row.topic_id || row.force_link_on_posts) {
+              // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
+              // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
+              // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
+              // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
+              const goLink = row.account_id
+                ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}`
+                : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
+              await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
+              await env.DB.prepare(`UPDATE social_post_queue SET has_external_link=1 WHERE id=?`).bind(qid).run();
+            }
 
             // 拿第一則（主文）的公開連結存起來備查——顧問要留紀錄用。
             let permalink = null;
@@ -5576,7 +5675,7 @@ async function pipelineReminders(env) {
   if (tpe.getUTCHours() !== 9 || tpe.getUTCMinutes() >= 15) return;
 
   const { results } = await env.DB.prepare(
-    `SELECT id, candidate_name, job_title, client_name, stage, onboard_date,
+    `SELECT id, application_id, client_id, candidate_name, job_title, client_name, stage, onboard_date,
             guarantee_days, care_log,
             CAST(julianday('now','+8 hours') - julianday(stage_since) AS INTEGER)  AS days_in_stage,
             CAST(julianday('now','+8 hours') - julianday(onboard_date) AS INTEGER) AS days_since_onboard
@@ -5586,10 +5685,29 @@ async function pipelineReminders(env) {
   const rows = results || [];
   if (!rows.length) return;
 
+  // 2026-09-04 加：這套提醒完全不知道「用人單位在portal按不推進」或
+  // 「顧問自己在初篩報告判不推薦」這兩件事——呂皓宇真實案例：顧問7/30就
+  // 判定不推薦了，這裡完全沒發現，卡在AWAITING_CLIENT_FEEDBACK提醒了31天。
+  // 查一次這兩種「已經有結論」的來源，命中的直接排除，不進停滯偵測。
+  const { results: rejFwd } = await env.DB.prepare(
+    `SELECT application_id, company_id FROM candidate_forwards WHERE client_rejected_at IS NOT NULL`
+  ).all();
+  const rejectedSet = new Set((rejFwd || []).map((r) => r.application_id + '|' + r.company_id));
+  const { results: allReports } = await env.DB.prepare(
+    `SELECT application_id, consultant_decision FROM reports ORDER BY application_id, created_at DESC`
+  ).all();
+  const latestDecision = new Map();
+  for (const r of (allReports || [])) {
+    if (!latestDecision.has(r.application_id)) latestDecision.set(r.application_id, r.consultant_decision);
+  }
+  const isAlreadyDecided = (r) =>
+    rejectedSet.has(r.application_id + '|' + r.client_id) || latestDecision.get(r.application_id) === 'rejected';
+
   // ── 一、停滯偵測。只列需要注意的，正常進行中的不列——
   //     全部列出來只會讓真正該關心的被淹沒。
   const over = [], near = [];
   for (const r of rows) {
+    if (isAlreadyDecided(r)) continue;        // 已經有結論（顧問不推薦／客戶婉拒），不是卡住
     const lim = STALL_LIMIT[r.stage];
     if (!lim) continue;                       // GUARANTEE 不做停滯偵測，它走下面的關懷排程
     const d = r.days_in_stage ?? 0;
