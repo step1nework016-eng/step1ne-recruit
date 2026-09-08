@@ -642,7 +642,97 @@ def _callup(meta):
     return html, e(when)
 
 
-def build_client_html(data, meta):
+# 就服法第 5 條列舉的項目：不論存在哪個欄位，一律不得出現在給客戶的文件上。
+_PROTECTED_RE = re.compile(
+    r'(性別|男性|女性|男生|女生|年齡|歲以上|歲以下|年次|婚姻|已婚|未婚|生育|懷孕|'
+    r'容貌|五官|身高|體重|星座|血型|宗教|黨派|籍貫|出生地)')
+_CHECK_ICON = {'pass': '✓', 'fail': '✗', 'partial': '!', 'unknown': '—'}
+_CHECK_CLASS = {'pass': '', 'fail': ' no', 'partial': ' warn', 'unknown': ' warn'}
+_CHECK_WORD = {'pass': '符合', 'fail': '不符合', 'partial': '待確認', 'unknown': '還沒問到'}
+
+
+def _checkitems(raw, txt, drop_protected=False):
+    """把 jobs.must_check_items / hard_filters 的 JSON 畫成色塊卡。
+
+    格式：[{"label": "機車駕照", "status": "pass|fail|partial|unknown",
+            "detail": "電洽確認持有", "source": "電洽 2026-09-07"}]
+
+    ⚠️ drop_protected=True 時，命中就服法列舉項目的整條丟掉——硬條件那一區
+       就算顧問手滑勾了要顯示，性別／年齡這種也不能印出去。
+    """
+    if not raw:
+        return ''
+    try:
+        items = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return ''
+    if not isinstance(items, list):
+        return ''
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        label = str(it.get('label') or '').strip()
+        if not label:
+            continue
+        if drop_protected and _PROTECTED_RE.search(label + str(it.get('detail') or '')):
+            continue
+        st = str(it.get('status') or 'unknown')
+        icon = _CHECK_ICON.get(st, '—')
+        cls = _CHECK_CLASS.get(st, ' warn')
+        detail = txt(it.get('detail')) or _CHECK_WORD.get(st, '')
+        src = txt(it.get('source'))
+        src_html = f'<span class="src">來源：{e(src)}</span>' if src else ''
+        out.append(f'<div class="condcard{cls}"><div class="t">{icon} {e(label)}</div>'
+                   f'<div class="d">{e(detail)}{src_html}</div></div>')
+    return ''.join(out)
+
+
+_BY_LABEL = {'ai': '阿財 AI 初談', 'call': '顧問電洽', 'both': 'AI 初談＋電洽'}
+
+
+def _questions(raw):
+    """「我們問了人選哪些問題」——依職缺客製的提問總覽。
+
+    2026-09-08 加。築樂（主管特助）要求在客戶版看到我們問了什麼、
+    哪些是阿財問的、哪些是電洽問的，這樣他們安排面談時不會重複問。
+
+    資料存 jobs.question_overview，格式：
+    [{"no":"01","title":"轉職動機","purpose":"為什麼問這一段",
+      "items":["題目一","題目二"],"by":"ai|call|both"}]
+
+    ⚠️ 這裡只寫「我們問了什麼」，**不寫候選人怎麼回答**——回答屬於個別面談
+       紀錄，該出現在專業問答與條件對照那幾區，有各自的過濾規則。
+    """
+    if not raw:
+        return ''
+    try:
+        cats = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return ''
+    if not isinstance(cats, list):
+        return ''
+    out = []
+    for c in cats:
+        if not isinstance(c, dict):
+            continue
+        title = str(c.get('title') or '').strip()
+        if not title:
+            continue
+        by = str(c.get('by') or 'ai')
+        items = [str(x).strip() for x in (c.get('items') or []) if str(x).strip()]
+        lis = ''.join(f'<li>{e(x)}</li>' for x in items)
+        pp = f'<p class="pp">{e(c.get("purpose"))}</p>' if c.get('purpose') else ''
+        out.append(
+            f'<div class="qcat"><div class="h">'
+            f'<span class="no">{e(c.get("no") or "")}</span>'
+            f'<span class="ti">{e(title)}</span>'
+            f'<span class="by {e(by)}">{e(_BY_LABEL.get(by, by))}</span></div>'
+            f'{pp}<ul>{lis}</ul></div>')
+    return ''.join(out)
+
+
+def build_client_html(data, meta, show=None):
     """客戶版（可轉給用人企業）。
 
     這個函式的每一個 return 值都會被印出去給第三方看，
@@ -734,8 +824,26 @@ def build_client_html(data, meta):
                   else 'AI 結構化初步面談')
 
     cond_html = _cond(data.get('hard_conditions') or [], with_evidence=False)
+    # ── 必要評估項目／硬條件 ──
+    # 2026-09-08 加。jobs.must_check_items 是「用人單位指定要確認、而且要讓客戶
+    # 看到狀態」的項目（例如律准要會騎機車、築樂要在留資格）；jobs.hard_filters
+    # 是「顧問自己刷人用」的，預設不進客戶版。
+    # ⚠️ 性別／年齡／婚育這類項目就算被寫進 hard_filters 也永遠不可顯示——
+    #    那是就業服務法第 5 條的列舉項目，印在給客戶的文件上等同留下歧視證據。
+    mustcheck_html = _checkitems(meta.get('must_check_items'), txt)
+    questions_html = _questions(meta.get('question_overview'))
+    hardfilters_html = _checkitems(meta.get('hard_filters'), txt, drop_protected=True)
     callup_text, callup_when = _callup(meta)
     tpl = open(os.path.join(TPL_DIR, 'client.html'), encoding='utf-8').read()
+    # 顧問在勾選頁關掉的區塊，這裡直接覆蓋成 False；打開硬條件也走這裡。
+    # ⚠️ 用同一套 @IF 機制，不另造——模板已經支援，多一套只會走鐘。
+    def _flags(base):
+        if show:
+            for k, v in show.items():
+                if k in base:
+                    base[k] = bool(v)
+        return base
+
     return _render(tpl, {
         'NAME': e(name),
         'JOB': e(meta.get('job_title') or meta.get('job_slug') or ''),
@@ -752,6 +860,9 @@ def build_client_html(data, meta):
         'FACTS': ''.join(facts),
         'COND': cond_html,
         'RISKS': risks_html,
+        'MUSTCHECK': mustcheck_html,
+        'QUESTIONS': questions_html,
+        'HARDFILTERS': hardfilters_html,
         'ASKED': asked,
         'SPEC': spec_html,
         'SPEC_NOTE': spec_note,
@@ -765,7 +876,7 @@ def build_client_html(data, meta):
         # 也不會寫 STEP1NE 人選推薦，只會寫人選推薦。」
         # 理由：靠朋友關係幫忙介紹，掛公司品牌等於把私人幫忙變成商業委託。
         **_branding(meta, phrase),
-    }, {
+    }, _flags({
         'reasons': bool(reasons),
         'expertise': bool(data.get('expertise_findings')),
         'blockers': bool(data.get('blocker_findings')),
@@ -777,7 +888,21 @@ def build_client_html(data, meta):
         'callup': bool(callup_text),
         'fit': bool(fit_pros_html or fit_cons_html),
         'oneliner': bool(one_liner_trait),
-    })
+        # 2026-09-08 加：新版式多出來的三塊
+        # ⚠️ 'key' 這個旗標從 2026-08-10 建模板以來就沒有人設定過，
+        #    所以四格關鍵欄位（期望待遇／可到職／工作地點／目前狀態）
+        #    在客戶版上**從來沒有出現過**。2026-09-08 補上。
+        #    _nums() 一定會回傳四格（沒資料就寫「未提供」），所以恆為 True。
+        'key': True,
+        'basics': True,
+        'risks': bool(risks_html),
+        'mustcheck': bool(mustcheck_html),
+        # 有資料就預設顯示——這是客戶特別要求才會建的，建了就是要給他看
+        'questions': bool(questions_html),
+        # 硬條件預設**不顯示**——那是顧問自己刷人用的，客戶不需要知道我們刷過誰。
+        # 只有顧問在勾選頁明確打開才會出現（show['hardfilters'] = True）。
+        'hardfilters': False,
+    }))
 
 
 def build_consultant_html(data, meta):
