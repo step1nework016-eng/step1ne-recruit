@@ -642,23 +642,22 @@ def _callup(meta):
     return html, e(when)
 
 
-# 就服法第 5 條列舉的項目：不論存在哪個欄位，一律不得出現在給客戶的文件上。
-_PROTECTED_RE = re.compile(
-    r'(性別|男性|女性|男生|女生|年齡|歲以上|歲以下|年次|婚姻|已婚|未婚|生育|懷孕|'
-    r'容貌|五官|身高|體重|星座|血型|宗教|黨派|籍貫|出生地)')
 _CHECK_ICON = {'pass': '✓', 'fail': '✗', 'partial': '!', 'unknown': '—'}
 _CHECK_CLASS = {'pass': '', 'fail': ' no', 'partial': ' warn', 'unknown': ' warn'}
 _CHECK_WORD = {'pass': '符合', 'fail': '不符合', 'partial': '待確認', 'unknown': '還沒問到'}
 
 
-def _checkitems(raw, txt, drop_protected=False):
+def _checkitems(raw, txt):
     """把 jobs.must_check_items / hard_filters 的 JSON 畫成色塊卡。
 
     格式：[{"label": "機車駕照", "status": "pass|fail|partial|unknown",
             "detail": "電洽確認持有", "source": "電洽 2026-09-07"}]
 
-    ⚠️ drop_protected=True 時，命中就服法列舉項目的整條丟掉——硬條件那一區
-       就算顧問手滑勾了要顯示，性別／年齡這種也不能印出去。
+    ⚠️ 2026-09-08 拿掉了原本的關鍵字封鎖（Jacky 明確授權）。原本會把含性別、
+       年齡、婚姻等字眼的條目整條丟掉，但那是把兩件事混在一起：**人選的客觀
+       屬性**本來就寫在履歷上、客戶一定看得到，其中有些正是客戶判斷工作需求
+       要用的，揭露不等於歧視——2026-09-04 就決定過客戶版基本資料要包含性別。
+       顯示與否改由顧問在勾選頁決定（硬條件區塊本來就預設關閉，要勾才出現）。
     """
     if not raw:
         return ''
@@ -674,8 +673,6 @@ def _checkitems(raw, txt, drop_protected=False):
             continue
         label = str(it.get('label') or '').strip()
         if not label:
-            continue
-        if drop_protected and _PROTECTED_RE.search(label + str(it.get('detail') or '')):
             continue
         st = str(it.get('status') or 'unknown')
         icon = _CHECK_ICON.get(st, '—')
@@ -832,7 +829,7 @@ def build_client_html(data, meta, show=None):
     #    那是就業服務法第 5 條的列舉項目，印在給客戶的文件上等同留下歧視證據。
     mustcheck_html = _checkitems(meta.get('must_check_items'), txt)
     questions_html = _questions(meta.get('question_overview'))
-    hardfilters_html = _checkitems(meta.get('hard_filters'), txt, drop_protected=True)
+    hardfilters_html = _checkitems(meta.get('hard_filters'), txt)
     callup_text, callup_when = _callup(meta)
     tpl = open(os.path.join(TPL_DIR, 'client.html'), encoding='utf-8').read()
     # 顧問在勾選頁關掉的區塊，這裡直接覆蓋成 False；打開硬條件也走這裡。
