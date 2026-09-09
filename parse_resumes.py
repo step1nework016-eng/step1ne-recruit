@@ -77,6 +77,35 @@ def d1(sql):
     return json.loads(out)[0].get('results', [])
 
 
+def _admin_token():
+    try:
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                return l.strip().split('=', 1)[1].strip().strip("'\"")
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_r2_b64(file_id):
+    """新檔案（2026-09-03 之後）存在 R2，D1 的 files 表只有 metadata，
+    沒有內容。跟瀏覽器下載按鈕走同一支既有端點（/admin/file/:id，
+    fileB64() 的 HTTP 版本），不用另外接 R2 的 S3 相容 API。
+    """
+    tok = _admin_token()
+    if not tok:
+        return None
+    req = urllib.request.Request(
+        f'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/{urllib.parse.quote(file_id)}',
+        headers={'authorization': f'Bearer {tok}', 'user-agent': 'parse_resumes/1.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+    except Exception:
+        return None
+    return base64.b64encode(raw).decode()
+
+
 def meaningful_ratio(text):
     """文字裡真的算「內容」的字元比例（去掉數字、空白、標點符號後）。
 
@@ -479,9 +508,9 @@ def main():
     not_resume = (
         ' AND (EXISTS (SELECT 1 FROM applications a WHERE a.resume_file_id = f.id)'
         ' OR EXISTS (SELECT 1 FROM checkups c WHERE c.resume_file_id = f.id))')
-    cond = ('WHERE (f.content_b64 IS NOT NULL OR f.chunks IS NOT NULL)' + not_resume if force
+    cond = ("WHERE (f.content_b64 IS NOT NULL OR f.chunks IS NOT NULL OR f.storage='r2')" + not_resume if force
             else 'WHERE f.parsed_at IS NULL' + not_resume)
-    rows = d1(f"SELECT f.id, f.filename, f.mime, f.content_b64, f.chunks FROM files f {cond} LIMIT 20")
+    rows = d1(f"SELECT f.id, f.filename, f.mime, f.content_b64, f.chunks, f.storage FROM files f {cond} LIMIT 20")
     url_ok, url_fail, failed = parse_urls()
     if not rows and not (url_ok or url_fail):
         print('  沒有待解析的履歷')
@@ -498,6 +527,16 @@ def main():
                 fid = str(r['id']).replace("'", "''")
                 parts = d1(f"SELECT b64 FROM file_chunks WHERE file_id='{fid}' ORDER BY idx ASC")
                 b64 = ''.join(p['b64'] for p in parts)
+            # ⚠️ 2026-09-09 修：這裡原本只認 content_b64／file_chunks 這兩種
+            # 舊式 D1 儲存，完全不知道 2026-09-03 之後新檔案改存 R2
+            # （見 saveResume() 的 storage='r2' 分支）。結果是**所有新上傳的
+            # 履歷**都被這裡判定「這份履歷沒有檔案內容」——不是真的沒有，
+            # 是這支腳本找錯地方。真實案例：蘇微閔、郭鑑宸的履歷都確實存進
+            # R2（size 有正常數字），卻被推播「請他重傳履歷」的假警報。
+            # 修法：R2 檔案改打 /admin/file/:id 這支既有端點（fileB64() 的
+            # HTTP 版本，本來就是給瀏覽器下載用的，兩種儲存方式它都認）。
+            if not b64 and r.get('storage') == 'r2':
+                b64 = _fetch_r2_b64(r['id'])
             if not b64:
                 raise RuntimeError('這份履歷沒有檔案內容')
             text, note = extract(base64.b64decode(b64), r['filename'], r['mime'])
