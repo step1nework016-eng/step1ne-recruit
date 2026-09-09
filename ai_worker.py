@@ -146,6 +146,41 @@ def prompt_call_prep(p):
 
 
 
+def prompt_sourced_client_report_synthesize(p):
+    """主動開發（sourced_candidates）人選的客戶版履歷整理——跟
+    prompt_client_report_synthesize 是兩條不同路徑：這支沒有 hard_filters
+    清單、沒有職缺結構化資料，只有履歷全文＋顧問電洽逐字稿／備註（bio/note）。
+    2026-09-09 遷移自 Worker 端原本同步呼叫 Llama 的 synthesizeClientReport()，
+    輸出格式原封不動照搬，不要改欄位名稱（Worker 端組 HTML 的程式碼直接讀這些欄位）。
+    """
+    source_parts = []
+    if p.get('resume_text'):
+        source_parts.append(f"【履歷全文】\n{p['resume_text'][:6000]}")
+    if p.get('call_notes'):
+        source_parts.append(f"【電洽逐字稿／筆記】\n{p['call_notes'][:6000]}")
+    source = '\n\n'.join(source_parts)
+    return f"""你是獵頭顧問的助理，要把下面這位人選的履歷跟電洽逐字稿整理成一份「給用人企業客戶看」的正式人選推薦報告內容。
+
+{TERM_FIX}
+
+規則：
+- 只寫查得到根據的內容，不要編造履歷或逐字稿裡沒提到的事實。
+- 語氣正面、客觀陳述事實，不要出現「不推薦」「顧問懷疑」這類內部判斷用語。
+- 不要出現候選人目前/接案收入、其他機會/offer細節、人格測驗分數這類不該給客戶看的內容。
+- 「核心條件對應」要像績效面談摘要一樣，依電訪跟履歷實際談到的重點分成 4~7 點，每點一個簡短小標＋一段 100~200 字的敘述（可以包含：學習意願與職務理解、轉職動機、穩定度與抗壓力、學經歷背景、薪資接受度、到職彈性、工作模式接受度等面向，只寫有談到的，沒談到的不要硬湊）。
+- 「補充說明」是履歷本身沒寫、但電訪過程中觀察到的正面資訊（例如跨文化溝通能力、職涯決策成熟度等），列 2~4 點，每點一句話。
+- 「我方建議」是顧問對客戶的整體推薦結論，2~3 段，總結人選適合度跟後續建議（例如儘速安排面談）。
+- 「現況」「相關經驗」「交通工具」各是履歷基本資料表格要用的一行文字（現況＝目前工作狀態一句話；相關經驗＝跟這個職缺相關的經驗程度一句話；交通工具＝有寫才填，沒有就空字串）。
+- 資料不足（沒有履歷或沒有電洽紀錄）就誠實留空，不要硬編。
+
+用下面這個 JSON 格式直接輸出，不要加任何說明文字、不要用 markdown code block 包起來：
+{{"current_state":"...","related_experience":"...","transportation":"...","core_fit":[{{"title":"...","body":"..."}}],"supplementary":["...","..."],"recommendation":"..."}}
+
+人選姓名：{p.get('name') or ''}
+
+{source or '（沒有履歷全文也沒有電洽紀錄，只能盡量依人選姓名判斷，多數欄位應留空）'}"""
+
+
 def prompt_client_report_synthesize(p):
     job = p.get('job') or {}
     checklist = p.get('hard_filters_template') or []
@@ -206,6 +241,7 @@ HANDLERS = {
     'call_notes_summary': (prompt_call_notes_summary, False),
     'call_prep': (prompt_call_prep, True),
     'client_report_synthesize': (prompt_client_report_synthesize, True),
+    'sourced_client_report_synthesize': (prompt_sourced_client_report_synthesize, True),
 }
 
 
