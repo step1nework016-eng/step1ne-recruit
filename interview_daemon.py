@@ -659,7 +659,8 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
         f"a.disc_d, a.disc_i, a.disc_s, a.disc_c, "
         f"a.interview_started_at, a.interview_ended_at, "
         f"a.call_summary_client_md, a.call_summary_client_at, "
-        f"j.title AS job_title, j.ai_disclosure, cc.relation AS client_company_relation "
+        f"j.title AS job_title, j.ai_disclosure, cc.relation AS client_company_relation, "
+        f"j.hard_filters, j.must_check_items "
         f"FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug "
         f"LEFT JOIN client_companies cc ON cc.id = j.company_id "
         f"WHERE a.id = {q(app_id)}")
@@ -684,6 +685,8 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
         'expected_salary': r.get('expected_salary'),
         'available_date': r.get('available_date'),
         'location_ok': r.get('location_ok'),
+        'hard_filters': r.get('hard_filters'),
+        'must_check_items': r.get('must_check_items'),
         'disc': {'d': r.get('disc_d'), 'i': r.get('disc_i'),
                  's': r.get('disc_s'), 'c': r.get('disc_c')},
         # 顧問電洽補充：顧問確認過的客戶安全版（deliver._callup() 用）。

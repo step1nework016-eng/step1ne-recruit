@@ -807,7 +807,13 @@ def build_client_html(data, meta, show=None):
     # 不要整段消失。
     asked = ''.join(f'<div class="ask">{e(txt(c.get("question")))}</div>'
                     for c in (data.get('candidate_questions') or []) if txt(c.get('question')))
-    if not asked:
+    # ⚠️ 2026-09-09 修：這句「沒有主動提問」原本不管有沒有真的面談過都會印，
+    # 但這個假設只在「真的做過阿財結構化面談、逐題記錄下來確實是空的」才成立。
+    # 純電洽（has_real_interview=False）沒有這份逐題記錄，不等於候選人真的
+    # 什麼都沒問——林巧昀電洽逐字稿裡明顯主動問了好幾個問題，這句話印出去
+    # 等於講假話給客戶看。真的面談過才印這句斷言；電洽版沒有這份資料就照
+    # deliver.py 其他區塊一樣的原則整段不顯示，不硬湊一句可能不實的話。
+    if not asked and meta.get('has_real_interview'):
         asked = '<div class="ask">面談過程中沒有主動提問，對職缺內容與條件皆表示了解，沒有特別疑慮。</div>'
 
     # 2026-09-04 加：has_real_interview=False 代表這個人選從沒真的開始過

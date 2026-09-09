@@ -145,10 +145,67 @@ def prompt_call_prep(p):
 """
 
 
+
+def prompt_client_report_synthesize(p):
+    job = p.get('job') or {}
+    checklist = p.get('hard_filters_template') or []
+    checklist_lines = '\n'.join(
+        f'{i+1}. {c.get("label")}' for i, c in enumerate(checklist)
+    ) or '（這個職缺目前沒有設定到職可行性清單，就不用產出 hard_filters）'
+    return f"""你是獵頭顧問的助理，要把一位候選人的履歷、顧問電洽逐字稿，整理成一份
+給用人企業客戶看的人選推薦報告內容。這位人選**還沒有經過阿財AI結構化面談**，
+只有履歷跟顧問電洽逐字稿可以參考。
+
+{TERM_FIX}
+
+🚨 最重要的規則——這是你唯一、也是最容易犯的錯：
+- **逐字稿裡沒有提到、答不出來的，一律誠實寫「還沒問到」或「未提及」，絕對不要
+  猜、不要用「表示了解，沒有特別疑慮」這種聽起來合理但其實是編出來的話帶過。**
+  2026-09-09 真實事故：上一版模型（Llama）在候選人明明主動問了 4 個問題的情況下，
+  寫出「面談過程中沒有主動提問」這種假話，已經差點送到客戶手上。你不是在猜
+  一個合理答案，是在做一份會影響真人前途、影響客戶決策的正式文件，寧可留白
+  也不要編。
+- 逐字稿是語音轉文字，沒有標記說話者，你要自己判斷哪句是候選人說的、哪句是
+  顧問說的——顧問通常是在問問題、解釋條件；候選人通常是在回答，或用「我還有
+  問題」「所以是不是」這類語氣主動確認。抓 candidate_questions 只抓你有把握
+  是候選人自己主動問的，不確定就不要放進去，寧可少放。
+- 只寫履歷／電洽逐字稿裡有根據的內容，不要編造。
+- 不要出現候選人目前/接案收入、其他機會/offer細節、人格測驗分數。
+- 不要出現任何社群連結、作品集連結——除非履歷或逐字稿裡真的有提到網址，
+  不要自己生一個看起來像的連結。
+
+到職可行性清單（這個職缺原本就要問的項目，逐項核對逐字稿裡有沒有問到、
+答案是什麼，答對/合理給 pass，有疑慮給 partial，沒問到給 unknown）：
+{checklist_lines}
+
+職缺條件：
+{('必要條件：' + job.get('required_conditions')) if job.get('required_conditions') else ''}
+{('主要職責：' + job.get('main_duties')) if job.get('main_duties') else ''}
+{('用人單位篩選重點：' + job.get('client_screen_conditions')) if job.get('client_screen_conditions') else ''}
+
+人選姓名：{p.get('name') or ''}
+人選履歷：
+{(p.get('resume_text') or '')[:8000]}
+
+顧問電洽逐字稿：
+{p.get('call_notes') or '（沒有電洽紀錄，只能依履歷判斷）'}
+
+用這個 JSON 格式直接輸出，不要加任何說明文字、不要用 markdown code block 包起來：
+{{"one_liner":"一句話定位30字內，不要寫年齡／性別",
+"basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
+"for_client":{{"reasons":["3點推薦理由，要跟職缺條件掛勾"],"job_fit_pros":["2-3點"],"job_fit_cons":["1-2點"],"trait_one_liner":"依電洽語氣跟應答方式寫一句對這個人特質的觀察，沒有足夠根據就留空字串"}},
+"work_history":[{{"employer":"","role":"","duration":"","source":"履歷","nature":"雇主","note":"電洽有補充相關內容才填，沒有就空字串"}}],
+"hard_filters":[{{"label":"清單上的項目名稱，逐項照上面清單的順序跟數量","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
+"expertise_findings":[{{"topic":"","asked":"逐字稿裡的問題，沒有就留空","answered":"候選人怎麼回答的重點","depth":"具體|籠統|未談到"}}],
+"candidate_questions":[{{"question":"候選人自己主動問的問題，逐字或接近逐字，沒把握是候選人問的就不要放"}}],
+"call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}"""
+
+
 HANDLERS = {
     'call_summary_client': (prompt_call_summary_client, False),
     'call_notes_summary': (prompt_call_notes_summary, False),
     'call_prep': (prompt_call_prep, True),
+    'client_report_synthesize': (prompt_client_report_synthesize, True),
 }
 
 

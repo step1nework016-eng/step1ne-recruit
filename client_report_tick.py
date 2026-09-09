@@ -105,6 +105,11 @@ def process_one(req_row):
         company_id = fwd[0]['company_id'] if fwd else None
 
     meta = D._delivery_meta(app_id, name, job_slug, abandoned=False)
+    # ⚠️ 2026-09-09 加：meta 裡的 hard_filters／must_check_items 是職缺層級
+    # 的靜態清單（哪些項目要問），沒有這位人選實際的電洽結果。真的問到答案
+    # 時（不管是阿財結構化面談的 content_json，還是這裡湊資料時手動填的
+    # synthetic 版本），要用那份蓋掉靜態清單——不然客戶看到的永遠是「還沒
+    # 問到」，就算顧問明明已經問過。
     # 2026-09-04 加：這個人選從沒真的開始過AI阿財面談（純顧問電洽也是允許的
     # 正常流程），但報告內容格式跟真的面談產出的長得一樣——裡面的「原話引用」
     # 是套用電洽逐字稿硬塞進面談模板的欄位，內容跟模板來源本來就對不上，
@@ -141,6 +146,13 @@ def process_one(req_row):
         except Exception:
             show = None      # 壞掉就當沒勾，不要因此整份做不出來
 
+    # data 裡如果有這位人選實際問到的結果（真的面談的 content_json，或
+    # synthetic 版本手動補的），用它蓋掉 meta 裡職缺層級的靜態清單。
+    if data.get('hard_filters'):
+        meta['hard_filters'] = data['hard_filters']
+    if data.get('must_check_items'):
+        meta['must_check_items'] = data['must_check_items']
+
     try:
         html = deliver.build_client_html(data, meta, show=show)
     except Exception as e:
@@ -171,7 +183,46 @@ def process_one(req_row):
     print(f'✅ {name}（{app_id}）客戶版履歷已產出並推送')
 
 
+def promote_synthesized():
+    """撈 ai_worker.py 用 claude CLI 跑完的合成結果，寫回 client_report_requests。
+
+    2026-09-09 加：這是 Llama 遷移的第二半——Worker 那邊已經改成排 ai_jobs
+    工作、狀態設成 awaiting_synthesis，不會自己變成 pending 讓下面排版流程
+    接手。這支負責接手：ai_jobs 跑完了才把結果轉存進 synthetic_content_json、
+    狀態改回 pending；跑失敗（重試 3 次都不行）就直接標錯誤，不要讓請求卡死
+    在 awaiting_synthesis 裡永遠沒人管。
+    """
+    rows = D.d1("SELECT id, application_id, ai_job_id FROM client_report_requests "
+                "WHERE status='awaiting_synthesis' AND ai_job_id IS NOT NULL")
+    for row in rows:
+        job = D.d1(f"SELECT status, result_text, error FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
+        if not job:
+            continue
+        j = job[0]
+        if j['status'] == 'done':
+            try:
+                synth = json.loads(j['result_text'])
+            except Exception as e:
+                D.d1(f"UPDATE client_report_requests SET status='error', "
+                     f"error={D.q(f'AI 產出的 JSON 解析失敗：{e}')}, "
+                     f"done_at=datetime('now','+8 hours') WHERE id={D.q(row['id'])}")
+                continue
+            call_summary = synth.pop('call_summary_client_md', None)
+            if call_summary:
+                D.d1(f"UPDATE applications SET call_summary_client_md={D.q(call_summary)}, "
+                     f"call_summary_client_at=datetime('now','+8 hours') WHERE id={D.q(row['application_id'])}")
+            D.d1(f"UPDATE client_report_requests SET status='pending', "
+                 f"synthetic_content_json={D.q(json.dumps(synth, ensure_ascii=False))} "
+                 f"WHERE id={D.q(row['id'])}")
+        elif j['status'] == 'failed':
+            D.d1(f"UPDATE client_report_requests SET status='error', "
+                 f"error={D.q('AI 整理履歷內容失敗（重試3次都不行）：' + str(j['error'] or '')[:200])}, "
+                 f"done_at=datetime('now','+8 hours') WHERE id={D.q(row['id'])}")
+        # 還在 pending／running 就不動它，下一輪再檢查
+
+
 def tick():
+    promote_synthesized()
     rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json FROM client_report_requests "
                 "WHERE status='pending' ORDER BY requested_at ASC LIMIT 5")
     for row in rows:
