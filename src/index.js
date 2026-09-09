@@ -1002,6 +1002,64 @@ async function verifyLineSignature(secret, rawBody, signatureB64) {
   }
 }
 
+// ── 已關閉職缺的候選人回覆 ──
+// 2026-09-09 Jacky 定調：不能只講「已關閉」就結束，那等於把人推走。
+// 要做三件事：誠實說已結束招募、推薦相關職缺、給一個直接找顧問的入口。
+// 相關職缺的挑法：先同一個用人企業（最準，人選看的通常是同一家的職缺群），
+// 沒有才退到同一條服務線，再沒有就只給職缺列表。
+function jobLocText(raw) {
+  if (!raw) return '';
+  const t = String(raw).replace(/[[\]'"]/g, '').replace(/,\s*/g, '、').trim();
+  return t.length > 18 ? t.slice(0, 18) + '…' : t;
+}
+
+async function closedJobMessages(env, job) {
+  let rel = [];
+  try {
+    if (job.company_id) {
+      rel = (await env.DB.prepare(
+        `SELECT slug, title, locations FROM jobs
+          WHERE company_id=? AND status='open' AND slug<>? LIMIT 3`
+      ).bind(job.company_id, job.slug).all()).results || [];
+    }
+    if (!rel.length && job.service_line) {
+      rel = (await env.DB.prepare(
+        `SELECT slug, title, locations FROM jobs
+          WHERE service_line=? AND status='open' AND slug<>? LIMIT 3`
+      ).bind(job.service_line, job.slug).all()).results || [];
+    }
+  } catch (e) { console.error('closedJobMessages 找相關職缺失敗', String(e)); }
+
+  const head = { type: 'text',
+    text: `嗨嗨 👋 感謝您的詢問！\n\n「${job.title}」已經結束招募了 🙏` };
+
+  const body = [{ type: 'text', weight: 'bold', size: 'md',
+    text: rel.length ? '這幾個職缺可能也適合您' : '目前開放中的職缺' , wrap: true }];
+  for (const r of rel) {
+    const loc = jobLocText(r.locations);
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'box', layout: 'vertical', margin: 'md', spacing: 'xs', contents: [
+      { type: 'text', text: r.title, size: 'sm', weight: 'bold', wrap: true },
+      ...(loc ? [{ type: 'text', text: loc, size: 'xs', color: '#8a8a8a', wrap: true }] : []),
+      { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '看這個職缺',
+        uri: `https://step1ne.com/jobs/${encodeURIComponent(r.slug)}/` } },
+    ] });
+  }
+
+  const flex = { type: 'flex', altText: `「${job.title}」已結束招募，這裡有其他機會`,
+    contents: { type: 'bubble',
+      body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: body },
+      footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px', contents: [
+        { type: 'button', style: 'secondary', height: 'sm',
+          action: { type: 'uri', label: '看全部職缺', uri: 'https://step1ne.com/jobs/' } },
+        { type: 'button', style: 'primary', height: 'sm', color: '#1c2f6b',
+          action: { type: 'postback', label: '跟顧問聊聊',
+                    data: `contact_closed_job:${job.slug}`,
+                    displayText: '我想跟顧問聊聊其他機會' } },
+      ] } } };
+  return [head, flex];
+}
+
 async function lineReply(env, replyToken, text) {
   if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return;
   try {
@@ -2771,6 +2829,18 @@ async function handleLineEvent(env, ev) {
     // 2026-08-13 加：各張卡片上原本共用的「聯繫顧問」按鈕統一改成 postback，
     // 不再是 message 型（那種按了只是把文字丟進對話框，沒有任何自動處理，
     // 候選人會覺得「按了沒反應」）。這裡統一通知你 Telegram，也回候選人一句。
+    // 從「已關閉職缺」卡片按的——這個人還沒有應徵紀錄，用職缺代號當上下文，
+    // 不要硬套 contact_consultant:（那支要 application_id，查不到會通知一則空白訊息）。
+    if (data.startsWith('contact_closed_job:')) {
+      const slug = data.slice('contact_closed_job:'.length);
+      const j = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(slug).first();
+      await notify(env,
+        `💬 有人在 LINE 詢問已結束招募的「${j ? j.title : slug}」，按了「跟顧問聊聊」。`
+        + `他還沒有應徵紀錄，麻煩主動聯繫看看有沒有適合的其他職缺。`,
+        { message_thread_id: THREAD.decide });
+      return lineReply(env, ev.replyToken,
+        '好的，已經通知顧問了 🙏 顧問會跟您聊聊有沒有其他適合的機會，謝謝您！');
+    }
     if (data.startsWith('contact_consultant:')) {
       const appId = data.slice('contact_consultant:'.length);
       const app = await env.DB.prepare(`SELECT name, job_title, job_slug FROM applications WHERE id = ?`).bind(appId).first();
@@ -2846,10 +2916,25 @@ async function handleLineEvent(env, ev) {
   const lcMatch = text.match(/\[LC(\d+)\]/);
   if (lcMatch) {
     try {
+      // ⚠️ 2026-09-09 修：原本只用 lc.job_slug 直接比對 jobs.slug。真實事故：
+      // 11:04 有候選人帶 [LC351] 進來，那筆點擊記的是 pending-co_802bdd6b-3b807a75
+      // 這種暫存代號，jobs 表查不到 → 回了「這則貼文的職缺連結有點問題」。
+      // job_slug_aliases 早就有這組對應（/go/resolve 已經在查），這裡漏掉了，
+      // 補上同一套退回：先直接查，查不到再走別名表。
       const click = await env.DB.prepare(
-        `SELECT lc.id, lc.account_id, lc.job_slug, lc.ctx, j.title AS job_title
-           FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug WHERE lc.id=?`
+        `SELECT lc.id, lc.account_id, lc.job_slug, lc.ctx,
+                COALESCE(j.title, ja.title) AS job_title,
+                COALESCE(j.slug,  ja.slug)  AS resolved_slug,
+                COALESCE(j.status, ja.status) AS job_status
+           FROM link_clicks lc
+           LEFT JOIN jobs j ON j.slug = lc.job_slug
+           LEFT JOIN job_slug_aliases a ON a.old_slug = lc.job_slug
+           LEFT JOIN jobs ja ON ja.slug = a.new_slug
+          WHERE lc.id=?`
       ).bind(Number(lcMatch[1])).first();
+      // 後面的應徵連結要用「查得到的那個代號」，不能用貼文上的暫存代號，
+      // 不然表單送出去一樣對不到職缺。
+      if (click && click.resolved_slug) click.job_slug = click.resolved_slug;
       if (click) {
         const source = `lc${click.id}:${click.account_id}:${click.job_slug}`;
         if (!binding) {
@@ -2867,6 +2952,16 @@ async function handleLineEvent(env, ev) {
         ).bind(userId, now, click.id).run();
         // 只在「全新候選人」且點的是真的職缺（不是話題貼文那種借位的 job_slug）
         // 才主動回覆應徵流程；舊候選人或話題貼文一律不打斷，只默默記歸因。
+        // ⚠️ 2026-09-09 加：職缺被顧問關閉之後，社群舊貼文還在外面流傳，
+        // 人選照樣點得進來。原本完全不看 status，會熱情地推一個已經徵到人的
+        // 職缺的應徵連結給他——比不回話還糟。關閉的一律誠實講，並導去列表。
+        if (!binding && click.job_title && click.job_status === 'closed') {
+          const closed = await env.DB.prepare(
+            `SELECT slug, title, company_id, service_line FROM jobs WHERE slug=?`
+          ).bind(click.job_slug).first();
+          return lineReplyMessages(env, replyToken,
+            await closedJobMessages(env, closed || { slug: click.job_slug, title: click.job_title }));
+        }
         if (!binding && click.job_title) {
           const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
             + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`;
