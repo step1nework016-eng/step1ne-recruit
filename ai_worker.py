@@ -218,7 +218,63 @@ def process(job):
     return run_claude(builder(payload), want_json=want_json)
 
 
+def _build_call_prep_md(prep):
+    return ('人選狀況快速摘要\n' + '\n'.join(f'・{s}' for s in prep.get('summary') or [])
+            + '\n\n建議電洽問題\n' + '\n'.join(f'{i+1}. {q_}' for i, q_ in enumerate(prep.get('questions') or []))
+            + '\n\n工作介紹重點\n' + '\n'.join(f'・{s}' for s in prep.get('talkingPoints') or [])
+            + '\n\n人選可能問的問題與建議回覆\n'
+            + '\n'.join(f'{i+1}. Q：{x.get("q")}\n   A：{x.get("a")}' for i, x in enumerate(prep.get('anticipatedQna') or [])))
+
+
+def promote_writebacks():
+    """撈 call_notes_summary／call_prep 這兩種工作跑完的結果，寫回 applications，
+    寫完就刪掉那筆 ai_jobs（用完即丟，不佔位置）。
+
+    2026-09-09 加：Worker 那邊改成排隊後不等結果（doCallNote／手動新增人選／
+    call-prep-generate 三個呼叫點都已改成 queueAiJob，不再當場呼叫 Llama），
+    這支負責把結果接回去——包含手動新增人選那邊原本「電洽摘要一存好就順手
+    寫一筆 candidate_notes『電洽紀錄』時間軸」的行為，用 payload 裡的
+    also_note 旗標保留。
+    """
+    rows = d1_http.query(
+        "SELECT * FROM ai_jobs WHERE kind IN ('call_notes_summary','call_prep') "
+        "AND status IN ('done','failed') ORDER BY created_at LIMIT 20")['results']
+    for job in rows:
+        jid = job['id']
+        try:
+            payload = json.loads(job.get('payload_json') or '{}')
+        except Exception:
+            payload = {}
+        app_id = payload.get('application_id')
+        target = payload.get('target')
+        if not app_id or not target:
+            d1_http.query(f"DELETE FROM ai_jobs WHERE id={q(jid)}")
+            continue
+        if job['status'] == 'failed':
+            log(f'  ⚠️ {job["kind"]}（{jid[:8]}）重試 3 次都失敗，放棄寫回：{str(job.get("error") or "")[:120]}')
+            d1_http.query(f"DELETE FROM ai_jobs WHERE id={q(jid)}")
+            continue
+        try:
+            if job['kind'] == 'call_notes_summary':
+                summary_md = job['result_text']
+                d1_http.query(f"UPDATE applications SET {target}={q(summary_md)} WHERE id={q(app_id)}")
+                if payload.get('also_note'):
+                    d1_http.query(
+                        "INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) "
+                        f"VALUES ({q(str(uuid.uuid4()))}, {q(app_id)}, '電洽紀錄', {q(summary_md)}, "
+                        f"datetime('now','+8 hours'), {q(payload.get('note_by'))})")
+            elif job['kind'] == 'call_prep':
+                prep = json.loads(job['result_text'])
+                md = _build_call_prep_md(prep)
+                d1_http.query(f"UPDATE applications SET {target}={q(md)} WHERE id={q(app_id)}")
+            d1_http.query(f"DELETE FROM ai_jobs WHERE id={q(jid)}")
+            log(f'  ↩️ 寫回 {job["kind"]}（{jid[:8]}）→ applications.{target}')
+        except Exception as e:
+            log(f'  ⚠️ 寫回 {job["kind"]}（{jid[:8]}）失敗，先留著：{str(e)[:150]}')
+
+
 def tick():
+    promote_writebacks()
     rows = d1_http.query(
         "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
         "ORDER BY created_at LIMIT 3" % MAX_ATTEMPTS)['results']
