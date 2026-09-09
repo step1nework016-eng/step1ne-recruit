@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TPL_DIR = os.path.join(HERE, 'reporttpl')
@@ -1052,24 +1053,56 @@ def html_to_pdf(html_text, out_path):
     ⚠️ 交付流程的每一步都不可以讓面談收尾掛掉，所以這裡把錯誤吃掉只回布林。
     --no-pdf-header-footer 是必要的：預設會在每頁印上網址與日期，
     那份 PDF 是要轉給用人企業的，頁尾出現 file:///tmp/... 很難看。
+
+    ⚠️ 2026-09-09：一定要給 --user-data-dir 指向專用資料夾。不給的話
+    headless Chrome 會去碰 Jacky 本人正在用的預設設定檔（同一個 profile
+    鎖），他的 Chrome 視窗有機會被關掉——他面談中被關過。
+    但給了專用設定檔之後 Chrome 印完 PDF 不會自己退場（實測固定卡到逾時），
+    所以這裡不等它結束，改成輪詢檔案：PDF 檔案大小連續兩次沒變就視為印完，
+    主動把 process 收掉。
     """
     tmp_html = None
+    proc = None
     try:
         fd, tmp_html = tempfile.mkstemp(suffix='.html')
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(html_text)
-        r = subprocess.run(
+        profile_dir = os.path.join(tempfile.gettempdir(), 'step1ne-chrome-pdf')
+        os.makedirs(profile_dir, exist_ok=True)
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        proc = subprocess.Popen(
             [CHROME, '--headless', '--disable-gpu', '--no-pdf-header-footer',
+             f'--user-data-dir={profile_dir}',
+             '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+             '--disable-background-networking', '--disable-sync',
+             '--disable-component-update', '--disable-default-apps',
+             '--metrics-recording-only', '--mute-audio',
              f'--print-to-pdf={out_path}', f'file://{tmp_html}'],
-            capture_output=True, text=True, timeout=120)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        last = -1
+        for _ in range(120):          # 最多等 120 秒
+            if proc.poll() is not None:
+                break                 # 自己結束了（沒帶 profile 的舊行為）
+            size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+            if size > 1000 and size == last:
+                break                 # 檔案穩定＝印完了，下面主動收掉
+            last = size
+            time.sleep(1)
         ok = os.path.exists(out_path) and os.path.getsize(out_path) > 1000
         if not ok:
-            print(f'[deliver] PDF 產生失敗：{(r.stderr or r.stdout or "")[-300:]}')
+            print('[deliver] PDF 產生失敗：headless Chrome 逾時或沒輸出檔案')
         return ok
     except Exception as ex:
         print(f'[deliver] PDF 例外：{ex}')
         return False
     finally:
+        if proc and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
         if tmp_html and os.path.exists(tmp_html):
             os.remove(tmp_html)
 
