@@ -413,9 +413,18 @@ def tick():
         return 0
     for job in rows:
         jid = job['id']
-        d1_http.query(
+        # 2026-09-10 加：多台機器（不同裝置，同一個claude帳號各跑一份這支）
+        # 同時搶同一批 pending 工作時，原本這個 UPDATE 沒有 WHERE status='pending'，
+        # 兩台機器都會「成功」把同一筆改成running、各自跑一次claude CLI——
+        # 同一份工作被處理兩次，浪費用量還可能兩邊都寫結果互相覆蓋。
+        # 改成帶條件的UPDATE，用 meta.changes 判斷「這次是不是真的搶到」，
+        # 這是 d1_http.py 檔頭註解裡講的設計，本來就是設計來做這件事的。
+        claim = d1_http.query(
             f"UPDATE ai_jobs SET status='running', started_at=datetime('now','+8 hours'), "
-            f"attempts=attempts+1 WHERE id={q(jid)}")
+            f"attempts=attempts+1 WHERE id={q(jid)} AND status='pending'")
+        if not claim.get('meta', {}).get('changes'):
+            log(f'  ⏭️ {job["kind"]}（{jid[:8]}）已被其他裝置搶走，跳過')
+            continue
         log(f'處理 {job["kind"]}（{jid[:8]}）')
         try:
             out = process(job)
