@@ -958,7 +958,7 @@ def build_client_html(data, meta, show=None):
         # 接受度／顧問觀察／有N件事想先跟您說明。txt()已經過scrub_for_client
         # 跟匿名處理，這裡的helper只負責組HTML，資料本身已經是安全的。
         'OVERVIEW': _overview(txt(data.get('overview'))),
-        'MOTIVATION': _motivation([txt(x) for x in (data.get('motivation') or []) if txt(x)]),
+        'MOTIVATION': _motivation([txt(x) for x in (data.get('motivation_notes') or []) if txt(x)]),
         'CONDACCEPT': _condition_acceptance([
             {'topic': txt(c.get('topic')), 'detail': txt(c.get('detail'))}
             for c in (data.get('condition_acceptance') or [])
@@ -1003,7 +1003,7 @@ def build_client_html(data, meta, show=None):
         # 2026-09-10 加：附件一多出來的五塊，全部依實際有沒有內容決定要不要顯示，
         # 沒有根據AI就會留空——這裡忠實反映，不強迫顯示空區塊。
         'overview': bool(data.get('overview') and txt(data.get('overview'))),
-        'motivation': bool(data.get('motivation')),
+        'motivation': bool(data.get('motivation_notes')),
         'condaccept': bool(data.get('condition_acceptance')),
         'observations': bool(data.get('consultant_observations')),
         'flags': bool(data.get('things_to_flag')),

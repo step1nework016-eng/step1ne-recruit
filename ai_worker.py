@@ -338,13 +338,13 @@ Jacky 針對上一版提出的修改意見：
 "must_check_items":[{{"label":"必要評估項目清單上的項目名稱，逐項照順序跟數量，沒有清單就給空陣列","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
 "expertise_findings":[{{"topic":"","asked":"逐字稿裡的問題，沒有就留空","answered":"候選人怎麼回答的重點","depth":"具體|籠統|未談到"}}],
 "candidate_questions":[{{"question":"候選人自己主動問的問題，逐字或接近逐字，沒把握是候選人問的就不要放"}}],
-"motivation":["動機與意願，條列——轉職原因、對這個職務的理解、想待多久，只寫對話紀錄或履歷自傳裡有根據的，沒有就空陣列"],
+"motivation_notes":["動機與意願，條列——轉職原因、對這個職務的理解、想待多久，只寫對話紀錄或履歷自傳裡有根據的，沒有就空陣列"],
 "condition_acceptance":[{{"topic":"通勤／加班／調派／班別等，只寫有實際問到的項目","detail":"候選人的回答，具體陳述"}}],
 "consultant_observations":{{"approach":"做事方法的觀察，需要有逐字稿具體事例佐證，沒有就空字串","communication":"溝通方式的觀察，同上","preparation":"準備程度的觀察，同上"}},
 "things_to_flag":["需要客戶評估、用溫和口吻寫的提醒，例如年資短/待遇高於核薪/異動頻繁——每一點都要講清楚事實，不要下判斷說「不建議」，只講「請企業自行評估」，沒有需要提醒的就空陣列"],
 "call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}
 
-⚠️ overview／motivation／condition_acceptance／consultant_observations／things_to_flag 這五個欄位
+⚠️ overview／motivation_notes／condition_acceptance／consultant_observations／things_to_flag 這五個欄位
 都是新加的——一樣適用最上面的規則：沒有根據就誠實留空（字串留空字串、陣列留空陣列），
 不要為了讓報告看起來完整就硬湊內容。"""
 
