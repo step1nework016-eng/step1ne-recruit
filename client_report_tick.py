@@ -201,6 +201,8 @@ def build_draft_text(name, synth):
     對不對，決定要不要放行」，不用照PDF版面排。
     """
     lines = [f'📋 {name} 客戶推薦履歷草稿（確認後回覆「做PDF」才會產出PDF）', '']
+    if synth.get('_worker_id'):
+        lines.append(f'（由「{synth["_worker_id"]}」這台裝置處理）')
     if synth.get('one_liner'):
         lines.append(f'【一句話定位】{synth["one_liner"]}')
     fc = synth.get('for_client') or {}
@@ -271,7 +273,7 @@ def promote_synthesized():
     rows = D.d1("SELECT id, application_id, ai_job_id FROM client_report_requests "
                 "WHERE status='awaiting_synthesis' AND ai_job_id IS NOT NULL")
     for row in rows:
-        job = D.d1(f"SELECT status, result_text, error, payload_json FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
+        job = D.d1(f"SELECT status, result_text, error, payload_json, worker_id FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
         if not job:
             continue
         j = job[0]
@@ -304,7 +306,10 @@ def promote_synthesized():
             # 舊流程只把它存欄位、不會再顯示，現在草稿要秀給Jacky看）。
             app_row = D.d1(f"SELECT name FROM applications WHERE id={D.q(row['application_id'])}")
             name = app_row[0]['name'] if app_row else '（人選）'
-            send_confirm_draft(row['id'], name, synth)
+            # 2026-09-10 加：_worker_id只給草稿文字用，不存進synthetic_content_json
+            # （那份是最終PDF的資料來源，處理裝置跟履歷內容無關，不要混進去）。
+            draft_synth = dict(synth, _worker_id=j.get('worker_id'))
+            send_confirm_draft(row['id'], name, draft_synth)
         elif j['status'] == 'failed':
             D.d1(f"UPDATE client_report_requests SET status='error', "
                  f"error={D.q('AI 整理履歷內容失敗（重試3次都不行）：' + str(j['error'] or '')[:200])}, "
