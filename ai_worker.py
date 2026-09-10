@@ -31,7 +31,11 @@ sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
 
 MODEL = 'claude-sonnet-5'
-TIMEOUT = 300
+# 2026-09-10 加：客戶推薦履歷的提示詞今天加了很多新規則＋5個新schema欄位，
+# 變長很多，遇到電洽逐字稿本來就長的人選（劉尚義那份），claude CLI跑到
+# 4分41秒還沒完，撞300秒逾時被砍掉重來——不是卡死，是原本的逾時值對現在
+# 這份提示詞的份量來說太緊。拉高留餘裕，不要每次都靠重試硬撐。
+TIMEOUT = 480
 POLL_SEC = 20
 MAX_ATTEMPTS = 3
 NO_TOOLS = ['--disallowed-tools', 'Bash,Edit,Write,Read,WebFetch,WebSearch,Task']
