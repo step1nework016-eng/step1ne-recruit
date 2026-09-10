@@ -521,7 +521,7 @@ def tg_buttons(text, buttons, thread=None, chat_id=None):
     return None
 
 
-def tg_doc(data, filename, caption='', thread=None):
+def tg_doc(data, filename, caption='', thread=None, chat_id=None):
     """把檔案當附件推到同一個 Telegram 群組。
 
     為什麼要有這支：原本只推一行「報告在後台」＋連結。但顧問多半是在外面用手機
@@ -529,13 +529,19 @@ def tg_doc(data, filename, caption='', thread=None):
     附件直接點開就能讀，不用登入、不用電腦。
 
     標準庫沒有 multipart encoder，手動組。
+    2026-09-10 加 chat_id：跟 tg()／tg_buttons() 同一個理由——客戶履歷人工
+    確認的最終PDF要送回這個新topic（不同群組），不是原本step1ne-tg.env
+    設定的那個。這支之前漏改，導致process_one()呼叫時直接丟
+    TypeError（多帶了一個沒定義的關鍵字參數），江芷楹那次PDF卡在error
+    狀態就是撞到這裡。
     """
     try:
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
+        target_chat = chat_id if chat_id is not None else e['TG_CHAT_ID']
         b = '----s1' + uuid.uuid4().hex
-        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{e["TG_CHAT_ID"]}\r\n'.encode()]
+        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{target_chat}\r\n'.encode()]
         if thread is not None:
             e = dict(e, TG_THREAD_ID=str(thread))
         if e.get('TG_THREAD_ID'):
