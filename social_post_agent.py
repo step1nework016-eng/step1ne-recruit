@@ -352,9 +352,17 @@ def format_job_requirement(job):
     add('資歷要求', f"{job['years_min']} 年以上" if job.get('years_min') else None)
     add('必備技能', job.get('must_skills'))
     if job.get('salary_min') or job.get('salary_max'):
+        # 2026-09-10 改：預設字眼原本是「月薪」，AI 會照抄成「月薪X起」，
+        # 跟今天訂的規則（只有下限、沒上限時要講「平均薪資X起」，不要講
+        # 「月薪X以上/起」，因為那個下限常常是就業服務法揭露門檻，不是
+        # 客戶真的開的價）互相矛盾。只有下限沒上限時改用「平均薪資」；
+        # 有完整區間時保留原字眼，區間本身已經夠具體，不算誤導。
         unit = job.get('salary_unit') or '月薪'
         lo, hi = job.get('salary_min'), job.get('salary_max')
-        add('薪資', f"{unit} {lo}–{hi}" if lo and hi else f"{unit} {lo or hi}")
+        if lo and hi:
+            add('薪資', f"{unit} {lo}–{hi}")
+        else:
+            add('薪資', f"平均薪資 {lo or hi} 起")
     add('薪資備註', public_part(job.get('salary_note')))
     add('團隊規模', job.get('team_size'))
     # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
@@ -993,10 +1001,15 @@ if __name__ == '__main__':
     elif '--repost' in sys.argv or (len(sys.argv) > 1 and not sys.argv[1].startswith('--')):
         main()
     else:
-        log('社群發文 agent 啟動（常駐，每 10 分鐘掃一次）')
+        # 2026-09-10 改：原本600秒(10分鐘)，Jacky反應顧問剛按完要乾等太久。
+        # 改成90秒——阿財面談那支daemon是每8秒查一次D1都撐得住，90秒負擔
+        # 小很多；比原本快6倍多，顧問按下去最多等1-2分鐘就有動靜。
+        # 如果之後發現D1負載真的被推高（查D1 timeout變頻繁），要退回更慢
+        # 的間隔，或改做「Worker直接喚醒本機」這種事件觸發式設計。
+        log('社群發文 agent 啟動（常駐，每 90 秒掃一次）')
         while True:
             try:
                 tick()
             except Exception as e:
                 log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
-            time.sleep(600)
+            time.sleep(90)
