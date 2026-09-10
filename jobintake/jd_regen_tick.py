@@ -209,5 +209,19 @@ def main():
             pass
 
 
+# ⚠️ 2026-09-10 改：這支原本純靠 launchd StartInterval 每10分鐘戳一次，
+# 今天連續在好幾支排程上撞到「StartInterval 計時器安靜停止跳動」的病——
+# log 停在 09-08 12:40，兩天沒動靜也沒人發現。改成跟 ai_worker.py 同一套
+# 常駐迴圈，plist 配 RunAtLoad+KeepAlive，不再依賴會壞的定時器；
+# main() 內部的鎖跟「一次只處理一筆」邏輯完全不變，只是換成自己睡覺再叫自己。
 if __name__ == '__main__':
-    main()
+    if '--once' in sys.argv:
+        main()
+    else:
+        log('JD 重新發布處理器啟動（常駐，每 10 分鐘掃一次）')
+        while True:
+            try:
+                main()
+            except Exception as e:
+                log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
+            time.sleep(600)

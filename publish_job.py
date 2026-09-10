@@ -190,7 +190,10 @@ def card_meta(j):
     labels = [EMPLOYMENT_LABEL[e] for e in emp if e in EMPLOYMENT_LABEL]
     if labels:
         out.append('／'.join(dict.fromkeys(labels)))
-    loc = (j.get('locations') or '').strip()
+    loc = j.get('locations') or ''
+    if isinstance(loc, list):
+        loc = '、'.join(str(x) for x in loc if x)
+    loc = loc.strip()
     if loc:
         out.append(loc.split('、')[0].split(',')[0].strip())
     return out

@@ -97,6 +97,13 @@ def process_one(req_row):
                  f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
             return
 
+    # ⚠️ 2026-09-09 加：周海暉那份「一句話總結」空白事故——AI 有時會把
+    # trait_one_liner 寫在最外層，沒照 schema 放進 for_client 底下，
+    # deliver.py 只認 for_client.trait_one_liner，抓不到就整格空白。
+    # 這裡防禦性挪回正確位置，不管 AI 這次有沒有照規矩。
+    if isinstance(data, dict) and data.get('trait_one_liner') and not (data.get('for_client') or {}).get('trait_one_liner'):
+        data.setdefault('for_client', {})['trait_one_liner'] = data.pop('trait_one_liner')
+
     # company_id 沒帶就退回這個人選最新一筆推薦紀錄，跟 Worker 端 prefill/report
     # 兩支端點同一套退回邏輯，避免顧問沒特別選公司時整批失敗。
     if not company_id:
@@ -183,6 +190,75 @@ def process_one(req_row):
     print(f'✅ {name}（{app_id}）客戶版履歷已產出並推送')
 
 
+CONFIRM_CHAT_ID = '-1004320100190'  # Step1ne AI 顧問室
+CONFIRM_THREAD_ID = '35'            # 客戶履歷人工確認 topic
+
+
+def build_draft_text(name, synth):
+    """把 synth（claude CLI 產出的 JSON）整理成一份人看得懂的純文字草稿，
+    貼進 TG 讓 Jacky 確認用——跟給客戶看的PDF不是同一份東西，這份是給
+    Jacky自己看的，可以帶一點內部判斷的口吻，重點是「讓他一眼看出內容
+    對不對，決定要不要放行」，不用照PDF版面排。
+    """
+    lines = [f'📋 {name} 客戶推薦履歷草稿（確認後回覆「做PDF」才會產出PDF）', '']
+    if synth.get('one_liner'):
+        lines.append(f'【一句話定位】{synth["one_liner"]}')
+    fc = synth.get('for_client') or {}
+    if fc.get('reasons'):
+        lines.append('\n【推薦理由】')
+        lines += [f'・{r}' for r in fc['reasons']]
+    if fc.get('job_fit_pros'):
+        lines.append('\n【加分項】')
+        lines += [f'・{r}' for r in fc['job_fit_pros']]
+    if fc.get('job_fit_cons'):
+        lines.append('\n【需留意】')
+        lines += [f'・{r}' for r in fc['job_fit_cons']]
+    if synth.get('work_history'):
+        lines.append('\n【工作經歷】')
+        for w in synth['work_history']:
+            lines.append(f'・{w.get("duration","")} {w.get("employer","")}｜{w.get("role","")}')
+    if synth.get('hard_filters'):
+        lines.append('\n【到職可行性】')
+        for h in synth['hard_filters']:
+            lines.append(f'・{h.get("label","")}：{h.get("status","")}－{h.get("detail","")}')
+    if synth.get('must_check_items'):
+        lines.append('\n【客戶指定必要評估項目】')
+        for h in synth['must_check_items']:
+            lines.append(f'・{h.get("label","")}：{h.get("status","")}－{h.get("detail","")}')
+    if synth.get('candidate_questions'):
+        lines.append('\n【候選人主動提出的問題】')
+        lines += [f'・{q.get("question","")}' for q in synth['candidate_questions']]
+    if synth.get('call_summary_client_md'):
+        lines.append(f'\n【電洽摘要】\n{synth["call_summary_client_md"]}')
+    return '\n'.join(lines)[:3800]  # TG單則訊息上限4096字，留一點餘裕
+
+
+def send_confirm_draft(req_id, name, synth):
+    """2026-09-10 加：人工確認關卡，互動式版本。合成結果剛落地時不直接產PDF，
+    先把純文字草稿＋兩顆按鈕貼進「客戶履歷人工確認」topic：
+      ✅ 確認，產出PDF → Worker把狀態改成confirmed，下一輪tick()真的產PDF
+      ✏️ 要修改        → Worker回一句引導，實際修改靠「直接回覆這則訊息打
+                          修改內容」——Worker收到文字回覆會拿去重新跑一次
+                          claude CLI（帶著Jacky的意見＋前一版內容），跑完
+                          再貼一版新草稿，一樣兩顆按鈕，可以來回改到滿意
+                          為止，狀態全程留在awaiting_confirm，不會提早產PDF。
+    """
+    text = build_draft_text(name, synth)
+    buttons = [[
+        {'text': '✅ 確認，產出PDF', 'callback_data': f'crconfirm:{req_id}'},
+        {'text': '✏️ 要修改', 'callback_data': f'credit:{req_id}'},
+    ]]
+    mid = D.tg_buttons(text, buttons, thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
+    if mid is None:
+        # 貼不出去就先留在原狀態，下一輪tick()再試一次，不要憑空轉成
+        # awaiting_confirm又沒有對應的訊息可以回覆。
+        return False
+    D.d1(f"UPDATE client_report_requests SET status='awaiting_confirm', "
+         f"tg_confirm_message_id={D.q(str(mid))}, tg_confirm_chat_id={D.q(CONFIRM_CHAT_ID)}, "
+         f"tg_confirm_thread_id={D.q(CONFIRM_THREAD_ID)} WHERE id={D.q(req_id)}")
+    return True
+
+
 def promote_synthesized():
     """撈 ai_worker.py 用 claude CLI 跑完的合成結果，寫回 client_report_requests。
 
@@ -207,13 +283,20 @@ def promote_synthesized():
                      f"error={D.q(f'AI 產出的 JSON 解析失敗：{e}')}, "
                      f"done_at=datetime('now','+8 hours') WHERE id={D.q(row['id'])}")
                 continue
-            call_summary = synth.pop('call_summary_client_md', None)
+            call_summary = synth.get('call_summary_client_md')
             if call_summary:
                 D.d1(f"UPDATE applications SET call_summary_client_md={D.q(call_summary)}, "
                      f"call_summary_client_at=datetime('now','+8 hours') WHERE id={D.q(row['application_id'])}")
-            D.d1(f"UPDATE client_report_requests SET status='pending', "
+            D.d1(f"UPDATE client_report_requests SET "
                  f"synthetic_content_json={D.q(json.dumps(synth, ensure_ascii=False))} "
                  f"WHERE id={D.q(row['id'])}")
+            # 2026-09-10 改：不再直接轉pending讓process_one()立刻產PDF，
+            # 先送人工確認草稿——name查applications表，call_summary_client_md
+            # 留在synth裡一起顯示在草稿裡，不從synth裡pop掉（原本pop是因為
+            # 舊流程只把它存欄位、不會再顯示，現在草稿要秀給Jacky看）。
+            app_row = D.d1(f"SELECT name FROM applications WHERE id={D.q(row['application_id'])}")
+            name = app_row[0]['name'] if app_row else '（人選）'
+            send_confirm_draft(row['id'], name, synth)
         elif j['status'] == 'failed':
             D.d1(f"UPDATE client_report_requests SET status='error', "
                  f"error={D.q('AI 整理履歷內容失敗（重試3次都不行）：' + str(j['error'] or '')[:200])}, "
@@ -223,8 +306,12 @@ def promote_synthesized():
 
 def tick():
     promote_synthesized()
+    # 2026-09-10 改：'pending' 是「本來就不需要AI合成」那條舊路（Worker
+    # INSERT時直接給pending，沒有ai_job_id，promote_synthesized()不會碰到），
+    # 這條沒有AI生成內容可審，維持原樣直接產PDF。'confirmed' 才是走過人工
+    # 確認關卡、Jacky在TG按了「✅確認，產出PDF」的那批。
     rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json FROM client_report_requests "
-                "WHERE status='pending' ORDER BY requested_at ASC LIMIT 5")
+                "WHERE status IN ('pending','confirmed') ORDER BY requested_at ASC LIMIT 5")
     for row in rows:
         try:
             process_one(row)

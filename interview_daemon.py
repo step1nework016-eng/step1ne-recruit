@@ -467,45 +467,58 @@ def save_report(app_id, content_md, content_json):
         return None
 
 
-def tg(text, thread=None):
+def tg(text, thread=None, chat_id=None):
     # 這支用獨立的設定檔（step1ne-tg.env），不要跟總指揮 yuqi 共用的 tg.env 混在一起——
     # 2026-07-31 差點把 yuqi 的 bot token 換成這個 bot，那樣 yuqi 會整個換身分。
+    # 2026-09-10 加 chat_id 參數＋回傳 message_id：客戶履歷人工確認那個新topic
+    # 開在另一個群組（Step1ne AI 顧問室，-1004320100190），跟這支原本預設
+    # 貼文的群組（TG_CHAT_ID，-1003231629634）不是同一個——不能只靠
+    # thread參數，要能指定完全不同的chat_id。回傳message_id是為了之後要
+    # 比對Jacky的回覆是不是針對這則訊息（reply_to_message.message_id）。
     try:
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {'chat_id': e['TG_CHAT_ID'], 'text': text}
+        body = {'chat_id': chat_id if chat_id is not None else e['TG_CHAT_ID'], 'text': text}
         tid = thread if thread is not None else e.get('TG_THREAD_ID')
         if tid:
             body['message_thread_id'] = tid
-        urllib.request.urlopen(
+        r = json.loads(urllib.request.urlopen(
             f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
             data=urllib.parse.urlencode(body).encode(),
-            timeout=20)
+            timeout=20).read())
+        if r.get('ok'):
+            return r['result']['message_id']
     except Exception as ex:
         log(f'Telegram 推播失敗：{ex}')
+    return None
 
 
-def tg_buttons(text, buttons, thread=None):
+def tg_buttons(text, buttons, thread=None, chat_id=None):
     """跟 tg() 一樣，但帶 inline keyboard。
 
     buttons 是 [[{'text':..,'callback_data':..}, ...], ...]（一列一個 list）。
     按下去由 Worker 的 callback handler 處理，這支不負責接。
+    2026-09-10 加 chat_id＋回傳message_id，跟tg()同一個理由——客戶履歷人工
+    確認的按鈕貼在另一個群組，而且要記下message_id才能比對之後的文字回覆。
     """
     try:
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {'chat_id': e['TG_CHAT_ID'], 'text': text,
+        body = {'chat_id': chat_id if chat_id is not None else e['TG_CHAT_ID'], 'text': text,
                 'reply_markup': json.dumps({'inline_keyboard': buttons})}
         tid = thread if thread is not None else e.get('TG_THREAD_ID')
         if tid:
             body['message_thread_id'] = tid
-        urllib.request.urlopen(
+        r = json.loads(urllib.request.urlopen(
             f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
-            data=urllib.parse.urlencode(body).encode(), timeout=20)
+            data=urllib.parse.urlencode(body).encode(), timeout=20).read())
+        if r.get('ok'):
+            return r['result']['message_id']
     except Exception as ex:
         log(f'Telegram 按鈕推播失敗：{ex}')
+    return None
 
 
 def tg_doc(data, filename, caption='', thread=None):

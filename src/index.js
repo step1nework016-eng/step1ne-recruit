@@ -4465,6 +4465,71 @@ export default {
         }
       }
 
+      // ── 客戶推薦履歷｜人工確認關卡 ──
+      // 2026-09-10 加。草稿貼進「客戶履歷人工確認」topic 時帶兩顆按鈕：
+      // ✅確認→狀態改confirmed，本機client_report_tick.py下一輪就會真的產PDF；
+      // ✏️要修改→只回一句引導，真正的修改內容靠「直接回覆那則訊息打文字」，
+      // 跟job_intakes「重寫」那套完全同一個模式（按鈕收不到自由文字）。
+      if (update.callback_query && String(update.callback_query.data || '').match(/^(crconfirm|credit):/)) {
+        const cqc = update.callback_query;
+        const [action, reqId] = String(cqc.data).split(':');
+        const ansCb = async (t) => {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cqc.id, text: t }),
+          }).catch(() => {});
+        };
+        if (action === 'crconfirm') {
+          await env.DB.prepare(`UPDATE client_report_requests SET status='confirmed' WHERE id=?`).bind(reqId).run();
+          await ansCb('已確認，PDF產出中…');
+        } else {
+          await ansCb('請直接回覆這則草稿訊息，打你要怎麼改');
+        }
+        return new Response('ok');
+      }
+
+      // 顧問（Jacky）直接回覆客戶推薦履歷草稿訊息打修改意見——不透過按鈕，
+      // 靠 tg_confirm_message_id 比對。收到意見後不是自己改文字，是重新排一次
+      // ai_jobs（kind='client_report_synthesize'），把Jacky的意見＋前一版內容
+      // 一起餵給claude CLI重新整理，整理完 client_report_tick.py 的
+      // promote_synthesized() 會自動再貼一版新草稿出來，一樣兩顆按鈕，可以
+      // 反覆修改到滿意為止；狀態改回awaiting_synthesis，不會提早產PDF。
+      {
+        const crmsg = update.message;
+        if (crmsg && crmsg.reply_to_message && String(crmsg.text || '').trim()) {
+          const crRow = await env.DB.prepare(
+            `SELECT id, application_id, ai_job_id, synthetic_content_json FROM client_report_requests
+              WHERE tg_confirm_message_id = ? AND status = 'awaiting_confirm'`
+          ).bind(String(crmsg.reply_to_message.message_id)).first();
+          if (crRow) {
+            const oldJob = crRow.ai_job_id
+              ? await env.DB.prepare(`SELECT payload_json FROM ai_jobs WHERE id=?`).bind(crRow.ai_job_id).first()
+              : null;
+            let payload = {};
+            try { payload = oldJob ? JSON.parse(oldJob.payload_json) : {}; } catch { payload = {}; }
+            payload.edit_instruction = crmsg.text.trim();
+            try { payload.previous_output = JSON.parse(crRow.synthetic_content_json || '{}'); } catch { payload.previous_output = null; }
+            const newJobId = crypto.randomUUID();
+            await env.DB.prepare(
+              `INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'client_report_synthesize', ?, 'pending', ?)`
+            ).bind(newJobId, JSON.stringify(payload), nowTaipei()).run();
+            await env.DB.prepare(
+              `UPDATE client_report_requests SET status='awaiting_synthesis', ai_job_id=? WHERE id=?`
+            ).bind(newJobId, crRow.id).run();
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: crmsg.chat.id,
+                ...(crmsg.message_thread_id ? { message_thread_id: crmsg.message_thread_id } : {}),
+                reply_to_message_id: crmsg.message_id,
+                text: '✏️ 收到，重新整理中（約1-2分鐘），好了會貼新版草稿給你確認。',
+              }),
+            }).catch(() => {});
+            return new Response('ok');
+          }
+        }
+      }
+
       // ── 顧問按「重寫」之後，直接回覆那則訊息補意見 ──
       // Telegram 的 inline 按鈕收不到自由文字，所以按鈕只負責把狀態改成 rewrite，
       // 意見靠「回覆同一則訊息」收。不做這一段的話，顧問按了重寫之後

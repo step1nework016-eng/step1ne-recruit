@@ -231,6 +231,24 @@ def prompt_client_report_synthesize(p):
                 '絕對不要把任何分數、測驗名稱、「人格測驗」「Big Five」「DISC」「Grit」這些字眼寫進任何輸出欄位】\n'
                 + '\n'.join(pt_lines)) if pt_lines else ''
 
+    # 2026-09-10 加：人工確認關卡的修改回合——Jacky在TG回覆意見時帶著。
+    # previous_output 是上一版完整JSON，讓模型「調整」而不是「重新猜一次」，
+    # 沒被Jacky提到要改的欄位應該盡量保留，不要整份跟著重寫。
+    edit_instruction = p.get('edit_instruction')
+    previous_output = p.get('previous_output')
+    edit_block = ''
+    if edit_instruction:
+        edit_block = f"""
+⚠️ 這是修改回合，不是第一次產出。上一版輸出內容如下：
+{json.dumps(previous_output, ensure_ascii=False) if previous_output else '（沒有上一版內容）'}
+
+Jacky 針對上一版提出的修改意見：
+{edit_instruction}
+
+請針對這個意見調整輸出，其餘沒提到要改的部分盡量沿用上一版（除非上一版本身就違反
+最上面的規則）。一樣輸出完整的 JSON（不是只輸出差異的部分），格式不變。
+"""
+
     return f"""你是獵頭顧問的助理，要把一位候選人的履歷、對話紀錄（可能是阿財AI面談逐字稿、
 顧問電洽逐字稿，或兩者都有），整理成一份給用人企業客戶看的人選推薦報告內容。
 
@@ -263,6 +281,24 @@ def prompt_client_report_synthesize(p):
   跟 job_fit_cons 裡用近乎一樣的長句子重複寫兩次**——job_fit_cons 只需要
   用一句話點出重點（例如「近三段工作任期偏短，候選人已說明原因，建議企業
   自行評估」），細節留給 hard_filters 那邊的具體陳述，不要兩邊都寫一整段。
+- 2026-09-10 加（Jacky提供的客戶推薦履歷提示詞規格，補進來的規則）：
+  1. **不要自己推算總年資／平均年資**，也不要沿用履歷自填欄位裡的「總年資X年」
+     （那種欄位常常把工讀／實習也算進去，不可靠）——只描述各段工作各自的
+     起訖時間，不要加總下結論。
+  2. **人選目前/期望待遇**：不相關產業的前職／現職薪資一律不寫；只有
+     「期望薪資＝前職薪資」且屬於相關產業時，才可以寫期望薪資這個數字。
+     不確定產業是否相關就不要寫。
+  3. **對前雇主的負面細節一律改寫成中性說法**——例如原話是「派系鬥爭」
+     「被針對」，要改寫成「團隊相處氛圍因素」這種不會引戰的描述，不要
+     照抄候選人原話裡的負面用詞。
+  4. **不要用推銷式用語**——「極佳」「非常適合」「強力推薦」「不可多得」
+     這類形容詞，用具體事實陳述代替。
+  5. **候選人自傳裡的自我形容詞（例如「高抗壓性」「積極主動」）不能直接
+     當成事實寫進推薦理由**——除非有具體事例佐證，否則不要寫成推薦理由；
+     沒有事例就不寫這一點，不要用候選人自己的形容詞頂替事實。
+  6. **不要暴露內部資訊**：內部評級（A/B/C/D）、內部評估分析、AI初篩本身
+     的品質問題（例如問得不夠深）、顧問電洽當下的口誤或失誤、Step1ne的
+     內部招募策略，這些都不能出現在任何輸出欄位。
 
 到職可行性清單（這個職缺原本就要問的項目，逐項核對對話紀錄裡有沒有問到、
 答案是什麼，答對/合理給 pass，有疑慮給 partial，沒問到給 unknown）：
@@ -282,7 +318,7 @@ def prompt_client_report_synthesize(p):
 {(p.get('resume_text') or '')[:8000]}
 
 {convo_text}{pt_block}
-
+{edit_block}
 用這個 JSON 格式直接輸出，不要加任何說明文字、不要用 markdown code block 包起來：
 {{"one_liner":"一句話定位30字內，不要寫年齡／性別",
 "basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
