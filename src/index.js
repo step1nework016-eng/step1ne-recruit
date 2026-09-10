@@ -4479,11 +4479,50 @@ export default {
             body: JSON.stringify({ callback_query_id: cqc.id, text: t }),
           }).catch(() => {});
         };
+        // 2026-09-10 修：原本只靠 answerCallbackQuery 的小提示（Telegram
+        // 頂部彈出的toast，2秒左右就消失、容易漏看），按完鈕原本那則草稿
+        // 訊息完全沒變化，兩顆按鈕還留在那裡——Jacky反映「按了確認怎麼
+        // 沒顯示已確認」「按了要修改怎麼沒有別的按鈕可以點」，都是同一個
+        // 根因：狀態只在toast裡講一次，訊息本身沒有留下痕跡。
+        // 改成直接編輯原本那則訊息：拿掉兩顆按鈕（避免手滑連點兩次），
+        // 並且在文字最上面補一行狀態；「要修改」額外補發一則新訊息把
+        // 引導文字留在對話串裡，不會像toast那樣消失就找不到了。
+        const chatId = cqc.message && cqc.message.chat && cqc.message.chat.id;
+        const msgId = cqc.message && cqc.message.message_id;
+        const origText = (cqc.message && cqc.message.text) || '';
         if (action === 'crconfirm') {
           await env.DB.prepare(`UPDATE client_report_requests SET status='confirmed' WHERE id=?`).bind(reqId).run();
           await ansCb('已確認，PDF產出中…');
+          if (chatId && msgId) {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: chatId, message_id: msgId,
+                text: `✅ 已確認，PDF產出中（約1-2分鐘，完成後會在這個topic收到檔案）\n\n${origText}`,
+                reply_markup: { inline_keyboard: [] },
+              }),
+            }).catch(() => {});
+          }
         } else {
           await ansCb('請直接回覆這則草稿訊息，打你要怎麼改');
+          if (chatId && msgId) {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: chatId, message_id: msgId,
+                text: `✏️ 等待修改意見——請直接回覆這則訊息，打你想怎麼改\n\n${origText}`,
+              }),
+            }).catch(() => {});
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: chatId,
+                ...(cqc.message.message_thread_id ? { message_thread_id: cqc.message.message_thread_id } : {}),
+                reply_to_message_id: msgId,
+                text: '👆 直接回覆上面那則草稿訊息，打你想怎麼改就可以了（不用按鈕）',
+              }),
+            }).catch(() => {});
+          }
         }
         return new Response('ok');
       }
