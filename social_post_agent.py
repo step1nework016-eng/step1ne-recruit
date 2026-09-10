@@ -19,6 +19,7 @@ LinkedIn 還沒申請，之後金鑰到位後一樣是加在 Worker 那個 callb
     python3 social_post_agent.py --repost <slug>   # 職缺內容改過，重新產一次草稿
 """
 import ast, json, os, re, subprocess, sys, time, datetime, urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
@@ -921,12 +922,26 @@ def main():
         d1(f"INSERT INTO social_post_queue (job_slug, account_id, requested_at) "
            f"VALUES ({q(r['slug'])}, NULL, datetime('now','+8 hours'))")
 
+    tick()
+
+
+MAX_CONCURRENT = 3
+
+
+def tick():
+    # ⚠️ 2026-09-10 改：原本一筆一筆循序處理，一個顧問的職缺卡在客戶名稱
+    # 稽核重產（要2-3分鐘），排在後面的其他顧問就得乾等。Jacky 當場抱怨
+    # 「不然每次都這樣」——改成最多同時處理 MAX_CONCURRENT 筆，各顧問
+    # 的請求互不卡隊。3 這個數字是刻意壓低的：機器是 8GB、今天才因為
+    # 多個 Claude session 同時跑撞過資源緊張的問題，不要為了發文順暢
+    # 又把同一台機器榨乾。
     queue_rows = d1("SELECT * FROM social_post_queue WHERE status IS NULL ORDER BY requested_at ASC")
     if not queue_rows:
         log('沒有需要產貼文的新職缺／話題')
         return
     jobs_cache = {}
     topics_cache = {}
+    tasks = []
     for qrow in queue_rows:
         # 2026-09-03 加：話題類型的排隊紀錄靠 topic_id 分辨。job_slug 這時候
         # 存的是「💬 描述文字」，只給列表顯示跟 /go/ 點擊歸因用，不是真職缺
@@ -939,7 +954,7 @@ def main():
             if not topic:
                 log(f'⚠️ 排隊紀錄 {qrow["id"]} 指向不存在的話題 id={tid}，跳過')
                 continue
-            process_topic(qrow, topic)
+            tasks.append((process_topic, qrow, topic))
             continue
         slug = qrow['job_slug']
         if slug not in jobs_cache:
@@ -948,8 +963,40 @@ def main():
         if not job:
             log(f'⚠️ 排隊紀錄 {qrow["id"]} 指向不存在的職缺 {slug}，跳過')
             continue
-        process_job(qrow, job)
+        tasks.append((process_job, qrow, job))
+
+    if not tasks:
+        return
+
+    def _run(t):
+        fn, qrow, arg = t
+        try:
+            fn(qrow, arg)
+        except Exception as e:
+            log(f'⚠️ 排隊紀錄 {qrow["id"]} 處理時出錯：{str(e)[:200]}')
+
+    with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT, len(tasks))) as ex:
+        list(ex.map(_run, tasks))
 
 
+# ⚠️ 2026-09-10 改：原本靠 launchd StartInterval（每10分鐘）觸發一次性腳本，
+# 今天連續撞到 interview／client_report_tick／這支自己，三個 StartInterval
+# 排程都無聲無息停止跳動（launchd 的 runs 計數卡住，不知道為什麼），
+# 顧問「一鍵發文」超過 10 小時完全沒反應，靜靜卡死沒有任何錯誤訊息。
+# Jacky 明確要求發文優先做穩——改成跟 ai_worker.py／interview_daemon.py
+# 同一套常駐迴圈，不再依賴 launchd 的計時器；plist 改 RunAtLoad+KeepAlive，
+# 程式自己活著就會一直跑，就算真的當掉 launchd 的 KeepAlive 也會直接重開，
+# 不用再靠人工發現「怎麼10小時沒動靜」才知道壞了。
 if __name__ == '__main__':
-    main()
+    if '--once' in sys.argv:
+        main()
+    elif '--repost' in sys.argv or (len(sys.argv) > 1 and not sys.argv[1].startswith('--')):
+        main()
+    else:
+        log('社群發文 agent 啟動（常駐，每 10 分鐘掃一次）')
+        while True:
+            try:
+                tick()
+            except Exception as e:
+                log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
+            time.sleep(600)
