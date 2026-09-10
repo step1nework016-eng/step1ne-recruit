@@ -39,11 +39,15 @@ body{margin:0;background:#fff;color:var(--ink);
 .wrap{max-width:820px;margin:0 auto;padding:22px 20px 40px}
 
 /* ── 抬頭 ── */
-.hero{background:var(--hero);color:#fff;padding:26px 28px;margin-bottom:22px}
-.hero .brand{font-size:11px;letter-spacing:.18em;color:var(--gold);font-weight:700}
-.hero h1{font-size:30px;margin:14px 0 10px;font-weight:700;letter-spacing:.01em}
-.hero .job{font-size:14px;color:#c3ccd8;margin:0 0 14px}
-.hero .pos{font-size:13.5px;line-height:1.85;color:#e6ebf1;margin:0}
+/* 2026-09-10 改：原本整塊深藍底色塊，跟Jacky提供的參考範本（純文字＋姓名
+   旁綠色「推薦」標籤）不同，改成純文字版，色塊拿掉。 */
+.hero{padding:0;margin-bottom:22px}
+.hero .brand{font-size:11px;letter-spacing:.18em;color:var(--navy);font-weight:700}
+.hero h1{font-size:28px;margin:10px 0 6px;font-weight:700;letter-spacing:.01em;color:var(--ink);display:inline-block;vertical-align:middle}
+.hero .tag{display:inline-block;vertical-align:middle;margin-left:10px;padding:3px 12px;
+  border-radius:999px;background:#1f8f5f;color:#fff;font-size:12px;font-weight:700}
+.hero .job{font-size:14px;color:var(--ink2);margin:2px 0 10px}
+.hero .pos{font-size:13.5px;line-height:1.85;color:var(--ink2);margin:0}
 
 /* ── 四格關鍵欄位 ──
    _nums() 輸出的是 <div>標籤<b>值</b></div> 四組，不是 table。
@@ -174,6 +178,8 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 .jobdetail li{font-size:12.5px;line-height:1.75;color:var(--ink2);margin-bottom:2px}
 .leave{margin:4px 0 0;font-size:12.5px;color:var(--ink3)}
 .leave b{color:var(--ink2);font-weight:700}
+.otherexp{margin:10px 0 0;font-size:12.5px;color:var(--ink3)}
+.otherexp b{color:var(--ink2);font-weight:700}
 
 /* ── 頁尾 ── */
 .stamp{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
@@ -198,7 +204,7 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 
 <div class="hero">
   <div class="brand">{{BRAND_LABEL}}</div>
-  <h1>{{NAME}}</h1>
+  <h1>{{NAME}}</h1><span class="tag">推薦</span>
   <div class="job">推薦職缺：{{JOB}}</div>
   <p class="pos">{{POSITIONING}}</p>
 </div>

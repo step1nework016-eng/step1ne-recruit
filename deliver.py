@@ -420,8 +420,15 @@ def _jobs(work_history, scrub=False):
     整段順序都是這個列表在決定，錯誤才會直接曝光。修法就是不要倒著跑，
     照陣列原始順序輸出。
     """
+    # 2026-09-10 加：nature='工讀'的（求學期間工讀／短期打工，跟職缺專業
+    # 無關的舊經歷）不該跟正式工作經歷用一樣的卡片規格呈現——附件一是用
+    # 「其他經歷：X，YYYY/M–YYYY/M，共N」一行帶過，不是完整卡片。
+    # 先分流，主要經歷照原本邏輯逐張畫卡片，工讀類的收集起來最後併成一行。
+    main_wh = [w for w in work_history if (w.get('nature') or '雇主') != '工讀']
+    minor_wh = [w for w in work_history if (w.get('nature') or '雇主') == '工讀']
+
     out = []
-    for w in work_history:
+    for w in main_wh:
         dur = (w.get('duration') or '').strip()
         period = f'<div class="period">{e(dur)}</div>' if dur else '<div class="period unk">期間未提供</div>'
         dim = ' dim' if not dur else ''
@@ -445,6 +452,15 @@ def _jobs(work_history, scrub=False):
         leave_html = f'<p class="leave"><b>離職原因：</b>{e(leave_reason)}</p>' if leave_reason else ''
         out.append(f'<div class="job{dim}">{period}<div class="co">{e(w.get("employer"))}</div>'
                    f'{role_html}{body}{bullets_html}{leave_html}</div>')
+
+    if minor_wh:
+        bits = []
+        for w in minor_wh:
+            piece = '、'.join(x for x in [e(w.get('employer')), e(w.get('role')), e(w.get('duration'))] if x)
+            if piece:
+                bits.append(piece)
+        if bits:
+            out.append(f'<p class="otherexp"><b>其他經歷：</b>{"；".join(bits)}</p>')
     return ''.join(out)
 
 
