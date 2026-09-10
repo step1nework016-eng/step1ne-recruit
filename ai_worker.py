@@ -21,6 +21,7 @@
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -39,6 +40,10 @@ TIMEOUT = 480
 POLL_SEC = 20
 MAX_ATTEMPTS = 3
 NO_TOOLS = ['--disallowed-tools', 'Bash,Edit,Write,Read,WebFetch,WebSearch,Task']
+# 2026-09-10 加：多裝置分擔工作之後，Jacky問「怎麼知道這筆是哪台裝置處理的」——
+# 原本完全沒記錄。用主機名稱當識別（可用 STEP1NE_WORKER_NAME 環境變數覆蓋，
+# 給每台裝置取好記的名字，不設就用系統主機名稱，不用額外設定也能區分）。
+WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
 
 
 def log(m):
@@ -434,11 +439,11 @@ def tick():
         # 這是 d1_http.py 檔頭註解裡講的設計，本來就是設計來做這件事的。
         claim = d1_http.query(
             f"UPDATE ai_jobs SET status='running', started_at=datetime('now','+8 hours'), "
-            f"attempts=attempts+1 WHERE id={q(jid)} AND status='pending'")
+            f"attempts=attempts+1, worker_id={q(WORKER_ID)} WHERE id={q(jid)} AND status='pending'")
         if not claim.get('meta', {}).get('changes'):
             log(f'  ⏭️ {job["kind"]}（{jid[:8]}）已被其他裝置搶走，跳過')
             continue
-        log(f'處理 {job["kind"]}（{jid[:8]}）')
+        log(f'處理 {job["kind"]}（{jid[:8]}），裝置：{WORKER_ID}')
         try:
             out = process(job)
             d1_http.query(
