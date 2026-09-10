@@ -99,6 +99,12 @@ def scrub_for_client(text):
     """
     if not text:
         return ''
+    # ⚠️ 2026-09-10 加：劉尚義那份撞到——AI提示詞裡叫它不要寫「阿財」，
+    # 但靠AI記得是賭運氣，不是保證。改成程式碼層級強制置換，不管AI這次
+    # 有沒有照規矩，「阿財」這個內部暱稱都進不了客戶看得到的文件。
+    # 整句留著只換詞，不像下面的禁字是整句/整段丟掉——這句話本身通常
+    # 是有用的內容，只是提到了不該出現的名字。
+    text = str(text).replace('阿財', 'AI初篩')
     keep = []
     for c in _CLAUSE_SPLIT.split(str(text)):
         if not c.strip():

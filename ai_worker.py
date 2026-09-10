@@ -118,6 +118,16 @@ def prompt_call_notes_summary(p):
 
 def prompt_call_prep(p):
     job = p.get('job') or {}
+    # ⚠️ 2026-09-10 防呆：transcript 理論上該是 Worker 端已經組好的一段文字，
+    # 但撞過一次傳成物件陣列（list）害這支直接噴 TypeError、call_prep_md
+    # 永遠是 null、顧問按「產生電洽前準備」完全沒反應。這裡多一層防呆，
+    # 不管上游傳什麼形狀都轉成字串，不會再整支掛掉。
+    transcript = p.get('transcript')
+    if isinstance(transcript, list):
+        transcript = '\n'.join(
+            f"{(m.get('role') or '')}：{m.get('content') or ''}" if isinstance(m, dict) else str(m)
+            for m in transcript
+        )
     return f"""你是獵頭顧問的助理。顧問等一下要打電話給這位人選，請幫他準備。
 
 {TERM_FIX}
@@ -141,7 +151,7 @@ def prompt_call_prep(p):
 履歷全文：
 {p.get('resume_text') or ''}
 
-{('電洽逐字稿：' + chr(10) + p.get('transcript')) if p.get('transcript') else ''}
+{('電洽逐字稿：' + chr(10) + transcript) if transcript else ''}
 """
 
 
@@ -187,6 +197,14 @@ def prompt_client_report_synthesize(p):
     checklist_lines = '\n'.join(
         f'{i+1}. {c.get("label")}' for i, c in enumerate(checklist)
     ) or '（這個職缺目前沒有設定到職可行性清單，就不用產出 hard_filters）'
+
+    # 2026-09-09 加：must_check_items 是另一份清單（用人單位指定、客戶端會看到
+    # 狀態），跟 hard_filters 分開評估、分開輸出——不要混在一起，欄位名稱要對得上
+    # client_report_tick.py 的覆蓋邏輯（meta['must_check_items'] = data['must_check_items']）。
+    mustcheck = p.get('must_check_items_template') or []
+    mustcheck_lines = '\n'.join(
+        f'{i+1}. {c.get("label")}' for i, c in enumerate(mustcheck)
+    ) or '（這個職缺沒有設定必要評估項目，就不用產出 must_check_items）'
 
     # 2026-09-09 改：Jacky 明確要求統一管線——阿財面談逐字稿／顧問電洽逐字稿
     # 擇一或都有，加上履歷、可選的風格測驗，都要能兜出一份完整報告，不是只有
@@ -234,10 +252,25 @@ def prompt_client_report_synthesize(p):
 - 不要出現候選人目前/接案收入、其他機會/offer細節、人格測驗分數或測驗名稱。
 - 不要出現任何社群連結、作品集連結——除非履歷或對話紀錄裡真的有提到網址，
   不要自己生一個看起來像的連結。
+- 2026-09-10 加：**任何輸出欄位都不准出現「阿財」這個名字**——那是我們內部
+  對AI面談助理的暱稱，客戶看到會不知道是什麼東西。統一講「AI初篩」或
+  「本次面談」，不要寫「阿財問了」「阿財追問」這種寫法。
+- 2026-09-10 加：**不要用「仍待進一步釐清」「有待確認」「需進一步確認」這種
+  結尾**——這種寫法聽起來像我們這份報告本身沒做完功課。有問到就直接陳述
+  問到的內容跟候選人的回答；沒問到就照規則寫「還沒問到」，不要兩者都想講
+  又寫成模稜兩可的句子。
+- 2026-09-10 加：**同一個疑慮不要在 hard_filters/must_check_items 的 detail
+  跟 job_fit_cons 裡用近乎一樣的長句子重複寫兩次**——job_fit_cons 只需要
+  用一句話點出重點（例如「近三段工作任期偏短，候選人已說明原因，建議企業
+  自行評估」），細節留給 hard_filters 那邊的具體陳述，不要兩邊都寫一整段。
 
 到職可行性清單（這個職缺原本就要問的項目，逐項核對對話紀錄裡有沒有問到、
 答案是什麼，答對/合理給 pass，有疑慮給 partial，沒問到給 unknown）：
 {checklist_lines}
+
+必要評估項目（用人單位指定要確認、客戶會直接看到狀態的項目，一樣逐項核對
+對話紀錄裡有沒有問到，跟上面的到職可行性清單分開評估、分開輸出）：
+{mustcheck_lines}
 
 職缺條件：
 {('必要條件：' + job.get('required_conditions')) if job.get('required_conditions') else ''}
@@ -256,6 +289,7 @@ def prompt_client_report_synthesize(p):
 "for_client":{{"reasons":["3點推薦理由，要跟職缺條件掛勾"],"job_fit_pros":["2-3點，指超出到職可行性清單以外、讓這個人選比及格線更出色的地方——已經寫進 hard_filters 的項目（機車駕照、能接受到班等）不要在這裡重複講一次，那些是門檻不是優點"],"job_fit_cons":["1-2點"],"trait_one_liner":"依電洽語氣跟應答方式寫一句對這個人特質的觀察，沒有足夠根據就留空字串"}},
 "work_history":[{{"employer":"","role":"","duration":"","source":"履歷","nature":"雇主","note":"電洽有補充相關內容才填，沒有就空字串"}}],
 "hard_filters":[{{"label":"清單上的項目名稱，逐項照上面清單的順序跟數量","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
+"must_check_items":[{{"label":"必要評估項目清單上的項目名稱，逐項照順序跟數量，沒有清單就給空陣列","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
 "expertise_findings":[{{"topic":"","asked":"逐字稿裡的問題，沒有就留空","answered":"候選人怎麼回答的重點","depth":"具體|籠統|未談到"}}],
 "candidate_questions":[{{"question":"候選人自己主動問的問題，逐字或接近逐字，沒把握是候選人問的就不要放"}}],
 "call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}"""

@@ -212,13 +212,13 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 
 <!--@IF:mustcheck@-->
 <h2>必要評估項目</h2>
-<p class="hint">用人單位指定要確認的項目與目前狀態。標「還沒問到」的表示這場沒有問到，不是沒有問題。</p>
+<p class="hint">貴司指定要確認的項目與目前掌握狀況。</p>
 {{MUSTCHECK}}
 <!--@ENDIF:mustcheck@-->
 
 <!--@IF:blockers@-->
 <h2>到職可行性</h2>
-<p class="hint">{{TALK_KIND}}中確認過的到職相關條件與他的回答。標「還沒問到」的表示這場沒有問到，不是沒有問題。</p>
+<p class="hint">{{TALK_KIND}}中確認過的到職相關條件與他的回答。</p>
 {{BLOCKERS}}
 <!--@ENDIF:blockers@-->
 
@@ -252,6 +252,7 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 
 <!--@IF:asked@-->
 <h2>人選{{TALK_KIND}}中主動提出的問題</h2>
+<p class="hint">面談結束後我們會協助整理貴司的回覆，轉達讓候選人了解。</p>
 {{ASKED}}
 <!--@ENDIF:asked@-->
 
