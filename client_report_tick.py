@@ -86,7 +86,7 @@ def process_one(req_row):
             D.d1(f"UPDATE client_report_requests SET status='error', "
                  f"error='這位人選沒有阿財面談的結構化報告，也沒有現場湊的資料', "
                  f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
-            D.tg(f'⚠️ {name} 沒有阿財面談的結構化報告，也沒有現場湊的資料，沒辦法做客戶版履歷。', D.THREAD_POOL)
+            D.tg(f'⚠️ {name} 沒有阿財面談的結構化報告，也沒有現場湊的資料，沒辦法做客戶版履歷。', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
             return
         try:
             data = json.loads(report[0]['content_json'])
@@ -126,7 +126,7 @@ def process_one(req_row):
     if not meta.get('has_real_interview'):
         D.tg(f'⚠️ {name} 沒有真的做過AI阿財面談，客戶版履歷是套用顧問電洽紀錄產生的——'
              f'裡面的「原話引用」「專業問答」等內容建議送出前先人工核對一次，'
-             f'不要照系統產出的直接用。', D.THREAD_POOL)
+             f'不要照系統產出的直接用。', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
     if company_id:
         # 一個人選可能同時推薦給好幾家客戶，各自可能是不同職缺——_delivery_meta()
         # 只認 applications.job_slug 那一個主職缺，這裡要覆蓋成「這次要做哪家
@@ -165,7 +165,7 @@ def process_one(req_row):
     except Exception as e:
         D.d1(f"UPDATE client_report_requests SET status='error', error={D.q(f'組HTML失敗：{e}')}, "
              f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
-        D.tg(f'❌ {name} 的客戶版履歷組版失敗：{str(e)[:200]}', D.THREAD_POOL)
+        D.tg(f'❌ {name} 的客戶版履歷組版失敗：{str(e)[:200]}', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
         return
 
     display_name = deliver.client_display_name(meta)
@@ -175,13 +175,13 @@ def process_one(req_row):
         if not deliver.html_to_pdf(html, path):
             D.d1(f"UPDATE client_report_requests SET status='error', error='PDF產生失敗', "
                  f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
-            D.tg(f'❌ {name} 的客戶版履歷PDF產生失敗，請至後台查看。', D.THREAD_POOL)
+            D.tg(f'❌ {name} 的客戶版履歷PDF產生失敗，請至後台查看。', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
             return
         with open(path, 'rb') as fh:
             pdf_bytes = fh.read()
 
     file_id = upload_pdf(app_id, company_id, pdf_bytes, fn) if company_id else None
-    D.tg_doc(pdf_bytes, fn, f'📄 {display_name}｜客戶版履歷（新版，可直接轉給用人企業）', D.THREAD_POOL)
+    D.tg_doc(pdf_bytes, fn, f'📄 {display_name}｜客戶版履歷（新版，可直接轉給用人企業）', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
 
     now_ok = 'error' if (company_id and not file_id) else 'done'
     err = "'PDF已產生但回填候選人卡片失敗，TG已收到檔案，可自行下載後手動附上'" if now_ok == 'error' else 'NULL'
