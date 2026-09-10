@@ -156,6 +156,25 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 .risk{background:var(--nobg);border:1px solid var(--nobd);border-radius:4px;
   padding:12px 15px;font-size:13px;line-height:1.8;margin:14px 0}
 
+/* ── 2026-09-10 加：附件一多出來的五塊 ── */
+.overview{font-size:13.5px;line-height:1.85;color:var(--ink2);margin:10px 0 4px}
+.motivation{margin:0;padding-left:18px}
+.motivation li{font-size:13px;line-height:1.8;margin-bottom:5px}
+.condrow{font-size:13px;line-height:1.8;margin-bottom:6px}
+.condrow b{color:var(--navy)}
+.obsitem{margin-bottom:12px}
+.obsitem h4{margin:0 0 3px;font-size:13px;color:var(--navy)}
+.obsitem p{margin:0;font-size:13px;line-height:1.8;color:var(--ink2)}
+.flagsbox{background:var(--wnbg);border:1px solid var(--wnbd);border-radius:4px;
+  padding:13px 16px;margin-top:16px}
+.flagsbox h4{margin:0 0 8px;font-size:13px;color:var(--navy)}
+.flagsbox p{margin:0 0 8px;font-size:13px;line-height:1.8}
+.flagsbox p:last-child{margin-bottom:0}
+.jobdetail{margin:4px 0 0;padding-left:18px}
+.jobdetail li{font-size:12.5px;line-height:1.75;color:var(--ink2);margin-bottom:2px}
+.leave{margin:4px 0 0;font-size:12.5px;color:var(--ink3)}
+.leave b{color:var(--ink2);font-weight:700}
+
 /* ── 頁尾 ── */
 .stamp{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
   text-align:center;font-size:12px;color:var(--ink3);line-height:2}
@@ -183,6 +202,10 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
   <div class="job">推薦職缺：{{JOB}}</div>
   <p class="pos">{{POSITIONING}}</p>
 </div>
+
+<!--@IF:overview@-->
+{{OVERVIEW}}
+<!--@ENDIF:overview@-->
 
 <!--@IF:key@-->
 <div class="keyfacts">{{NUMS}}</div>
@@ -227,6 +250,16 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 {{EXPERTISE}}
 <!--@ENDIF:expertise@-->
 
+<!--@IF:motivation@-->
+<h2>動機與意願</h2>
+{{MOTIVATION}}
+<!--@ENDIF:motivation@-->
+
+<!--@IF:condaccept@-->
+<h2>條件接受度</h2>
+{{CONDACCEPT}}
+<!--@ENDIF:condaccept@-->
+
 <!--@IF:history@-->
 <h2>工作經歷</h2>
 {{JOBS}}
@@ -237,6 +270,11 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 <h2>與職缺條件對照</h2>
 {{COND}}
 <!--@ENDIF:cond@-->
+
+<!--@IF:observations@-->
+<h2>顧問觀察</h2>
+{{OBSERVATIONS}}
+<!--@ENDIF:observations@-->
 
 <!--@IF:questions@-->
 <h2>我們問了人選哪些問題</h2>
@@ -260,7 +298,16 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 <h2>特質與風格</h2>
 {{SPEC}}
 {{SPEC_NOTE}}
+<!--@ENDIF:spectrum@-->
 
+<!-- 2026-09-10 修：fit／oneliner 原本巢狀包在 spectrum 的 @IF 裡面——
+     _render() 的 @IF 處理是「單次、不遞迴」的正規表示式取代（見 deliver.py
+     的 _render() 註解），巢狀的內層 @IF 永遠不會被獨立當成一次比對，
+     只會原封不動跟著外層一起被留下或整段砍掉，內層自己的flag形同虛設。
+     江芷楹那份「一句話總結：」印出空白框就是撞到這個——spectrum為真、
+     oneliner自己的flag為假，但因為巢狀，oneliner的@IF從來沒被單獨處理過，
+     div跟label照樣印出來，只有{{ONELINER}}變數被換成空字串。拆成同一層
+     級的獨立區塊，各自的flag才會真的生效。 -->
 <!--@IF:fit@-->
 <div class="fitwrap">
   <div class="fitcard good">
@@ -274,10 +321,16 @@ h3{font-size:13.5px;margin:16px 0 4px;font-weight:700;color:var(--ink)}
 </div>
 <!--@ENDIF:fit@-->
 
+<!--@IF:flags@-->
+<div class="flagsbox">
+  <h4>有{{FLAGS_COUNT}}件事想先跟您說明</h4>
+  {{FLAGS}}
+</div>
+<!--@ENDIF:flags@-->
+
 <!--@IF:oneliner@-->
 <div class="oneliner"><b>一句話總結：</b>{{ONELINER}}</div>
 <!--@ENDIF:oneliner@-->
-<!--@ENDIF:spectrum@-->
 
 <!--@IF:hardfilters@-->
 <h2>硬條件</h2>

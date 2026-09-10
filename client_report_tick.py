@@ -271,7 +271,7 @@ def promote_synthesized():
     rows = D.d1("SELECT id, application_id, ai_job_id FROM client_report_requests "
                 "WHERE status='awaiting_synthesis' AND ai_job_id IS NOT NULL")
     for row in rows:
-        job = D.d1(f"SELECT status, result_text, error FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
+        job = D.d1(f"SELECT status, result_text, error, payload_json FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
         if not job:
             continue
         j = job[0]
@@ -283,6 +283,14 @@ def promote_synthesized():
                      f"error={D.q(f'AI 產出的 JSON 解析失敗：{e}')}, "
                      f"done_at=datetime('now','+8 hours') WHERE id={D.q(row['id'])}")
                 continue
+            # 2026-09-10 加：依學歷核薪是顧問手動輸入、不是AI能推算的數字，
+            # 原封不動從當初送進ai_jobs的payload帶過來，合成結果不用管這格。
+            try:
+                orig_payload = json.loads(j.get('payload_json') or '{}')
+            except Exception:
+                orig_payload = {}
+            if orig_payload.get('salary_band'):
+                synth['salary_band'] = orig_payload['salary_band']
             call_summary = synth.get('call_summary_client_md')
             if call_summary:
                 D.d1(f"UPDATE applications SET call_summary_client_md={D.q(call_summary)}, "

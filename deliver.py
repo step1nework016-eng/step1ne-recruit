@@ -348,11 +348,24 @@ def _nums(meta, current_state):
     答案，只是換一句更誠實的提示語，指向真的有的內容。"""
     has_call = bool((meta.get('call_summary_client') or '').strip())
     fallback = '見下方電洽補充' if has_call else '未提供'
-    items = [('期望待遇', meta.get('expected_salary')),
-             ('可到職', meta.get('available_date')),
-             ('工作地點', meta.get('location_ok')),
-             ('目前狀態', current_state)]
-    return ''.join(f'<div>{e(k)}<b>{e(v or fallback)}</b></div>' for k, v in items)
+    # 2026-09-10 加：期望待遇原本只印一個裸值（例如「45800」），附件一的
+    # 參考格式是「月薪45,800」＋底下另一行依學歷核薪對照——salary_band是
+    # 顧問手填的（不是AI推算），沒填就不印那行，不要憑空編一個數字上去。
+    salary_val = meta.get('expected_salary')
+    salary_cell = None
+    if salary_val:
+        digits = re.sub(r'[^\d]', '', str(salary_val))
+        salary_line = f'月薪 {int(digits):,}' if digits else e(str(salary_val))
+        band = meta.get('salary_band')
+        if band:
+            salary_line += (f'<div style="font-size:11.5px;color:var(--ink3);'
+                            f'margin-top:2px;font-weight:400">依學歷核薪：{e(band)}</div>')
+        salary_cell = salary_line
+    items = [('期望待遇', salary_cell if salary_cell is not None else e(fallback)),
+             ('可到職', e(meta.get('available_date') or fallback)),
+             ('工作地點', e(meta.get('location_ok') or fallback)),
+             ('目前狀態', e(current_state or fallback))]
+    return ''.join(f'<div>{e(k)}<b>{v}</b></div>' for k, v in items)
 
 
 def _current_state(data):
@@ -418,8 +431,20 @@ def _jobs(work_history, scrub=False):
         role = w.get('role') or ''
         role_html = f'<div class="role">{e(role)}</div>' if role else ''
         body = f'<p>{_note_html(note)}</p>' if note else ''
+        # 2026-09-10 加：detail_bullets（這段工作的具體內容，逐點）＋
+        # leave_reason（離職原因）——附件一每段工作經歷都有這兩塊，原本
+        # 這裡只有note一段連續文字，資訊density比參考版低很多。
+        bullets = w.get('detail_bullets') or []
+        bullets_html = ''
+        if bullets:
+            items = ''.join(f'<li>{e(scrub_for_client(b) if scrub else b)}</li>' for b in bullets if b)
+            bullets_html = f'<ul class="jobdetail">{items}</ul>' if items else ''
+        leave_reason = w.get('leave_reason') or ''
+        if scrub:
+            leave_reason = scrub_for_client(leave_reason)
+        leave_html = f'<p class="leave"><b>離職原因：</b>{e(leave_reason)}</p>' if leave_reason else ''
         out.append(f'<div class="job{dim}">{period}<div class="co">{e(w.get("employer"))}</div>'
-                   f'{role_html}{body}</div>')
+                   f'{role_html}{body}{bullets_html}{leave_html}</div>')
     return ''.join(out)
 
 
@@ -621,6 +646,9 @@ def _basics(data, meta, for_client=False):
              ('學歷', b.get('education')),
              ('語言', b.get('languages')),
              ('證照', b.get('certificates')),
+             # 2026-09-10 加：附件一有這格，原本schema漏了——不是候選人沒有
+             # 駕照，是資料結構本來就沒有這個位置可以存。
+             ('駕照', b.get('license')),
              ('兵役', b.get('military'))]
     items = [(k, v) for k, v in items if str(v or '').strip() and str(v).lower() != 'none']
     if not items:
@@ -736,6 +764,48 @@ def _questions(raw):
     return ''.join(out)
 
 
+# 2026-09-10 加：附件一（Jacky提供的參考範本）比舊版多出來的五塊——
+# 開頭概述、動機與意願、條件接受度、顧問觀察、有N件事想先跟您說明。
+# 全部走同一套txt()過濾（呼叫端已經做過scrub_for_client，這裡只負責組HTML）。
+def _overview(text):
+    return f'<div class="overview">{e(text)}</div>' if text else ''
+
+
+def _motivation(items):
+    if not items:
+        return ''
+    return '<ul class="motivation">' + ''.join(f'<li>{e(x)}</li>' for x in items if x) + '</ul>'
+
+
+def _condition_acceptance(items):
+    if not items:
+        return ''
+    return ''.join(
+        f'<div class="condrow"><b>{e(c.get("topic"))}：</b>{e(c.get("detail"))}</div>'
+        for c in items if c.get('topic') and c.get('detail'))
+
+
+def _consultant_observations(obs):
+    if not obs:
+        return ''
+    labels = [('approach', '做事方法'), ('communication', '溝通'), ('preparation', '準備程度')]
+    out = []
+    for key, lab in labels:
+        v = (obs.get(key) or '').strip()
+        if v:
+            out.append(f'<div class="obsitem"><h4>{e(lab)}</h4><p>{e(v)}</p></div>')
+    return ''.join(out)
+
+
+def _things_to_flag(items):
+    if not items:
+        return ''
+    circled = '①②③④⑤⑥⑦⑧⑨'
+    return ''.join(
+        f'<p>{circled[n] if n < len(circled) else "・"} {e(x)}</p>'
+        for n, x in enumerate(items) if x)
+
+
 def build_client_html(data, meta, show=None):
     """客戶版（可轉給用人企業）。
 
@@ -757,6 +827,9 @@ def build_client_html(data, meta, show=None):
 
     fc = data.get('for_client') or {}
     wh = data.get('work_history') or []
+    # 2026-09-10 加：salary_band存在synth資料（data）裡，不是meta——_nums()
+    # 只吃meta，這裡先併進去，不改_nums()的參數形狀。
+    meta['salary_band'] = data.get('salary_band')
 
     reason_texts = [txt(r) for r in (fc.get('reasons') or [])]
     reason_texts = [r for r in reason_texts if r]
@@ -881,6 +954,21 @@ def build_client_html(data, meta, show=None):
         'ONELINER': e(one_liner_trait),
         'INTERVIEW_PHRASE': e(phrase),
         'TALK_KIND': '面談' if meta.get('has_real_interview') else '電洽',
+        # 2026-09-10 加：附件一多出來的五塊——開頭概述／動機與意願／條件
+        # 接受度／顧問觀察／有N件事想先跟您說明。txt()已經過scrub_for_client
+        # 跟匿名處理，這裡的helper只負責組HTML，資料本身已經是安全的。
+        'OVERVIEW': _overview(txt(data.get('overview'))),
+        'MOTIVATION': _motivation([txt(x) for x in (data.get('motivation') or []) if txt(x)]),
+        'CONDACCEPT': _condition_acceptance([
+            {'topic': txt(c.get('topic')), 'detail': txt(c.get('detail'))}
+            for c in (data.get('condition_acceptance') or [])
+            if txt(c.get('topic')) and txt(c.get('detail'))
+        ]),
+        'OBSERVATIONS': _consultant_observations({
+            k: txt(v) for k, v in (data.get('consultant_observations') or {}).items()
+        }),
+        'FLAGS_COUNT': str(len([x for x in (data.get('things_to_flag') or []) if txt(x)])),
+        'FLAGS': _things_to_flag([txt(x) for x in (data.get('things_to_flag') or []) if txt(x)]),
         # 客戶對象＝朋友私人協助時，報告不可以有任何 Step1ne 痕跡。
         # Jacky 2026-08-10：「不會有任何 step1ne logo、頁尾德仁管理顧問的標記，
         # 也不會寫 STEP1NE 人選推薦，只會寫人選推薦。」
@@ -912,6 +1000,13 @@ def build_client_html(data, meta, show=None):
         # 硬條件預設**不顯示**——那是顧問自己刷人用的，客戶不需要知道我們刷過誰。
         # 只有顧問在勾選頁明確打開才會出現（show['hardfilters'] = True）。
         'hardfilters': False,
+        # 2026-09-10 加：附件一多出來的五塊，全部依實際有沒有內容決定要不要顯示，
+        # 沒有根據AI就會留空——這裡忠實反映，不強迫顯示空區塊。
+        'overview': bool(data.get('overview') and txt(data.get('overview'))),
+        'motivation': bool(data.get('motivation')),
+        'condaccept': bool(data.get('condition_acceptance')),
+        'observations': bool(data.get('consultant_observations')),
+        'flags': bool(data.get('things_to_flag')),
     }))
 
 

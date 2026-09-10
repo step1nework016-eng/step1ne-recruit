@@ -321,14 +321,23 @@ Jacky 針對上一版提出的修改意見：
 {edit_block}
 用這個 JSON 格式直接輸出，不要加任何說明文字、不要用 markdown code block 包起來：
 {{"one_liner":"一句話定位30字內，不要寫年齡／性別",
-"basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
+"overview":"開頭概述3-4句：目前狀態（在職/待業）、主要經歷方向、有無相關經驗、居住地與通勤方式、可到職日、對這個職缺的意願，沒有把握的項目就不提那一句，不要用「未提供」湊句子",
+"basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":null,"license":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
 "for_client":{{"reasons":["3點推薦理由，要跟職缺條件掛勾"],"job_fit_pros":["2-3點，指超出到職可行性清單以外、讓這個人選比及格線更出色的地方——已經寫進 hard_filters 的項目（機車駕照、能接受到班等）不要在這裡重複講一次，那些是門檻不是優點"],"job_fit_cons":["1-2點"],"trait_one_liner":"依電洽語氣跟應答方式寫一句對這個人特質的觀察，沒有足夠根據就留空字串"}},
-"work_history":[{{"employer":"","role":"","duration":"","source":"履歷","nature":"雇主","note":"電洽有補充相關內容才填，沒有就空字串"}}],
+"work_history":[{{"employer":"","role":"","duration":"","source":"履歷","nature":"雇主","note":"電洽有補充相關內容才填，沒有就空字串","detail_bullets":["這段工作的具體內容，逐點列，只有履歷/逐字稿有寫才列，1-3點，沒有具體內容就空陣列"],"leave_reason":"離職原因，中性描述，沒問到就空字串"}}],
 "hard_filters":[{{"label":"清單上的項目名稱，逐項照上面清單的順序跟數量","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
 "must_check_items":[{{"label":"必要評估項目清單上的項目名稱，逐項照順序跟數量，沒有清單就給空陣列","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
 "expertise_findings":[{{"topic":"","asked":"逐字稿裡的問題，沒有就留空","answered":"候選人怎麼回答的重點","depth":"具體|籠統|未談到"}}],
 "candidate_questions":[{{"question":"候選人自己主動問的問題，逐字或接近逐字，沒把握是候選人問的就不要放"}}],
-"call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}"""
+"motivation":["動機與意願，條列——轉職原因、對這個職務的理解、想待多久，只寫對話紀錄或履歷自傳裡有根據的，沒有就空陣列"],
+"condition_acceptance":[{{"topic":"通勤／加班／調派／班別等，只寫有實際問到的項目","detail":"候選人的回答，具體陳述"}}],
+"consultant_observations":{{"approach":"做事方法的觀察，需要有逐字稿具體事例佐證，沒有就空字串","communication":"溝通方式的觀察，同上","preparation":"準備程度的觀察，同上"}},
+"things_to_flag":["需要客戶評估、用溫和口吻寫的提醒，例如年資短/待遇高於核薪/異動頻繁——每一點都要講清楚事實，不要下判斷說「不建議」，只講「請企業自行評估」，沒有需要提醒的就空陣列"],
+"call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}
+
+⚠️ overview／motivation／condition_acceptance／consultant_observations／things_to_flag 這五個欄位
+都是新加的——一樣適用最上面的規則：沒有根據就誠實留空（字串留空字串、陣列留空陣列），
+不要為了讓報告看起來完整就硬湊內容。"""
 
 
 HANDLERS = {
