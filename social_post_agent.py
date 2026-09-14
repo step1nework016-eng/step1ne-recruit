@@ -449,6 +449,8 @@ POST_END = '<<<POST_END>>>'
 # 都不會進到發文內容，但完整原文還是會貼進 Telegram 讓顧問看得到分析。
 WRAP_INSTRUCTION = (
     f'\n\n---\n\n【格式要求，不算在技能包規則內，只是方便程式解析】\n'
+    f'🚨 **全篇一律使用繁體中文（台灣用語），不准出現任何簡體字**——'
+    f'不管上面技能包的公式內容本身是用什麼字打的，輸出一律轉成繁體中文。\n'
     f'完成上面技能包要求的所有內容後，請額外做一件事：把「可以直接發布的文案」'
     f'（也就是「輸出格式」那一段，從「職缺情報｜」開始到收尾段落結束，不含合規檢查'
     f'跟附加輸出）用這兩行標記整段包起來：\n'
@@ -463,8 +465,13 @@ WRAP_INSTRUCTION = (
     f'公開發布，整篇工作內容、福利、公司特色全是「［待補］」，等於告訴候選人\n'
     f'我們對這個職缺一無所知。回頭掃描發現三則已發布的貼文都帶著「待補」字樣。\n'
     f'**資料不足的段落請整段不要寫**，寧可短，不要有洞。\n'
-    f'如果連職稱與地點以外幾乎什麼都沒有，就在標記外面說明「資料不足以產出貼文」，\n'
+    f'如果連職稱與地點以外幾乎什麼都沒有，或是某個公式規則要求的素材（例如真實對話、\n'
+    f'真實候選人提問）你手上完全沒有，就在標記外面說明「資料不足以產出貼文」，\n'
     f'不要硬生一篇出來——那種稿發出去比不發更傷。\n'
+    f'🚨 這句「資料不足以產出貼文」的說明一定要寫在 {POST_START}／{POST_END}\n'
+    f'標記外面，絕對不要包進標記裡面——標記裡面的東西會被當成正式貼文推去審核，\n'
+    f'包進去等於讓這句說明被誤判成貼文本體。這種情況下，你的整段回覆裡根本不應該\n'
+    f'出現 {POST_START}／{POST_END} 這兩個標記。\n'
     f'Markdown 符號不會被平台轉成粗體或標題，只會照字面被貼出去、變成亂碼。\n\n'
     f'🚨 **文末如果要邀請候選人互動，一律說「找 AI阿財 聊聊」，不要說「找 Step1ne 聊聊」**。\n'
     f'2026-09-09 真實事故：多篇貼文結尾寫「有興趣歡迎找Step1ne聊聊」已經公開發布——\n'
@@ -487,16 +494,71 @@ def strip_markdown(text):
 
 def extract_post(raw):
     """從 claude 的完整回覆裡，只挖出 POST_START／POST_END 中間那段當作
-    真的要發布的文案。抓不到標記就整段當文案（保底行為，至少不會直接壞掉，
-    但這種情況應該去看 log 確認是不是模型沒照格式回）。"""
+    真的要發布的文案。
+
+    ⚠️ 2026-09-11 改：舊版「抓不到標記就整段當文案」這個保底行為，
+    真實事故直接證明是錯的——「真實轉述」公式的規則要求模型在缺真實
+    素材時「不准自己編，改成回頭問人」，模型照規則拒寫、只回一段解釋，
+    這段解釋沒有被包進 POST_START/POST_END（因為根本沒有文案可以包），
+    舊的保底邏輯卻把這整段解釋文字當成文案，直接推到 TG 標成
+    「以下會被公開發布」——顧問差點把 AI 的提問當成真的貼文稿。
+    WRAP_INSTRUCTION 明講「只包可以直接發布的文案」，所以沒標記＝
+    沒有文案可用，是可靠訊號，不該再猜、更不該整段代打。
+    """
     i = raw.find(POST_START)
     j = raw.find(POST_END)
     if i >= 0 and j > i:
-        post = raw[i + len(POST_START):j]
-    else:
-        log('⚠️ 沒抓到 POST_START/POST_END 標記，整段當文案用，麻煩檢查一下原始回覆')
-        post = raw
-    return strip_markdown(post)
+        post = strip_markdown(raw[i + len(POST_START):j])
+        # ⚠️ 2026-09-11 加：真實事故第二例——模型這次有乖乖放標記，但把
+        # WRAP_INSTRUCTION 自己定義的拒寫句「資料不足以產出貼文」包*進*
+        # 標記裡面，等於把拒寫說明當成貼文本體。這句是系統自己教的固定
+        # 措辭（見下面「資料不足的段落」那條規則），出現在標記內一律視為
+        # 拒寫，不是貼文，不管前後还写了什么。
+        if '資料不足以產出貼文' in post:
+            log('⚠️ 標記內出現「資料不足以產出貼文」——模型把拒寫說明包進了標記裡，視為沒有產出文案。')
+            return None
+        return post
+    log('⚠️ 沒抓到 POST_START/POST_END 標記——模型沒有產出可發布的文案（常見原因：'
+        '公式要求的素材不夠，模型改成回頭問人），不再拿整段回覆頂替，視為失敗。')
+    return None
+
+
+def line_community_link_suffix(account_id):
+    """2026-09-11 加：Jacky 明確要求「LINE 社群」這個管道，不限文案類型
+    （職缺文／通用文／AI阿財話題）、不限公式（純CTA型／對話討論型／原始格式），
+    結尾一律要附 LINE 連結——只限這個平台，其他平台不受影響。
+    寫成一律事後補在 post 尾巴，不靠 AI 照 prompt 指示自己加——三種文案
+    生成路徑（generate_draft／generate_draft_job_styled／generate_draft_topic）
+    用的 prompt 完全不同，靠 AI 自己記得會有漏放的風險，補在存檔前這一個
+    點才能保證『不限類型不限公式』都一定有，不用三邊分別改 prompt。
+    連結存在帳號自己的 line_link 欄位，換連結改資料庫就好，不用重新部署。"""
+    if not account_id:
+        return ''
+    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'line_community' and acc[0].get('line_link'):
+        # 2026-09-11 再改：Jacky 看到光禿禿一個網址就退回——LINE 社群裡的人
+        # 不知道點進去要幹嘛，要有一句「有興趣就點這裡聯繫顧問」帶著點進去。
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+    return ''
+
+
+def job_raw_format_line_suffix(account_id, style_row):
+    """2026-09-14 加：職缺文「原始格式」（沒選純CTA型／對話討論型公式，
+    style_row 是 None）要一律附上顧問自己的 LINE OA 連結。查完現況發現
+    這件事之前完全交給各顧問自己的 skill_prompt 記得寫——結果 DR 的
+    prompt 甚至寫死「不放連結」，Phoebe 的連結是舊的（跟她卡片上現在
+    的 line_link 對不上），Bob／Anna／Dan H／Eileen S／法蘭克／宥恩的
+    CTA 段落全部只有「私訊我」這種話術、沒有真的網址。跟
+    line_community_link_suffix() 同一個理由：補在存檔前這一點，
+    不用回頭改七八份 prompt，也不怕以後又有人漏寫。
+    只管「原始格式」——純CTA型／對話討論型公式本身的連結／CTA 規則
+    照舊，不在這裡動。"""
+    if style_row or not account_id:
+        return ''
+    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'threads' and acc[0].get('line_link'):
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+    return ''
 
 
 def generate_draft(job, account_id):
@@ -640,7 +702,18 @@ def process_topic(queue_row, topic):
         log(f'{title}（話題）：產生貼文草稿中…')
         raw, post = generate_draft_topic(topic, style_row)
         if not raw or not post:
-            log(f'❌ {title}：claude 沒有回東西')
+            # 2026-09-11 加：同 process_job() 的修法——不再靜默，也不再讓
+            # AI 的「缺素材」說明被誤標成「以下會被公開發布」的草稿。
+            log(f'❌ {title}（話題）：AI 沒有產出可發布的草稿（常見原因：這個公式要求的素材不足）')
+            d1(f"UPDATE social_post_queue SET status='needs_material' WHERE id={qid}")
+            tg_with_buttons(
+                f'⚠️ <b>{title}</b>（{style_row["name"] if style_row else "原始格式"}）沒有產出可發布的草稿\n\n'
+                f'—— AI 的說明 ——\n{(raw or "（沒有任何回覆）")[:1200]}\n\n'
+                f'這一則不會被公開發布。要嘛照上面說明補素材後按「🔄 再產一次」，要嘛換一個不需要真實對話素材的公式。',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
             return
 
         hits = audit_client_names(post)
@@ -694,6 +767,7 @@ def process_topic(queue_row, topic):
         # 2026-09-04 加：Threads觀察系統要比較「話題成效」，得先知道每篇話題文
         # 屬於哪種角度（category：ai＝AI阿財信任建立／general＝一般互動），
         # 沒有這個標記，儀表板的分類比較就永遠是空的。
+        post = post + line_community_link_suffix(account_id)
         mission_tag = {'ai': 'trust_building', 'general': 'engagement'}.get(topic.get('category'), 'general')
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
@@ -758,7 +832,22 @@ def process_job(queue_row, job, repost=False):
         log(f'{title}（{slug}）：產生貼文草稿中…' + (f'（套用「{style_row["name"]}」）' if style_row else ''))
         raw, post = gen()
         if not raw or not post:
-            log(f'❌ {title}：claude 沒有回東西')
+            # 2026-09-11 加：以前這裡完全靜默——顧問看不到任何結果，這則
+            # 排隊紀錄也會卡在 status=NULL，每 2 分鐘被重新掃到、重跑一次，
+            # 白白浪費 API 額度。現在把 AI 的原始回覆（通常是「缺素材，
+            # 需要提供真實對話」這類說明）明確標成「沒有產出草稿」通知顧問，
+            # 不能標成「以下會被公開發布」——那句話曾經差點把 AI 的提問
+            # 當成真的貼文稿推去發布。
+            log(f'❌ {title}：AI 沒有產出可發布的草稿（常見原因：這個公式要求的素材不足）')
+            d1(f"UPDATE social_post_queue SET status='needs_material' WHERE id={qid}")
+            tg_with_buttons(
+                f'⚠️ <b>{title}</b>（{style_row["name"] if style_row else "原始格式"}）沒有產出可發布的草稿\n\n'
+                f'—— AI 的說明 ——\n{(raw or "（沒有任何回覆）")[:1200]}\n\n'
+                f'這一則不會被公開發布。要嘛照上面說明補素材後按「🔄 再產一次」，要嘛換一個不需要真實對話素材的公式。',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
             return
 
         # ── 客戶名稱稽核（第二道防線）──
@@ -821,6 +910,7 @@ def process_job(queue_row, job, repost=False):
         # 自己在 Telegram 裡搜。
         # 2026-09-04 加：Threads觀察系統要比較「哪個公式表現好」，得先知道每篇
         # 職缺文是用哪套公式寫的（style_row 的 subtype，沒選公式就是預設寫法）。
+        post = post + line_community_link_suffix(account_id) + job_raw_format_line_suffix(account_id, style_row)
         formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "

@@ -18,7 +18,7 @@ AI 代筆草稿，不是逐字照抄客戶原始文字——JD 內容一定要�
 jd_regen_tick.py／publish_job.py 那邊原本就有的防線也還在，這裡是
 多一層，不是取代。
 """
-import os, sys, json, re, subprocess, time, tempfile
+import os, sys, json, re, socket, subprocess, time, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
@@ -50,18 +50,22 @@ def env():
     return e
 
 
-def d1(sql):
+def d1_raw(sql):
     r = subprocess.run(
         ['npx', '--yes', 'wrangler', 'd1', 'execute', 'step1ne-recruit',
          '--remote', '--json', '--command', sql],
         cwd=RECRUIT, env=env(), capture_output=True, text=True, timeout=180)
     try:
-        return json.loads(r.stdout)[0]['results']
+        return json.loads(r.stdout)[0]
     except Exception:
         err = (r.stderr or r.stdout or '')[-300:].strip()
         if err:
             log(f'⚠️ D1 查詢失敗：{err}')
-        return []
+        return {}
+
+
+def d1(sql):
+    return d1_raw(sql).get('results', [])
 
 
 def q(v):
@@ -306,6 +310,13 @@ def main():
         rows = d1(f"SELECT slug, client_named, {cols} FROM jobs "
                   f"WHERE jd_needs_ai_draft = 1 ORDER BY jd_updated_at ASC LIMIT 1")
         if not rows:
+            return
+        # 2026-09-10 加：多裝置協作保護鎖——本機的 LOCK 檔只防同一台重複跑，
+        # 防不了另一台裝置同時搶到同一個 slug。搶到才處理，搶不到跳過。
+        worker_id = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
+        claim = d1_raw(f"UPDATE jobs SET jd_needs_ai_draft=0, worker_id={q(worker_id)} "
+                        f"WHERE slug={q(rows[0]['slug'])} AND jd_needs_ai_draft=1")
+        if not claim.get('meta', {}).get('changes'):
             return
         process_one(rows[0])
     finally:

@@ -32,6 +32,52 @@ def env_with_cf():
     return env
 
 
+NOTE_MODEL = 'claude-sonnet-5'
+NOTE_PROMPT = """你是資深獵頭顧問，剛讀完一位候選人的履歷，準備幫 AI 阿財的面談做準備。
+
+職缺：{job_title}
+
+履歷全文：
+{resume}
+
+寫一份簡短的「面談前評估筆記」，給顧問看（不是給候選人看，可以直接講重點）：
+- 3 到 5 點，每點一到兩句話
+- 內容是：這份履歷哪裡有亮點、哪裡有疑點或落差、面談時應該特別問清楚什麼
+- 只根據履歷內容判斷，履歷沒寫的不要編
+- 不要用「候選人」以外的稱呼，不要寫開場白或結語，直接列點
+
+輸出純文字，每點一行，前面加「・」，不要用 Markdown 的 * 或 -。"""
+
+
+def generate_pre_interview_note(app_id, resume_text):
+    """履歷解析成功後，順便讓阿財先讀一次、寫一份面談前筆記——這是人看得到的
+    評估重點（跟純文字履歷解析本身是兩件事），顯示在顧問後台人選卡片的
+    「初篩」區塊。失敗不影響履歷解析本身，安靜跳過就好，不要讓這個附加功能
+    拖垮主流程。"""
+    try:
+        rows = d1(f"SELECT a.id, j.title FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug "
+                  f"WHERE a.id='{app_id}'")
+        if not rows:
+            return
+        job_title = rows[0].get('title') or '（職缺未指定）'
+        text = ''.join(c for c in resume_text if c in '\n\t' or ord(c) >= 32)[:MAX_CHARS]
+        prompt = NOTE_PROMPT.format(job_title=job_title, resume=text)
+        r = subprocess.run(['claude', '-p', prompt, '--model', NOTE_MODEL,
+                            '--allowedTools', '', '--output-format', 'text'],
+                           cwd=HERE, capture_output=True, text=True,
+                           env=env_with_cf(), timeout=90)
+        note = (r.stdout or '').strip()
+        if not note:
+            return
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        q = lambda v: "'" + str(v).replace("'", "''") + "'"
+        d1(f"UPDATE applications SET pre_interview_note={q(note)}, "
+           f"pre_interview_note_at='{now}' WHERE id='{app_id}'")
+        print(f'  📝 已寫入面談前筆記（{app_id[:8]}…）')
+    except Exception as e:
+        print(f'  （面談前筆記產生失敗，不影響履歷解析）：{str(e)[:150]}')
+
+
 # ── D1 走 HTTP，不再每次查詢都開一個 node ──
 # 2026-09-08 加。原本每查一次就 subprocess 一個 `npx wrangler d1 execute`，
 # npx 再拉起 node，一次約 100MB＋冷啟動。這支 daemon 每 8 秒輪詢一次，
@@ -551,6 +597,9 @@ def main():
         if text:
             ok += 1
             print(f"  ✅ {r['filename']}　{len(text)} 字")
+            who = d1(f"SELECT id FROM applications WHERE resume_file_id='{r['id']}'")
+            if who:
+                generate_pre_interview_note(who[0]['id'], text)
         else:
             fail += 1
             # 檔名對顧問沒意義，要找出是誰才聯絡得到人

@@ -586,9 +586,19 @@ def _expertise(data, for_client=False):
     return ''.join(out)
 
 
+_VERDICT_CLASS = {'符合': '', '不符': ' no', '待確認': ' warn'}
+
+
 def _cond(hard_conditions, with_evidence):
     """硬條件逐條。客戶版不帶 evidence_source——那是我們內部怎麼查證的紀錄，
-    印給客戶看只會讓他去質疑每一條的可信度。"""
+    印給客戶看只會讓他去質疑每一條的可信度。
+
+    ⚠️ 2026-09-11 改：跟參考範本並排比對才發現「與職缺條件對照」一直用純文字
+    +圖示的舊樣式，跟同一頁「必要評估項目」（_checkitems()）用的綠/黃/紅色塊卡
+    完全不一致，範本要的是色塊卡。客戶版（with_evidence=False）改用跟
+    _checkitems() 同一套 .condcard 樣式；顧問內部版（with_evidence=True）
+    的 consultant.html 沒有這組 CSS，維持原本純文字，不要動。
+    """
     out = []
     for h in hard_conditions:
         v = h.get('verdict') or '待確認'
@@ -597,8 +607,13 @@ def _cond(hard_conditions, with_evidence):
             detail = scrub_for_client(detail)
         ev = (f'<u>依據：{e(h.get("evidence_source"))}</u>'
               if with_evidence and h.get('evidence_source') else '')
-        out.append(f'<div><span>{_VERDICT_ICON.get(v, "⚠️")}</span><span>'
-                   f'<b>{e(h.get("item"))}</b><em>{e(detail)}</em>{ev}</span></div>')
+        if with_evidence:
+            out.append(f'<div><span>{_VERDICT_ICON.get(v, "⚠️")}</span><span>'
+                       f'<b>{e(h.get("item"))}</b><em>{e(detail)}</em>{ev}</span></div>')
+        else:
+            cls = _VERDICT_CLASS.get(v, ' warn')
+            out.append(f'<div class="condcard{cls}"><div class="t">{_VERDICT_ICON.get(v, "⚠️")} {e(h.get("item"))}</div>'
+                       f'<div class="d">{e(detail)}</div></div>')
     return ''.join(out)
 
 
@@ -937,12 +952,19 @@ def build_client_html(data, meta, show=None):
     # 顧問在勾選頁關掉的區塊，這裡直接覆蓋成 False；打開硬條件也走這裡。
     # ⚠️ 用同一套 @IF 機制，不另造——模板已經支援，多一套只會走鐘。
     def _flags(base):
+        # ⚠️ 2026-09-11 修：黃育騏那份客戶履歷「候選人提供的社群連結」明明
+        # 沒資料，卻印出一個空的標題——因為這裡原本是直接覆蓋成 show[k]，
+        # 顧問在勾選頁預設全勾（含這位人選根本沒填的社群連結），就把「沒有
+        # 內容」蓋成「有勾＝要顯示」。這裡本來的用途（見上面註解）只是要讓
+        # 顧問能「關掉」不想給客戶看的區塊，不是要讓勾選憑空生出內容——
+        # 改成 AND：勾了也只是「不禁止顯示」，真正有沒有內容還是看 base 本身。
         if show:
             for k, v in show.items():
                 if k in base:
-                    base[k] = bool(v)
+                    base[k] = bool(v) and base[k]
         return base
 
+    social_html = _social(meta)
     return _render(tpl, {
         'NAME': e(name),
         'JOB': e(meta.get('job_title') or meta.get('job_slug') or ''),
@@ -952,7 +974,7 @@ def build_client_html(data, meta, show=None):
         'CALLUP_TEXT': callup_text,
         'CALLUP_WHEN': callup_when,
         'REASONS': reasons,
-        'SOCIAL': _social(meta),
+        'SOCIAL': social_html,
         'BLOCKERS': _blockers(data, for_client=True),
         'EXPERTISE': _expertise(data, for_client=True),
         'JOBS': _jobs(wh, scrub=True),
@@ -994,7 +1016,7 @@ def build_client_html(data, meta, show=None):
         'reasons': bool(reasons),
         'expertise': bool(data.get('expertise_findings')),
         'blockers': bool(data.get('blocker_findings')),
-        'social': bool(meta.get('social_links')),
+        'social': bool(social_html),
         'history': bool(wh),
         'cond': bool(cond_html),
         'asked': bool(asked),
@@ -1120,6 +1142,7 @@ def build_consultant_html(data, meta):
                  '推測是關掉視窗離開。以下內容只涵蓋談到的部分。</div>')
 
     tpl = open(os.path.join(TPL_DIR, 'consultant.html'), encoding='utf-8').read()
+    social_html = _social(meta)
     return _render(tpl, {
         'NAME': e(meta.get('name') or ''),
         'JOB': e(meta.get('job_title') or meta.get('job_slug') or ''),
@@ -1141,7 +1164,7 @@ def build_consultant_html(data, meta):
         'FILES': ''.join(files),
         'COND': _cond(data.get('hard_conditions') or [], with_evidence=True),
         'FIT': _fit(data),
-        'SOCIAL': _social(meta),
+        'SOCIAL': social_html,
         'BLOCKERS': _blockers(data),
         'EXPERTISE': _expertise(data),
         'ASSESSMENT': bars,
@@ -1160,7 +1183,7 @@ def build_consultant_html(data, meta):
         'fit': bool((data.get('fit_scores') or {}).get('dimensions')),
         'expertise': bool(data.get('expertise_findings')),
         'blockers': bool(data.get('blocker_findings')),
-        'social': bool(meta.get('social_links')),
+        'social': bool(social_html),
         'cond': bool(data.get('hard_conditions')),
         'style': bool((data.get('observations') or {}).get('communication_style')),
         'forclient': bool(reasons or risks_html),

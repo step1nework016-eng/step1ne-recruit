@@ -1265,6 +1265,18 @@ def build_prompt(ctx, skill_md):
             f" S{app.get('disc_s', 0)} C{app.get('disc_c', 0)}，滿分 20）"
             "　— 這是表單填寫時測的，只用來對照面談中的實際表現，不要在面談中提起或解釋。")
 
+    # 2026-09-14 加：面談前四個資料來源裡的另外兩個——顧問如果已經先電洽過，
+    # 那份摘要要讓阿財看到（別把已經問過的問題再問一次）；履歷解析完之後
+    # 自動寫的「面談前筆記」也要讓阿財知道要往哪裡追問，這兩個原本都存在
+    # D1，但這支 prompt 建構函式沒有把它們讀進來，等於白存了沒人用。
+    if app.get('call_summary_md'):
+        lines.append('\n【顧問電洽摘要（顧問已經先打過電話，這些不用再問一次）】')
+        lines.append(str(app['call_summary_md'])[:3000])
+
+    if app.get('pre_interview_note'):
+        lines.append('\n【面談前筆記（讀完履歷自動產生，是你這場要特別追問的方向，不要照唸給候選人聽）】')
+        lines.append(str(app['pre_interview_note'])[:2000])
+
     # ── 人格測驗（Big Five ＋ Grit）──
     # 2026-08-07 加。用途是**對照**，不是評分：看他自己填的樣子跟他講話的樣子是不是同一個人。
     #

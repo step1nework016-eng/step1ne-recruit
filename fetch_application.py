@@ -13,10 +13,43 @@
     python3 fetch_application.py --latest        # 最新一筆，測試用
     python3 fetch_application.py --list          # 列出可用的 id
 """
-import base64, json, os, re, subprocess, sys, tempfile
+import base64, json, os, re, subprocess, sys, tempfile, urllib.request, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
+
+
+def _admin_token():
+    try:
+        for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
+            if l.startswith('RECRUIT_ADMIN_TOKEN='):
+                return l.strip().split('=', 1)[1].strip().strip("'\"")
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_r2_b64(file_id):
+    """2026-09-14 加：即時補抽那段原本只認 content_b64／file_chunks 這兩種舊式
+    D1 儲存，不知道 2026-09-03 之後新檔案改存 R2（見 saveResume() 的
+    storage='r2' 分支）——parse_resumes.py 已經在 2026-09-09 修過同一個問題
+    （蘇微閔、郭鑑宸案例），但這支是獨立腳本，沒有同步補上，於是同一種 bug
+    又在王仁君身上重演：履歷真的存在 R2，但面談時判成「沒有可讀的履歷」。
+    跟 parse_resumes.py 共用同一支既有端點（/admin/file/:id，瀏覽器下載鈕
+    fileB64() 的 HTTP 版本），不用另外接 R2 的 S3 相容 API。
+    """
+    tok = _admin_token()
+    if not tok:
+        return None
+    req = urllib.request.Request(
+        f'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/{urllib.parse.quote(file_id)}',
+        headers={'authorization': f'Bearer {tok}', 'user-agent': 'fetch_application/1.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+    except Exception:
+        return None
+    return base64.b64encode(raw).decode()
 
 
 def d1(sql):
@@ -100,7 +133,7 @@ def main():
     resume_text, resume_source, resume_note = None, None, None
 
     if app.get('resume_file_id'):
-        fs = d1(f"SELECT id, filename, mime, content_b64, chunks, text_content, parse_note "
+        fs = d1(f"SELECT id, filename, mime, content_b64, chunks, text_content, parse_note, storage "
                 f"FROM files WHERE id = '{app['resume_file_id']}'")
         if fs:
             f = fs[0]
@@ -114,6 +147,12 @@ def main():
                 if not b64 and f.get('chunks'):
                     parts = d1(f"SELECT b64 FROM file_chunks WHERE file_id = '{f['id']}' ORDER BY idx ASC")
                     b64 = ''.join(p['b64'] for p in parts)
+                # ⚠️ 2026-09-14 加：2026-09-03 之後新上傳的履歷存在 R2，上面兩種
+                # 舊式 D1 儲存都抓不到——王仁君案例：resume_file_id 有值、檔案
+                # 確實在 R2（761KB），但這裡漏抓，判成「沒有可讀的履歷」，
+                # 阿財因此叫他重傳一次，其實根本不用。
+                if not b64 and f.get('storage') == 'r2':
+                    b64 = _fetch_r2_b64(f['id'])
                 resume_text = extract_text(
                     base64.b64decode(b64), f['filename'], f['mime']) if b64 else None
                 resume_source = '上傳檔案（即時抽取）'

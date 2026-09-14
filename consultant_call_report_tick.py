@@ -19,6 +19,7 @@ import datetime
 import importlib.util
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,10 @@ spec = importlib.util.spec_from_file_location('ccr', os.path.join(HERE, 'consult
 CCR = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(CCR)
 D = CCR.D  # interview_daemon 模組（d1/q/tg/report_to_json/save_report 都在這裡）
+
+# 2026-09-10 加：多裝置協作用——搶到才算你的，搶不到跳過，避免兩台裝置同時
+# 處理同一筆 call_report_pending，重複產報告、重複發 TG 通知。
+WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
 
 POLL_SECONDS = 300
 
@@ -136,7 +141,10 @@ def process_one(row):
     except Exception as e:
         print(f'[錯誤] {name}（{app_id}）產報告失敗：{e}', file=sys.stderr)
         # 失敗不清 flag，下一輪還會重試；同一筆一直失敗的話 tg 訊息會一直提醒，
-        # 這是刻意的——比默默卡住好。
+        # 這是刻意的——比默默卡住好。⚠️ 2026-09-10 加：tick() 現在會先把
+        # call_report_pending 搶成 2（多裝置保護鎖），失敗要退回 1 才會重試，
+        # 不然會卡在 2 永遠不會再被撈到。
+        D.d1(f"UPDATE applications SET call_report_pending=1 WHERE id={D.q(app_id)}")
         D.tg(f'❌ {name} 的顧問電訪報告自動產出失敗，稍後會重試。錯誤：{str(e)[:200]}')
         return
 
@@ -144,6 +152,7 @@ def process_one(row):
     rid = D.save_report(app_id, report, report_json)
     if not rid:
         print(f'[錯誤] {name}（{app_id}）報告產好但寫入 D1 失敗', file=sys.stderr)
+        D.d1(f"UPDATE applications SET call_report_pending=1 WHERE id={D.q(app_id)}")
         D.tg(f'❌ {name} 的顧問電訪報告產好了但存檔失敗，需要人工處理。')
         return
 
@@ -160,6 +169,10 @@ def tick():
     rows = D.d1("SELECT id, name, consultant_call_notes, call_notes_file_id FROM applications "
                 "WHERE call_report_pending=1 LIMIT 5")
     for row in rows:
+        claim = D.d1_raw(f"UPDATE applications SET call_report_pending=2, worker_id={D.q(WORKER_ID)} "
+                          f"WHERE id={D.q(row['id'])} AND call_report_pending=1")
+        if not claim.get('meta', {}).get('changes'):
+            continue  # 已經被別台裝置搶走
         process_one(row)
 
 

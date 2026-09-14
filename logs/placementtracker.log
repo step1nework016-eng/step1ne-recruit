@@ -307,3 +307,84 @@ owner：phoebe
 客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
 
 [09:31:15] 本輪：新增待辦 0 筆，發出通知 1 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:04] 本輪：新增待辦 0 筆，發出通知 1 則
+[09:30:02]   建立待辦：陳其寬｜BIM 工程師｜卡在 OFFER 已 3 天；目前真實面試階段：錄取，用人單位排的時間：2026-09-07 16:17｜聯絡窗口：MISSING
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜陳亭瑾｜VIP貴賓接待服務員（晚班）
+卡在 SUBMITTED 已 8 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：（未指定）
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:04] 本輪：新增待辦 1 筆，發出通知 2 則
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜陳亭瑾｜VIP貴賓接待服務員（晚班）
+卡在 SUBMITTED 已 9 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：（未指定）
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:03] 本輪：新增待辦 0 筆，發出通知 2 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳其寬
+客戶「苗栗銅鑼建廠專案廠區用人單位（正職僱用，公司名稱保密）」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜陳亭瑾｜VIP貴賓接待服務員（晚班）
+卡在 SUBMITTED 已 10 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：（未指定）
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:05] 本輪：新增待辦 0 筆，發出通知 4 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳其寬
+客戶「苗栗銅鑼建廠專案廠區用人單位（正職僱用，公司名稱保密）」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜陳亭瑾｜VIP貴賓接待服務員（晚班）
+卡在 SUBMITTED 已 11 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：（未指定）
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:05]   建立待辦：江芷楹｜財務主管 Finance Controller｜卡在 SUBMITTED 已 3 天｜聯絡窗口：MISSING
+[09:30:05] 本輪：新增待辦 1 筆，發出通知 4 則
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜張博州
+客戶「弘昌管理顧問」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳其寬
+客戶「苗栗銅鑼建廠專案廠區用人單位（正職僱用，公司名稱保密）」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[CRITICAL_STALE → thread 2855]
+🔴 CRITICAL_STALE｜陳亭瑾｜VIP貴賓接待服務員（晚班）
+卡在 SUBMITTED 已 12 天，聯絡窗口缺失，需要人工先找到人再跟進
+owner：（未指定）
+
+[OWNER_DECISION_REQUIRED → thread 2855]
+🙋 OWNER_DECISION_REQUIRED｜陳亭瑾
+客戶「私人招待所」在系統裡沒有任何已驗證聯絡窗口，無法自動產生跟進草稿，需要人工先確認要找誰跟進。
+
+[09:30:05] 本輪：新增待辦 0 筆，發出通知 4 則
