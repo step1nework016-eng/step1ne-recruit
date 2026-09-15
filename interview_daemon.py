@@ -1536,9 +1536,13 @@ def sanitize(t):
 
 
 def run_claude(prompt):
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
+    # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
+    # 它會自己讀 stdin，macOS/Linux 行為不變）。
     r = subprocess.run(
-        [CLAUDE_BIN, '-p', sanitize(prompt), '--model', TALK_MODEL,
+        [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
          *NO_TOOLS, '--output-format', 'text'],
+        input=sanitize(prompt),
         capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
@@ -2095,9 +2099,11 @@ def report_to_json(report, ctx, name='', app_id=None):
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
     _before_files = _snapshot_session_files()
     try:
-        r = subprocess.run([CLAUDE_BIN, '-p', sanitize(prompt), '--model', REPORT_MODEL,
+        # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
+        r = subprocess.run([CLAUDE_BIN, '-p', '--model', REPORT_MODEL,
                             # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
                             *NO_TOOLS, '--output-format', 'text'],
+                           input=sanitize(prompt),
                            capture_output=True, text=True, env=env_with_cf(),
                            timeout=REPORT_TIMEOUT)
         log_token_usage(app_id, 'report_json', prompt, _before_files)
@@ -2191,8 +2197,10 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     _before_files = _snapshot_session_files()
     try:
-        r = subprocess.run([CLAUDE_BIN, '-p', sanitize(prompt), '--model', REPORT_MODEL,
+        # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
+        r = subprocess.run([CLAUDE_BIN, '-p', '--model', REPORT_MODEL,
                             *NO_TOOLS, '--output-format', 'text'],
+                           input=sanitize(prompt),
                            capture_output=True, text=True, env=env_with_cf(), timeout=REPORT_TIMEOUT)
         report = r.stdout.strip() or '（報告產生失敗，請看逐字稿）'
         # 模型常把整份報告包在程式碼區塊裡，推到 Telegram 會多出兩行反引號

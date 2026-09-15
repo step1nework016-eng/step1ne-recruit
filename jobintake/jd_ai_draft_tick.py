@@ -179,17 +179,12 @@ def build_prompt(facts, client_named):
 
 def run_claude(prompt):
     e = env()
-    with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as f:
-        f.write(prompt)
-        prompt_path = f.name
-    try:
-        cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
-               '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-               '--setting-sources', '']
-        r = subprocess.run(cmd + [open(prompt_path, encoding='utf-8').read()],
-                            cwd=RECRUIT, env=e, capture_output=True, text=True, timeout=TIMEOUT_SEC)
-    finally:
-        os.unlink(prompt_path)
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
+    cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
+           '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+           '--setting-sources', '']
+    r = subprocess.run(cmd, input=prompt,
+                        cwd=RECRUIT, env=e, capture_output=True, text=True, timeout=TIMEOUT_SEC)
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or '').strip()
     return True, (r.stdout or '').strip()

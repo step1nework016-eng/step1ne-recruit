@@ -74,8 +74,10 @@ def sanitize(t):
 def run_claude(prompt, want_json=False):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)      # 巢狀 session 裡 claude CLI 會拒跑
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
     r = subprocess.run(
-        [CLAUDE_BIN, '-p', sanitize(prompt), '--model', MODEL, *NO_TOOLS, '--output-format', 'text'],
+        [CLAUDE_BIN, '-p', '--model', MODEL, *NO_TOOLS, '--output-format', 'text'],
+        input=sanitize(prompt),
         capture_output=True, text=True, env=env, timeout=TIMEOUT, cwd=HERE)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')

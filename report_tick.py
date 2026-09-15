@@ -171,8 +171,10 @@ def parse(text):
     wd = '一二三四五六日'[now.weekday()]
     p = PROMPT.format(text=text, roster=ros,
                       today=now.strftime('%Y-%m-%d'), weekday=f'週{wd}')
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
     r = subprocess.run(
-        [CLAUDE_BIN, '-p', D.sanitize(p), '--model', MODEL, *D.NO_TOOLS, '--output-format', 'text'],
+        [CLAUDE_BIN, '-p', '--model', MODEL, *D.NO_TOOLS, '--output-format', 'text'],
+        input=D.sanitize(p),
         capture_output=True, text=True, env=D.env_with_cf(), timeout=300)
     out = (r.stdout or '').strip()
     s, e = out.find('{'), out.rfind('}')

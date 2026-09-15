@@ -103,8 +103,10 @@ def build(app_id, notes, by):
         + merge_instruction
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
 
-    r = subprocess.run(['claude', '-p', D.sanitize(prompt), '--model', D.REPORT_MODEL,
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
+    r = subprocess.run([D.CLAUDE_BIN, '-p', '--model', D.REPORT_MODEL,
                         *D.NO_TOOLS, '--output-format', 'text'],
+                       input=D.sanitize(prompt),
                        capture_output=True, text=True, env=D.env_with_cf(), timeout=D.REPORT_TIMEOUT)
     report = (r.stdout or '').strip()
     if not report:

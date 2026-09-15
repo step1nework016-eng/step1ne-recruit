@@ -289,11 +289,12 @@ def run_commander(prompt, workdir):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)          # 巢狀 session 時 claude 會拒跑
     env.pop('CLAUDE_CODE_ENTRYPOINT', None)
+    # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
     cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
            '--permission-mode', 'bypassPermissions',
            '--setting-sources', '',
            '--session-id', str(uuid.uuid4())]
-    r = subprocess.run(cmd + [prompt], cwd=workdir, capture_output=True,
+    r = subprocess.run(cmd, input=prompt, cwd=workdir, capture_output=True,
                        text=True, timeout=TIMEOUT_SEC, env=env)
     return r.returncode == 0, (r.stdout or r.stderr or '')[-4000:]
 

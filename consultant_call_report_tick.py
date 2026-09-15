@@ -90,7 +90,7 @@ def extract_notes_text(raw, filename, mime):
         f.write(raw); path = f.name
     try:
         if ext == '.pdf' or 'pdf' in (mime or ''):
-            r = subprocess.run(['pdftotext', '-layout', path, '-'],
+            r = subprocess.run(['pdftotext', '-layout', '-enc', 'UTF-8', path, '-'],
                                capture_output=True, text=True, timeout=60)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout
@@ -104,10 +104,22 @@ def extract_notes_text(raw, filename, mime):
                 pass
             return '【無法抽取文字】這份 PDF 可能是掃描影像，請改貼文字或用其他格式重傳。'
         if ext in ('.docx', '.doc'):
-            r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
-                               capture_output=True, text=True, timeout=60)
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout
+            # textutil 是 macOS 專用指令，Windows 上不存在；.docx 改用
+            # docx2txt（純 Python），.doc 沒有對應的跨平台替代。
+            try:
+                r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
+                                   capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout
+            except FileNotFoundError:
+                if ext == '.docx':
+                    try:
+                        import docx2txt
+                        text = docx2txt.process(path) or ''
+                        if text.strip():
+                            return text
+                    except Exception:
+                        pass
         return f'【無法抽取文字】不支援的檔案格式：{ext or mime or "未知"}'
     finally:
         os.unlink(path)
