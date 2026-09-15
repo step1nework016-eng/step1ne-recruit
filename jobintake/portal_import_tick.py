@@ -25,10 +25,16 @@ Worker（Cloudflare）沒有能力可靠解析任意格式的 JD 文件——202
     python3 portal_import_tick.py --loop     # 常駐輪詢（launchd 用 tick 模式即可，這個是備用）
 """
 import os, sys, json, uuid, subprocess, tempfile, base64, time, re, argparse, datetime
+import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-LOCK = '/tmp/step1ne-portal-import.lock'
+# 原本寫死 /tmp/...，Windows 上會解析成當前磁碟根目錄下的 \tmp\...，
+# 若該資料夾不存在 open() 會直接失敗，改用 tempfile.gettempdir()。
+LOCK = os.path.join(tempfile.gettempdir(), 'step1ne-portal-import.lock')
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
 MODEL = 'claude-sonnet-5'
 TIMEOUT_SEC = 240
 
@@ -297,7 +303,7 @@ def run_claude(prompt):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)
     env.pop('CLAUDE_CODE_ENTRYPOINT', None)
-    cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text',
+    cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
            '--permission-mode', 'bypassPermissions',
            '--setting-sources', '',
            '--session-id', str(uuid.uuid4())]

@@ -14,10 +14,14 @@
     python3 parse_resumes.py --force  # 全部重抽（改了抽取邏輯時用）
 """
 import base64, io, json, os, re, subprocess, sys, tempfile, datetime
+import shutil
 import urllib.parse, urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
+# npx 在 Windows 是 npx.cmd，subprocess.run(['npx',...]) 不帶副檔名會
+# FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+NPX_BIN = shutil.which('npx') or 'npx'
 MAX_CHARS = 12000   # 履歷再長也不會超過這個；超過通常是抽到雜訊
 
 
@@ -68,7 +72,7 @@ def d1(sql):
     if _h is not None:
         return _h.get('results', [])
     r = subprocess.run(
-        ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json',
+        [NPX_BIN, '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json',
          f'--command={sql}'],
         cwd=HERE, capture_output=True, text=True, env=env_with_cf(), timeout=180)
     if r.returncode != 0:
@@ -126,7 +130,7 @@ def extract(raw, filename, mime):
         f.write(raw); path = f.name
     try:
         if ext == '.pdf' or 'pdf' in (mime or ''):
-            r = subprocess.run(['pdftotext', '-layout', path, '-'],
+            r = subprocess.run(['pdftotext', '-layout', '-enc', 'UTF-8', path, '-'],
                                capture_output=True, text=True, timeout=60)
             if r.returncode == 0 and r.stdout.strip():
                 text = r.stdout.strip()
@@ -148,10 +152,23 @@ def extract(raw, filename, mime):
             return None, '掃描影像式 PDF，抽不到文字層'
 
         if ext in ('.docx', '.doc', '.rtf'):
-            r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
-                               capture_output=True, text=True, timeout=60)
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()[:MAX_CHARS], None
+            # textutil 是 macOS 專用指令，Windows 上不存在；.docx 改用
+            # docx2txt（純 Python），.doc/.rtf 沒有對應的跨平台替代，直接標記不支援。
+            try:
+                r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
+                                   capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.strip()[:MAX_CHARS], None
+            except FileNotFoundError:
+                if ext == '.docx':
+                    try:
+                        import docx2txt
+                        text = (docx2txt.process(path) or '').strip()
+                        if text:
+                            return text[:MAX_CHARS], None
+                    except Exception as e:
+                        return None, f'docx2txt 失敗：{str(e)[:100]}'
+                return None, f'這台裝置沒有 {ext} 的文字抽取工具（textutil 是 macOS 專用）'
             return None, 'textutil 轉換失敗'
 
         if ext in ('.txt', '.md'):

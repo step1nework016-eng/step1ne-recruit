@@ -18,6 +18,11 @@ import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
 import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
+# 同理，npx 在 Windows 是 npx.cmd，不帶副檔名會 FileNotFoundError。
+NPX_BIN = shutil.which('npx') or 'npx'
 DB = 'step1ne-recruit'
 POLL_SEC = 8
 MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–400MB。
@@ -197,7 +202,7 @@ def d1_raw(sql):
     if _h is not None:
         return _h
     r = subprocess.run(
-        ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--command={sql}'],
+        [NPX_BIN, '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--command={sql}'],
         cwd=HERE, capture_output=True, text=True, env=env_with_cf(), timeout=180)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout)[-300:])
@@ -221,7 +226,7 @@ def d1_file(sql):
         path = f.name
     try:
         r = subprocess.run(
-            ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--file={path}'],
+            [NPX_BIN, '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json', f'--file={path}'],
             cwd=HERE, capture_output=True, text=True, env=env_with_cf(), timeout=180)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout)[-300:])
@@ -576,7 +581,7 @@ def push_report_files(app_id, name, job_slug):
     # 1) 報告 PDF。export_pdf.py 會 import 這支檔案，所以要開子行程跑，不能直接 import。
     try:
         out = f'/tmp/step1ne_report_{app_id[:8]}.pdf'
-        r = subprocess.run(['python3', os.path.join(HERE, 'export_pdf.py'), app_id, '--out', out],
+        r = subprocess.run([sys.executable, os.path.join(HERE, 'export_pdf.py'), app_id, '--out', out],
                            capture_output=True, text=True, env=env_with_cf(), timeout=120)
         if r.returncode == 0 and os.path.exists(out):
             with open(out, 'rb') as f:
@@ -963,7 +968,7 @@ _static_lock = threading.Lock()
 
 
 def _fetch_static(app_id):
-    r = subprocess.run(['python3', 'fetch_application.py', app_id],
+    r = subprocess.run([sys.executable, 'fetch_application.py', app_id],
                        cwd=HERE, capture_output=True, text=True,
                        env=env_with_cf(), timeout=200)
     if r.returncode != 0:
@@ -1520,7 +1525,7 @@ def sanitize(t):
 
 def run_claude(prompt):
     r = subprocess.run(
-        ['claude', '-p', sanitize(prompt), '--model', TALK_MODEL,
+        [CLAUDE_BIN, '-p', sanitize(prompt), '--model', TALK_MODEL,
          *NO_TOOLS, '--output-format', 'text'],
         capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
     if r.returncode != 0:
@@ -2078,7 +2083,7 @@ def report_to_json(report, ctx, name='', app_id=None):
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
     _before_files = _snapshot_session_files()
     try:
-        r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
+        r = subprocess.run([CLAUDE_BIN, '-p', sanitize(prompt), '--model', REPORT_MODEL,
                             # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
                             *NO_TOOLS, '--output-format', 'text'],
                            capture_output=True, text=True, env=env_with_cf(),
@@ -2174,7 +2179,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     _before_files = _snapshot_session_files()
     try:
-        r = subprocess.run(['claude', '-p', sanitize(prompt), '--model', REPORT_MODEL,
+        r = subprocess.run([CLAUDE_BIN, '-p', sanitize(prompt), '--model', REPORT_MODEL,
                             *NO_TOOLS, '--output-format', 'text'],
                            capture_output=True, text=True, env=env_with_cf(), timeout=REPORT_TIMEOUT)
         report = r.stdout.strip() or '（報告產生失敗，請看逐字稿）'

@@ -23,10 +23,14 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
 sys.path.insert(0, HERE)
 
 _spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview_daemon.py'))
@@ -163,7 +167,7 @@ def parse(text):
     p = PROMPT.format(text=text, roster=ros,
                       today=now.strftime('%Y-%m-%d'), weekday=f'週{wd}')
     r = subprocess.run(
-        ['claude', '-p', D.sanitize(p), '--model', MODEL, *D.NO_TOOLS, '--output-format', 'text'],
+        [CLAUDE_BIN, '-p', D.sanitize(p), '--model', MODEL, *D.NO_TOOLS, '--output-format', 'text'],
         capture_output=True, text=True, env=D.env_with_cf(), timeout=300)
     out = (r.stdout or '').strip()
     s, e = out.find('{'), out.rfind('}')

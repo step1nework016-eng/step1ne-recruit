@@ -19,10 +19,18 @@ jd_regen_tick.py／publish_job.py 那邊原本就有的防線也還在，這裡�
 多一層，不是取代。
 """
 import os, sys, json, re, subprocess, time, tempfile
+import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
-LOCK = '/tmp/step1ne-jd-ai-draft.lock'
+# 原本寫死 /tmp/...，Windows 上會解析成當前磁碟根目錄下的 \tmp\...，
+# 若該資料夾不存在 open() 會直接失敗，改用 tempfile.gettempdir()。
+LOCK = os.path.join(tempfile.gettempdir(), 'step1ne-jd-ai-draft.lock')
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
+# 同理，npx 在 Windows 是 npx.cmd，不帶副檔名會 FileNotFoundError。
+NPX_BIN = shutil.which('npx') or 'npx'
 MODEL = 'claude-sonnet-5'
 TIMEOUT_SEC = 180
 
@@ -52,7 +60,7 @@ def env():
 
 def d1(sql):
     r = subprocess.run(
-        ['npx', '--yes', 'wrangler', 'd1', 'execute', 'step1ne-recruit',
+        [NPX_BIN, '--yes', 'wrangler', 'd1', 'execute', 'step1ne-recruit',
          '--remote', '--json', '--command', sql],
         cwd=RECRUIT, env=env(), capture_output=True, text=True, timeout=180)
     try:
@@ -171,7 +179,7 @@ def run_claude(prompt):
         f.write(prompt)
         prompt_path = f.name
     try:
-        cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text',
+        cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
                '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                '--setting-sources', '']
         r = subprocess.run(cmd + [open(prompt_path, encoding='utf-8').read()],

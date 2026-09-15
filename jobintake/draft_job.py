@@ -27,7 +27,12 @@
     python3 draft_job.py --all
 """
 import os, sys, json, uuid, argparse, subprocess, datetime, importlib.util, base64, textwrap
+import shutil
 import urllib.request, urllib.parse   # ⚠️ 要在模組層級，函式內 import 的話別的函式抓不到
+
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -284,7 +289,7 @@ def run_commander(prompt, workdir):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)          # 巢狀 session 時 claude 會拒跑
     env.pop('CLAUDE_CODE_ENTRYPOINT', None)
-    cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text',
+    cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text',
            '--permission-mode', 'bypassPermissions',
            '--setting-sources', '',
            '--session-id', str(uuid.uuid4())]

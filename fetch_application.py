@@ -14,9 +14,13 @@
     python3 fetch_application.py --list          # 列出可用的 id
 """
 import base64, json, os, re, subprocess, sys, tempfile
+import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
+# npx 在 Windows 是 npx.cmd，subprocess.run(['npx',...]) 不帶副檔名會
+# FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+NPX_BIN = shutil.which('npx') or 'npx'
 
 
 def d1(sql):
@@ -29,7 +33,7 @@ def d1(sql):
                 k, v = line.strip().split('=', 1)
                 env[k] = v
     r = subprocess.run(
-        ['npx', '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json',
+        [NPX_BIN, '--yes', 'wrangler', 'd1', 'execute', DB, '--remote', '--json',
          f'--command={sql}'],
         cwd=HERE, capture_output=True, text=True, env=env, timeout=180)
     if r.returncode != 0:
@@ -46,7 +50,7 @@ def extract_text(raw, filename, mime):
         f.write(raw); path = f.name
     try:
         if ext == '.pdf' or 'pdf' in (mime or ''):
-            r = subprocess.run(['pdftotext', '-layout', path, '-'],
+            r = subprocess.run(['pdftotext', '-layout', '-enc', 'UTF-8', path, '-'],
                                capture_output=True, text=True, timeout=60)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout
@@ -62,10 +66,22 @@ def extract_text(raw, filename, mime):
             return ('【無法抽取文字】這份 PDF 可能是掃描影像。'
                     '面談時不要說「履歷我看過了」，改成請對方口頭介紹經歷。')
         if ext in ('.docx', '.doc'):
-            r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
-                               capture_output=True, text=True, timeout=60)
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout
+            # textutil 是 macOS 專用指令，Windows 上不存在；.docx 改用
+            # docx2txt（純 Python），.doc 沒有對應的跨平台替代。
+            try:
+                r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
+                                   capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout
+            except FileNotFoundError:
+                if ext == '.docx':
+                    try:
+                        import docx2txt
+                        text = docx2txt.process(path) or ''
+                        if text.strip():
+                            return text
+                    except Exception:
+                        pass
         return '【無法抽取文字】不支援的檔案格式：' + (ext or mime or '未知')
     finally:
         os.unlink(path)

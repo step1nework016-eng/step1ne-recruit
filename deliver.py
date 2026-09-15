@@ -20,6 +20,7 @@
 import html as _html
 import json
 import os
+import pathlib
 import re
 import subprocess
 import tempfile
@@ -28,7 +29,27 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 TPL_DIR = os.path.join(HERE, 'reporttpl')
 
-CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+def _find_chrome():
+    """找本機的 Chrome/Chromium 執行檔。原本寫死 mac 路徑，這台是 Windows 裝置。"""
+    import shutil
+    candidates = [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    for name in ('google-chrome', 'chromium-browser', 'chromium', 'chrome'):
+        found = shutil.which(name)
+        if found:
+            return found
+    return candidates[0]
+
+
+CHROME = _find_chrome()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1201,7 +1222,7 @@ def html_to_pdf(html_text, out_path):
              '--disable-background-networking', '--disable-sync',
              '--disable-component-update', '--disable-default-apps',
              '--metrics-recording-only', '--mute-audio',
-             f'--print-to-pdf={out_path}', f'file://{tmp_html}'],
+             f'--print-to-pdf={out_path}', pathlib.Path(tmp_html).as_uri()],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         last = -1
         for _ in range(120):          # 最多等 120 秒
