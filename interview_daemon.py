@@ -1539,19 +1539,36 @@ def run_claude(prompt):
     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
     # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
     # 它會自己讀 stdin，macOS/Linux 行為不變）。
-    r = subprocess.run(
-        [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
-         *NO_TOOLS, '--output-format', 'text'],
-        input=sanitize(prompt),
-        capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
-    if r.returncode != 0:
-        raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
-    out = r.stdout.strip()
-    # 模型偶爾還是會包程式碼區塊或前後多講一句，抓最外層的 JSON 就好
-    i, j = out.find('{'), out.rfind('}')
-    if i < 0 or j < 0:
-        raise RuntimeError(f'回覆裡沒有 JSON：{out[:200]}')
-    return json.loads(out[i:j + 1])
+    #
+    # 2026-09-15 加：模型偶爾那一輪漏打一個逗號、JSON 格式不合法，之前
+    # 是直接放棄該輪、回候選人一句道歉收尾——真實案例：馮聖硯剛講出
+    # 「不知道下一個方向可以去哪裡」這句真心話的那一輪就撞到這個問題，
+    # 對話被迫中斷。格式錯誤通常是模型那次輸出的偶發問題，重跑一次
+    # 多半就正常，所以改成：只在「JSON 解析失敗」這個特定原因時，
+    # 原提示詞原封不動重試最多 2 次；其他原因（額度打滿、逾時、exit!=0）
+    # 不在這裡重試，交給外層既有的重試/降級邏輯處理，避免浪費時間重試
+    # 一個重跑也沒用的錯誤。
+    last_err = None
+    for attempt in range(3):
+        r = subprocess.run(
+            [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
+             *NO_TOOLS, '--output-format', 'text'],
+            input=sanitize(prompt),
+            capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+        if r.returncode != 0:
+            raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
+        out = r.stdout.strip()
+        # 模型偶爾還是會包程式碼區塊或前後多講一句，抓最外層的 JSON 就好
+        i, j = out.find('{'), out.rfind('}')
+        if i < 0 or j < 0:
+            last_err = RuntimeError(f'回覆裡沒有 JSON：{out[:200]}')
+            continue
+        try:
+            return json.loads(out[i:j + 1])
+        except json.JSONDecodeError as e:
+            last_err = e
+            continue
+    raise RuntimeError(f'回覆連續 3 次都不是合法 JSON，放棄這輪：{last_err}')
 
 
 def snap_signals(app_id, at):
