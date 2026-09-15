@@ -4658,6 +4658,88 @@ export default {
         }
       }
 
+      // ── 顧問找人才：TG 打字觸發 talent_sourcing_agent.py（2026-09-15 加）──
+      // Jacky 要求把原本只有排程在跑的 AI 主動找人才功能開放給顧問隨時呼叫，
+      // 不用等每天 9 點。查證過同一個群組裡「總指揮」（commander/bot.py）會把
+      // 任何開頭是 `/` 的文字訊息當成在叫它——跟「電洽新增人選」拿掉 `/new`
+      // 是同一個理由，所以這裡刻意不做成 `/找人才 xxx` 這種 slash command，
+      // 改成：進這個專屬 topic 打職缺關鍵字（純文字，不用斜線）→ 選按鈕確認
+      // →排進 talent_sourcing_requests，交給本機常駐的
+      // talent_sourcing_tg_worker.py 認領執行（實際跑 15-40 分鐘，Worker 這裡
+      // 只負責排隊跟回覆，不能自己跑）。
+      {
+        const sourcingTopic = await getOrCreateTopic(env, 'talent_sourcing_ask', '🔍 顧問找人才');
+        const rm3 = update.message;
+        const cq3 = update.callback_query;
+
+        if (cq3 && String(cq3.data || '').startsWith('ts_pick:')) {
+          const slug = String(cq3.data).slice('ts_pick:'.length);
+          const who = (cq3.from && (cq3.from.username || cq3.from.first_name)) || '顧問';
+          const answer = async (t) => {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: cq3.id, text: t }),
+            }).catch(() => {});
+          };
+          const jobRow = await env.DB.prepare(
+            `SELECT slug, title FROM jobs WHERE slug=? AND status='open'`).bind(slug).first();
+          if (!jobRow) {
+            await answer('這個職缺現在不是開放狀態了，換一個看看');
+            return new Response('ok');
+          }
+          const dup = await env.DB.prepare(
+            `SELECT id FROM talent_sourcing_requests WHERE job_slug=? AND status IN ('pending','running') LIMIT 1`
+          ).bind(slug).first();
+          if (dup) {
+            await answer('這個職缺已經在排隊或搜尋中了，完成會通知，不用重複點');
+            return new Response('ok');
+          }
+          const reqId = uid();
+          await env.DB.prepare(
+            `INSERT INTO talent_sourcing_requests
+               (id, job_slug, requested_by, chat_id, thread_id, status, created_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?)`
+          ).bind(reqId, slug, who, String(cq3.message.chat.id),
+                 cq3.message.message_thread_id || null, nowTaipei()).run();
+          await answer('已排入搜尋');
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: cq3.message.chat.id, message_id: cq3.message.message_id,
+              text: `⏳ 已排入搜尋：${jobRow.title}（由 ${who} 要求）\n`
+                + `預計 15-40 分鐘，完成後會在這裡通知，不用等著看。`,
+            }),
+          }).catch(() => {});
+          return new Response('ok');
+        }
+
+        if (rm3 && sourcingTopic && Number(rm3.message_thread_id) === sourcingTopic
+            && !(rm3.from && rm3.from.is_bot)) {
+          const kw = String(rm3.text || '').trim();
+          if (!kw) return new Response('ok');
+          const listAll = kw === '全部' || kw.toLowerCase() === 'all';
+          const { results: jobs } = listAll
+            ? await env.DB.prepare(
+                `SELECT slug, title FROM jobs WHERE status='open' ORDER BY updated_at DESC LIMIT 10`).all()
+            : await env.DB.prepare(
+                `SELECT slug, title FROM jobs WHERE status='open'
+                   AND (title LIKE ? OR slug LIKE ?) ORDER BY updated_at DESC LIMIT 8`
+              ).bind(`%${kw}%`, `%${kw}%`).all();
+          if (!jobs || !jobs.length) {
+            await ncSend(env, rm3.chat.id, sourcingTopic,
+              `找不到符合「${kw}」的開放職缺。換個關鍵字再打一次，或打「全部」看目前所有開放職缺。`);
+            return new Response('ok');
+          }
+          const rows = jobs.map((j) => ([{
+            text: `🔍 ${j.title}`.slice(0, 60), callback_data: 'ts_pick:' + j.slug,
+          }]));
+          await ncSend(env, rm3.chat.id, sourcingTopic,
+            listAll ? '目前開放的職缺，點一個開始找人才：' : `找到符合「${kw}」的職缺，點一個開始找人才：`,
+            { inline_keyboard: rows });
+          return new Response('ok');
+        }
+      }
+
       // ── 顧問手動發文匯入追蹤（2026-09-03加）──
       // 顧問自己在Threads上發的文（不是走「一鍵發文」那條自動產稿的路），
       // 原本要Jacky手動貼網址給我、我再手動查職缺、手動INSERT——現在讓顧問
