@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 
@@ -36,6 +37,10 @@ sys.path.insert(0, HERE)
 _spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview_daemon.py'))
 D = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(D)
+
+# 2026-09-10 加：多裝置協作用——同一筆 status='new' 的回報，兩台裝置同時撈到
+# 會各自跑一次 handle()，重複送 TG 確認訊息給顧問。搶到才算你的，搶不到跳過。
+WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
 
 MODEL = 'claude-sonnet-5'   # 這是分類與比對，不是判斷；要的是快
 THREAD_REPORT = 3161
@@ -274,6 +279,10 @@ def main():
         return
     log(f'撿到 {len(rows)} 則顧問回報')
     for r in rows:
+        claim = D.d1_raw(f"UPDATE consultant_reports SET status='claimed', worker_id={D.q(WORKER_ID)} "
+                          f"WHERE id={D.q(r['id'])} AND status='new'")
+        if not claim.get('meta', {}).get('changes'):
+            continue  # 已經被別台裝置搶走
         try:
             handle(r)
         except Exception as e:

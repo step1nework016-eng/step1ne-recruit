@@ -67,4 +67,39 @@ else
   done
 fi
 
+say "⑤ 寫執行紀錄，讓儀表板看得到這輪跑了什麼"
+# 2026-09-14 加：Jacky 問「改的紀錄與成效我要在哪邊開」，查完發現這支
+# 從來沒寫過 ~/aijob-automation/run-log.jsonl（儀表板「今日執行」的資料
+# 來源），所以每週一跑完儀表板上完全看不到，只能去查資料庫或本機 log 檔。
+# 補寫一筆彙總——細節（前後對照）還是留在 job_audits 表，這裡只給儀表板
+# 看得懂的總覽，照 interview_daemon.py 的 runlog() 同一套格式手動組，
+# 不 import 整支只為了這一個函式。
+python3 - <<PYEOF >> "$LOG" 2>&1
+import importlib.util, os, json, datetime
+sp=importlib.util.spec_from_file_location('d', os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/interview_daemon.py'))
+m=importlib.util.module_from_spec(sp)
+try: sp.loader.exec_module(m)
+except SystemExit: pass
+
+rows = m.d1("SELECT job_slug, blockers_json FROM job_audits WHERE verdict='已產修正版' "
+            "AND audited_at >= datetime('now','+8 hours','-3 hours')")
+n_changed = len(rows)
+n_ask = sum(len(json.loads(r.get('blockers_json') or '[]')) for r in rows)
+n_total = len("""$JOBS""".split())
+
+summary = f'稽核 {n_total} 個職缺，改了 {n_changed} 個'
+if n_ask:
+    summary += f'，{n_ask} 件要人決定'
+
+RUNLOG = os.path.expanduser('~/aijob-automation/run-log.jsonl')
+os.makedirs(os.path.dirname(RUNLOG), exist_ok=True)
+with open(RUNLOG, 'a', encoding='utf-8') as f:
+    f.write(json.dumps({
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'task': 'step1ne-job-copy', 'status': 'success', 'summary': summary,
+        'metrics': {'audited': n_total, 'changed': n_changed, 'need_human': n_ask}},
+        ensure_ascii=False) + '\n')
+print(f'runlog 寫入：{summary}')
+PYEOF
+
 say "完成，紀錄在 $LOG"

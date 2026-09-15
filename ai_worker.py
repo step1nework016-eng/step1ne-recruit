@@ -21,6 +21,7 @@
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -30,6 +31,10 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
+
+# Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+# 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+CLAUDE_BIN = shutil.which('claude') or 'claude'
 
 MODEL = 'claude-sonnet-5'
 # 2026-09-10 加：客戶推薦履歷的提示詞今天加了很多新規則＋5個新schema欄位，
@@ -54,11 +59,23 @@ def q(v):
     return 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
 
 
+def sanitize(t):
+    """清掉控制字元——跟 interview_daemon.py 的 sanitize() 同一個理由：prompt 是
+    用命令列參數傳給 claude 的，只要有一個 \\x00，subprocess 就直接丟
+    "embedded null byte"，整個 job 失敗。2026-09-10 客戶履歷確認（黃育騏那筆）
+    就是履歷來源文字帶了空位元組，卡在 error 沒人發現——這支之前漏了這道
+    過濾，其他呼叫 claude 的地方（interview_daemon/parse_resumes）早就有。
+    """
+    if not t:
+        return t
+    return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
+
+
 def run_claude(prompt, want_json=False):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)      # 巢狀 session 裡 claude CLI 會拒跑
     r = subprocess.run(
-        ['claude', '-p', prompt, '--model', MODEL, *NO_TOOLS, '--output-format', 'text'],
+        [CLAUDE_BIN, '-p', sanitize(prompt), '--model', MODEL, *NO_TOOLS, '--output-format', 'text'],
         capture_output=True, text=True, env=env, timeout=TIMEOUT, cwd=HERE)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')

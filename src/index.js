@@ -1564,6 +1564,12 @@ const STAGE_ORDER = [
   { key: 'backup', lb: '備選' },
 ];
 const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((s, i) => [s.key, i]));
+// 2026-09-14 修：doManualForward() 一直在引用 MANUAL_STAGE_OPTS 驗證
+// b.initial_stage，但這個變數從來沒有在任何地方宣告過——只要顧問手動新增
+// 人選時帶了初始階段，就會直接丟 ReferenceError、整支功能炸掉。doManualForward
+// 是顧問後台用的內部函式（不是客戶 portal），比照 /admin/set-manual-stage
+// 「顧問仍然可以設全部 9 個 key」的規則，直接用完整的 STAGE_INDEX 鍵值。
+const MANUAL_STAGE_OPTS = Object.keys(STAGE_INDEX);
 
 // 2026-09-01 加：面試輪數（第一～第四階段哪幾關「存在」）是職缺的屬性，不是
 // 候選人的——同一個職缺不管推給哪個人選，關數都一樣。存在 jobs.interview_stage_config
@@ -3428,6 +3434,468 @@ async function decideCheckupRouteFresh(env, c) {
   return { route: 'book', busy: load.active + load.pending, slots: await checkupOpenSlots(env) };
 }
 
+
+// 2026-09-14 加：Step1ne 週文章草稿審核（art_approve／art_skip）。跟
+// soc_approve 不同的地方——這裡按確認**不會真的發文**，Worker 沒有本機
+// git 環境可以建頁面/push/deploy。這裡只負責記「人已經核准了」，實際套用
+// 上線靠本機 article_publish_tick.py 輪詢 status='approved' 的列去做，
+// 那支才有 repo 可以動、才能跑 git push。兩段分開是因為發布這個動作本質上
+// 只能在本機做，Worker 這層只是核准的窗口。
+async function handleArticleAction(env, cq) {
+  const [action, idRaw] = String(cq.data).split(':');
+  const id = Number(idRaw);
+  const answer = async (text, alert) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
+    }).catch(() => {});
+  };
+  const row = await env.DB.prepare(
+    `SELECT id, title, status FROM article_drafts WHERE id = ?`
+  ).bind(id).first();
+  if (!row) { await answer('❌ 找不到這篇草稿（可能太舊或已被清除）'); return; }
+  const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+
+  const editButtons = async (label) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+        reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] },
+      }),
+    }).catch(() => {});
+  };
+
+  if (action === 'art_approve') {
+    if (row.status === 'published') { await answer('這篇已經上線了，不用再按'); return; }
+    await env.DB.prepare(
+      `UPDATE article_drafts SET status='approved', approved_at=datetime('now','+8 hours'), approved_by=? WHERE id=?`
+    ).bind(who, id).run();
+    await answer('✅ 已核准，稍後本機排程會實際套用上線（幾分鐘內），完成會再通知');
+    await editButtons(`✅ ${who} 已核准，等待上線中`);
+  } else if (action === 'art_skip') {
+    await env.DB.prepare(`UPDATE article_drafts SET status='skipped' WHERE id=?`).bind(id).run();
+    await answer('已標記不發這篇');
+    await editButtons(`❌ ${who} 選擇不發這篇`);
+  } else {
+    await answer('未知的操作');
+  }
+}
+
+// 2026-09-11 抽出來：soc_approve/soc_skip/soc_regen 原本直接寫在 webhook 收到
+// callback_query 那條路徑裡，只能被真的 Telegram 按鈕點擊觸發。排程要做到
+// 「先核准、時間到才真的發文」，得讓同一段發文邏輯也能被 cron 用重建出來的
+// 假 cq 觸發——內容完全不動，只是包成函式讓兩條路都能叫用。
+async function handleSocAction(env, cq) {
+        const [action, qidRaw] = String(cq.data).split(':');
+        const qid = Number(qidRaw);
+        const answer = async (text, alert) => {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
+          }).catch(() => {});
+        };
+        // ⚠️ 2026-08-18 改：原本「一個職缺對應一個發文狀態」直接存在 jobs 表
+        // 的單一欄位上，同一職缺換一個顧問排就會直接覆蓋前一個人排的——
+        // 真實案例撞到（顧問要讓四個人各自對同一個職缺發一篇）。改成一個
+        // 職缺可以對應多筆 social_post_queue 排隊紀錄，每筆各自獨立，
+        // 按鈕直接認排隊紀錄的 id，不會再互相蓋掉。
+        // ⚠️ 2026-09-03 改 LEFT JOIN：話題類型的排隊紀錄 job_slug 存的是
+        // 「💬 話題描述」文字，不是真職缺 slug，INNER JOIN 查不到會讓這一整段
+        // approve/regen/skip 全部誤判成「找不到這筆排隊紀錄」，三顆按鈕都按不動。
+        // COALESCE 讓 row.title 對職缺類型／話題類型都能正常顯示，不用動下面任何一處。
+        const row = await env.DB.prepare(
+          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, q.scheduled_at,
+                  COALESCE(j.title, q.job_slug) AS title,
+                  COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
+             FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
+             LEFT JOIN social_accounts sa ON sa.id = q.account_id WHERE q.id = ?`
+        ).bind(qid).first();
+        if (!row) { await answer('❌ 找不到這筆排隊紀錄（可能太舊或已被清除）'); return; }
+        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+
+        if (action === 'soc_approve') {
+          if (!row.draft) { await answer('❌ 這則沒有草稿內容，沒辦法發文'); return; }
+
+          // 2026-09-11 加：排程貼文「先核准、時間到才真的發」——顧問按確認
+          // 這一刻，如果排定時間還沒到，不要往下跑發文邏輯，先記住「已核准」
+          // 這個決定，時間到了由排程（見下方 scheduled()）重建這個 cq 再跑
+          // 同一套邏輯。
+          // ⚠️ 2026-09-11 修：真實事故——原本用「row.status !== 'approved_scheduled'」
+          // 判斷要不要檢查時間，結果顧問對同一則按第二次確認（或 Telegram 重送
+          // 同一個 callback_query，這是它已知的行為），這時 status 已經是
+          // approved_scheduled，直接跳過時間檢查、立刻真的發文——排定 14:55，
+          // 14:49 就發出去了。改成永遠檢查「現在有沒有超過排定時間」，不管
+          // 目前狀態是什麼；排程觸發時本來就是時間真的到了才會呼叫，這個檢查
+          // 自然會是 false、直接放行，不需要靠狀態去特案判斷。
+          if (row.scheduled_at) {
+            const schedMs = Date.parse(String(row.scheduled_at).replace(' ', 'T') + '+08:00');
+            if (!Number.isNaN(schedMs) && schedMs > Date.now()) {
+              await env.DB.prepare(
+                `UPDATE social_post_queue SET status='approved_scheduled', approved_at=?, approved_by=?,
+                        tg_message_id=?, tg_thread_id=? WHERE id=?`
+              ).bind(nowTaipei(), who, String(cq.message.message_id),
+                     cq.message.message_thread_id ? String(cq.message.message_thread_id) : null, qid).run();
+              await answer(`✅ 已核准，會在 ${row.scheduled_at} 準時發布，不用再按`, true);
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+                  reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，會在 ${row.scheduled_at} 準時發布`, callback_data: 'noop' }]] },
+                }),
+              }).catch(() => {});
+              return;
+            }
+          }
+
+          // 🚨 2026-08-27 加：草稿放太久就不准直接發。
+          // 職缺內容會變——BIM 的薪資 8/27 改成面議之後，8/21 產的那批草稿裡
+          // 還完整寫著「月薪 40,833–50,167（已含 2 個月年終攤提）」；
+          // 那時的按鈕還躺在 Telegram 裡，按下去就把已經撤下的內容公開發出去。
+          // 實測 45 筆待確認草稿有 20 筆含現在不能講的內容。
+          // 重產一次會重跑現行的所有過濾，比在這裡逐項列黑名單可靠。
+          const ageDays = row.requested_at
+            ? Math.floor((Date.now() - Date.parse(String(row.requested_at).replace(' ', 'T') + '+08:00')) / 86400000)
+            : 0;
+          if (ageDays >= 3) {
+            await env.DB.prepare(`UPDATE social_post_queue SET status='expired' WHERE id=?`).bind(row.id).run();
+            await answer(`❌ 這則草稿是 ${ageDays} 天前產的，職缺內容可能已經改過（薪資、客戶名稱等），不能直接發。請按「🔄 重新產一次」。`, true);
+            return;
+          }
+
+          // 🚨 客戶名稱稽核。產稿時已經擋過一次，但草稿是存下來的，
+          // 而客戶名單會新增（今天就補了台灣美光與帆宣兩筆）——
+          // 發出去那一刻用最新的名單再掃一次才算數。
+          const terms = await clientNameTerms(env);
+          const nameHits = hitsClientNames(row.draft, terms);
+          if (nameHits.length) {
+            await env.DB.prepare(`UPDATE social_post_queue SET status='blocked_compliance' WHERE id=?`).bind(row.id).run();
+            await answer(`🚫 這則出現客戶公司名稱「${nameHits.join('」「')}」，社群一律不提客戶名，已擋下。請按「🔄 重新產一次」。`, true);
+            return;
+          }
+
+          // 🚨 草稿沒填完就不准發。這是公開貼文，發出去才發現要自己去刪。
+          const ph = placeholderHits(row.draft);
+          if (ph.length) {
+            await answer(`❌ 這則草稿裡還有「${ph.join('」「')}」，沒填完不能發`, true);
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id,
+                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                reply_to_message_id: cq.message.message_id,
+                text: `🚨 這則沒有發出去——草稿裡還有「${ph.join('」「')}」\n\n`
+                  + `這通常代表職缺資料缺了東西，模型就用佔位符先頂著。\n`
+                  + `請先把該職缺的欄位補齊，再按「🔄 重新產一次」。`,
+              }),
+            }).catch(() => {});
+            return;
+          }
+
+          // ⚠️ 2026-08-17 修：真實案例抓到同一則職缺連續發兩篇一模一樣的文——
+          // 這支發文流程每則貼文都要 sleep(5000) 等 container 就緒，一次審核
+          // 常常要跑 10~20 秒才回得了 Telegram，Telegram 覺得太久沒回應就會
+          // 重送同一個 callback_query，這支又沒有防重複機制，整套流程就跑兩次。
+          // 修法：進來第一件事就搶鎖（UPDATE ... WHERE status 不是
+          // posting/posted 才會生效），搶不到鎖代表已經在發或發過了，
+          // 直接短路擋掉，不再跑一次 Threads API。
+          const claim = await env.DB.prepare(
+            `UPDATE social_post_queue SET status='posting', posting_at=datetime('now','+8 hours') WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
+          ).bind(qid).run();
+          if (!claim.meta || !claim.meta.changes) {
+            await answer(row.status === 'posted' ? '✅ 這則已經發過了，沒有重複發' : '⏳ 正在發文中，請稍等，不要重複按', true);
+            return;
+          }
+          // 搶到鎖之後先回應 Telegram，避免它因為接下來 Threads API 那段
+          // 太慢而判定沒回應、又重送一次同一個按鈕事件。
+          await answer('⏳ 收到，發文中…');
+
+          // 2026-08-14 加：多顧問各自帳號——這則排隊紀錄如果在「一鍵發文」
+          // 頁面指定過帳號，就用 social_accounts 存的那組金鑰；沒指定的
+          // （例如排程自動掃到的舊職缺）退回 wrangler secret 那組（目前就是
+          // Jacky 自己的帳號），行為跟改之前一樣，不會突然發不出去。
+          let threadsToken = env.THREADS_ACCESS_TOKEN, threadsUserId = env.THREADS_USER_ID;
+          let platform = 'threads';   // 沒指定帳號的舊職缺一律當 Threads
+          let accLabel = '';
+          // 2026-08-18 加：串文最後那則「應徵了解窗口」原本寫死同一個 LINE 連結，
+          // 四位顧問各自發文卻都導去同一個人身上，候選人的來源就分不清是誰帶來的。
+          // 改成每個帳號各自的連結；沒指定帳號的舊職缺退回 Jacky 那組（跟金鑰退回邏輯一致）。
+          let lineLink = 'https://lin.ee/RR4nQqm';
+          if (row.account_id) {
+            const acc = await env.DB.prepare(
+              `SELECT access_token, platform_user_id, line_link, platform, label FROM social_accounts WHERE id = ? AND is_active = 1`
+            ).bind(row.account_id).first();
+            if (!acc) { await answer('❌ 指定的發文帳號找不到或已停用'); return; }
+            threadsToken = acc.access_token; threadsUserId = acc.platform_user_id;
+            accLabel = acc.label || '';
+            if (acc.line_link) lineLink = acc.line_link;
+            platform = acc.platform || 'threads';
+          }
+          // ── LINE 社群：不自動發，產好稿交給人手動貼 ──
+          // 2026-08-21 Jacky 要求。LINE 社群沒有可以自動發文的 API
+          //（官方帳號的推播 API 是推給好友，不是發到社群），
+          // 所以這個管道的價值不在自動化，是在「版型固定、內容產好」——
+          // 顧問收到就直接複製貼上，不用每次自己重寫一遍。
+          // 按核准只代表「這篇可以用了」，不代表已經發出去。
+          if (platform === 'line_community') {
+            await env.DB.prepare(
+              `UPDATE social_post_queue SET status='ready_manual', posted_at=datetime('now','+8 hours') WHERE id=?`
+            ).bind(qid).run();
+            await answer('✅ 已產好，複製下面那則貼到 LINE 社群');
+            // ⚠️ 2026-09-11 修：原本寫死送去 THREAD.decide（面試通知確認，是
+            // 候選人決策用的主題，跟社群發文完全無關），顧問在那邊根本找不到。
+            // 改成回在「按確認」那個按鈕原本所在的同一個聊天室、同一個主題——
+            // 跟 Threads/LinkedIn 發布成功那則訊息的做法一致，不用另外猜地方。
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id,
+                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                reply_to_message_id: cq.message.message_id,
+                text: `📋 LINE 社群貼文已產好（${accLabel || '手動'}）\n` +
+                  `職缺：${row.job_slug}\n\n` +
+                  `⚠️ 這一則不會自動發出去，請自己複製貼到社群：\n` +
+                  `━━━━━━━━━━━━\n${row.draft}\n━━━━━━━━━━━━`,
+              }),
+            }).catch(() => {});
+            return;
+          }
+
+          if (!threadsToken || !threadsUserId) {
+            await answer('⚠️ Threads 金鑰還沒設定，先標記核准，不會真的發出去。', true);
+            await env.DB.prepare(`UPDATE social_post_queue SET status='approved' WHERE id=?`).bind(qid).run();
+            return;
+          }
+          try {
+            // ── LinkedIn ──
+            // 2026-08-19 加。LinkedIn 跟 Threads 差在三件事，所以不共用同一段：
+            //   ① 單則上限 3000 字，這個長度的招募文完全放得下，不用切串文
+            //   ② 沒有「回覆自己」的串接概念，窗口連結直接接在本文最後
+            //   ③ 發文是一次呼叫，沒有 Threads 那種「先建 container 再 publish」
+            if (platform === 'linkedin') {
+              // ⚠️ 一定要帶 q=<queue_id>：只有 c（顧問）+ j（職缺）的話，同一個人
+              // 發同一個缺發過多次時，/go/resolve 只能猜「最新那一篇」，舊貼文
+              // 帶來的點擊會全部被算到新貼文頭上。總點擊數是準的，但各篇排名不準。
+              const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
+              const body = `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
+              const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${threadsToken}`,
+                  'content-type': 'application/json',
+                  'x-restli-protocol-version': '2.0.0',
+                },
+                body: JSON.stringify({
+                  author: `urn:li:person:${threadsUserId}`,
+                  lifecycleState: 'PUBLISHED',
+                  specificContent: {
+                    'com.linkedin.ugc.ShareContent': {
+                      shareCommentary: { text: body.slice(0, 2900) },
+                      shareMediaCategory: 'NONE',
+                    },
+                  },
+                  visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' },
+                }),
+              });
+              const pd = await pr.json().catch(() => ({}));
+              const postUrn = pd.id || pr.headers.get('x-restli-id');
+              if (!pr.ok || !postUrn) {
+                throw new Error('LinkedIn 發文失敗：' + JSON.stringify(pd).slice(0, 300));
+              }
+              const permalink = `https://www.linkedin.com/feed/update/${postUrn}`;
+              await env.DB.prepare(
+                `UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`
+              ).bind(permalink, qid).run();
+              await answer('✅ 已經發到 LinkedIn 上了', true);
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: cq.message.chat.id,
+                  ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                  reply_to_message_id: cq.message.message_id,
+                  text: `✅ ${who} 已核准，已發到 LinkedIn\n${permalink}`,
+                }),
+              }).catch(() => {});
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+                  reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，已發到 LinkedIn`, callback_data: 'noop' }]] },
+                }),
+              }).catch(() => {});
+              return;
+            }
+
+            // 2026-08-14 改：Jacky 要的是「串文」——不是單則貼文，是主文
+            // 後面接一則自己回覆自己的貼文，最後一則固定放應徵了解窗口的
+            // LINE 連結。Threads 每一則都是「建立 container 拿 creation_id
+            // →threads_publish 才真的貼出去」兩段式；第二則要串在第一則
+            // 底下，靠 reply_to_id 帶第一則「已發布」的 id。
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            // ⚠️ 實測撞到「Media not found」：container 建立完不能馬上發布，
+            // Threads／Instagram 這類容器式發文 API 都一樣——container 是
+            // 非同步處理的，太快呼叫 publish 會抓不到還沒就緒的 container。
+            // 官方文件建議發布前等幾秒，這裡固定等 5 秒再 publish，
+            // 三則串文連續發也一樣，每一則都各自等。
+            const postOne = async (text, replyToId) => {
+              const params = { media_type: 'TEXT', text, access_token: threadsToken };
+              if (replyToId) params.reply_to_id = replyToId;
+              const createR = await fetch(
+                `https://graph.threads.net/v1.0/${threadsUserId}/threads?` + new URLSearchParams(params),
+                { method: 'POST' }
+              );
+              const created = await createR.json();
+              if (!createR.ok || !created.id) throw new Error('建立草稿失敗：' + JSON.stringify(created));
+
+              await sleep(5000);
+
+              const pubR = await fetch(
+                `https://graph.threads.net/v1.0/${threadsUserId}/threads_publish?` +
+                new URLSearchParams({ creation_id: created.id, access_token: threadsToken }),
+                { method: 'POST' }
+              );
+              const published = await pubR.json();
+              if (!pubR.ok || !published.id) throw new Error('發布失敗：' + JSON.stringify(published));
+              return published.id;
+            };
+
+            // ⚠️ 實測抓到：Threads 單則貼文上限 500 字，這個格式的招募文案
+            // （開場＋工作內容＋招募資訊＋收尾）常態性會超過，要自動切成
+            // 多則串接，不能整包當一則送出去——2026-08-14 真實測試撞到
+            // 「Param text must be at most 500 characters long」才發現。
+            // ⚠️ 2026-08-14 再改：原本逐「行」硬湊，切點很隨便，常常把
+            // 「招募資訊」那一整塊從中間切斷，讀起來支離破碎。這個文案格式
+            // 本身就是用空白行分段（開場／工作內容／招募資訊／收尾），改成
+            // 優先照這些段落切，一段一段湊，同一段裡的行不會被拆開；只有
+            // 單一段落本身就超過上限這種極端情況，才退回逐行硬切。
+            const splitForThreads = (text, maxLen = 480) => {
+              const paras = text.split(/\n\s*\n/); // 空白行＝段落邊界
+              const chunks = [];
+              let cur = '';
+              const flush = () => { if (cur) { chunks.push(cur); cur = ''; } };
+              for (const para of paras) {
+                const candidate = cur ? cur + '\n\n' + para : para;
+                if (candidate.length <= maxLen) { cur = candidate; continue; }
+                flush();
+                if (para.length <= maxLen) { cur = para; continue; }
+                // 單一段落本身就太長（極端情況）：退回逐行湊，行內不再硬切。
+                const lines = para.split('\n');
+                for (const line of lines) {
+                  const c2 = cur ? cur + '\n' + line : line;
+                  if (c2.length <= maxLen) { cur = c2; continue; }
+                  flush();
+                  if (line.length <= maxLen) { cur = line; continue; }
+                  for (let i = 0; i < line.length; i += maxLen) chunks.push(line.slice(i, i + maxLen));
+                }
+              }
+              flush();
+              return chunks;
+            };
+
+            const chunks = splitForThreads(row.draft);
+            let firstId = null, lastId = null;
+            for (const chunk of chunks) {
+              lastId = await postOne(chunk, lastId);
+              if (!firstId) firstId = lastId;
+            }
+            // 2026-09-03 改：純職缺貼文（topic_id 為空）不再自動加發連結回覆——
+            // Jacky 要求改成留言制 CTA（見 SKILL.md／style_prompts 的
+            // {{CTA_KEYWORD}} 機制），連結由發布端硬加等於把留言制架空。
+            // 話題類型（topic_id 有值）維持原行為不動，範圍只限「純職缺貼文」。
+            // 2026-09-04 加：DR 是唯一例外——這隻帳號的職缺文仍要放連結，
+            // 用 social_accounts.force_link_on_posts 這個帳號層級開關控制，
+            // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
+            if (row.topic_id || row.force_link_on_posts) {
+              // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
+              // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
+              // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
+              // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
+              // ⚠️ q=<queue_id> 一定要帶——沒帶的話同帳號同職缺發過多次時，
+              // 點擊只能猜最新那一篇，舊貼文的成效會被吃掉。
+              const goLink = row.account_id
+                ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`
+                : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
+              await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
+              await env.DB.prepare(`UPDATE social_post_queue SET has_external_link=1 WHERE id=?`).bind(qid).run();
+            }
+
+            // 拿第一則（主文）的公開連結存起來備查——顧問要留紀錄用。
+            let permalink = null;
+            try {
+              const linkR = await fetch(
+                `https://graph.threads.net/v1.0/${firstId}?` +
+                new URLSearchParams({ fields: 'permalink', access_token: threadsToken })
+              );
+              const linkD = await linkR.json();
+              permalink = linkD.permalink || null;
+            } catch { /* 查連結失敗不影響已經發出去這件事 */ }
+
+            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
+              .bind(permalink, qid).run();
+            await answer('✅ 已經發到 Threads 上了', true);
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id,
+                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+                reply_to_message_id: cq.message.message_id,
+                text: `✅ ${who} 已核准，已發到 Threads（串文兩則）` + (permalink ? `\n${permalink}` : '\n（連結查詢失敗，請自行到 Threads 上確認）'),
+              }),
+            }).catch(() => {});
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+                reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，已發到 Threads`, callback_data: 'noop' }]] },
+              }),
+            }).catch(() => {});
+          } catch (e) {
+            // 失敗要解鎖，不然這篇就卡在 posting 狀態，之後永遠按不動、也重發不了。
+            await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
+            await answer('❌ 發文失敗：' + String(e).slice(0, 150), true);
+            // ⚠️ 2026-08-19 改：原本寫死「Threads 發文失敗」，也沒帶是哪一則、哪個帳號。
+            // 加了 LinkedIn 之後這則通知會誤導——顧問看到「Threads 失敗」卻是
+            // LinkedIn 那則掛掉，會往錯的方向查。而且沒有 queue id 就無法回頭比對。
+            const transient = /is_transient|"code":\s*2|rate limit|try again/i.test(String(e));
+            await notify(env,
+              `⚠️ ${platform === 'linkedin' ? 'LinkedIn' : 'Threads'} 發文失敗`
+              + `\n職缺：${row.title}`
+              + `\n帳號：${accLabel || '（未指定）'}　·　排隊編號 #${qid}`
+              + (transient ? '\n\n🔄 對方系統回報這是**暫時性錯誤**，通常直接重按一次就會成功。'
+                           : '\n\n這不是暫時性錯誤，重按大概還是會失敗，可能要看金鑰或內容。')
+              + `\n\n${String(e).slice(0, 300)}`,
+              { message_thread_id: THREAD.system });
+          }
+        } else if (action === 'soc_skip') {
+          await env.DB.prepare(`UPDATE social_post_queue SET status='skipped' WHERE id=?`).bind(qid).run();
+          await answer('已標記不發這篇');
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+              reply_markup: { inline_keyboard: [[{ text: `❌ ${who} 決定不發這篇`, callback_data: 'noop' }]] },
+            }),
+          }).catch(() => {});
+        } else if (action === 'soc_regen') {
+          // 重新產一次交回本機腳本做（要重跑 claude），這裡只清狀態讓它下次
+          // 掃描時重新撿到，不在 Worker 裡呼叫 claude（同一個理由：本機
+          // claude CLI 帳號登入，Worker 連不到）。
+          await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, draft=NULL WHERE id=?`).bind(qid).run();
+          await answer('已清掉舊草稿，下次排程跑到時會重新產一份');
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+              reply_markup: { inline_keyboard: [[{ text: `🔄 ${who} 要求重新產一次`, callback_data: 'noop' }]] },
+            }),
+          }).catch(() => {});
+        } else {
+          await answer('未知的操作');
+        }
+        return;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -4692,6 +5160,11 @@ export default {
             const stage = STAGE_OK.has(String(it.stage || '').toUpperCase())
               ? String(it.stage).toUpperCase() : null;
             const noteTxt = (it.note || '') + `（${now.slice(0, 10)} ${who} 於群組回報）`;
+            // 2026-09-14 修：since 原本宣告在下面 if (stage) {} 區塊裡，但後面
+            // 「ONBOARDED 發報到日期確認卡」那段是另一個獨立的 if/else if 區塊，
+            // 看不到它，一 ONBOARDED 就直接 ReferenceError 炸掉整支寫入流程。
+            // 提升到跟 noteTxt 同一層（for 迴圈本體），兩個區塊才共用得到。
+            const since = it.date || now.slice(0, 10);
             // 有狀態變化才動 placements；純備註只留在 consultant_reports 裡。
             // ⚠️ 一位人選在同一個職缺只留一筆 placements，用 stage 往前推——
             //    每次插新的會讓漏斗把同一個人算好幾次
@@ -4702,7 +5175,6 @@ export default {
               // 進入保證期關懷（CARE_POINTS 邏輯要求 stage==='GUARANTEE'），
               // 所以這裡要落地成 stage='GUARANTEE' + onboard_date，不能照字面寫 'ONBOARDED'。
               const writeStage = stage === 'ONBOARDED' ? 'GUARANTEE' : stage;
-              const since = it.date || now.slice(0, 10);
               const onboardSql = stage === 'ONBOARDED' ? ', onboard_date = ?' : '';
               const exist = await env.DB.prepare(
                 `SELECT id FROM placements WHERE application_id = ? ORDER BY updated_at DESC LIMIT 1`
@@ -4928,370 +5400,12 @@ export default {
       }
 
       if (cq && cq.data && String(cq.data).startsWith('soc_')) {
-        const [action, qidRaw] = String(cq.data).split(':');
-        const qid = Number(qidRaw);
-        const answer = async (text, alert) => {
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
-          }).catch(() => {});
-        };
-        // ⚠️ 2026-08-18 改：原本「一個職缺對應一個發文狀態」直接存在 jobs 表
-        // 的單一欄位上，同一職缺換一個顧問排就會直接覆蓋前一個人排的——
-        // 真實案例撞到（顧問要讓四個人各自對同一個職缺發一篇）。改成一個
-        // 職缺可以對應多筆 social_post_queue 排隊紀錄，每筆各自獨立，
-        // 按鈕直接認排隊紀錄的 id，不會再互相蓋掉。
-        // ⚠️ 2026-09-03 改 LEFT JOIN：話題類型的排隊紀錄 job_slug 存的是
-        // 「💬 話題描述」文字，不是真職缺 slug，INNER JOIN 查不到會讓這一整段
-        // approve/regen/skip 全部誤判成「找不到這筆排隊紀錄」，三顆按鈕都按不動。
-        // COALESCE 讓 row.title 對職缺類型／話題類型都能正常顯示，不用動下面任何一處。
-        const row = await env.DB.prepare(
-          `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, COALESCE(j.title, q.job_slug) AS title,
-                  COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
-             FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
-             LEFT JOIN social_accounts sa ON sa.id = q.account_id WHERE q.id = ?`
-        ).bind(qid).first();
-        if (!row) { await answer('❌ 找不到這筆排隊紀錄（可能太舊或已被清除）'); return new Response('ok'); }
-        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+        await handleSocAction(env, cq);
+        return new Response('ok');
+      }
 
-        if (action === 'soc_approve') {
-          if (!row.draft) { await answer('❌ 這則沒有草稿內容，沒辦法發文'); return new Response('ok'); }
-
-          // 🚨 2026-08-27 加：草稿放太久就不准直接發。
-          // 職缺內容會變——BIM 的薪資 8/27 改成面議之後，8/21 產的那批草稿裡
-          // 還完整寫著「月薪 40,833–50,167（已含 2 個月年終攤提）」；
-          // 那時的按鈕還躺在 Telegram 裡，按下去就把已經撤下的內容公開發出去。
-          // 實測 45 筆待確認草稿有 20 筆含現在不能講的內容。
-          // 重產一次會重跑現行的所有過濾，比在這裡逐項列黑名單可靠。
-          const ageDays = row.requested_at
-            ? Math.floor((Date.now() - Date.parse(String(row.requested_at).replace(' ', 'T') + '+08:00')) / 86400000)
-            : 0;
-          if (ageDays >= 3) {
-            await env.DB.prepare(`UPDATE social_post_queue SET status='expired' WHERE id=?`).bind(row.id).run();
-            await answer(`❌ 這則草稿是 ${ageDays} 天前產的，職缺內容可能已經改過（薪資、客戶名稱等），不能直接發。請按「🔄 重新產一次」。`, true);
-            return new Response('ok');
-          }
-
-          // 🚨 客戶名稱稽核。產稿時已經擋過一次，但草稿是存下來的，
-          // 而客戶名單會新增（今天就補了台灣美光與帆宣兩筆）——
-          // 發出去那一刻用最新的名單再掃一次才算數。
-          const terms = await clientNameTerms(env);
-          const nameHits = hitsClientNames(row.draft, terms);
-          if (nameHits.length) {
-            await env.DB.prepare(`UPDATE social_post_queue SET status='blocked_compliance' WHERE id=?`).bind(row.id).run();
-            await answer(`🚫 這則出現客戶公司名稱「${nameHits.join('」「')}」，社群一律不提客戶名，已擋下。請按「🔄 重新產一次」。`, true);
-            return new Response('ok');
-          }
-
-          // 🚨 草稿沒填完就不准發。這是公開貼文，發出去才發現要自己去刪。
-          const ph = placeholderHits(row.draft);
-          if (ph.length) {
-            await answer(`❌ 這則草稿裡還有「${ph.join('」「')}」，沒填完不能發`, true);
-            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: cq.message.chat.id,
-                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
-                reply_to_message_id: cq.message.message_id,
-                text: `🚨 這則沒有發出去——草稿裡還有「${ph.join('」「')}」\n\n`
-                  + `這通常代表職缺資料缺了東西，模型就用佔位符先頂著。\n`
-                  + `請先把該職缺的欄位補齊，再按「🔄 重新產一次」。`,
-              }),
-            }).catch(() => {});
-            return new Response('ok');
-          }
-
-          // ⚠️ 2026-08-17 修：真實案例抓到同一則職缺連續發兩篇一模一樣的文——
-          // 這支發文流程每則貼文都要 sleep(5000) 等 container 就緒，一次審核
-          // 常常要跑 10~20 秒才回得了 Telegram，Telegram 覺得太久沒回應就會
-          // 重送同一個 callback_query，這支又沒有防重複機制，整套流程就跑兩次。
-          // 修法：進來第一件事就搶鎖（UPDATE ... WHERE status 不是
-          // posting/posted 才會生效），搶不到鎖代表已經在發或發過了，
-          // 直接短路擋掉，不再跑一次 Threads API。
-          const claim = await env.DB.prepare(
-            `UPDATE social_post_queue SET status='posting', posting_at=datetime('now','+8 hours') WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
-          ).bind(qid).run();
-          if (!claim.meta || !claim.meta.changes) {
-            await answer(row.status === 'posted' ? '✅ 這則已經發過了，沒有重複發' : '⏳ 正在發文中，請稍等，不要重複按', true);
-            return new Response('ok');
-          }
-          // 搶到鎖之後先回應 Telegram，避免它因為接下來 Threads API 那段
-          // 太慢而判定沒回應、又重送一次同一個按鈕事件。
-          await answer('⏳ 收到，發文中…');
-
-          // 2026-08-14 加：多顧問各自帳號——這則排隊紀錄如果在「一鍵發文」
-          // 頁面指定過帳號，就用 social_accounts 存的那組金鑰；沒指定的
-          // （例如排程自動掃到的舊職缺）退回 wrangler secret 那組（目前就是
-          // Jacky 自己的帳號），行為跟改之前一樣，不會突然發不出去。
-          let threadsToken = env.THREADS_ACCESS_TOKEN, threadsUserId = env.THREADS_USER_ID;
-          let platform = 'threads';   // 沒指定帳號的舊職缺一律當 Threads
-          let accLabel = '';
-          // 2026-08-18 加：串文最後那則「應徵了解窗口」原本寫死同一個 LINE 連結，
-          // 四位顧問各自發文卻都導去同一個人身上，候選人的來源就分不清是誰帶來的。
-          // 改成每個帳號各自的連結；沒指定帳號的舊職缺退回 Jacky 那組（跟金鑰退回邏輯一致）。
-          let lineLink = 'https://lin.ee/RR4nQqm';
-          if (row.account_id) {
-            const acc = await env.DB.prepare(
-              `SELECT access_token, platform_user_id, line_link, platform, label FROM social_accounts WHERE id = ? AND is_active = 1`
-            ).bind(row.account_id).first();
-            if (!acc) { await answer('❌ 指定的發文帳號找不到或已停用'); return new Response('ok'); }
-            threadsToken = acc.access_token; threadsUserId = acc.platform_user_id;
-            accLabel = acc.label || '';
-            if (acc.line_link) lineLink = acc.line_link;
-            platform = acc.platform || 'threads';
-          }
-          // ── LINE 社群：不自動發，產好稿交給人手動貼 ──
-          // 2026-08-21 Jacky 要求。LINE 社群沒有可以自動發文的 API
-          //（官方帳號的推播 API 是推給好友，不是發到社群），
-          // 所以這個管道的價值不在自動化，是在「版型固定、內容產好」——
-          // 顧問收到就直接複製貼上，不用每次自己重寫一遍。
-          // 按核准只代表「這篇可以用了」，不代表已經發出去。
-          if (platform === 'line_community') {
-            await env.DB.prepare(
-              `UPDATE social_post_queue SET status='ready_manual', posted_at=datetime('now','+8 hours') WHERE id=?`
-            ).bind(qid).run();
-            await answer('✅ 已產好，複製下面那則貼到 LINE 社群');
-            await notify(env,
-              `📋 LINE 社群貼文已產好（${accLabel || '手動'}）\n` +
-              `職缺：${row.job_slug}\n\n` +
-              `⚠️ 這一則不會自動發出去，請自己複製貼到社群：\n` +
-              `━━━━━━━━━━━━\n${row.draft}\n━━━━━━━━━━━━`,
-              { message_thread_id: THREAD.decide }).catch(() => {});
-            return new Response('ok');
-          }
-
-          if (!threadsToken || !threadsUserId) {
-            await answer('⚠️ Threads 金鑰還沒設定，先標記核准，不會真的發出去。', true);
-            await env.DB.prepare(`UPDATE social_post_queue SET status='approved' WHERE id=?`).bind(qid).run();
-            return new Response('ok');
-          }
-          try {
-            // ── LinkedIn ──
-            // 2026-08-19 加。LinkedIn 跟 Threads 差在三件事，所以不共用同一段：
-            //   ① 單則上限 3000 字，這個長度的招募文完全放得下，不用切串文
-            //   ② 沒有「回覆自己」的串接概念，窗口連結直接接在本文最後
-            //   ③ 發文是一次呼叫，沒有 Threads 那種「先建 container 再 publish」
-            if (platform === 'linkedin') {
-              // ⚠️ 一定要帶 q=<queue_id>：只有 c（顧問）+ j（職缺）的話，同一個人
-              // 發同一個缺發過多次時，/go/resolve 只能猜「最新那一篇」，舊貼文
-              // 帶來的點擊會全部被算到新貼文頭上。總點擊數是準的，但各篇排名不準。
-              const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
-              const body = `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
-              const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
-                method: 'POST',
-                headers: {
-                  authorization: `Bearer ${threadsToken}`,
-                  'content-type': 'application/json',
-                  'x-restli-protocol-version': '2.0.0',
-                },
-                body: JSON.stringify({
-                  author: `urn:li:person:${threadsUserId}`,
-                  lifecycleState: 'PUBLISHED',
-                  specificContent: {
-                    'com.linkedin.ugc.ShareContent': {
-                      shareCommentary: { text: body.slice(0, 2900) },
-                      shareMediaCategory: 'NONE',
-                    },
-                  },
-                  visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' },
-                }),
-              });
-              const pd = await pr.json().catch(() => ({}));
-              const postUrn = pd.id || pr.headers.get('x-restli-id');
-              if (!pr.ok || !postUrn) {
-                throw new Error('LinkedIn 發文失敗：' + JSON.stringify(pd).slice(0, 300));
-              }
-              const permalink = `https://www.linkedin.com/feed/update/${postUrn}`;
-              await env.DB.prepare(
-                `UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`
-              ).bind(permalink, qid).run();
-              await answer('✅ 已經發到 LinkedIn 上了', true);
-              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-                method: 'POST', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: cq.message.chat.id,
-                  ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
-                  reply_to_message_id: cq.message.message_id,
-                  text: `✅ ${who} 已核准，已發到 LinkedIn\n${permalink}`,
-                }),
-              }).catch(() => {});
-              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-                method: 'POST', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: cq.message.chat.id, message_id: cq.message.message_id,
-                  reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，已發到 LinkedIn`, callback_data: 'noop' }]] },
-                }),
-              }).catch(() => {});
-              return new Response('ok');
-            }
-
-            // 2026-08-14 改：Jacky 要的是「串文」——不是單則貼文，是主文
-            // 後面接一則自己回覆自己的貼文，最後一則固定放應徵了解窗口的
-            // LINE 連結。Threads 每一則都是「建立 container 拿 creation_id
-            // →threads_publish 才真的貼出去」兩段式；第二則要串在第一則
-            // 底下，靠 reply_to_id 帶第一則「已發布」的 id。
-            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-            // ⚠️ 實測撞到「Media not found」：container 建立完不能馬上發布，
-            // Threads／Instagram 這類容器式發文 API 都一樣——container 是
-            // 非同步處理的，太快呼叫 publish 會抓不到還沒就緒的 container。
-            // 官方文件建議發布前等幾秒，這裡固定等 5 秒再 publish，
-            // 三則串文連續發也一樣，每一則都各自等。
-            const postOne = async (text, replyToId) => {
-              const params = { media_type: 'TEXT', text, access_token: threadsToken };
-              if (replyToId) params.reply_to_id = replyToId;
-              const createR = await fetch(
-                `https://graph.threads.net/v1.0/${threadsUserId}/threads?` + new URLSearchParams(params),
-                { method: 'POST' }
-              );
-              const created = await createR.json();
-              if (!createR.ok || !created.id) throw new Error('建立草稿失敗：' + JSON.stringify(created));
-
-              await sleep(5000);
-
-              const pubR = await fetch(
-                `https://graph.threads.net/v1.0/${threadsUserId}/threads_publish?` +
-                new URLSearchParams({ creation_id: created.id, access_token: threadsToken }),
-                { method: 'POST' }
-              );
-              const published = await pubR.json();
-              if (!pubR.ok || !published.id) throw new Error('發布失敗：' + JSON.stringify(published));
-              return published.id;
-            };
-
-            // ⚠️ 實測抓到：Threads 單則貼文上限 500 字，這個格式的招募文案
-            // （開場＋工作內容＋招募資訊＋收尾）常態性會超過，要自動切成
-            // 多則串接，不能整包當一則送出去——2026-08-14 真實測試撞到
-            // 「Param text must be at most 500 characters long」才發現。
-            // ⚠️ 2026-08-14 再改：原本逐「行」硬湊，切點很隨便，常常把
-            // 「招募資訊」那一整塊從中間切斷，讀起來支離破碎。這個文案格式
-            // 本身就是用空白行分段（開場／工作內容／招募資訊／收尾），改成
-            // 優先照這些段落切，一段一段湊，同一段裡的行不會被拆開；只有
-            // 單一段落本身就超過上限這種極端情況，才退回逐行硬切。
-            const splitForThreads = (text, maxLen = 480) => {
-              const paras = text.split(/\n\s*\n/); // 空白行＝段落邊界
-              const chunks = [];
-              let cur = '';
-              const flush = () => { if (cur) { chunks.push(cur); cur = ''; } };
-              for (const para of paras) {
-                const candidate = cur ? cur + '\n\n' + para : para;
-                if (candidate.length <= maxLen) { cur = candidate; continue; }
-                flush();
-                if (para.length <= maxLen) { cur = para; continue; }
-                // 單一段落本身就太長（極端情況）：退回逐行湊，行內不再硬切。
-                const lines = para.split('\n');
-                for (const line of lines) {
-                  const c2 = cur ? cur + '\n' + line : line;
-                  if (c2.length <= maxLen) { cur = c2; continue; }
-                  flush();
-                  if (line.length <= maxLen) { cur = line; continue; }
-                  for (let i = 0; i < line.length; i += maxLen) chunks.push(line.slice(i, i + maxLen));
-                }
-              }
-              flush();
-              return chunks;
-            };
-
-            const chunks = splitForThreads(row.draft);
-            let firstId = null, lastId = null;
-            for (const chunk of chunks) {
-              lastId = await postOne(chunk, lastId);
-              if (!firstId) firstId = lastId;
-            }
-            // 2026-09-03 改：純職缺貼文（topic_id 為空）不再自動加發連結回覆——
-            // Jacky 要求改成留言制 CTA（見 SKILL.md／style_prompts 的
-            // {{CTA_KEYWORD}} 機制），連結由發布端硬加等於把留言制架空。
-            // 話題類型（topic_id 有值）維持原行為不動，範圍只限「純職缺貼文」。
-            // 2026-09-04 加：DR 是唯一例外——這隻帳號的職缺文仍要放連結，
-            // 用 social_accounts.force_link_on_posts 這個帳號層級開關控制，
-            // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
-            if (row.topic_id || row.force_link_on_posts) {
-              // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
-              // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
-              // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
-              // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
-              // ⚠️ q=<queue_id> 一定要帶——沒帶的話同帳號同職缺發過多次時，
-              // 點擊只能猜最新那一篇，舊貼文的成效會被吃掉。
-              const goLink = row.account_id
-                ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`
-                : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
-              await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
-              await env.DB.prepare(`UPDATE social_post_queue SET has_external_link=1 WHERE id=?`).bind(qid).run();
-            }
-
-            // 拿第一則（主文）的公開連結存起來備查——顧問要留紀錄用。
-            let permalink = null;
-            try {
-              const linkR = await fetch(
-                `https://graph.threads.net/v1.0/${firstId}?` +
-                new URLSearchParams({ fields: 'permalink', access_token: threadsToken })
-              );
-              const linkD = await linkR.json();
-              permalink = linkD.permalink || null;
-            } catch { /* 查連結失敗不影響已經發出去這件事 */ }
-
-            await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
-              .bind(permalink, qid).run();
-            await answer('✅ 已經發到 Threads 上了', true);
-            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: cq.message.chat.id,
-                ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
-                reply_to_message_id: cq.message.message_id,
-                text: `✅ ${who} 已核准，已發到 Threads（串文兩則）` + (permalink ? `\n${permalink}` : '\n（連結查詢失敗，請自行到 Threads 上確認）'),
-              }),
-            }).catch(() => {});
-            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: cq.message.chat.id, message_id: cq.message.message_id,
-                reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已核准，已發到 Threads`, callback_data: 'noop' }]] },
-              }),
-            }).catch(() => {});
-          } catch (e) {
-            // 失敗要解鎖，不然這篇就卡在 posting 狀態，之後永遠按不動、也重發不了。
-            await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
-            await answer('❌ 發文失敗：' + String(e).slice(0, 150), true);
-            // ⚠️ 2026-08-19 改：原本寫死「Threads 發文失敗」，也沒帶是哪一則、哪個帳號。
-            // 加了 LinkedIn 之後這則通知會誤導——顧問看到「Threads 失敗」卻是
-            // LinkedIn 那則掛掉，會往錯的方向查。而且沒有 queue id 就無法回頭比對。
-            const transient = /is_transient|"code":\s*2|rate limit|try again/i.test(String(e));
-            await notify(env,
-              `⚠️ ${platform === 'linkedin' ? 'LinkedIn' : 'Threads'} 發文失敗`
-              + `\n職缺：${row.title}`
-              + `\n帳號：${accLabel || '（未指定）'}　·　排隊編號 #${qid}`
-              + (transient ? '\n\n🔄 對方系統回報這是**暫時性錯誤**，通常直接重按一次就會成功。'
-                           : '\n\n這不是暫時性錯誤，重按大概還是會失敗，可能要看金鑰或內容。')
-              + `\n\n${String(e).slice(0, 300)}`,
-              { message_thread_id: THREAD.system });
-          }
-        } else if (action === 'soc_skip') {
-          await env.DB.prepare(`UPDATE social_post_queue SET status='skipped' WHERE id=?`).bind(qid).run();
-          await answer('已標記不發這篇');
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: cq.message.chat.id, message_id: cq.message.message_id,
-              reply_markup: { inline_keyboard: [[{ text: `❌ ${who} 決定不發這篇`, callback_data: 'noop' }]] },
-            }),
-          }).catch(() => {});
-        } else if (action === 'soc_regen') {
-          // 重新產一次交回本機腳本做（要重跑 claude），這裡只清狀態讓它下次
-          // 掃描時重新撿到，不在 Worker 裡呼叫 claude（同一個理由：本機
-          // claude CLI 帳號登入，Worker 連不到）。
-          await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, draft=NULL WHERE id=?`).bind(qid).run();
-          await answer('已清掉舊草稿，下次排程跑到時會重新產一份');
-          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: cq.message.chat.id, message_id: cq.message.message_id,
-              reply_markup: { inline_keyboard: [[{ text: `🔄 ${who} 要求重新產一次`, callback_data: 'noop' }]] },
-            }),
-          }).catch(() => {});
-        } else {
-          await answer('未知的操作');
-        }
+      if (cq && cq.data && String(cq.data).startsWith('art_')) {
+        await handleArticleAction(env, cq);
         return new Response('ok');
       }
 
@@ -5405,19 +5519,52 @@ export default {
         const exist = await env.DB.prepare(
           `SELECT id FROM social_accounts WHERE platform='linkedin' AND platform_user_id=?`
         ).bind(sub).first();
+
+        // 2026-09-11 加：顧問自助綁 LinkedIn 時打的 label 常常跟他 Threads
+        // 帳號的名字不一致（真實案例：Anna 打「Anna Wu」、Threads 那邊存的是
+        // 「Anna」；Dan 打「H Dan」、Threads 存「Dan H」）——這會導致「一鍵
+        // 發文」的顧問下拉選單把同一個人拆成兩筆看起來不相干的項目。
+        // 用「分詞後有沒有共同字」抓可能是同一人的既有帳號，抓到就沿用
+        // 那筆的 consultant_name，抓不到才用這次打的 label 當新的分組名。
+        const words = (s) => String(s || '').toLowerCase().split(/[\s\-–]+/).filter(Boolean);
+        const labelWords = words(label);
+        const { results: others } = await env.DB.prepare(
+          `SELECT DISTINCT consultant_name FROM social_accounts WHERE consultant_name IS NOT NULL`
+        ).all();
+        let consultantName = label;
+        for (const o of others || []) {
+          if (words(o.consultant_name).some((w) => labelWords.includes(w))) { consultantName = o.consultant_name; break; }
+        }
+
+        // 2026-09-14 加：顧問社群卡片（後台表單）會先建一筆「佔位」的 LinkedIn
+        // 卡片（platform_user_id 還是空的，因為那個時候還沒授權），存好風格
+        // 提示詞／LINE 連結／TG 主題。授權完成如果只用 platform_user_id 比對，
+        // 一定找不到這筆佔位資料，就會照舊插入一筆全新的，佔位那筆的設定
+        // 全部白填。這裡改成先找「同一個顧問、還沒授權過的佔位卡片」，
+        // 找到就補齊 token 資訊，不要另外新建。
+        const placeholder = exist ? null : await env.DB.prepare(
+          `SELECT id FROM social_accounts WHERE platform='linkedin' AND consultant_name=?
+             AND (platform_user_id IS NULL OR platform_user_id='') LIMIT 1`
+        ).bind(consultantName).first();
+
         if (exist) {
           await env.DB.prepare(
             `UPDATE social_accounts SET access_token=?, refresh_token=?, token_expires_at=?,
-                    label=?, is_active=1 WHERE id=?`
+                    label=?, consultant_name=?, is_active=1 WHERE id=?`
           ).bind(td.access_token, td.refresh_token || null, expAt,
-                 `${label} – LinkedIn`, exist.id).run();
+                 `${label} – LinkedIn`, consultantName, exist.id).run();
+        } else if (placeholder) {
+          await env.DB.prepare(
+            `UPDATE social_accounts SET platform_user_id=?, access_token=?, refresh_token=?,
+                    token_expires_at=?, is_active=1 WHERE id=?`
+          ).bind(sub, td.access_token, td.refresh_token || null, expAt, placeholder.id).run();
         } else {
           await env.DB.prepare(
             // created_at 是 NOT NULL 且沒有預設值——2026-08-19 第一次綁定就撞到
             `INSERT INTO social_accounts (platform, platform_user_id, access_token, refresh_token,
-                                          token_expires_at, label, is_active, created_at)
-             VALUES ('linkedin', ?, ?, ?, ?, ?, 1, datetime('now','+8 hours'))`
-          ).bind(sub, td.access_token, td.refresh_token || null, expAt, `${label} – LinkedIn`).run();
+                                          token_expires_at, label, consultant_name, is_active, created_at)
+             VALUES ('linkedin', ?, ?, ?, ?, ?, ?, 1, datetime('now','+8 hours'))`
+          ).bind(sub, td.access_token, td.refresh_token || null, expAt, `${label} – LinkedIn`, consultantName).run();
         }
 
         const hasRefresh = !!td.refresh_token;
@@ -5506,6 +5653,39 @@ export default {
     // 卻擠在同一個cron裡搶CPU／D1讀取量。程式碼在
     // ~/工作流程技能包/step1ne-social-worker/src/index.js，要改那4段邏輯要去那邊改，
     // 不要在這裡加回來。
+
+    // 2026-09-11 加：排程貼文「先核准、時間到才真的發」的第二段——顧問按確認
+    // 那一刻如果還沒到排定時間（見上面 handleSocAction 裡的攔截），會停在
+    // status='approved_scheduled'；這裡負責時間到了真的觸發發文。
+    // ⚠️ 這段刻意留在這支 Worker，沒有搬去 step1ne-social-worker：真正發文
+    // 用到的 TG_BOT_TOKEN／THREADS_ACCESS_TOKEN／handleSocAction() 都只在這裡，
+    // 搬過去要嘛重複存一份金鑰，要嘛跨 Worker 呼叫，兩個都不划算。
+    try {
+      const { results: dueApproved } = await env.DB.prepare(
+        `SELECT id, tg_message_id, tg_thread_id, approved_by FROM social_post_queue
+          WHERE status='approved_scheduled'
+            AND datetime(scheduled_at) <= datetime('now','+8 hours')
+          LIMIT 20`
+      ).all();
+      for (const r of dueApproved || []) {
+        // 重建一個假的 callback_query——handleSocAction() 只會用到這幾個欄位。
+        // answer() 會打一次 answerCallbackQuery，cq.id 是假的所以那次呼叫必失敗，
+        // 但那個 fetch 本來就包在 try/catch 裡，失敗不影響後面真正發文那段。
+        const fakeCq = {
+          id: `sched_${r.id}`,
+          data: `soc_approve:${r.id}`,
+          from: { username: r.approved_by || '排程' },
+          message: {
+            chat: { id: env.TG_CHAT_ID },
+            message_id: r.tg_message_id,
+            message_thread_id: r.tg_thread_id || undefined,
+          },
+        };
+        await handleSocAction(env, fakeCq);
+      }
+    } catch (e) {
+      await notify(env, `⚠️ 排程貼文到時間發布失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
+    }
 
     // 2026-08-13 加：阿財初審結束後的「1-1 顧問初審確認」，改成兩則不同時機的訊息
     // （Jacky 明確要求，不要用單一個「3 天」預設值）：

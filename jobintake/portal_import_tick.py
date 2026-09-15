@@ -24,7 +24,7 @@ Worker（Cloudflare）沒有能力可靠解析任意格式的 JD 文件——202
     python3 portal_import_tick.py           # 處理所有 pending 的匯入（單次）
     python3 portal_import_tick.py --loop     # 常駐輪詢（launchd 用 tick 模式即可，這個是備用）
 """
-import os, sys, json, uuid, subprocess, tempfile, base64, time, re, argparse, datetime
+import os, sys, json, uuid, subprocess, tempfile, base64, time, re, argparse, datetime, socket
 import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -330,7 +330,14 @@ def extract_json(text):
 def process_one(row):
     import_id = row['id']
     log(f'處理匯入 {import_id}（{row["source_type"]}）…')
-    D.d1(f"UPDATE portal_imports SET status='parsing' WHERE id={D.q(import_id)}")
+    # 2026-09-10 加：多裝置協作保護鎖——搶到才算你的，搶不到跳過，
+    # 避免兩台裝置同時處理同一筆匯入。
+    worker_id = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
+    claim = D.d1_raw(f"UPDATE portal_imports SET status='parsing', worker_id={D.q(worker_id)} "
+                      f"WHERE id={D.q(import_id)} AND status='pending'")
+    if not claim.get('meta', {}).get('changes'):
+        log(f'  {import_id} 已經被別台裝置搶走，跳過')
+        return
 
     if row['source_type'] == 'file':
         text, err = gather_text_from_files(import_id)
