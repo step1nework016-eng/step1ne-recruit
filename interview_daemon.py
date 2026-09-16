@@ -2357,6 +2357,18 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     # 額外產一份結構化 JSON 給後台視覺化／客戶版用。
     # 失敗就是 None → 存 NULL，純文字報告照存，不影響下面任何一步。
     report_json = report_to_json(report, ctx, name, app_id=app_id)
+    # ⚠️ 2026-09-16 修：report_to_json() 回傳的是**字串**（存進 D1 content_json
+    # 那一欄本來就要是字串），不是 dict——下面兩處原本直接對 report_json 呼叫
+    # .get()，等於對一個 JSON 字串呼叫 dict 的方法，一定會是
+    # 'str' object has no attribute 'get'，每一場只要有結構化報告就會觸發，
+    # 只是外層包了 try/except 把它吃掉、看起來「不影響交付」，但語言驗證那格
+    # 因此從來沒有真的成功過。這裡統一解析一次成 dict 給下面兩處共用。
+    try:
+        report_json_obj = json.loads(report_json) if report_json else {}
+        if not isinstance(report_json_obj, dict):
+            report_json_obj = {}
+    except Exception:
+        report_json_obj = {}
 
     # 2026-09-07 加：這是 lang_verified_at 唯一會被寫入的地方——之前整支
     # 系統只會「讀」這個欄位（收尾時拿來決定要不要跳警告），但完全沒有任何
@@ -2367,7 +2379,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     # report_json.language_verification（阿財自己在收尾產報告時填的欄位），
     # 不是看有沒有語音檔。
     try:
-        lv = (report_json or {}).get('language_verification') or {}
+        lv = report_json_obj.get('language_verification') or {}
         if lv.get('verdict') == '通過':
             d1(f"UPDATE applications SET lang_verified_at=datetime('now','+8 hours') WHERE id={q(app_id)}")
     except Exception as ex:
@@ -2412,7 +2424,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
             # report_json.language_verification，區分「不通過」（真的答不出來／
             # 迴避）跟「未測試」（那一題根本沒發生，故障/跳過/忘記問）是兩種
             # 完全不同的狀況，訊息要講清楚是哪一種，不要都講成「沒收到驗證紀錄」。
-            lv = (report_json or {}).get('language_verification') or {}
+            lv = report_json_obj.get('language_verification') or {}
             verdict = lv.get('verdict')
             if verdict == '不通過':
                 detail = (f'這場**有測**，但候選人{lang}回答不出來或明顯迴避'
