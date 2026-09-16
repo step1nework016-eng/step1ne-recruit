@@ -13,7 +13,7 @@
     python3 interview_daemon.py           # 常駐
     python3 interview_daemon.py --once    # 跑一輪就結束（測試用）
 """
-import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urllib.request
+import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urllib.request, urllib.error
 import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
 import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
 
@@ -747,30 +747,49 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
 def _resume_attachment(app_id):
     """履歷原檔的位元組內容。沒有檔案就回 (None, None)。
 
-    大檔案不是存在 content_b64，是切段存在 file_chunks——
-    2026-08-05 第一版漏了這段，有履歷的人被判成「沒有」。
+    ⚠️ 2026-09-16 修：這支原本直接查 D1 的 files.content_b64／file_chunks——
+    但 2026-09-03 履歷檔案已經改存 R2（見 step1ne-backoffice-worker 的
+    fileB64()，用 files.storage='r2' 判斷去哪裡拿），新上傳的履歷根本不會
+    寫進 content_b64／file_chunks 這兩欄，直接查表只會查到「檔案有 filename
+    紀錄、但內容是空的」，害有履歷的人被判成「沒有履歷檔」（陳旻婕那筆就是
+    這樣：resume_file_id 有值、files 表也有這筆 row，但 content_b64/chunks
+    都是空的）。改成呼叫 backoffice-worker 已經寫好、R2/D1 兩種來源都認得的
+    /admin/resume/:id，不要自己查表繞過那層判斷邏輯（跟 R2 遷移那次的教訓
+    「讀檔案一律呼叫 fileB64()，別自己查表」是同一件事，只是這裡是本機
+    Python 常駐程式連不到 Worker 裡的 fileB64()，改成打 HTTP 版本）。
     """
-    rows = d1(f"SELECT f.id AS fid, f.filename, f.content_b64, f.chunks FROM applications a "
-              f"JOIN files f ON f.id = a.resume_file_id WHERE a.id = {q(app_id)}")
-    if not rows:
+    tok = _admin_token()
+    if not tok:
+        log('找不到 RECRUIT_ADMIN_TOKEN，履歷下載不了')
         return None, None
-    f = rows[0]
-    b64 = f.get('content_b64')
-    if not b64 and f.get('chunks'):
-        seg = d1(f"SELECT b64 FROM file_chunks WHERE file_id = {q(f['fid'])} ORDER BY idx ASC")
-        b64 = ''.join(x['b64'] for x in seg)
-    if not b64:
-        return None, f.get('filename')
-    # 檔名是從瀏覽器上傳時帶進來的，中文常常是 percent-encoded
-    # （實際存到的是「%E5%91%A8%E6%89%BF%E7%B7%AF.pdf」）。
-    # 推到 Telegram 給人看的東西不該長這樣，解回中文。
-    fn = f.get('filename') or 'resume.pdf'
     try:
-        if '%' in fn:
-            fn = urllib.parse.unquote(fn)
-    except Exception:
-        pass
-    return base64.b64decode(b64), fn
+        req = urllib.request.Request(
+            f'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/resume/{app_id}',
+            headers={'authorization': f'Bearer {tok}', 'user-agent': 'step1ne-interview-daemon/1.0'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            content = r.read()
+            cd = r.headers.get('content-disposition') or ''
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, None
+        log(f'⚠️ {app_id} 履歷下載失敗：HTTP {e.code}')
+        return None, None
+    except Exception as e:
+        log(f'⚠️ {app_id} 履歷下載失敗：{e}')
+        return None, None
+    if not content:
+        return None, None
+    # content-disposition: attachment; filename="...（percent-encoded）"
+    fn = 'resume.pdf'
+    m = re.search(r'filename="?([^"]+)"?', cd)
+    if m:
+        fn = m.group(1)
+        try:
+            if '%' in fn:
+                fn = urllib.parse.unquote(fn)
+        except Exception:
+            pass
+    return content, fn
 
 
 def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
