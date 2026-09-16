@@ -1043,6 +1043,22 @@ def _fetch_static(app_id):
             static['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
     except Exception as e:
         log(f'⚠️ 專業題庫載入失敗（面談照常，只是少了專業段）：{e}')
+
+    # 2026-09-15 加（Jacky 交辦）：候選人常常同時投了不只一個職缺，之前阿財被問到
+    # 「另一個職缺」一律回「我這邊沒有相關資料」——不是真的沒有，是這支函式從沒
+    # 把「這個職缺以外的其他在辦職缺」讀進來過，阿財等於被關在單一職缺的資料裡。
+    # 只帶最基本、對外本來就會講的欄位（職稱／主要工作內容／地點／薪資的公開講法），
+    # 不帶 client_name／faq_notes／notes 這些——跨職缺簡答的用意是讓候選人知道
+    # 「有這個職缺、大概在做什麼」，細節跟客戶身分留給那個職缺實際負責的顧問，
+    # 不要因為這個新功能，變相把原本只在單一職缺 prompt 裡才會揭露的資訊全部攤開。
+    try:
+        cur_slug = static.get('job', {}).get('slug') or static.get('job_slug') or ''
+        oj = d1(f"SELECT slug, title, main_duties, locations, salary_note, service_line "
+                f"FROM jobs WHERE status='open' AND slug != {q(cur_slug)} "
+                f"ORDER BY created_at DESC LIMIT 40")
+        static['other_jobs'] = oj
+    except Exception as e:
+        log(f'⚠️ 其他在辦職缺清單載入失敗（面談照常，只是少了跨職缺簡答功能）：{e}')
     return static
 
 
@@ -1405,6 +1421,31 @@ def build_prompt(ctx, skill_md):
             lines.append(f'  （顧問備註，不要對候選人講）：{job["notes"]}')
     else:
         lines.append('  （這個職缺在 jobs 表裡沒有資料，公司相關問題一律說會由顧問說明）')
+
+    # 2026-09-15 加（Jacky 交辦）：候選人常同時投了不只一個職缺，問到「另一個職缺」
+    # 時，之前阿財只會說「我這邊沒有相關資料」——那不是誠實，是資訊真的沒進 prompt。
+    # 現在補進一份簡版清單，讓阿財可以簡單回答，但這場面談的主體還是目前這個職缺，
+    # 不要因為候選人問了別的職缺就整場改聊那個。
+    other_jobs = ctx.get('other_jobs') or []
+    if other_jobs:
+        cur_title = (job or {}).get('title') or app.get('job_title') or '這個職缺'
+        lines.append(f'\n【其他在辦職缺（簡答用，不是這場面談的主題）】')
+        lines.append(f'  這場對話是「{cur_title}」的面談，這個職缺永遠優先——不要因為候選人'
+                     '問了別的職缺就整場改聊那個，問完就要拉回目前這個職缺繼續往下問。')
+        lines.append('  🗣️ 候選人問到清單裡的其他職缺時，用這個句型回：'
+                     f'「目前這個對話是「{cur_title}」的面談，我們會先以這個為優先；'
+                     '不過您問的「（那個職缺）」如果有問題，我可以簡單回覆您喔」，'
+                     '然後用下面清單裡的資料簡短回答（職稱／主要工作內容／地點／薪資的公開講法），'
+                     '回完接一句「詳細的部分負責這個職缺的顧問會再跟您說明」，再把話題拉回目前這場。')
+        lines.append('  ⚠️ 只能講清單裡列出來的欄位。**不要講客戶公司名稱**——'
+                     '那個職缺的客戶身分不是你的資訊範圍，一律說「顧問會說明」。'
+                     '沒在清單裡的職缺（候選人講的名稱兜不起來），就照實說「這個我這邊查不到，'
+                     '幫您請顧問確認」，不要用猜的。')
+        for oj in other_jobs[:40]:
+            duties = (oj.get('main_duties') or '').replace('\n', ' ')[:100]
+            lines.append(f'  · {oj.get("title")}（{oj.get("locations") or "地點未提供"}）'
+                         f'{"：" + duties if duties else ""}'
+                         f'{"｜待遇：" + oj["salary_note"][:60] if oj.get("salary_note") else ""}')
 
     # 2026-08-20 加：候選人在應徵表單填的社群連結。
     # ⚠️ 阿財**看不到這些連結的內容**——它沒有瀏覽器，平台也擋外部抓取。
@@ -2385,12 +2426,68 @@ def timeout_close(app):
             _busy.discard(app_id)
 
 
+_notified_cross_job = set()  # (app_id, other_job_slug) 記憶體去重，daemon 重啟會重置，可接受
+
+# 中文標題裡太通用、任何職缺都可能出現的詞——這些不能拿來當「候選人是在講這個
+# 職缺」的證據，不然「我做過工程師」這種話會被誤判成在問某個特定職缺。
+_GENERIC_JOB_WORDS = {
+    '工程', '程師', '工程師', '經理', '理人', '主管', '專員', '員工', '顧問',
+    '職缺', '助理', '人員', '正職', '兼職', '派遣', '面談', '面試', '客服',
+}
+
+
+def _job_match_tokens(oj):
+    """把一個職缺拆成拿來跟候選人白話講法比對的關鍵詞——英數詞（BIM／PM）整詞比對，
+    中文用地點的 2-gram 滑動視窗（候選人常只講「銅鑼」不會講「苗栗縣銅鑼鄉」全名），
+    標題本身的中文也用 2-gram，但濾掉上面那份太通用的詞。"""
+    ascii_toks = {m.group().lower() for m in re.finditer(r'[A-Za-z0-9]{2,}', (oj.get('title') or '') + (oj.get('locations') or ''))}
+    cjk_toks = set()
+    for field in (oj.get('locations') or ''), (oj.get('title') or ''):
+        cjk = re.sub(r'[^一-鿿]', '', field)
+        for i in range(len(cjk) - 1):
+            g = cjk[i:i + 2]
+            if g not in _GENERIC_JOB_WORDS:
+                cjk_toks.add(g)
+    return ascii_toks, cjk_toks
+
+
+def _notify_cross_job_interest(app, ctx):
+    """候選人在面談裡問到別的在辦職缺——用關鍵字比對(標題／地點)判斷問的是哪一個，
+    確實命中才通知，不用阿財自己記得講（2026-08-13 徐振倫那次教訓：規則寫在提示詞裡，
+    靠 AI 自己每次都記得執行，長提示詞裡很容易被忘掉——這段是決定性的，改用固定程式碼判斷，
+    不靠 AI 自己記得。）只做通知，不擋面談、不影響阿財的回覆。"""
+    try:
+        conv = ctx.get('conversation') or []
+        cand_msgs = [m['content'] for m in conv if m.get('role') == 'candidate']
+        if not cand_msgs:
+            return
+        last = cand_msgs[-1]
+        last_lower = last.lower()
+        for oj in (ctx.get('other_jobs') or []):
+            ascii_toks, cjk_toks = _job_match_tokens(oj)
+            hit = any(t in last_lower for t in ascii_toks) or any(t in last for t in cjk_toks)
+            if hit:
+                key = (app['id'], oj.get('slug'))
+                if key in _notified_cross_job:
+                    return
+                _notified_cross_job.add(key)
+                tg(f'💬 {app["name"]} 面談中問到另一個職缺「{oj.get("title")}」\n'
+                   f'目前面談的是：{app.get("job_slug")}\n'
+                   f'候選人這句話：{last[:150]}\n'
+                   f'阿財已簡單回覆（職稱／地點／待遇），細節請這個職缺的負責顧問接手聯繫。',
+                   THREAD_DECIDE)
+                return
+    except Exception as e:
+        log(f'⚠️ 跨職缺興趣偵測失敗（不影響面談）：{e}')
+
+
 def handle(app):
     app_id, name = app['id'], app['name']
     rate_limited = False
     try:
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
+        _notify_cross_job_interest(app, ctx)
         talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
         _before_files = _snapshot_session_files()
         result = run_claude(talk_prompt)
