@@ -3506,6 +3506,7 @@ async function handleSocAction(env, cq) {
         // COALESCE 讓 row.title 對職缺類型／話題類型都能正常顯示，不用動下面任何一處。
         const row = await env.DB.prepare(
           `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, q.scheduled_at,
+                  q.approved_at,
                   COALESCE(j.title, q.job_slug) AS title,
                   COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
              FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
@@ -3881,8 +3882,20 @@ async function handleSocAction(env, cq) {
           // 重新產一次交回本機腳本做（要重跑 claude），這裡只清狀態讓它下次
           // 掃描時重新撿到，不在 Worker 裡呼叫 claude（同一個理由：本機
           // claude CLI 帳號登入，Worker 連不到）。
-          await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, draft=NULL WHERE id=?`).bind(qid).run();
-          await answer('已清掉舊草稿，下次排程跑到時會重新產一份');
+          // ⚠️ 2026-09-16 修：顧問常常快速選職缺/時間時順手按這顆——這本身沒問題，
+          // 但如果這篇之前已經按過「核准」排定時間（row.approved_at 有值），
+          // 舊版這裡只清 status/draft，approved_at 沒清掉：資料庫看起來像「已核准」，
+          // 但 scheduled() 的觸發條件認 status='approved_scheduled'，這裡已經被清成
+          // NULL，時間到了不會有任何動作——排程被默默取消，顧問完全不知道。
+          // 真實案例：資深職安衛工程師那篇，原訂 09-15 20:00 發，卡在 drafted 沒發。
+          // 修法：approved_at 一起清掉，這樣資料庫不會撒謊；只有「原本真的核准過」
+          // 才多講一句提醒，平常單純重產新草稿（從沒核准過）不會多跳出這句，
+          // 不打擾快速操作的正常流程。
+          const hadSchedule = !!row.approved_at;
+          await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, draft=NULL, approved_at=NULL WHERE id=?`).bind(qid).run();
+          await answer(hadSchedule
+            ? `已清掉舊草稿（這篇原本核准排定 ${row.scheduled_at || ''} 發布，這個排程現在取消了，新草稿出來要重新核准）`
+            : '已清掉舊草稿，下次排程跑到時會重新產一份');
           await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
