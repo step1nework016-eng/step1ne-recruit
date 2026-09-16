@@ -1051,9 +1051,18 @@ def _fetch_static(app_id):
     # 不帶 client_name／faq_notes／notes 這些——跨職缺簡答的用意是讓候選人知道
     # 「有這個職缺、大概在做什麼」，細節跟客戶身分留給那個職缺實際負責的顧問，
     # 不要因為這個新功能，變相把原本只在單一職缺 prompt 裡才會揭露的資訊全部攤開。
+    # ⚠️ 2026-09-16 加：Jacky 要求阿財不只能簡答，還要能在面談過程中主動判斷
+    # 「這個人可能更適合另一個職缺」，並具體講出符合/缺失哪幾項——這已經不是
+    # 「有這個職缺、大概在做什麼」的簡答等級，得看得到硬條件/技能要求才判斷得出來，
+    # 所以補上 must_skills／required_conditions／nice_to_have_skills／
+    # language_requirement／personality_traits／seniority。client_screen_conditions
+    # 刻意不帶——那是給用人單位/顧問看的內部篩選備註，不是要拿來跟候選人核對的
+    # 技能清單，帶進去容易講出不該講的客戶偏好。
     try:
         cur_slug = static.get('job', {}).get('slug') or static.get('job_slug') or ''
-        oj = d1(f"SELECT slug, title, main_duties, locations, salary_note, service_line "
+        oj = d1(f"SELECT slug, title, main_duties, locations, salary_note, service_line, "
+                f"seniority, must_skills, required_conditions, nice_to_have_skills, "
+                f"language_requirement, personality_traits "
                 f"FROM jobs WHERE status='open' AND slug != {q(cur_slug)} "
                 f"ORDER BY created_at DESC LIMIT 40")
         static['other_jobs'] = oj
@@ -1426,26 +1435,48 @@ def build_prompt(ctx, skill_md):
     # 時，之前阿財只會說「我這邊沒有相關資料」——那不是誠實，是資訊真的沒進 prompt。
     # 現在補進一份簡版清單，讓阿財可以簡單回答，但這場面談的主體還是目前這個職缺，
     # 不要因為候選人問了別的職缺就整場改聊那個。
+    # ⚠️ 2026-09-16 加（Jacky 交辦）：不只是被動簡答——阿財要能主動判斷「這個人可能
+    # 更適合別的職缺」，具體講出符合/缺失哪幾項，當面給候選人加值建議，類似阿福
+    # 履歷健檢那種「不只回答眼前這題，還幫你多想一步」的角色。這是**加分動作，
+    # 不是這場面談的義務**——不能為了做這件事，擠掉硬性條件、專業題庫這些原本
+    # 就一定要問完的東西，也不要每場都硬找一個職缺來講，沒有真的明顯符合就不用提。
     other_jobs = ctx.get('other_jobs') or []
     if other_jobs:
         cur_title = (job or {}).get('title') or app.get('job_title') or '這個職缺'
-        lines.append(f'\n【其他在辦職缺（簡答用，不是這場面談的主題）】')
-        lines.append(f'  這場對話是「{cur_title}」的面談，這個職缺永遠優先——不要因為候選人'
-                     '問了別的職缺就整場改聊那個，問完就要拉回目前這個職缺繼續往下問。')
-        lines.append('  🗣️ 候選人問到清單裡的其他職缺時，用這個句型回：'
+        lines.append(f'\n【其他在辦職缺——被動簡答＋主動加值建議兩種用法】')
+        lines.append(f'  這場對話是「{cur_title}」的面談，這個職缺永遠優先——不管是候選人問的、'
+                     '還是你自己主動提的其他職缺，聊完都要拉回目前這個職缺繼續往下問，'
+                     '不能讓硬性條件／專業題庫這些必問項因此漏問。')
+        lines.append('  ① 被動簡答：候選人問到清單裡的其他職缺時，用這個句型回：'
                      f'「目前這個對話是「{cur_title}」的面談，我們會先以這個為優先；'
                      '不過您問的「（那個職缺）」如果有問題，我可以簡單回覆您喔」，'
-                     '然後用下面清單裡的資料簡短回答（職稱／主要工作內容／地點／薪資的公開講法），'
-                     '回完接一句「詳細的部分負責這個職缺的顧問會再跟您說明」，再把話題拉回目前這場。')
-        lines.append('  ⚠️ 只能講清單裡列出來的欄位。**不要講客戶公司名稱**——'
-                     '那個職缺的客戶身分不是你的資訊範圍，一律說「顧問會說明」。'
-                     '沒在清單裡的職缺（候選人講的名稱兜不起來），就照實說「這個我這邊查不到，'
-                     '幫您請顧問確認」，不要用猜的。')
+                     '用下面清單資料簡短回答（職稱／主要工作內容／地點／薪資的公開講法），'
+                     '回完接一句「詳細的部分負責這個職缺的顧問會再跟您說明」，再拉回目前這場。'
+                     '**不要講客戶公司名稱**，一律說「顧問會說明」；查不到的職缺照實說查不到，不要用猜的。')
+        lines.append('  ② 主動加值建議：面談過程中，如果候選人講的經歷/技能跟清單裡某個'
+                     '職缺的 must_skills／required_conditions 明顯對得上（不是模糊感覺，是'
+                     '講得出具體是哪幾項符合），可以主動說「聽您這樣講，我們手上還有一個'
+                     '「（職缺名）」職缺，您在（具體符合項）這幾點滿吻合的，不過（具體缺失項，'
+                     '如果有的話）這部分可能要再確認——如果您有興趣，我可以請負責顧問也跟您'
+                     '介紹一下」，然後把話題拉回目前這場。**一場面談最多主動提一個**，'
+                     '不要清單裡每個看起來沾得上邊的都拿出來講，那會讓候選人覺得在亂槍打鳥。'
+                     '真的沒有明顯符合的，這場就不用主動提，不用硬湊。')
+        lines.append('  ⚠️ 不管哪一種用法，只能講清單裡列出來的欄位，仍然**不要講客戶公司名稱**。'
+                     '如果這場有做過②主動加值建議，請在輸出 JSON 的 note 欄位寫一句'
+                     '「推薦了（職缺名），符合：xxx，缺失：xxx」，讓顧問在報告裡看得到——'
+                     '不寫的話這段對話等於白做，顧問完全不會知道。')
         for oj in other_jobs[:40]:
             duties = (oj.get('main_duties') or '').replace('\n', ' ')[:100]
+            reqs = []
+            if oj.get('must_skills'): reqs.append('必要技能：' + str(oj['must_skills'])[:150])
+            if oj.get('required_conditions'): reqs.append('必要條件：' + str(oj['required_conditions'])[:150])
+            if oj.get('nice_to_have_skills'): reqs.append('加分項：' + str(oj['nice_to_have_skills'])[:150])
+            if oj.get('seniority'): reqs.append('職級：' + str(oj['seniority']))
             lines.append(f'  · {oj.get("title")}（{oj.get("locations") or "地點未提供"}）'
                          f'{"：" + duties if duties else ""}'
                          f'{"｜待遇：" + oj["salary_note"][:60] if oj.get("salary_note") else ""}')
+            if reqs:
+                lines.append('    ' + '；'.join(reqs))
 
     # 2026-08-20 加：候選人在應徵表單填的社群連結。
     # ⚠️ 阿財**看不到這些連結的內容**——它沒有瀏覽器，平台也擋外部抓取。
@@ -2239,12 +2270,22 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         '\n\n【履歷】這位候選人沒有可讀的履歷檔案，'
         '報告裡的經歷一律標「來源：口述」。')
 
+    # 2026-09-16 加（Jacky 交辦）：報告要補一段「其他推薦職缺」——不只看對話中
+    # 阿財有沒有當場提過（那個受限於時間跟話題自然度，不一定每個真符合的都會被
+    # 聊到），報告產生時用完整履歷＋逐字稿再看一次其他在辦職缺的清單，是比較
+    # 完整的第二次機會，兩者互補，不是只依賴其中一個。
+    other_jobs_block = ''
+    if ctx.get('other_jobs'):
+        other_jobs_block = ('\n\n【其他在辦職缺（給你判斷這位候選人適不適合，'
+            '不是候選人本次應徵的職缺）】\n'
+            + json.dumps(ctx['other_jobs'][:40], ensure_ascii=False, indent=1))
     prompt = (
         '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n\n'
         + skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block
+        + other_jobs_block
         + '\n\n【逐字稿】\n' + transcript
         + (('\n\n' + engagement_block(app_id)) if engagement_block(app_id) else '')
         + (('\n\n' + answer_timing(app_id)) if answer_timing(app_id) else '')
