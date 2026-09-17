@@ -23,3 +23,14 @@ CREATE TABLE IF NOT EXISTS line_bindings (
   updated_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_line_bindings_state ON line_bindings(state);
+
+-- ⚠️ 這欄不在原始 CREATE TABLE 裡，是後來用 wrangler d1 execute --remote 直接
+-- ALTER TABLE 加的，不會因為重跑這個檔案自動補上（IF NOT EXISTS 語法 D1 的
+-- ALTER TABLE ADD COLUMN 不支援，只能新機器初始化時手動照這份清單跑一次）：
+--   ALTER TABLE line_bindings ADD COLUMN source TEXT;          -- 2026-09 前某次加，校園徵才/社群貼文歸因用
+--
+-- 2026-09-16 LIFF 整合加，同樣用 ALTER TABLE 補（見 step1ne-public-worker 的
+-- POST /chat/:t/liff-bind）：
+--   ALTER TABLE line_bindings ADD COLUMN display_name TEXT;      -- LIFF liff.getProfile() 拿到的顯示名稱
+--   ALTER TABLE line_bindings ADD COLUMN picture_url TEXT;       -- LIFF liff.getProfile() 拿到的頭像網址
+--   ALTER TABLE line_bindings ADD COLUMN profile_synced_at TEXT; -- 上面兩欄最後一次同步的時間

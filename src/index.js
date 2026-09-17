@@ -1926,15 +1926,27 @@ async function doCallNote(env, b) {
   // 就是這個情境）。用 env.AI.toMarkdown 把附件先轉成文字再餵給同一支彙整，
   // 這樣拖檔案跟打字兩條路都能秒出重點；toMarkdown 認不得的格式或轉換失敗就
   // 放棄即時彙整（不擋主流程），本機排程那份完整報告一樣會照跑。
+  // ⚠️ 2026-09-17 補：env.AI.toMarkdown 官方支援清單沒有純文字（.txt）——
+  // PDF/DOCX/HTML/CSV/圖片都有，就是沒有 text/plain。顧問上傳逐字稿最自然的
+  // 格式就是 .txt，無腦丟給 toMarkdown 會被吃掉且不報錯（回傳空字串），跟
+  // step1ne-backoffice-worker 的 doCallNote() 是同一份函式複製過來的，同一個
+  // bug 要一起修，不要只改一邊。
   let textForAi = text;
   if (!textForAi && b.file_b64) {
+    const mime = (b.file_mime || '').toLowerCase();
+    const isPlainText = mime.startsWith('text/') || /\.(txt|md)$/i.test(b.file_name || '');
     try {
       const bytes = Uint8Array.from(atob(b.file_b64), (c) => c.charCodeAt(0));
-      const md = await env.AI.toMarkdown([
-        { name: b.file_name || 'upload', blob: new Blob([bytes], { type: b.file_mime || 'application/octet-stream' }) },
-      ]);
-      const extracted = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
-      if (extracted) textForAi = extracted;
+      if (isPlainText) {
+        const decoded = new TextDecoder('utf-8').decode(bytes).trim();
+        if (decoded) textForAi = decoded;
+      } else {
+        const md = await env.AI.toMarkdown([
+          { name: b.file_name || 'upload', blob: new Blob([bytes], { type: b.file_mime || 'application/octet-stream' }) },
+        ]);
+        const extracted = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+        if (extracted) textForAi = extracted;
+      }
     } catch (e) {
       textForAi = '';
     }
@@ -3133,11 +3145,26 @@ async function handleLineEvent(env, ev) {
     }
 
     const ids = matched.map((m) => m.id);
+
+    // ⚠️ 2026-09-17 補：三項文字驗證這條路徑，webhook 收到的是純文字訊息事件，
+    // 沒有 LIFF 那種 liff.getProfile() 可以直接拿頭像/顯示名稱——不補這段，
+    // 用這條舊流程綁定的人選在顧問後台／人選面談室永遠不會有頭像，會一直被
+    // 誤判成「顯示邏輯壞掉」（這個月已經抓過三次類似案例，這次查證後其實是
+    // 這條路徑本來就沒抓過大頭貼，不是排序或快取的問題）。用既有的
+    // GET /v2/bot/profile/:userId（跟 admin 逾期名單那支同款 fetch）補抓一次，
+    // 抓不到就留 NULL，不擋綁定本身成功。
+    let profDisplayName = null; let profPictureUrl = null;
+    try {
+      const prof = await fetch(`https://api.line.me/v2/bot/profile/${userId}`,
+        { headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` } });
+      if (prof.ok) { const pj = await prof.json(); profDisplayName = pj.displayName || null; profPictureUrl = pj.pictureUrl || null; }
+    } catch { /* 抓不到就留 NULL，前端一樣有姓名色塊當備援 */ }
+
     await env.DB.prepare(
       `UPDATE line_bindings SET state='bound', phone=?, email=?, application_ids=?, bound_at=?, updated_at=?,
-              pending_name=NULL, pending_email=NULL
+              pending_name=NULL, pending_email=NULL, display_name=COALESCE(?, display_name), picture_url=COALESCE(?, picture_url)
         WHERE line_user_id = ?`
-    ).bind(text, binding.pending_email, JSON.stringify(ids), now, now, userId).run();
+    ).bind(text, binding.pending_email, JSON.stringify(ids), now, now, profDisplayName, profPictureUrl, userId).run();
 
     // 配對紀錄要讓顧問在後台看得到，這裡先推一則 Telegram 通知——
     // 跟「顧問人選回報區」不是同一件事，放系統回報主題就好，不用麻煩顧問回應。
@@ -3939,6 +3966,27 @@ export default {
     // 這個Worker還活著——刪掉風險不明，成本又是0，兩邊都留一份最安全。
     if (p === '/health') return json(request, { ok: true });
 
+    // 2026-09-17 加：查進度 LIFF 頁（step1ne-stopgap-site/progress/）給已綁定的
+    // 候選人用——原本已綁定的人點進頁面只會看到「請回到 LINE 對話視窗再問一次」，
+    // 等於白開了這個網頁，Jacky 要求直接在網頁上顯示進度。跟 buildProgressMessages()
+    // （LINE 對話裡查進度）共用同一個 deriveApplicationProgress()，不要另外寫一套
+    // 判斷邏輯——不然候選人在網頁跟在 LINE 對話裡看到的文字之後會慢慢兜不起來。
+    if (p === '/progress-data' && request.method === 'GET') {
+      const lineUserId = (url.searchParams.get('userId') || '').trim();
+      if (!lineUserId) return json(request, { ok: false, error: '缺少 userId' }, 400);
+      const binding = await env.DB.prepare(
+        `SELECT application_ids FROM line_bindings WHERE line_user_id = ? AND state='bound'`
+      ).bind(lineUserId).first();
+      if (!binding) return json(request, { ok: true, bound: false, rows: [] });
+      const ids = safeJsonArray(binding.application_ids);
+      const rows = [];
+      for (const id of ids) {
+        const row = await deriveApplicationProgress(env, id);
+        if (row) rows.push(row);
+      }
+      return json(request, { ok: true, bound: true, rows });
+    }
+
     // ── 招募形式評估工具（enterprise.step1ne.com）──
     //
     // 前端是一個獨立的 Cloudflare Pages 專案（step1ne-enterprise），純靜態、
@@ -4425,6 +4473,14 @@ export default {
             if (sess.step === 'transcript' && (String(rm2.text || '').trim() || rm2.document)) {
               let transcriptText = String(rm2.text || '').trim();
               if (!transcriptText && rm2.document) {
+                // ⚠️ 2026-09-17 補：Telegram 客戶端貼超過訊息長度上限的文字會自動
+                // 轉成附件送出（通常是 mime_type=text/plain、檔名 message.txt），
+                // 這正是顧問貼長逐字稿最容易撞到的情況——但 env.AI.toMarkdown
+                // 官方支援清單沒有純文字，之前無腦全丟給它會轉出空字串，顧問只
+                // 會看到「這個檔案讀不出文字內容」，其實是系統不會處理純文字，
+                // 不是檔案真的壞掉。純文字不需要轉換，直接當 UTF-8 解碼。
+                const docMime = (rm2.document.mime_type || '').toLowerCase();
+                const isPlainText = docMime.startsWith('text/') || /\.(txt|md)$/i.test(rm2.document.file_name || '');
                 try {
                   const fr = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${rm2.document.file_id}`);
                   const fd = await fr.json();
@@ -4432,10 +4488,14 @@ export default {
                     const fileUrl = `https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${fd.result.file_path}`;
                     const fileResp = await fetch(fileUrl);
                     const buf = await fileResp.arrayBuffer();
-                    const md = await env.AI.toMarkdown([
-                      { name: rm2.document.file_name || 'upload', blob: new Blob([buf], { type: rm2.document.mime_type || 'application/octet-stream' }) },
-                    ]);
-                    transcriptText = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+                    if (isPlainText) {
+                      transcriptText = new TextDecoder('utf-8').decode(buf).trim();
+                    } else {
+                      const md = await env.AI.toMarkdown([
+                        { name: rm2.document.file_name || 'upload', blob: new Blob([buf], { type: rm2.document.mime_type || 'application/octet-stream' }) },
+                      ]);
+                      transcriptText = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+                    }
                   }
                 } catch (e) { transcriptText = ''; }
                 if (!transcriptText) {
@@ -5355,6 +5415,49 @@ export default {
           body: JSON.stringify({
             chat_id: cq.message.chat.id, message_id: cq.message.message_id,
             reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] },
+          }),
+        }).catch(() => {});
+        return new Response('ok');
+      }
+
+      // 2026-09-15 加：用人單位在 portal 上傳匯款證明後，顧問在 Telegram 直接按
+      // 「已收到／還沒收到」確認——跟顧問後台 /admin/billing-installments/confirm
+      // 是同一份邏輯（那支給人選卡片按鈕用），這裡直接寫同一張表，因為
+      // step1ne-recruit 跟 step1ne-backoffice-worker 共用同一個 D1，
+      // 不必為了一次確認動作特地跨 Worker 打 HTTP。
+      if (cq && cq.data && String(cq.data).startsWith('bill_')) {
+        const [action, instId] = String(cq.data).split(':');
+        const who = (cq.from && (cq.from.username || cq.from.first_name)) || '顧問';
+        const ans = async (t) => {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cq.id, text: t }),
+          }).catch(() => {});
+        };
+        const row = await env.DB.prepare(
+          `SELECT id, label, percent, confirmed_received FROM placement_billing_installments WHERE id=?`
+        ).bind(instId || '').first();
+        if (!row) { await ans('找不到這一期'); return new Response('ok'); }
+        if (row.confirmed_received) { await ans('這一期已經確認過了，如果按錯要去後台改'); return new Response('ok'); }
+        const received = action === 'bill_recv';
+        const now = nowTaipei();
+        await env.DB.prepare(
+          `UPDATE placement_billing_installments
+              SET confirmed_received=?, confirmed_at=?, confirmed_by=?,
+                  paid_at=CASE WHEN ?=1 THEN ? ELSE paid_at END,
+                  paid_by=CASE WHEN ?=1 THEN ? ELSE paid_by END,
+                  updated_at=?
+            WHERE id=?`
+        ).bind(received ? 'yes' : 'no', now, who, received ? 1 : 0, now, received ? 1 : 0, who, now, instId).run();
+        await ans(received ? '已標記收到' : '已標記還沒收到');
+        await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+            reply_markup: { inline_keyboard: [[{
+              text: received ? `✅ ${who} 確認已收到` : `❌ ${who} 標記還沒收到`,
+              callback_data: 'noop',
+            }]] },
           }),
         }).catch(() => {});
         return new Response('ok');

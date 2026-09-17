@@ -1,0 +1,116 @@
+{
+  "slug": "bim-engineer-tongluo",
+  "client_code": "TW-HONGCHANG-01",
+  "run_date": "2026-09-16",
+  "run_type": "INCREMENTAL_RUN_ARCHETYPE_RELOCK_AND_CALIBRATION",
+  "persistent_state": "LEDGER_LOADED_5_KNOWN_IDENTITIES (在職繪圖/CAD 個人貢獻者樣本池)；本輪未從空白重新搜尋",
+  "route": {
+    "primary_ecosystem": "ENG_CONSTRUCTION",
+    "secondary_ecosystem": null,
+    "seniority": "entry (無經驗線；實際可收樣本為 junior IC)",
+    "employment_mode": "permanent / onsite (苗栗銅鑼全實體，可調派苗栗台中)",
+    "evidence_mode": "role + project",
+    "overlays": ["SHIFT_OR_ATTENDANCE", "VOLUME_HIRING", "SCARCE_HIGH_TOUCH"]
+  },
+  "archetype_lock": {
+    "status": "ARCHETYPE_LOCKED",
+    "basis": "職缺專屬閘門 2026-08-26/27 顧問裁示 + Candidate Memory Ledger 既有 5 位已驗證樣本（不另補問，前提無歧義）",
+    "positive": [
+      "在職個人貢獻者：機電／空調／營造／機械體系的繪圖工程師、製圖工程師、CAD Engineer",
+      "具機電圖說判讀 + 2D/3D 繪圖工具任一（AutoCAD/SolidWorks/Inventor/Revit）",
+      "無 BIM/Revit 經驗亦可（Revit 由公司培訓，不得當入場門檻）",
+      "近兩年（2024 年度起）畢業之電機／機械（含冷凍空調與能源）／工業設計／土木／建築科系",
+      "苗栗、台中、中部與竹苗一帶在地或可長期到班者"
+    ],
+    "negative": [
+      "帆宣系統科技全體員工（要派單位，顧問裁示一律不接觸、不得作為擴張節點）",
+      "已具實際 BIM 經驗之在職 BIM 工程師（屬弘昌有經驗線，需求表尚未取得）",
+      "教授、負責人、創辦人、經理副理以上主管、講師顧問、資深技師、主任工程師",
+      "在學生（G1 畢業非在學）",
+      "Autodesk 生態圈講者池（律准案實測：系統性只產出副理以上與資深講師）"
+    ],
+    "maturity": "trainable IC；無 BIM 經驗可",
+    "visibility_ceiling": "EMERGING（低公開能見度個人貢獻者）",
+    "hard_gates_contact_after_confirmation": [
+      "G1 大學畢業（校名/科系/畢業年份必問，碩士客戶明文不考慮）",
+      "G2 苗栗銅鑼全實體到班",
+      "G3 不提供宿舍、僅 5,000 元/月租屋補助",
+      "G4 常態加班（平日20h/月、假日16h/月、旺季46h/月約半年）",
+      "G5 機車駕照、無塵室約2成工時、楊梅總部受訓1週、苗栗台中調派、保密條款",
+      "G6 職級：以無經驗為主"
+    ],
+    "salary_disclosure_rule": "兩份客戶文件矛盾未擇一，一律不報數字，只說『依學歷×學校層級×科系分級核定，實際數字由顧問確認』",
+    "prohibited_screening": "年齡、性別、婚育、國籍、身心障礙、宗教（就服法第5條）一律不得詢問、推算或評分"
+  },
+  "calibration_round_1": {
+    "query_classes": ["tw.linkedin.com/in X-ray：繪圖工程師 × 機電/空調/營造/機械/台中/苗栗", "公司登記資料交叉驗證（twincn/findcompany/info.technews）", "Cake 公開履歷"],
+    "samples": [
+      {"name": "陳文雍", "company": "科建聯合工程顧問有限公司（台北市內湖區，結構設計顧問）", "role": "繪圖工程師", "source_url": "https://tw.linkedin.com/in/wen-yong-chen-504b49129", "verdict": "MATCH", "reason": "IC 級繪圖工程師 + 工程顧問公司，與 Ledger 樣本同層級；地緣需確認（G2/G3），學歷科系公開不可查"},
+      {"name": "康康最", "company": "霖興機械工業股份有限公司（鍋爐製造）", "role": "繪圖工程師", "source_url": "https://tw.linkedin.com/in/%E5%BA%B7%E6%9C%80-%E5%BA%B7-21985a136", "verdict": "MATCH", "reason": "IC 級繪圖工程師 + 機械製造，科系順位②鄰近；地緣與學歷不可查"},
+      {"name": "林釗宏", "company": "上研機電股份有限公司（台中市南屯區精科八路，自動化/機器人）", "role": "工程師", "source_url": "https://tw.linkedin.com/in/%E9%87%97%E5%AE%8F-%E6%9E%97-9a2310ab", "verdict": "MISMATCH", "reason": "公開摘要顯示同公司年資約25年5個月 → 資深錯位，與無經驗線職級與薪資級距不符（G6）"},
+      {"name": "林哲弘", "company": "誼昌空調工程有限公司（新北三重，台中太平分公司）", "role": "未顯示", "source_url": "https://www.linkedin.com/in/%E6%9E%97-%E6%9E%97%E5%93%B2%E5%BC%98-823b8b126/", "verdict": "UNVERIFIED_SAME_NAME", "reason": "僅公司一個錨點、無職稱無地點；同名 LinkedIn 檔案至少 8 筆，不足身分解析門檻"},
+      {"name": "黃志忠", "company": "夢想動畫 Moonshine VFX（新北市）", "role": "專案企劃", "source_url": "https://www.cake.me/resumes/a9562845195", "verdict": "MISMATCH", "reason": "技能列有 AutoCAD/SolidWorks 但職涯為動畫後期製作 → 第一輪已記錄之『工具訊號錯位型』false positive 再現"}
+    ],
+    "result": "2_OF_5"
+  },
+  "calibration_round_2": {
+    "lock_revision": "收緊證據標準：搜尋摘要必須直接顯示 繪圖／製圖／CAD 之 IC 職稱，排除泛稱『工程師』",
+    "samples": [
+      {"name": "黃俊育", "company": "良貿工業股份有限公司（台中市后里區，機械零件/金屬加工）", "role": "製圖工程師", "source_url": "https://www.linkedin.com/in/%E4%BF%8A%E8%82%B2-%E9%BB%83-7371b4191/", "verdict": "MATCH", "reason": "IC 製圖工程師 + 台中后里（距銅鑼廠區最近的樣本，同時解 G2/G3）；學歷科系與職級深度不可查"},
+      {"name": "王汶鑫", "company": "本人自行匿名為『某某空調工程公司』", "role": "未顯示", "source_url": "https://www.linkedin.com/in/%E6%B1%B6%E9%91%AB-%E7%8E%8B-b827851a5/", "verdict": "UNCERTAIN", "reason": "空調工程 + 台中兩個弱錨點，但雇主經本人刻意遮蔽，現職無法對官方資料驗證"},
+      {"name": "劉至堅", "company": "普羅米修斯有限公司（桃園，2D 動畫製作）", "role": "負責人／創辦人（前職：奧村組營造 繪圖員約1年）", "source_url": "https://www.linkedin.com/in/%E8%87%B3%E5%A0%85-%E5%8A%89-928036109/", "verdict": "MISMATCH", "reason": "公司負責人 — G6 明列排除；現職為動畫業，繪圖經歷為舊證據"},
+      {"name": "梁志峰", "company": "新泉營造股份有限公司（義聯集團，高雄市）", "role": "機電主任工程師", "source_url": "https://tw.linkedin.com/in/%E5%BF%97%E5%B3%B0-%E6%A2%81-5b77ab120", "verdict": "MISMATCH", "reason": "主任工程師屬主管/資深層級（G6），且位於高雄，地緣不符"},
+      {"name": "Wei-Ting Chin", "company": "中鹿營造股份有限公司", "role": "工程師（鋼構/鋼筋/模板/混凝土現場）", "source_url": "https://www.linkedin.com/in/wei-ting-chin-99b60a117/", "verdict": "UNVERIFIED_SAME_NAME", "reason": "回查同名英拼檔案大量出現於半導體/軟體業，無法以第二錨點鎖定；且為現場施工非繪圖職"}
+    ],
+    "result": "1_OF_5"
+  },
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "false_positive_patterns": [
+    "(d) 資深/年資錯位型：X-ray 摘要只帶職稱不帶年資，年資一旦浮現即觸發 G6 淘汰（林釗宏、梁志峰）",
+    "(e) 負責人/創辦人型：繪圖背景者公開能見度最高的往往已自營或轉業（劉至堅）",
+    "(b) 工具訊號錯位型（第一輪已記錄，再現）：AutoCAD/SolidWorks 技能字串大量落在動畫、影視、半導體族群（黃志忠）",
+    "(f) 匿名雇主/同名無錨點型：中文 LinkedIn slug 與常見姓名使身分解析失敗（林哲弘、王汶鑫、陳鴻山、Wei-Ting Chin、x Rainbow）"
+  ],
+  "graph_expansion_attempted": [
+    {"anchor": "萬德營造有限公司（Ledger: Eliza chiang）", "result": "1 筆同公司檔案 陳鴻山，無職稱，錨點不足"},
+    {"anchor": "裕力機械股份有限公司（Ledger: Wu Zheng-Xun）", "result": "無公開個人檔案命中"},
+    {"anchor": "世久營造探勘工程（Ledger: CHIANG MENGLING）", "result": "無公開個人檔案命中"},
+    {"anchor": "允利實業 Yunlitek（Ledger: Chui Hung Chiu）", "result": "無公開個人檔案命中"},
+    {"anchor": "亞翔工程股份有限公司（Ledger: TzuMing Su）", "result": "無繪圖/空調 IC 個人檔案命中"}
+  ],
+  "dedup": {
+    "cross_source_duplicate": 0,
+    "unverified_same_name": 5,
+    "new_unique_raw_lead_promoted_to_pool": 0,
+    "note": "本輪所有具名線索均停在校準樣本階段，未寫入 candidates；Ledger 既有 5 位一次都未被重複建立"
+  },
+  "sources_attempted": {
+    "linkedin_public_xray": "約24 次查詢（繪圖工程師/製圖工程師/CAD/助理工程師 × 機電/空調/營造/機械/鋼構/模具/水電消防 × 台中/彰化/苗栗/新竹）",
+    "cake_public_resume": "2 次（1 筆命中即為 false positive）",
+    "company_registry_verification": "科建聯合、霖興機械、上研機電、誼昌空調、良貿工業、萬德營造、世久營造、允利實業",
+    "blocked_or_unusable": [
+      "tw.linkedin.com 個人頁 HTTP 999 / 註冊牆 — 依規則不得登入、不得繞過，職稱以外欄位（學歷、畢業年份、現居地）無法取得",
+      "帆宣系統科技 — 顧問裁示封鎖，未查詢、未擴張",
+      "Autodesk 生態圈講者池 — 沿用律准案封鎖"
+    ]
+  },
+  "contact_enrichment": "NOT_PERFORMED — 校準未通過，依 job-route-calibration-v1.md 不得深查聯絡資料",
+  "daily_status": "BLOCKED_ROUTE_CALIBRATION_FAILED",
+  "delta": {
+    "new_unique_identities": 0,
+    "new_qualified": 0,
+    "newly_verified_email": 0,
+    "new_email_ready": 0,
+    "new_dual_channel": 0,
+    "new_client_ready": 0
+  },
+  "auto_outreach_target_missed": true,
+  "next_actions": [
+    "把第三個結構性發現交顧問拍板：本案可被動搜尋到的『在職繪圖/CAD IC』族群中，公開證據只夠證明職稱與公司，證不出 G1 學歷與畢業年份、G2 現居地、G6 職級深淺 —— 這三項正是本案核薪與淘汰的決定性條件",
+    "建議把 Ledger 那 5 位的產出方式當成上限值來看：他們同樣缺學歷、年資、地點，送件前仍須逐一電訪確認，被動搜尋在本案只能產出『待電訪確認的名單』而非 Qualified",
+    "優先改走已啟動的主動管道：中華大學就輔組 03-5186150 謝小姐（已回覆待跟進）、朝陽科大校職處窗口（已索取）、聯合大學土木與防災 037-382362/382363（苗栗市，地緣最佳，僅電話）、育達科大智慧機電 037-651188#5131",
+    "續追 08/27 已轉向的提問：向系所要『已就業想轉換／想往 BIM 發展的系友』，這批人正是本輪校準中唯一出現 MATCH 的族群（在職繪圖 IC），但主動管道能同時取得學歷與意願，被動搜尋不能",
+    "向弘昌反映職缺競爭力問題（朝陽助教回覆：土木營建缺工、應屆生很快就業），此事比再跑一輪搜尋有價值",
+    "取得弘昌『有經驗人選用人需求表』後，重新評估被動搜尋通路是否應整批改掛有經驗線"
+  ]
+}

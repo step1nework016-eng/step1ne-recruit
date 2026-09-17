@@ -1,0 +1,71 @@
+{
+  "slug": "brand-social-video-editor-neihu",
+  "run_date": "2026-09-17",
+  "run_type": "INCREMENTAL_DAILY_RUN_CALIBRATION_ROUND_3",
+  "persistent_state": "LOADED - prior ledger brand-social-video-editor-neihu_20260916_calibration_failed.json (10 rejected identities, 2 failed calibration rounds)",
+  "prior_run_reference": "2026-09-16 ROUTE_CALIBRATION_FAILED (round1 0/5, round2 0/5); 3 open human checkpoints",
+  "route": {
+    "primary_ecosystem": "CREATIVE_CONTENT",
+    "secondary_ecosystem": "SALES_OPERATIONS",
+    "seniority": "mid",
+    "employment_mode": "permanent / onsite",
+    "evidence_mode": "portfolio + public-content",
+    "overlays": ["PORTFOLIO_REQUIRED", "SHIFT_OR_ATTENDANCE"],
+    "route_reconfirmed": "與 job-strategy-router.md 基準案例表『品牌社群影音編輯』該列一致；路由本身未被證偽，失敗點在來源生態而非 Route 選擇"
+  },
+  "lock_revision_round_3": {
+    "change": "依 JD 自身 nice_to_have_skills『廣告活動行銷公司任職經驗』屬 unambiguous prior context，正式將『廣告/活動行銷公司執行層影音內容人員』確認為正向原型（昨日 next_action 問題(1)由 JD 本文自行解答，不再需人類補問）",
+    "unchanged": "禁止類型、成熟度3-8年、知名度上限EMERGING-GROWING、40K/月內湖 recruitability 硬門檻均維持",
+    "retired_sources_from_prior_run": ["IOH", "只要有人案例報導", "4A創意獎名單", "MOTO7", "SUPERMOTO8", "Tasker專家頁", "藝廊/攝影工作室作品頁", "Behance(HTTP_403)"]
+  },
+  "calibration_round_3": {
+    "new_source_families_tested": [
+      {"family": "品牌小編職涯專訪（數位時代/Meet創業小聚）", "status": "SEARCHED_NOT_FOUND", "note": "文章為職能通論與企業案例（全聯、蝦皮），未具名執行層個人"},
+      {"family": "重機/車業品牌台灣總代理具名行銷人員", "status": "SEARCHED_NOT_FOUND", "note": "僅取得總代理公司名（海德生、太古鼎翰），無具名行銷/影音人員"},
+      {"family": "Medium/方格子 從業者職涯自述", "status": "SEARCHED_NOT_FOUND", "note": "命中工具教學文與招募頁，無符合原型之具名在職者"},
+      {"family": "社群影音講座/工作坊講者（雜誌公會、DMA、活動通）", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "講者系統性為營運長、共同創辦人、KOL、平台官方負責人"},
+      {"family": "職訓/產業人才投資 結訓學員名冊與作品", "status": "SEARCHED_NOT_FOUND", "note": "結訓名冊屬個資，未公開；無合法公開具名來源"},
+      {"family": "數位奇點獎/金投賞 個人 credit", "status": "PARTIAL", "note": "僅列代理商與作品，未列個人 credit；再度回流『只要有人』= CROSS_SOURCE_DUPLICATE"},
+      {"family": "company-first 官方團隊頁（品牌端行銷團隊）", "status": "SEARCHED_NOT_FOUND", "note": "台灣品牌端普遍不公開行銷團隊成員頁"},
+      {"family": "品牌官方頻道幕後具名團隊", "status": "SEARCHED_NOT_FOUND", "note": "反向證據：業界標準作法明確建議員工不以個人帳號經營品牌頻道，故無個人歸屬"}
+    ],
+    "samples": [
+      {"name": "李中琪", "company": "adHub 經緯廣告科技", "role": "營運長", "source_url": "https://www.magazine.org.tw/events/mbatevents/244", "verdict": "MISMATCH", "reason": "營運長職級＋20多年資歷，超出成熟度上限與40K薪資帶 — Lock 明列禁止類型"},
+      {"name": "馮鈺婷", "company": "錨點影音股份有限公司", "role": "共同創辦人兼業務企劃總監", "source_url": "https://www.magazine.org.tw/events/mbatevents/244", "verdict": "MISMATCH", "reason": "共同創辦人＋總監 — Lock 明列禁止類型；10年以上整合行銷，非執行層"},
+      {"name": "葉韋廷", "company": "重機改造工作室（負責人）", "role": "工作室負責人／改裝設計師", "source_url": "https://alive.businessweekly.com.tw/single/Index/ARTL006001965", "verdict": "MISMATCH", "reason": "工作室負責人且為 CELEBRITY 知名度層級（國際獲獎、與哈雷/BMW合作），超出知名度上限；職能為改裝設計非社群影音編輯"},
+      {"name": "李瑾潔／郭千儀", "company": "（行銷企劃書文件內團隊配置）", "role": "行銷企劃／美編設計暨社群經營", "source_url": "https://www.slideshare.net/slideshow/cpc-x-250838742/250838742", "verdict": "MISMATCH", "reason": "來源為 SlideShare 行銷企劃書簡報內之團隊配置，非可驗證之在職證據；無法取得姓名＋兩項一致錨點 → IDENTITY_UNRESOLVED，依規不得進入 Candidate Pool"},
+      {"name": "只要有人社群顧問（2025數位奇點獎得獎團隊）", "company": "只要有人社群顧問", "role": "得獎團隊（未列個人 credit）", "source_url": "https://www.dma.org.tw/newsPost/2701", "verdict": "CROSS_SOURCE_DUPLICATE", "reason": "該組織已於2026-09-16 ledger 中出現並判 MISMATCH（創辦人/企劃/投放）；本次來源僅列代理商與作品名，無新個人身分錨點 — 依增量規則不計為新線索"}
+    ],
+    "result": "0_OF_5_MATCH",
+    "false_positive_pattern": "第三輪以8個全新來源家族重測，仍系統性產出創辦人、營運長/總監、工作室負責人、名人層級改裝師、代理商團隊名與無法解析之文件內姓名。機制已取得反向證據：目標原型的產出掛在品牌官方帳號下且業界明確建議員工不以個人帳號經營品牌頻道，因此『品牌端正職一人包辦社群＋影音編輯』在合法公開非招募來源中結構性不留下可歸屬的具名個人證據。"
+  },
+  "cumulative_calibration": "3 rounds, 15 samples, 0 MATCH — 同一系統性路由/來源生態衝突，非單輪抽樣誤差",
+  "final_status": "ROUTE_CALIBRATION_FAILED",
+  "bulk_sourcing_executed": false,
+  "contact_enrichment_executed": false,
+  "new_unique_raw_leads": 0,
+  "evidence_updates": 1,
+  "cross_source_duplicates": 1,
+  "qualified": 0,
+  "verified_email": 0,
+  "email_ready": 0,
+  "dual_channel": 0,
+  "client_ready": 0,
+  "daily_success_level": "BLOCKED",
+  "auto_outreach_target_missed": true,
+  "source_memory_updates": [
+    {"source": "社群影音講座/工作坊講者名單", "new_state": "RETIRED_FOR_THIS_JD", "reason": "講者結構性為創辦人/高階，Qualified yield 0%"},
+    {"source": "數位奇點獎/金投賞", "new_state": "RETIRED_FOR_THIS_JD", "reason": "只列代理商，無個人 credit"},
+    {"source": "職訓結訓名冊", "new_state": "RETIRED_FOR_THIS_JD", "reason": "個資未公開，無合法路徑"},
+    {"source": "品牌小編職涯專訪", "new_state": "COOLDOWN_14D", "reason": "0 具名執行層產出"},
+    {"source": "company-first 品牌官方團隊頁", "new_state": "COOLDOWN_30D", "reason": "台灣品牌端普遍不公開行銷團隊成員"},
+    {"source": "Behance", "new_state": "HUMAN_ACTION_REQUIRED", "reason": "前次 HTTP_403，技術狀態保留，未改寫為 NOT_FOUND"}
+  ],
+  "open_human_checkpoints": [
+    {"id": 1, "question": "是否接受『代理商執行層／車媒體編輯』為可接受相鄰原型", "status": "RESOLVED_BY_JD", "note": "JD nice_to_have『廣告活動行銷公司任職經驗』已授權；第三輪已套用，仍未解決失敗"},
+    {"id": 2, "question": "40K/月薪資帶是否可上修以放寬成熟度上限", "status": "STILL_OPEN"},
+    {"id": 3, "question": "是否授權 Cake／104／LinkedIn 公開頁作為主要發現來源（將突破70%非招募來源規則，須標記 SOURCE_MIX_PARTIAL）", "status": "STILL_OPEN", "note": "依三輪證據，這是目前唯一可望改變結果的路徑：目標原型的公開痕跡集中在履歷/作品平台，而非一般公開網路"}
+  ],
+  "next_action": "停在校準閘門。建議優先取得 checkpoint 3 授權（Cake/104/LinkedIn 公開頁升為主要發現來源並標記 SOURCE_MIX_PARTIAL）；次選 checkpoint 2（上修薪資帶）。取得任一授權後可重跑第四輪5人校準，不得在未授權前批量搜尋。",
+  "compliance": "僅使用合法公開資訊；未登入任何平台、未繞過驗證碼或付費牆、未使用外洩資料庫、未猜測任何 Email 格式；未依就業服務法第5條保護項目（年齡、性別、婚姻、國籍、身心障礙、宗教等）進行篩選、排序或排除"
+}

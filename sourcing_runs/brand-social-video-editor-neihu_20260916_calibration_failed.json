@@ -1,0 +1,71 @@
+{
+  "slug": "brand-social-video-editor-neihu",
+  "run_date": "2026-09-16",
+  "run_type": "INITIAL_RUN_ARCHETYPE_LOCK_AND_CALIBRATION",
+  "persistent_state": "NO_PRIOR_LEDGER_FOR_THIS_SLUG - ledger created empty this run",
+  "route": {
+    "primary_ecosystem": "CREATIVE_CONTENT",
+    "secondary_ecosystem": "SALES_OPERATIONS",
+    "seniority": "mid",
+    "employment_mode": "permanent / onsite",
+    "evidence_mode": "portfolio + public-content",
+    "overlays": ["PORTFOLIO_REQUIRED", "SHIFT_OR_ATTENDANCE"]
+  },
+  "archetype_lock": {
+    "status": "ARCHETYPE_LOCKED",
+    "positive": [
+      "in-house 品牌社群小編兼剪輯（腳本→拍攝→剪輯一人包）",
+      "車業/戶外/運動用品品牌或代理商 marketing content specialist",
+      "廣告或數位行銷公司 social content producer / 影音企劃 執行層",
+      "機車/汽車媒體 編輯兼影音製作"
+    ],
+    "negative": [
+      "工作室負責人／創辦人", "製片公司老闆", "KOL／網紅本人",
+      "行銷總監／經理級", "純平面設計無影音", "純VFX後期專才", "無3年經驗者",
+      "純自由接案者（未驗證正職意願）", "藝術家／藝廊創作者"
+    ],
+    "maturity": "3-8 years",
+    "visibility_ceiling": "EMERGING to GROWING",
+    "hard_gate_recruitability": "月薪40K起（台北內湖）— 資深高薪或已商業化者一律不得算 MATCH",
+    "blocked_source_ecosystems": ["VIRTUAL_CREATOR_LIVESTREAM", "GAME_STREAMER", "ENG_CONSTRUCTION"]
+  },
+  "calibration_round_1": {
+    "samples": [
+      {"name": "陳禹瑞 (Yu Jui Chen)", "company": "奧美互動行銷", "role": "社群媒體企劃", "source_url": "https://ioh.tw/talks/%E5%A5%A7%E7%BE%8E%E4%BA%92%E5%8B%95%E8%A1%8C%E9%8A%B7%E7%A4%BE%E7%BE%A4%E5%AA%92%E9%AB%94%E4%BC%81%E5%8A%83-%E9%99%B3%E7%A6%B9%E7%91%9E-yu-jui-chen-tw-work", "verdict": "MISMATCH", "reason": "純社群策略/投放，無影音剪輯 hands-on 證據；2009大學+2013碩士 → 約13年資歷，40K不現實；IOH 講座為舊證據，現職未驗證"},
+      {"name": "陳思傑", "company": "只要有人社群顧問", "role": "執行長／創辦人", "source_url": "https://sunrisemedium.com/p/496/humanoid", "verdict": "MISMATCH", "reason": "創辦人／CEO — Archetype Lock 明列禁止類型"},
+      {"name": "黃亭維", "company": "只要有人社群顧問", "role": "行銷企劃", "source_url": "https://www.goskyai.com/tw-blog/humanoid", "verdict": "MISMATCH", "reason": "chatbot 專案行銷企劃署名，無短影片腳本/拍攝/剪輯能力證據；現職未驗證"},
+      {"name": "游佳偉", "company": "只要有人社群顧問", "role": "數位廣告投放", "source_url": "https://www.goskyai.com/tw-blog/humanoid", "verdict": "MISMATCH", "reason": "廣告投放職能，非內容製作"},
+      {"name": "Ziv（筆名）", "company": "SUPERMOTO8", "role": "資深編輯", "source_url": "https://www.supermoto8.com/articles/13604", "verdict": "UNCERTAIN", "reason": "僅有筆名，無法取得精確姓名＋兩項一致錨點 → IDENTITY_UNRESOLVED；自述為文字工作者/攝影學徒，影音剪輯能力未證實"}
+    ],
+    "result": "0_OF_5_MATCH",
+    "false_positive_pattern": "非招募公開來源（IOH職涯講座、代理商案例報導、獎項名單、車媒體署名）系統性產出的是代理商策略人員、創辦人、投放人員與筆名編輯，而非JD鎖定的『品牌端一人包辦社群＋影音正職』"
+  },
+  "calibration_round_2": {
+    "revised_lock_change": "放寬必要公開證據：由『品牌帳號產出』改為『本人具名自有作品集』；新增來源家族：個人作品集網站、Vimeo/YouTube個人頻道、公開接案專家頁",
+    "samples": [
+      {"name": "聖翔", "company": "Tasker 出任務（接案）", "role": "影片剪輯師／IG短影音", "source_url": "https://www.tasker.com.tw/expert/photography-performing", "verdict": "MISMATCH", "reason": "自由接案者，無正職意願證據；僅單名，無公司/地點/時間線錨點 → 身分未解析"},
+      {"name": "黃名毅", "company": "獨立影像工作者", "role": "影像工作者", "source_url": "https://smiletaiwan.cw.com.tw/article/6145", "verdict": "MISMATCH", "reason": "紀實／品牌攝影獨立工作者，非社群營運＋短影音編輯職能"},
+      {"name": "羅喬綾", "company": "尊彩藝術中心（藝廊）", "role": "藝術創作者", "source_url": "https://www.lianggallery.com/portfolio-view/%E7%BE%85%E5%96%AC%E7%B6%BE/", "verdict": "MISMATCH", "reason": "純藝術創作生態，與JD無關 — 來源汙染"},
+      {"name": "明室影像 創辦人（輔大影像傳播兼任教學）", "company": "明室影像", "role": "創辦人／講師", "source_url": "https://www.1imageart.com/photographer", "verdict": "MISMATCH", "reason": "創辦人＋講師 — Archetype Lock 明列禁止類型"},
+      {"name": "黑焦耳攝影工作室（無具名個人）", "company": "黑焦耳攝影工作室", "role": "工作室", "source_url": "https://www.staytrueimage.com/portfolio/%E5%BD%A2%E8%B1%A1%E7%85%A7/", "verdict": "MISMATCH", "reason": "組織頁，無具名個人 → 不得進入 Candidate Pool"}
+    ],
+    "result": "0_OF_5_MATCH",
+    "false_positive_pattern": "改走『本人具名作品』路徑後，公開具名者系統性偏向自由接案者、攝影工作室負責人與藝術創作者 — 全部落在 Lock 的禁止類型；目標原型（品牌端正職社群影音編輯）在台灣的產出掛在品牌帳號下，本人姓名不公開"
+  },
+  "final_status": "ROUTE_CALIBRATION_FAILED",
+  "bulk_sourcing_executed": false,
+  "contact_enrichment_executed": false,
+  "new_unique_raw_leads": 0,
+  "qualified": 0,
+  "verified_email": 0,
+  "daily_success_level": "BLOCKED",
+  "source_access_log": [
+    {"source": "Behance 搜尋頁", "status": "HTTP_403_BLOCKED", "note": "存取受阻，記錄技術狀態，未改寫為 NOT_FOUND"},
+    {"source": "MOTO7 官網", "status": "SEARCHED_NOT_FOUND", "note": "文章無署名、無作者頁"},
+    {"source": "4A創意獎 2025 得獎名單", "status": "PARTIAL", "note": "僅列作品與代理商，未列個人 credit"},
+    {"source": "SUPERMOTO8", "status": "FOUND_PEN_NAMES_ONLY", "note": "Ziv / Webber / KRJ — 均為筆名，身分無法解析"},
+    {"source": "IOH 開放個人經驗平台", "status": "FOUND_VERIFIED", "note": "具名但原型不符"}
+  ],
+  "next_action": "需人類決策：(1) 確認是否接受『代理商執行層／車媒體編輯』為可接受相鄰原型；(2) 確認40K薪資帶是否可上修以放寬成熟度上限；(3) 授權以 Cake／104／LinkedIn 公開頁作為主要發現來源（將突破70%非招募來源規則，須明確標記 SOURCE_MIX_PARTIAL）。三者任一確認後可重跑第三輪5人校準。",
+  "compliance": "僅使用合法公開資訊；未登入任何平台、未繞過驗證碼或付費牆、未使用外洩資料庫、未猜測Email格式；未依就服法第5條保護項目篩選或排序"
+}

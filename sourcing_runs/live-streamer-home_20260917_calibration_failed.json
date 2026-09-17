@@ -1,0 +1,59 @@
+{
+  "slug": "live-streamer-home",
+  "run_date": "2026-09-17",
+  "run_type": "FIRST_RUN_ROUTE_CALIBRATION",
+  "persistent_state": "NONE_FOUND_FIRST_RUN_FOR_THIS_SLUG",
+  "route": "REAL_PERSON_LIVESTREAM",
+  "secondary_route": "SALES_OPERATIONS",
+  "seniority": "mid",
+  "employment_mode": "contract",
+  "evidence_mode": "public-content",
+  "overlays": ["CONTRACTOR_ECONOMICS", "PUBLIC_PERSONA", "SHIFT_OR_ATTENDANCE", "VOLUME_HIRING", "OVERSEAS_RELOCATION"],
+  "archetype_lock": {
+    "status": "ARCHETYPE_LOCKED",
+    "basis": "job-strategy-router.md 基準案例 #2「在家真人抖音直播主」為無歧義先例，不需再補問",
+    "positive": ["新手/可培訓真人出鏡主播", "直播帶貨主播", "活動/展場主持人", "銷售展示人員", "歌唱/舞蹈/樂器等才藝表演者", "近期開始嘗試短影音或直播的素人創作者"],
+    "negative": ["VTuber/虛擬形象", "純遊戲實況主", "幕後直播企劃/腳本", "網紅經紀與創作者主管", "工作室/公司負責人", "已商業成名網紅與藝人", "組織聯絡窗口"],
+    "visibility_ceiling": "GROWING",
+    "blocked_source_ecosystems": ["VIRTUAL_CREATOR_LIVESTREAM", "GAME_STREAMER"],
+    "hard_gates_contact_after_confirmation": ["有效台胞證", "可收款外幣帳戶", "家中可開播網路與空間", "每日培訓時段配合度", "每月開播時數與天數", "接受承攬制"]
+  },
+  "calibration": {
+    "result": "ROUTE_CALIBRATION_FAILED",
+    "score": "3_OF_5",
+    "threshold": "4_OF_5",
+    "contact_deep_search_performed": false,
+    "samples": [
+      {"name": "潘潘（TIKTOK找潘潘 輕鬆又簡單）", "anchors": ["新北市板橋區", "TikTok 直播帶貨", "接案成交 1 件"], "visibility_tier": "EMERGING", "verdict": "MATCH", "source_url": "https://www.pro360.com.tw/nearme/livestream_selling"},
+      {"name": "庭嘉", "anchors": ["屏東縣枋寮鄉", "TikTok/IG/蝦皮直播帶貨", "3人工作室團隊約1.5-2年"], "visibility_tier": "GROWING", "verdict": "MISMATCH", "reason": "自營工作室負責人，屬鎖定的排除類型；已有自有營運，不合理接受他方承攬與每日培訓", "source_url": "https://www.pro360.com.tw/nearme/livestream_selling"},
+      {"name": "韋倪豪（超級帶貨王）", "anchors": ["高雄市鳳山區", "為廠商執行直播帶貨", "具主持與歌唱經驗"], "visibility_tier": "EMERGING", "verdict": "MATCH", "source_url": "https://www.pro360.com.tw/nearme/livestream_selling"},
+      {"name": "心怡（品牌直播主心怡）", "anchors": ["台北市內湖區", "12年行政背景2024年轉入直播帶貨", "報價1000元/場"], "visibility_tier": "EMERGING", "verdict": "MATCH", "source_url": "https://www.pro360.com.tw/nearme/livestream_selling"},
+      {"name": "李方瑜", "anchors": ["台中市梧棲區", "直播帶貨服務類別", "接案成交 1 件"], "visibility_tier": "EMERGING", "verdict": "UNCERTAIN", "reason": "公開頁僅有姓名、地點與服務類別，缺乏實際出鏡作品或平台證據，Qualified Gate 第2項 hands-on capability 無法成立", "source_url": "https://www.pro360.com.tw/nearme/livestream_selling"}
+    ],
+    "systemic_route_conflicts": [
+      "SOURCE_MIX_STRUCTURAL_FAIL：唯一能產出具名、現役、可解析身分之真人直播人選的來源是 PRO360（自稱全台最大接案外包網），屬招募/接案平台。其餘七類非招募來源實測皆不產出可用具名個人。擴張至10-20人將使近100%線索來自招募平台，違反70%非招募來源規則。",
+      "ARCHETYPE_POOL_INVERSION：JD 明示無經驗可並提供1對1帶播培訓，真正目標母體是尚無公開直播足跡的素人，定義上不留公開證據、無法以公開資訊搜尋法觸及；而公開查得到的人幾乎都已是有自有客戶與每場550-1500元報價的現役商業主播，轉入承攬+每日培訓+月時數約束屬向下調整，招募合理性低。可搜尋池與可招募池近乎互斥。",
+      "HARD_GATE_UNVERIFIABLE_AT_SCALE：台胞證與可收款外幣帳戶為缺一即無法作業的硬門檻，且完全無公開證據可查，所有人選只能永遠停在 CONTACT_AFTER_CONFIRMATION；本職缺同時帶 VOLUME_HIRING 性質，公開證據型 sourcing 並非正確工具。"
+    ]
+  },
+  "sources_attempted": [
+    {"family": "作品/內容/公開真人直播", "query_class": "台灣直播主/抖音帶貨/素人開播", "yield": "0 named individuals", "state": "LOW_YIELD"},
+    {"family": "新聞/深度報導", "url": "https://www.twreporter.org/a/live-streamer-china-dream", "yield": "6 named, 5 為化名不可解析身分，1 位(沈瑋琦)為已成名歌手超出知名度上限；報導時點約2019-2020，現職證據失效", "state": "RETIRED_FOR_THIS_JD"},
+    {"family": "接案/服務市集", "url": "https://www.pro360.com.tw/nearme/livestream_selling", "yield": "10 listings, 6 具名個人, 4 為公司/工作室", "state": "ACTIVE_BUT_RECRUITING_PLATFORM"},
+    {"family": "才藝/歌手/表演者", "query_class": "台灣歌手才藝接案直播", "yield": "僅名人級 YouTuber，全數超出知名度上限", "state": "LOW_YIELD"},
+    {"family": "活動/主持/展場", "query_class": "尾牙展場主持人接案", "yield": "僅經紀公司與公關公司組織頁，無可直接聯繫之具名個人", "state": "LOW_YIELD"},
+    {"family": "課程/職訓/培訓成果", "query_class": "直播主培訓班學員成果", "yield": "僅課程與機構頁，無具名學員", "state": "LOW_YIELD"},
+    {"family": "平台可行性查證", "url": "https://evansworlds.com/douyin-register/", "yield": "確認JD前提成立：2024起台胞證可於大陸抖音實名認證並開播，可自台灣家中開播", "state": "JD_PREMISE_VERIFIED"}
+  ],
+  "candidates": [],
+  "delta_metrics": {
+    "new_unique_raw_leads": 0,
+    "qualified": 0,
+    "verified_email": 0,
+    "email_ready": 0,
+    "dual_channel": 0,
+    "client_ready": 0
+  },
+  "run_status": "ROUTE_CALIBRATION_FAILED",
+  "next_action": "修正 Archetype Lock 後重跑第二輪5人校準；建議改以「可培訓鄰接才藝/銷售人才」為正向類型並改用非招募來源（公協會、才藝教室、展演單位、直播公會前成員），或改採 inbound 招募/廣告與 MCN 轉介策略取代公開證據 sourcing。"
+}
