@@ -19,6 +19,8 @@
     python3 ai_worker.py --once     # 跑一輪就結束（測試用）
 """
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -193,6 +195,18 @@ def prompt_call_prep(p):
 # 這裡不重新分類、不重新發明——有現成清單就直接拿來當 Hard Gate 候選，AI 只負責
 # 「這個候選人這一項現在是 matched/unknown/unmatched」；只有完全沒有任何現成清單時，
 # 才讓 AI 自己從職缺條件文字推導（對應規格 doc02 的判斷引擎，當備援用，不是預設路徑）。
+PRECALL_SCHEMA_VERSION = '1.0'
+
+# 2026-09-17 加：PRECALL v1.4 Production Contract（docs/07、08）正式收斂的
+# source.type 列舉，跟 _hard_gate_source() 回傳的 source_kind 一一對應——
+# 不要讓兩邊字串各寫各的，這裡是唯一的翻譯表。
+_GATE_SOURCE_TYPE = {
+    'hard_filters': 'jobs.hard_filters',
+    'must_check_items': 'jobs.must_check_items',
+    'derive_from_jd': 'ai_fallback',
+}
+
+
 def _hard_gate_source(job):
     hf = job.get('hard_filters') or []
     if hf:
@@ -204,6 +218,15 @@ def _hard_gate_source(job):
 
 
 def prompt_precall_card(p):
+    """2026-09-17 改版：照 PRECALL v1.4 Contract（docs/07_Production_AI_Output_
+    Schema／08_API_Adapter_Contract）收斂。⚠️ 這裡刻意**不要求 AI 產生**
+    schema_version／application_id／job_slug／generated_at／source_fingerprint／
+    job_context——07 文件第 52 節明講「AI 自己產生 application_id/job_slug」是
+    Contract 不合格條件，這些欄位由 Worker（呼叫端）跟這支的呼叫者
+    （precall-card 端點與 promote_writebacks()）組好，AI 只負責推導的那五塊：
+    candidate_summary／call_goal／hard_gates／must_ask_questions／ai_flags，
+    外加一小段 meta（generation_status／used_ai_fallback_for_gates／warnings）。
+    """
     job = p.get('job') or {}
     transcript = p.get('transcript')
     if isinstance(transcript, list):
@@ -212,21 +235,25 @@ def prompt_precall_card(p):
             for m in transcript
         )
     source_kind, source_list = _hard_gate_source(job)
+    source_type = _GATE_SOURCE_TYPE[source_kind]
     if source_kind == 'hard_filters':
         gate_source_block = (
             '這個職缺已經有顧問整理好的到職可行性清單（hard_filters），**直接拿這份清單當 Hard Gate 候選，'
-            '不要自己另外發明一套條件、不要增加清單以外的項目**：\n'
+            '不要自己另外發明一套條件、不要增加清單以外的項目**（每一項的 source.raw_label 要填清單裡的原文）：\n'
             + '\n'.join(f'- {g.get("label") if isinstance(g, dict) else g}' for g in source_list))
     elif source_kind == 'must_check_items':
         gate_source_block = (
             '這個職缺沒有 hard_filters，但有用人單位指定的必要評估項目（must_check_items），'
-            '拿這份清單當 Hard Gate 候選，**不要自己另外發明**：\n'
+            '拿這份清單當 Hard Gate 候選，**不要自己另外發明**（source.raw_label 填清單原文）：\n'
             + '\n'.join(f'- {g.get("label") if isinstance(g, dict) else g}' for g in source_list))
     else:
         gate_source_block = (
             '這個職缺沒有 hard_filters 也沒有 must_check_items，只能由你依下面的職缺條件文字'
-            '（required_conditions／client_screen_conditions）自己判斷 Hard Gate 是什麼——'
-            '哪些是「不符合就不能用」的硬條件，哪些只是加分。最多列 4 項，不要把整份 JD 都當硬條件。')
+            '（required_conditions／client_screen_conditions／main_duties）自己判斷 Hard Gate 是什麼——'
+            '哪些是「不符合就不能用」的硬條件（classification=hard_gate），哪些條件明確但職缺沒說是否'
+            '必要（classification=pending_gate），哪些只是加分（classification=nice_to_have，這種不會被'
+            '主畫面優先顯示）。最多列 4 項，不要把整份 JD 都當硬條件，每項 source.type 固定填'
+            f'"{source_type}"、source.raw_label 填你依據的那句原文。')
 
     return f"""你是獵頭顧問的助理，要幫顧問準備一份「電話前只要看這張卡就好」的 Pre-call Card。
 
@@ -234,19 +261,22 @@ def prompt_precall_card(p):
 
 只輸出 JSON（不要任何說明文字、不要用 markdown code block 包起來），格式如下：
 {{"candidate_summary":{{"name":"","current_role":"依履歷判斷，履歷沒寫清楚就寫「履歷未提及」","relevant_experience":"跟這個職缺相關的年資或經驗一句話","location_summary":"居住地／通勤或到職地點偏好一句話，沒有就寫「履歷未提及」"}},
-"call_goal":{{"decision":"這通電話要確認的唯一決定，20字內，例如「確認是否能推薦『BIM工程師』」","target_role":"職缺名稱，2-12字","validation_points":["這通電話要驗證的重點，2-3項，每項2-8字，優先順序：會直接影響能不能推薦的Hard Gate最優先"],"reason":"一句話說明為什麼要驗證這些，20-35字，格式類似「已知OO，但OO還不清楚」"}},
-"hard_gates":[{{"id":"gate1","label":"條件名稱","source":"{source_kind}","status":"matched|unknown|unmatched","evidence":"依履歷判斷的具體理由，看不出來就寫「履歷未提及」","verify_in_call":true}}],
-"must_ask_questions":[{{"id":"q1","question":"可以直接照著念的具體問題，15-35字","validates_gate_id":"對應上面哪個gate的id","why_it_matters":"為什麼問這題，一句話","backup_probe":"如果對方回答含糊，可以再追問的一句話"}}],
-"ai_flags":[{{"title":"風險標題，4-12字","risk_level":"high|medium|low","short_message":"15-35字說明疑點是什麼","recommended_action":"建議顧問在電話中怎麼處理，一句話"}}]}}
+"call_goal":{{"decision":"確認是否能推","target_role":"職缺名稱，2-12字","validation_points":[{{"gate_id":"gate_1","label":"這個Gate的簡短名稱"}}],"reason":"一句話說明為什麼要驗證這些，20-45字，格式類似「已知OO，但OO還不清楚」"}},
+"hard_gates":[{{"id":"gate_1","label":"條件名稱","category":"ability|experience|qualification|work_condition","classification":"hard_gate|nice_to_have|pending_gate","status":"matched|unknown|unmatched","source":{{"type":"{source_type}","raw_label":"你依據的原文"}},"evidence":"依履歷判斷的具體理由，看不出來就寫「履歷未提及」","verify_in_call":true,"priority":"high|medium|low"}}],
+"must_ask_questions":[{{"id":"q_1","question":"可以直接照著念的具體問題，15-45字","validates_gate_id":"對應上面某個gate的id，不能亂填不存在的id","why_it_matters":"為什麼問這題，一句話","backup_probe":"如果對方回答含糊可以再追問的一句話，沒有就填null","answer_type":"experience|responsibility|scale|condition|choice"}}],
+"ai_flags":[{{"id":"flag_1","title":"風險標題，4-12字","category":"hard_gate|evidence_gap|contradiction|work_condition|data_quality","risk_level":"high|medium|low","evidence_confidence":"high|medium|low","related_gate_id":"相關的gate id，跟data_quality類無關就填null","short_message":"15-45字說明疑點是什麼","recommended_action":{{"type":"verify_in_call|add_must_ask|add_backup_probe|request_data|ask_client","label":"建議顧問怎麼處理，4-8字"}},"show_on_main_card":true}}],
+"meta":{{"generation_status":"ready","used_ai_fallback_for_gates":{str(source_kind == 'derive_from_jd').lower()},"warnings":[]}}}}
 
 規則：
 - **hard_gates 最多 4 項，依優先順序排列：unknown 優先、其次 unmatched，明確 matched 的放最後**
 - {gate_source_block}
-- hard_gates[].status 只能是 matched（履歷有明確證據符合）／unknown（履歷看不出來，需要電話確認）／unmatched（履歷明確顯示不符合）三選一，不確定一律給 unknown，不要用猜的判 matched 或 unmatched
-- must_ask_questions **最多 3 題**，每一題都要對應到一個 hard_gates 的 id（用 validates_gate_id），優先問 unknown 的 gate；沒有夠格的疑點就不要硬湊滿 3 題，2 題也可以
-- ai_flags **最多 1 個，沒有真正值得提醒的疑點就給空陣列 []**——沒有疑點比硬湊一個疑點更好，不要為了讓 JSON 看起來完整就發明風險
+- hard_gates[].status 只能是 matched（履歷有明確證據符合）／unknown（履歷看不出來，需要電話確認）／unmatched（履歷明確顯示不符合）三選一，**不確定一律給 unknown，不要用猜的判 matched 或 unmatched**
+- call_goal.validation_points 只放 2-3 個 `{{gate_id,label}}` 物件，gate_id 一定要對應到 hard_gates 裡真的存在的 id，**不要只給字串陣列**
+- must_ask_questions **最多 3 題**，每一題都要對應到一個 hard_gates 的 id（用 validates_gate_id，不能填不存在的 id），優先問 unknown 的 gate；沒有夠格的疑點就不要硬湊滿 3 題，2 題也可以
+- ai_flags **最多 1 個 show_on_main_card:true，沒有真正值得提醒的疑點就給空陣列 []**——沒有疑點比硬湊一個疑點更好，不要為了讓 JSON 看起來完整就發明風險；**evidence_confidence 是 low 的時候，risk_level 不准給 high**（證據薄弱不能講得很篤定）
 - 只根據履歷（跟逐字稿，如果有）判斷，**不要編造履歷上沒有的經歷**
 - 不准用年齡／性別／婚育／國籍做任何判斷或提醒
+- 如果履歷內容明顯不足以判斷（太短、幾乎沒有跟職缺相關的經歷），meta.warnings 加一個字串 "resume_insufficient"，但還是照規則輸出其他欄位（unknown 為主）
 
 職缺：{job.get('title') or ''}
 必要條件：{job.get('required_conditions') or job.get('must_skills') or ''}
@@ -267,9 +297,11 @@ def prompt_precall_card(p):
 
 
 def _validate_precall_card(data):
-    """壞掉的形狀不要寫出去——寧可讓 process() 退回舊版 call_prep，也不要讓前端
-    拿到一個少了必要 key 的 JSON 而整個 Candidate Drawer 壞掉（PRECALL_PHASE1
-    spec 第 12 節：AI failure 不可以讓 Drawer crash，這裡是防線的第一層）。"""
+    """照 PRECALL v1.4 Contract（docs/07 第 51-52 節）驗證 AI 產出的那五塊
+    （candidate_summary／call_goal／hard_gates／must_ask_questions／ai_flags／
+    meta）。壞掉的形狀不要寫出去——寧可讓 process() 退回舊版 call_prep，
+    也不要讓前端拿到一個少了必要 key 的 JSON 而整個 Candidate Drawer 壞掉。
+    """
     if not isinstance(data, dict):
         raise ValueError('precall_card 不是物件')
     for key in ('candidate_summary', 'call_goal', 'hard_gates', 'must_ask_questions', 'ai_flags'):
@@ -278,6 +310,52 @@ def _validate_precall_card(data):
     if not isinstance(data['hard_gates'], list) or not isinstance(data['must_ask_questions'], list) \
             or not isinstance(data['ai_flags'], list):
         raise ValueError('precall_card 的陣列欄位型別不對')
+
+    gate_ids = set()
+    for g in data['hard_gates']:
+        if not isinstance(g, dict) or not g.get('id') or not g.get('label'):
+            raise ValueError('hard_gates 項目缺 id/label')
+        if not isinstance(g.get('source'), dict) or not g['source'].get('type'):
+            raise ValueError(f'hard_gate {g.get("id")} 缺 source')
+        if g.get('status') not in ('matched', 'unknown', 'unmatched'):
+            raise ValueError(f'hard_gate {g.get("id")} status 不合法：{g.get("status")}')
+        gate_ids.add(g['id'])
+
+    if len(data['must_ask_questions']) > 3:
+        raise ValueError('must_ask_questions 超過 3 題，AI 沒有照規則')
+    for q in data['must_ask_questions']:
+        if not isinstance(q, dict) or not q.get('question'):
+            raise ValueError('must_ask_questions 項目缺 question')
+        gid = q.get('validates_gate_id')
+        if not gid:
+            raise ValueError('must_ask_questions 項目缺 validates_gate_id')
+        if gid not in gate_ids:
+            raise ValueError(f'validates_gate_id={gid} 找不到對應的 hard_gate（Contract 第 25/52 節：不合格）')
+        # 08 文件第 25-26 節：舊欄位名稱一律視為不合格，逼 AI／舊 prompt 產出都要重來，
+        # 不接受這裡做 normalization——normalization 只允許在真正的 Adapter 相容層，
+        # 這支已經是統一輸出源頭，沒有相容舊格式的理由。
+        if 'validates' in q or 'validates_gate' in q or 'why' in q:
+            raise ValueError('must_ask_questions 出現已停用的舊欄位名稱（validates/validates_gate/why）')
+
+    flag_primary = 0
+    for f in data['ai_flags']:
+        if not isinstance(f, dict) or not f.get('title') or not f.get('short_message'):
+            raise ValueError('ai_flags 項目缺 title/short_message')
+        if f.get('risk_level') not in ('high', 'medium', 'low'):
+            raise ValueError(f'ai_flag risk_level 不合法：{f.get("risk_level")}')
+        if f.get('evidence_confidence') == 'low' and f.get('risk_level') == 'high':
+            raise ValueError('evidence_confidence=low 卻給 risk_level=high，違反 Contract 第 32 節')
+        if f.get('show_on_main_card'):
+            flag_primary += 1
+    if flag_primary > 1:
+        raise ValueError('ai_flags 超過 1 個 show_on_main_card=true，AI 沒有照規則')
+
+    vp = (data.get('call_goal') or {}).get('validation_points')
+    if vp is not None:
+        if not (2 <= len(vp) <= 3):
+            raise ValueError(f'call_goal.validation_points 應該是 2-3 個，實際 {len(vp)} 個')
+        if any(not isinstance(x, dict) or not x.get('gate_id') for x in vp):
+            raise ValueError('call_goal.validation_points 必須是 {gate_id,label} 物件陣列，不能是純字串')
     if len(data['must_ask_questions']) > 3:
         raise ValueError('must_ask_questions 超過 3 題，AI 沒有照規則')
     if len(data['ai_flags']) > 1:
@@ -480,6 +558,50 @@ HANDLERS = {
 }
 
 
+def _source_fingerprint(payload):
+    """PRECALL v1.4 Contract 08 第 16 節：職缺／履歷版本的指紋，GET 端點拿現在
+    的指紋跟卡片裡存的比對，不同就是 stale。這裡只負責算，用什麼欄位組成
+    指紋要跟 Worker 端（呼叫端）給的 payload 對得上，缺欄位就用空字串墊著
+    （不會讓這支掛掉，只是指紋比較不精準，缺欄位本身另有 warnings 記錄）。
+    """
+    raw = '|'.join([
+        str(payload.get('application_id') or ''),
+        str(payload.get('job_slug') or ''),
+        str(payload.get('job_updated_at') or ''),
+        str(payload.get('resume_identifier') or ''),
+        PRECALL_SCHEMA_VERSION,
+    ])
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _wrap_precall_card(ai_data, payload):
+    """把 AI 產出的那五塊（candidate_summary／call_goal／hard_gates／
+    must_ask_questions／ai_flags／meta 局部）包上 07 Contract 要求的 root
+    欄位。這些 root 欄位規則上不能由 AI 自己生（07 第 52 節），是這支呼叫端
+    自己組——application_id／job_slug／job_context 全部照 payload 裡 Worker
+    端已經查好的原文抄過來，不重新猜。
+    """
+    meta = dict(ai_data.get('meta') or {})
+    meta.setdefault('generation_status', 'ready')
+    meta.setdefault('used_ai_fallback_for_gates', False)
+    meta.setdefault('warnings', [])
+    meta['fallback_call_prep_available'] = True
+    return {
+        'schema_version': PRECALL_SCHEMA_VERSION,
+        'application_id': payload.get('application_id'),
+        'job_slug': payload.get('job_slug'),
+        'generated_at': datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S+08:00'),
+        'source_fingerprint': _source_fingerprint(payload),
+        'candidate_summary': ai_data.get('candidate_summary'),
+        'job_context': payload.get('job_context') or {},
+        'call_goal': ai_data.get('call_goal'),
+        'hard_gates': ai_data.get('hard_gates'),
+        'must_ask_questions': ai_data.get('must_ask_questions'),
+        'ai_flags': ai_data.get('ai_flags'),
+        'meta': meta,
+    }
+
+
 def process(job):
     kind = job['kind']
     if kind not in HANDLERS:
@@ -489,13 +611,15 @@ def process(job):
     # 2026-09-17 加：precall_card 失敗（JSON 格式不對、或格式對但少必要欄位）
     # 不能直接讓整個 job 標 failed 給顧問看到空白——退回舊版 prompt_call_prep
     # 重跑一次，寫回時用 _fallback 包一層讓 promote_writebacks() 知道要組成
-    # 舊格式的 MD 文字，前端偵測不到新格式就照舊渲染純文字版（PRECALL_PHASE1
-    # spec 第 11 節：新版失敗要能 fallback 到舊版 call_prep_md 體驗，不是報錯）。
+    # 舊格式的 MD 文字，前端偵測不到新格式就照舊渲染純文字版。成功的話包上
+    # 07 Contract 的 root 欄位（_wrap_precall_card）才回傳，不是原始 AI 輸出。
     if kind == 'precall_card':
         try:
             out = run_claude(builder(payload), want_json=True)
-            _validate_precall_card(json.loads(out))
-            return out
+            ai_data = json.loads(out)
+            _validate_precall_card(ai_data)
+            wrapped = _wrap_precall_card(ai_data, payload)
+            return json.dumps(wrapped, ensure_ascii=False)
         except Exception as e:
             log(f'  ⚠️ precall_card 結構化產生失敗，退回舊版 call_prep：{str(e)[:150]}')
             fb_out = run_claude(prompt_call_prep(payload), want_json=True)
