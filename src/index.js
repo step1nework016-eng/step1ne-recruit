@@ -3036,7 +3036,25 @@ async function handleLineEvent(env, ev) {
   }
 
   if (binding.state === 'bound') {
-    if (text !== LINE_PROGRESS_TRIGGER) return; // 已綁定的人閒聊不接手
+    // 2026-09-17 加：已綁定的人打的「不是查進度」的閒聊，以前直接無聲丟掉
+    // （顧問後台完全看不到）。現在是顧問人選面談室要接的真實對話來源——
+    // 存進 line_messages 讓顧問後台的聊天室分頁讀得到，同時仍然「不接手」
+    // （不自動回覆，不搶顧問要親自回的話），這兩件事不衝突：存起來只是
+    // 為了顯示，不代表系統要自動回應。
+    if (text !== LINE_PROGRESS_TRIGGER) {
+      if (text) {
+        const ids = safeJsonArray(binding.application_ids);
+        if (ids.length) {
+          try {
+            await env.DB.prepare(
+              `INSERT INTO line_messages (line_user_id, application_id, direction, content, created_at)
+               VALUES (?,?,?,?,?)`
+            ).bind(userId, ids[0], 'in', text, now).run();
+          } catch (e) { /* 存不進去不能擋掉候選人原本可能還會收到的其他自動回覆 */ }
+        }
+      }
+      return;
+    }
 
     // ⚠️ 2026-08-13 補：application_ids 原本只在「第一次綁定」那一刻掃過
     // 手機號碼算好、之後存死不再更新——如果他後來又應徵了別的職缺，
