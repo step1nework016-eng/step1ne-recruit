@@ -1037,6 +1037,24 @@ def tick():
     if not queue_rows:
         log('沒有需要產貼文的新職缺／話題')
         return
+    # 2026-09-17 加：Mac 跟 WSL2 兩台機器同時跑這支時發現的真實 race——
+    # 原本抓到 status IS NULL 的就直接處理，狀態要等處理完才寫回，中間完全
+    # 沒有「先搶下這筆」的手續。兩台輪詢時間點重疊，會各自抓到同一筆、
+    # 各自產一份草稿、各自推一則 TG 審核給顧問，顧問看到同一件事重複跳出來。
+    # 改成一次原子性 UPDATE 先搶（照阿財 interview_daemon.py 的 acquire_lock
+    # 同一套寫法），搶不到的（meta.changes==0）代表已經被另一台搶走，跳過即可。
+    claimed_rows = []
+    for qrow in queue_rows:
+        meta = d1_raw(
+            f"UPDATE social_post_queue SET status='claimed' "
+            f"WHERE id={qrow['id']} AND status IS NULL"
+        ).get('meta', {})
+        if meta.get('changes'):
+            claimed_rows.append(qrow)
+    queue_rows = claimed_rows
+    if not queue_rows:
+        log('待處理項目都被另一台機器搶走了，這輪跳過')
+        return
     jobs_cache = {}
     topics_cache = {}
     tasks = []
@@ -1051,6 +1069,7 @@ def tick():
             topic = topics_cache[tid]
             if not topic:
                 log(f'⚠️ 排隊紀錄 {qrow["id"]} 指向不存在的話題 id={tid}，跳過')
+                d1(f"UPDATE social_post_queue SET status=NULL WHERE id={qrow['id']}")
                 continue
             tasks.append((process_topic, qrow, topic))
             continue
@@ -1060,6 +1079,7 @@ def tick():
         job = jobs_cache[slug]
         if not job:
             log(f'⚠️ 排隊紀錄 {qrow["id"]} 指向不存在的職缺 {slug}，跳過')
+            d1(f"UPDATE social_post_queue SET status=NULL WHERE id={qrow['id']}")
             continue
         tasks.append((process_job, qrow, job))
 
@@ -1072,6 +1092,14 @@ def tick():
             fn(qrow, arg)
         except Exception as e:
             log(f'⚠️ 排隊紀錄 {qrow["id"]} 處理時出錯：{str(e)[:200]}')
+            # 處理途中出錯，狀態還停在 claimed（沒被 fn 自己改成別的值）就會
+            # 永遠卡住、以後任何一台機器都不會再撿到——退回 NULL 讓下一輪重試，
+            # 跟改鎖之前「出錯狀態沒變、下一輪自動重跑」的行為一致。
+            try:
+                d1(f"UPDATE social_post_queue SET status=NULL "
+                   f"WHERE id={qrow['id']} AND status='claimed'")
+            except Exception:
+                pass
 
     with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT, len(tasks))) as ex:
         list(ex.map(_run, tasks))

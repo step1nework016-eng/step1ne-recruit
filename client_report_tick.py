@@ -323,9 +323,21 @@ def tick():
     # INSERT時直接給pending，沒有ai_job_id，promote_synthesized()不會碰到），
     # 這條沒有AI生成內容可審，維持原樣直接產PDF。'confirmed' 才是走過人工
     # 確認關卡、Jacky在TG按了「✅確認，產出PDF」的那批。
-    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json, status FROM client_report_requests "
                 "WHERE status IN ('pending','confirmed') ORDER BY requested_at ASC LIMIT 5")
+    # 2026-09-17 加：跟 social_post_agent.py 同一個坑、同一套修法——原本抓到就直接
+    # 處理，中間沒有「先搶下這筆」的手續。搬去第二台機器同時跑之後，兩台輪詢時間點
+    # 重疊會各自抓到同一筆、各自產一次 PDF、各自推一次 TG，顧問會收到重複檔案。
+    # 改成處理前先做一次原子性 UPDATE 搶（status 從原本的值改成 'running'），
+    # 搶不到（changes==0）代表被另一台拿走，跳過；出錯的話 process_one() 自己會
+    # 把狀態改成 'error'（不是 'running'），不會卡死在搶下但沒處理完的狀態。
     for row in rows:
+        claim = D.d1_raw(
+            f"UPDATE client_report_requests SET status='running' "
+            f"WHERE id={D.q(row['id'])} AND status={D.q(row['status'])}"
+        ).get('meta', {})
+        if not claim.get('changes'):
+            continue
         try:
             process_one(row)
         except Exception as e:

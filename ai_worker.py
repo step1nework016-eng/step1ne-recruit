@@ -183,6 +183,107 @@ def prompt_call_prep(p):
 """
 
 
+# ── 2026-09-17 加：Pre-call Card（PRECALL_PHASE1_IMPLEMENTATION_REPORT.md）──
+# 結構化版的電洽前準備，跟上面的 prompt_call_prep 是同一個使用情境（顧問打電話
+# 前要看的東西），差別是輸出從自由 MD 換成規格要的 JSON 結構。刻意不共用同一個
+# HANDLER，因為 want_json 的驗證方式不同、且這支失敗要能退回舊版（見 process()）。
+#
+# Hard Gate 來源優先序（PRECALL_PHASE1 spec 第 1 節）：
+#   jobs.hard_filters > jobs.must_check_items > required_conditions/client_screen_conditions
+# 這裡不重新分類、不重新發明——有現成清單就直接拿來當 Hard Gate 候選，AI 只負責
+# 「這個候選人這一項現在是 matched/unknown/unmatched」；只有完全沒有任何現成清單時，
+# 才讓 AI 自己從職缺條件文字推導（對應規格 doc02 的判斷引擎，當備援用，不是預設路徑）。
+def _hard_gate_source(job):
+    hf = job.get('hard_filters') or []
+    if hf:
+        return 'hard_filters', hf
+    mc = job.get('must_check_items') or []
+    if mc:
+        return 'must_check_items', mc
+    return 'derive_from_jd', []
+
+
+def prompt_precall_card(p):
+    job = p.get('job') or {}
+    transcript = p.get('transcript')
+    if isinstance(transcript, list):
+        transcript = '\n'.join(
+            f"{(m.get('role') or '')}：{m.get('content') or ''}" if isinstance(m, dict) else str(m)
+            for m in transcript
+        )
+    source_kind, source_list = _hard_gate_source(job)
+    if source_kind == 'hard_filters':
+        gate_source_block = (
+            '這個職缺已經有顧問整理好的到職可行性清單（hard_filters），**直接拿這份清單當 Hard Gate 候選，'
+            '不要自己另外發明一套條件、不要增加清單以外的項目**：\n'
+            + '\n'.join(f'- {g.get("label") if isinstance(g, dict) else g}' for g in source_list))
+    elif source_kind == 'must_check_items':
+        gate_source_block = (
+            '這個職缺沒有 hard_filters，但有用人單位指定的必要評估項目（must_check_items），'
+            '拿這份清單當 Hard Gate 候選，**不要自己另外發明**：\n'
+            + '\n'.join(f'- {g.get("label") if isinstance(g, dict) else g}' for g in source_list))
+    else:
+        gate_source_block = (
+            '這個職缺沒有 hard_filters 也沒有 must_check_items，只能由你依下面的職缺條件文字'
+            '（required_conditions／client_screen_conditions）自己判斷 Hard Gate 是什麼——'
+            '哪些是「不符合就不能用」的硬條件，哪些只是加分。最多列 4 項，不要把整份 JD 都當硬條件。')
+
+    return f"""你是獵頭顧問的助理，要幫顧問準備一份「電話前只要看這張卡就好」的 Pre-call Card。
+
+{TERM_FIX}
+
+只輸出 JSON（不要任何說明文字、不要用 markdown code block 包起來），格式如下：
+{{"candidate_summary":{{"name":"","current_role":"依履歷判斷，履歷沒寫清楚就寫「履歷未提及」","relevant_experience":"跟這個職缺相關的年資或經驗一句話","location_summary":"居住地／通勤或到職地點偏好一句話，沒有就寫「履歷未提及」"}},
+"call_goal":{{"decision":"這通電話要確認的唯一決定，20字內，例如「確認是否能推薦『BIM工程師』」","target_role":"職缺名稱，2-12字","validation_points":["這通電話要驗證的重點，2-3項，每項2-8字，優先順序：會直接影響能不能推薦的Hard Gate最優先"],"reason":"一句話說明為什麼要驗證這些，20-35字，格式類似「已知OO，但OO還不清楚」"}},
+"hard_gates":[{{"id":"gate1","label":"條件名稱","source":"{source_kind}","status":"matched|unknown|unmatched","evidence":"依履歷判斷的具體理由，看不出來就寫「履歷未提及」","verify_in_call":true}}],
+"must_ask_questions":[{{"id":"q1","question":"可以直接照著念的具體問題，15-35字","validates_gate_id":"對應上面哪個gate的id","why_it_matters":"為什麼問這題，一句話","backup_probe":"如果對方回答含糊，可以再追問的一句話"}}],
+"ai_flags":[{{"title":"風險標題，4-12字","risk_level":"high|medium|low","short_message":"15-35字說明疑點是什麼","recommended_action":"建議顧問在電話中怎麼處理，一句話"}}]}}
+
+規則：
+- **hard_gates 最多 4 項，依優先順序排列：unknown 優先、其次 unmatched，明確 matched 的放最後**
+- {gate_source_block}
+- hard_gates[].status 只能是 matched（履歷有明確證據符合）／unknown（履歷看不出來，需要電話確認）／unmatched（履歷明確顯示不符合）三選一，不確定一律給 unknown，不要用猜的判 matched 或 unmatched
+- must_ask_questions **最多 3 題**，每一題都要對應到一個 hard_gates 的 id（用 validates_gate_id），優先問 unknown 的 gate；沒有夠格的疑點就不要硬湊滿 3 題，2 題也可以
+- ai_flags **最多 1 個，沒有真正值得提醒的疑點就給空陣列 []**——沒有疑點比硬湊一個疑點更好，不要為了讓 JSON 看起來完整就發明風險
+- 只根據履歷（跟逐字稿，如果有）判斷，**不要編造履歷上沒有的經歷**
+- 不准用年齡／性別／婚育／國籍做任何判斷或提醒
+
+職缺：{job.get('title') or ''}
+必要條件：{job.get('required_conditions') or job.get('must_skills') or ''}
+用人單位篩選重點：{job.get('client_screen_conditions') or ''}
+主要工作：{job.get('main_duties') or ''}
+加分項目：{job.get('nice_to_have_skills') or ''}
+薪資：{job.get('salary_min') or ''}-{job.get('salary_max') or ''} {job.get('salary_unit') or ''}
+地點：{job.get('locations') or ''}
+工作型態：{job.get('work_mode') or ''}　工時：{job.get('work_hours') or ''}　僱用型態：{job.get('employment') or ''}
+到職時程：{job.get('onboard_by') or ''}　急迫度：{job.get('urgency') or ''}
+
+人選姓名：{p.get('name') or ''}
+履歷全文：
+{p.get('resume_text') or ''}
+
+{('電洽逐字稿：' + chr(10) + transcript) if transcript else ''}
+"""
+
+
+def _validate_precall_card(data):
+    """壞掉的形狀不要寫出去——寧可讓 process() 退回舊版 call_prep，也不要讓前端
+    拿到一個少了必要 key 的 JSON 而整個 Candidate Drawer 壞掉（PRECALL_PHASE1
+    spec 第 12 節：AI failure 不可以讓 Drawer crash，這裡是防線的第一層）。"""
+    if not isinstance(data, dict):
+        raise ValueError('precall_card 不是物件')
+    for key in ('candidate_summary', 'call_goal', 'hard_gates', 'must_ask_questions', 'ai_flags'):
+        if key not in data:
+            raise ValueError(f'precall_card 缺少必要欄位：{key}')
+    if not isinstance(data['hard_gates'], list) or not isinstance(data['must_ask_questions'], list) \
+            or not isinstance(data['ai_flags'], list):
+        raise ValueError('precall_card 的陣列欄位型別不對')
+    if len(data['must_ask_questions']) > 3:
+        raise ValueError('must_ask_questions 超過 3 題，AI 沒有照規則')
+    if len(data['ai_flags']) > 1:
+        raise ValueError('ai_flags 超過 1 個，AI 沒有照規則')
+    return data
+
 
 def prompt_sourced_client_report_synthesize(p):
     """主動開發（sourced_candidates）人選的客戶版履歷整理——跟
@@ -373,6 +474,7 @@ HANDLERS = {
     'call_summary_client': (prompt_call_summary_client, False),
     'call_notes_summary': (prompt_call_notes_summary, False),
     'call_prep': (prompt_call_prep, True),
+    'precall_card': (prompt_precall_card, True),
     'client_report_synthesize': (prompt_client_report_synthesize, True),
     'sourced_client_report_synthesize': (prompt_sourced_client_report_synthesize, True),
 }
@@ -384,6 +486,20 @@ def process(job):
         raise RuntimeError(f'未知的工作類型：{kind}')
     builder, want_json = HANDLERS[kind]
     payload = json.loads(job.get('payload_json') or '{}')
+    # 2026-09-17 加：precall_card 失敗（JSON 格式不對、或格式對但少必要欄位）
+    # 不能直接讓整個 job 標 failed 給顧問看到空白——退回舊版 prompt_call_prep
+    # 重跑一次，寫回時用 _fallback 包一層讓 promote_writebacks() 知道要組成
+    # 舊格式的 MD 文字，前端偵測不到新格式就照舊渲染純文字版（PRECALL_PHASE1
+    # spec 第 11 節：新版失敗要能 fallback 到舊版 call_prep_md 體驗，不是報錯）。
+    if kind == 'precall_card':
+        try:
+            out = run_claude(builder(payload), want_json=True)
+            _validate_precall_card(json.loads(out))
+            return out
+        except Exception as e:
+            log(f'  ⚠️ precall_card 結構化產生失敗，退回舊版 call_prep：{str(e)[:150]}')
+            fb_out = run_claude(prompt_call_prep(payload), want_json=True)
+            return json.dumps({'_fallback': True, 'call_prep': json.loads(fb_out)}, ensure_ascii=False)
     return run_claude(builder(payload), want_json=want_json)
 
 
@@ -406,7 +522,7 @@ def promote_writebacks():
     also_note 旗標保留。
     """
     rows = d1_http.query(
-        "SELECT * FROM ai_jobs WHERE kind IN ('call_notes_summary','call_prep') "
+        "SELECT * FROM ai_jobs WHERE kind IN ('call_notes_summary','call_prep','precall_card') "
         "AND status IN ('done','failed') ORDER BY created_at LIMIT 20")['results']
     for job in rows:
         jid = job['id']
@@ -436,6 +552,18 @@ def promote_writebacks():
                 prep = json.loads(job['result_text'])
                 md = _build_call_prep_md(prep)
                 d1_http.query(f"UPDATE applications SET {target}={q(md)} WHERE id={q(app_id)}")
+            elif job['kind'] == 'precall_card':
+                # 2026-09-17 加：刻意寫回同一欄（call_prep_md），不新建 DB 欄位
+                # （PRECALL_PHASE1 spec 第 10 節：Phase 1 不做 migration）。前端讀到
+                # 這欄時先試 JSON.parse，成功且有 hard_gates 等 key 就是新卡片格式，
+                # parse 失敗或是 {_fallback:true,...} 就照舊版純文字渲染——
+                # 同一欄位天然兼容新舊兩種格式，不用維護兩份候選人紀錄。
+                result = json.loads(job['result_text'])
+                if result.get('_fallback'):
+                    out_value = _build_call_prep_md(result['call_prep'])
+                else:
+                    out_value = json.dumps(result, ensure_ascii=False)
+                d1_http.query(f"UPDATE applications SET {target}={q(out_value)} WHERE id={q(app_id)}")
             d1_http.query(f"DELETE FROM ai_jobs WHERE id={q(jid)}")
             log(f'  ↩️ 寫回 {job["kind"]}（{jid[:8]}）→ applications.{target}')
         except Exception as e:
