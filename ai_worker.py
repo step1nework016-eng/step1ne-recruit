@@ -764,7 +764,13 @@ P3_REMATCH_MAX_PER_TICK = _int_env('P3_REMATCH_MAX_PER_TICK', 3)
 P3_REMATCH_ALLOW_IDS = tuple(
     x.strip() for x in (os.environ.get('P3_REMATCH_ALLOW_APPLICATION_IDS') or '').split(',') if x.strip()
 )
-P3_REMATCH_CREATED_AFTER = (os.environ.get('P3_REMATCH_CREATED_AFTER') or '').strip()
+# ⚠️ 把 ISO 格式的 T 換成空白：DB 的 created_at 是 'YYYY-MM-DD HH:MM:SS'（空白分隔），
+# 字串比大小時 'T'(0x54) > ' '(0x20)，混用會讓「之後的報告」全部比不到，
+# 而且是靜默失效——看起來設定好了，實際上一個人都不會被掃到。
+# 會用 T 是因為 launchd plist 的 PlistBuddy 以空白切參數，帶空白的值會被截斷
+# （2026-09-18 實際踩到：'2026-09-18 19:49' 被存成 '2026-09-18'，變成掃整天）。
+# 兩種格式都接受，在這裡正規化，不要求設定的人記得用哪一種。
+P3_REMATCH_CREATED_AFTER = (os.environ.get('P3_REMATCH_CREATED_AFTER') or '').strip().replace('T', ' ')
 
 
 def prompt_post_interview_rematch(p):
@@ -1322,7 +1328,15 @@ def scan_rematch_candidates(limit=None):
         # 就不再重跑。之後若重新面談產生新報告，report_id 會變，自然會重新分析。
         '   AND NOT EXISTS (SELECT 1 FROM ai_jobs aj '
         "                    WHERE aj.kind='post_interview_rematch' "
-        '                      AND aj.payload_json LIKE \'%\' || r.id || \'%\') '
+        '                      AND aj.payload_json LIKE \'%\' || r.id || \'%\' '
+        # ⚠️ 2026-09-18 Canary 試跑時抓到：王仁君被永久卡住跑不到。
+        # 原因是他那筆工作在兩台機器程式版本不一致的空窗期失敗了
+        # （另一台還沒拉到新程式，回報「未知的工作類型」），而上面這個防重複
+        # 條件把「失敗過」也算成「跑過了」，於是他再也不會被排進來。
+        # 部署競態造成的失敗**應該要能重試**——這種錯誤在兩台都更新後就不可能
+        # 再發生，沒有無限重試的風險。其他原因的失敗仍然維持不重試
+        # （那才是真的有問題，重試只會一直燒額度，要人去看 ai_jobs 的 error）。
+        "                      AND COALESCE(aj.error,'') NOT LIKE '%未知的工作類型%') "
         + allow_sql + after_sql
         + f' ORDER BY r.created_at DESC LIMIT {int(limit)}'
     )['results'] or []

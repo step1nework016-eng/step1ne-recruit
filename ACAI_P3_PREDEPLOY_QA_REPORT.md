@@ -409,10 +409,33 @@ P3_FOLLOWUP_REMINDER_ENABLED=1
 編輯 `~/Library/LaunchAgents/com.step1ne.aiworker.plist` 的 `EnvironmentVariables`：
 ```
 P3_REMATCH_ENABLED=1
-P3_REMATCH_ALLOW_APPLICATION_IDS=d8ca8d8a-...,970fd626-...,a5c0eb34-...
+P3_REMATCH_ALLOW_APPLICATION_IDS=<三個完整 application id，逗號分隔>
 P3_REMATCH_MAX_PER_TICK=1
 ```
-然後 `launchctl kickstart -k gui/$(id -u)/com.step1ne.aiworker`
+
+> ### 🚨 改完 plist 一定要這樣重啟，而且一定要驗證
+>
+> **`launchctl kickstart -k` 不夠。** 2026-09-18 實測踩到：改完 plist 用 kickstart 重啟後，
+> 執行中的程序**只帶到 `P3_REMATCH_ENABLED=1`，完全沒有帶到限流名單**——
+> 結果 Canary 形同虛設，系統照樣去跑名單外的人（實際跑了馮聖硯等人才被發現）。
+>
+> 原因：`ai_worker.py` 有「偵測到 git 有新版就自動 pull 並重啟自己」的機制
+> （`os.execv`）。程序自我重啟時**沿用自己原本的環境變數**，不會重新讀 plist，
+> 所以後來新增的環境變數會被靜默漏掉。
+>
+> **正確做法**：
+> ```bash
+> launchctl bootout gui/$(id -u)/com.step1ne.aiworker
+> launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.step1ne.aiworker.plist
+> # 沒起來就再 kickstart 一次
+> launchctl kickstart gui/$(id -u)/com.step1ne.aiworker
+> ```
+> **然後一定要驗證實際帶到的環境變數**（不要相信 plist 寫了就等於生效）：
+> ```bash
+> ps eww $(pgrep -f ai_worker.py | head -1) | tr ' ' '\n' | grep '^P3_'
+> ```
+> 三個變數都要出現。只出現一個就是沒生效，Canary 不成立。
+
 觀察：recommendation 內容、Telegram、DB、UI、log。
 
 ### Stage 2｜只跑新面談的人（觀察 3–5 天）
@@ -475,6 +498,46 @@ P3_REMATCH_MAX_PER_TICK=3
 
 建議人工標記分類：`Good` / `Acceptable` / `Bad` / `Dangerous`。
 其中 **Dangerous** 的定義（BUG 1 就是這一類）：推薦本身會讓候選人覺得沒被理解，或把人推回他明確想離開的方向。
+
+---
+
+---
+
+## 附錄｜Canary 實跑記錄（2026-09-18 19:00–19:50）
+
+指定三位試跑：#52 陳旻婕、#46 王仁君、#26 林巧昀（原指定的 #44 江芷楹尚未面談，無報告可分析，改由林巧昀替代——她正是 BUG 1 的主角，最值得驗證）。
+
+### 實跑成果
+
+| 候選人 | 結果 |
+|---|---|
+| **林巧昀** | 2 筆：培訓工程設計工程師／培訓半導體專案工程師。**完全沒有護理相關職缺** → BUG 1 修正在完整自動流程中確認有效（非手動觸發） |
+| **王仁君** | 1 筆：培訓半導體專案工程師。理由扣合他面談中親口說的「想轉往半導體方向」，並誠實標註「面談未問到大學主修，無法確認科系是否符合」 |
+| **陳旻婕** | 執行中（見下方 BUG 10） |
+
+### 🔴 只有真的跑起來才會現形的四個問題（程式審查與自動測試都抓不到）
+
+#### BUG 8｜限流名單靜默失效，Canary 形同虛設
+改完 plist 用 `launchctl kickstart -k` 重啟後，執行中的程序**只帶到 `P3_REMATCH_ENABLED=1`，完全沒有帶到限流名單與每輪上限**。系統照樣去跑名單外的人（實際跑了馮聖硯、尹緯正、林均緯等人才被發現）。
+
+根因：`ai_worker.py` 有「偵測到 git 新版就自動 pull 並 `os.execv` 重啟自己」的機制，**自我重啟會沿用原本的環境變數，不會重讀 plist**，後來新增的變數被靜默漏掉。
+
+修正：部署 SOP 改為 `bootout` + `bootstrap`（+ 必要時 `kickstart`），**且一定要用 `ps eww` 驗證實際帶到的變數**。已寫入 Stage 1 步驟。
+
+#### BUG 9｜失敗過的候選人被永久卡住，且看起來像「沒有推薦」
+王仁君的工作在兩台機器版本不一致的空窗期失敗（另一台還沒拉到新程式，回報「未知的工作類型」）。防重複機制把「失敗過」也算成「跑過了」，於是他**再也不會被排進來**——而畫面上只會顯示「沒有找到更適合的職缺」，與「真的沒有適合職缺」完全無法區分。
+
+修正：部署競態造成的失敗（`未知的工作類型`）允許重試；其他原因的失敗維持不重試（避免無限重跑燒額度）。修正後王仁君成功跑出推薦。
+
+#### BUG 10｜daemon 重啟會留下永遠卡住的「執行中」工作
+陳旻婕的工作在 19:17 標記為 `running`，daemon 之後重啟多次，該工作**沒有任何機制會被回收**，永遠停在 `running`。本次以手動 `UPDATE ... SET status='pending'` 救回。
+
+⚠️ **這是 `ai_jobs` 的系統性問題，不限於 P3**——任何 job kind 都可能因 daemon 重啟而留下孤兒。本輪未修（會影響所有 job kind，超出 QA 可改範圍），建議另案加入「`running` 超過 N 分鐘自動退回 `pending`」的回收機制。
+
+#### BUG 11｜plist 的值含空白會被截斷，導致時間線設定靜默失效
+`PlistBuddy -c "Set ... 2026-09-18 19:49:47"` 會以空白切參數，實際只存進 `2026-09-18`——原本要設「從 19:49 之後」變成「今天整天」，會把當天所有面談完的人全部掃進去。
+
+修正：程式端接受 `T` 分隔格式並正規化成空白（`'2026-09-18T19:49' → '2026-09-18 19:49'`）。若不處理，混用 `T` 與空白比字串大小會讓條件**全部比不到**，同樣是靜默失效。
 
 ---
 
