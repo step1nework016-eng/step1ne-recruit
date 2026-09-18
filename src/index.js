@@ -4513,7 +4513,23 @@ export default {
             // 找到就秀出來給顧問確認是不是同一人，是的話後面直接整合進舊紀錄
             // （呼叫 /admin/application/call-note，附加不覆蓋），不是就照原流程建新卡片。
             if (sess.step === 'name' && String(rm2.text || '').trim()) {
-              sess.data.name = rm2.text.trim();
+              const nameText = rm2.text.trim();
+              // ⚠️ 2026-09-18 修：貼很長的逐字稿時 Telegram 客戶端會自動拆成
+              // 好幾則訊息依序送出——第一則被收成逐字稿本身，session 就跳到
+              // 「問姓名」這一步，緊接著送到的後續訊息（其實還是逐字稿的
+              // 延續，不是人打的姓名）就被這裡當成姓名收下去，跳過真正的
+              // 姓名輸入（Jacky 實測撞到：翁紹軒案例，逐字稿後半段被當姓名）。
+              // 用「像不像一個人名」擋一下：太長或帶有多個標點符號的，判定
+              // 是逐字稿殘留，併回 transcript，重新問一次姓名，不要吃掉。
+              const looksLikeProse = nameText.length > 20 || /[，。！？；]{2,}/.test(nameText);
+              if (looksLikeProse) {
+                sess.data.transcript = (sess.data.transcript || '') + '\n' + nameText;
+                await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
+                await ncSend(env, rm2.chat.id, callIntakeTopic,
+                  '這段看起來還是逐字稿的內容（可能是 Telegram 自動拆成好幾則訊息送的），已經幫你併回逐字稿了。麻煩單獨打這位人選的姓名就好（不要連內容一起貼）。');
+                return new Response('ok');
+              }
+              sess.data.name = nameText;
               const { results: dups } = await env.DB.prepare(
                 `SELECT id, job_slug, job_title, created_at FROM applications
                   WHERE name = ? ORDER BY created_at DESC LIMIT 5`
@@ -6045,6 +6061,122 @@ export default {
       // 這則失敗不能擋到下面的提醒
     }
 
+    // 2026-09-18 加（P3-C①）：面談聊到一半就消失超過 24 小時，主動催一次。
+    //
+    // 為什麼要加：阿財的面談室本來就允許中途離開（interview_daemon 的
+    // held_too_long()／close_paused() 會在閒置 STALE_HOLD_MIN 之後把房間收掉），
+    // 但在「離開」到「房間被收掉」這段時間裡，系統對候選人是完全沉默的——
+    // 他自己不會知道進度停在哪、也不知道還能不能回來，最後就是默默流失，
+    // 我們連他為什麼不回來都不知道。這一則就是補那段沉默。
+    //
+    // ⚠️ 只認 interview_state = 'active'。'paused' 不算「沒談完」——那是
+    //    wrap_up() 已經產過報告、只是房間還留著的狀態（上面 postinterview
+    //    那兩段就是把 'done','paused' 當成「已經結束」在處理的），催他回來
+    //    繼續等於叫他重談一次已經談完的面談。'not_started' 也不在這裡，
+    //    那種人走的是上面 applied_notified_at 那封「開始測驗」的信。
+    //
+    // ⚠️ 一定要看 hold_until。這個欄位是 2026-08-13 徐先生那次事故換來的：
+    //    顧問已經跟候選人講好「明天上午再進來就好」，系統卻照固定時鐘把他
+    //    當成閒置處理。同樣的錯不能在這裡再犯一次——顧問特別交代要等的人，
+    //    hold_until 還沒到期就不要去吵他。
+    //
+    // ⚠️ 只催一次，永遠。idle_nudged_at 就是為此存在的。催第二次不會讓
+    //    不想繼續的人回心轉意，只會變成騷擾。沒綁 LINE 的人也照樣寫這個欄位，
+    //    不然每 15 分鐘都會把他撈出來重算一次（他永遠等不到訊息）。
+    if (env.P3_IDLE_NUDGE_ENABLED === '1') {
+      try {
+        const { results: idleRows } = await env.DB.prepare(
+          `SELECT a.id, a.name, a.job_slug, a.job_title FROM applications a
+            WHERE a.interview_state = 'active'
+              AND a.superseded_by IS NULL
+              AND a.idle_nudged_at IS NULL
+              AND (a.hold_until IS NULL OR a.hold_until = ''
+                   OR a.hold_until <= datetime('now','+8 hours'))
+              AND (SELECT m.created_at FROM messages m
+                    WHERE m.application_id = a.id
+                    ORDER BY m.id DESC LIMIT 1) <= datetime('now','+8 hours','-24 hours')
+            LIMIT 30`
+        ).all();
+        if (idleRows && idleRows.length) {
+          const { results: allBound } = await env.DB.prepare(
+            `SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound'`
+          ).all();
+          for (const a of idleRows) {
+            const bound = (allBound || []).filter((row) => safeJsonArray(row.application_ids).includes(a.id));
+            // 一則純文字就好，不用 Flex：這是「問候」不是「通知」，
+            // 做成卡片反而像系統自動催件，語氣會變硬。
+            // 語氣三個底線：不提期限、不提會不會被刷掉、明講可以接著上次繼續。
+            const text =
+              `${a.name} 您好，我是面談助理阿財 😊\n\n` +
+              `我們上次聊「${a.job_title || a.job_slug || ''}」聊到一半就停下來了，想說來問候一下。\n\n` +
+              `面談室還開著，您方便的時候再回來就好，會從上次停的地方接著繼續，不用重講一遍。\n` +
+              `如果現在正忙、或是想再想一想，都完全沒關係；有任何問題也可以直接在這裡跟我說。`;
+            for (const b of bound) await linePushMessages(env, b.line_user_id, [{ type: 'text', text }]);
+            await env.DB.prepare(`UPDATE applications SET idle_nudged_at = ? WHERE id = ?`)
+              .bind(nowTaipei(), a.id).run();
+          }
+        }
+      } catch (e) {
+        // 這則失敗不能擋到下面的提醒
+      }
+    }
+
+    // 2026-09-18 加（P3-C②）：到期的追蹤約定，提醒顧問。
+    //
+    // 背景：候選人在面談裡說「我下個月再看看」「等年終領完再聊」這種話時，
+    // 在這之前全系統沒有任何地方存得下「未來要做的事」——只有
+    // candidate_notes（過去發生過什麼）跟各種 *_notified_at（固定間隔）。
+    // 這些約定過去只活在逐字稿裡，沒有人會在一個月後回頭翻，等於全部漏掉。
+    // candidate_followups 這張表補上這塊，這一段負責到期時把它叫出來。
+    //
+    // ⚠️ 這則**只推給顧問，絕對不推給候選人**。這個階段的產品決定是：
+    //    AI 不主動就追蹤約定聯繫候選人本人。理由是約定是 AI 從逐字稿裡
+    //    判讀出來的，判讀可能錯（把「再看看」當成「下個月一定聊」），
+    //    由 AI 直接去敲人等於把這個錯誤直接丟到候選人臉上。所以這裡只
+    //    把「AI 聽到什麼、依據是哪一句」攤給顧問，由真人決定要不要聯繫。
+    //    這也是為什麼訊息一定要帶 evidence 原句——顧問要能一眼判斷
+    //    AI 有沒有腦補，不能只給結論。
+    //
+    // 發去 THREAD.report（顧問人選回報區），跟上面「談完沒人處置」那則同一個
+    // 主題：兩者都是「該去跟進誰」，而顧問跟進完也是在同一個主題回報一句，
+    // 動線一致，不用切來切去。
+    if (env.P3_FOLLOWUP_REMINDER_ENABLED === '1') {
+      try {
+        const { results: dueFollowups } = await env.DB.prepare(
+          `SELECT f.id, f.application_id, f.due_at, f.reason, f.evidence,
+                  a.name AS cand_name, a.job_title, a.job_slug
+             FROM candidate_followups f
+             LEFT JOIN applications a ON a.id = f.application_id
+            WHERE f.status = 'pending'
+              AND f.due_at <= datetime('now','+8 hours')
+            ORDER BY f.due_at ASC LIMIT 10`
+        ).all();
+        if (dueFollowups && dueFollowups.length) {
+          const lines = dueFollowups.map((f) => {
+            // evidence 是逐字稿原句，可能很長；TG 一則訊息塞十筆會爆，
+            // 截到 120 字仍足夠讓顧問判斷「這句話是不是真的這個意思」。
+            const ev = String(f.evidence || '').replace(/\s+/g, ' ').trim();
+            return `· ${f.cand_name || '（查不到姓名）'}　${f.job_title || f.job_slug || '（查不到職缺）'}` +
+              `\n　 約定時間：${f.due_at}` +
+              `\n　 原因：${f.reason || '（沒有記錄原因）'}` +
+              (ev ? `\n　 他當時是這麼說的：「${ev.length > 120 ? ev.slice(0, 120) + '…' : ev}」` : '');
+          });
+          await notify(env,
+            `🗓 有 ${dueFollowups.length} 位當初說「之後再聊」，時間到了\n\n${lines.join('\n\n')}\n\n` +
+            `上面那句原話是阿財從面談逐字稿抓的，聯繫前請先看一眼對不對。\n` +
+            `後台：https://step1ne.com/consultant/reports/`,
+            { message_thread_id: THREAD.report });
+          for (const f of dueFollowups) {
+            await env.DB.prepare(
+              `UPDATE candidate_followups SET status='notified', notified_at=?, updated_at=? WHERE id=?`
+            ).bind(nowTaipei(), nowTaipei(), f.id).run();
+          }
+        }
+      } catch (e) {
+        // 這則失敗不能擋到下面的提醒
+      }
+    }
+
     // 報告產出超過 24 小時卻沒人處置 → 每天提醒一次。
     //
     // ⚠️ 2026-08-10 查出來的真實問題：VIP貴賓接待有 4 位談完，其中湯豐銘、范博翔
@@ -6067,6 +6199,27 @@ export default {
             AND a.superseded_by IS NULL
             AND r.created_at <= datetime('now','+8 hours','-24 hours')
             AND COALESCE(a.stale_pinged_on,'') <> ?
+            -- ⚠️ 2026-09-18 Jacky 回報「每天提醒都不準而且很吵」，查證後確認屬實：
+            -- 當天那則提醒列了 6 位，只有 1 位是真的沒人處置。實測整條規則會撈到
+            -- 18 筆，其中 9 筆早就推薦給客戶或已經進到面試/Offer 流程了。
+            --
+            -- 根因：這條規則判斷「有沒有被處置」只看 reports.consultant_decision
+            -- 這一個欄位——但顧問實際上幾乎不從那個畫面處置，而是直接按「推薦給客戶」
+            -- （寫 candidate_forwards）或人已經進 placements 流程。系統看不到那些動作，
+            -- 就一直以為沒人理他。最諷刺的案例是陳亭瑾：這條說她「沒人處置」，
+            -- 同一輪 cron 的 Pipeline 提醒卻說她「卡 10 天」——兩則提醒自己在打架。
+            --
+            -- 改成：以下任何一種都算「已經處置過」，不再吵。
+            AND NOT EXISTS (SELECT 1 FROM candidate_forwards f WHERE f.application_id = a.id)
+            AND NOT EXISTS (SELECT 1 FROM placements p WHERE p.application_id = a.id)
+            AND a.manual_stage IS NULL        -- 顧問手動指定過階段
+            AND a.no_interview_at IS NULL     -- 顧問標記過「不需再面談」
+            -- 重複投遞產生的分身不要各吵一次（翁紹軒同一個人被算兩次）
+            AND COALESCE(a.status,'') NOT IN ('duplicate','rejected','declined','closed')
+            -- ⚠️ 刻意「不」排除 screen_decision 不是 NULL 的人：那是**面談前**的履歷
+            -- 篩選決定（approved＝准他來面談），不是面談後的處置。2026-09-18 修這條時
+            -- 一度把它加進排除條件，實測發現會把 Yi-yun Guo、陳旻婕這兩位真的還沒人
+            -- 處置的人悄悄藏起來——提醒漏掉比提醒太吵更危險，不要為了數字好看而過濾過頭。
           ORDER BY r.created_at ASC LIMIT 20`
       ).bind('stale_ping_' + today).all();
 

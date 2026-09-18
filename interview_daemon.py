@@ -126,6 +126,11 @@ NO_TOOLS = ['--disallowed-tools', _BAN_TOOLS,
 # 報告要的是「準」——那是顧問拿來決定推不推的依據，慢一分鐘沒差。
 TALK_MODEL = 'claude-sonnet-5'
 REPORT_MODEL = 'claude-sonnet-5'
+# 2026-09-18 P3-B：阿財要不要在面談中「主動」提起其他更適合的職缺。
+#   live（預設，維持現況）＝聽到明顯對得上的就主動問候選人有沒有興趣
+#   shadow          ＝只在心裡判斷、寫進給顧問看的 note，對候選人絕口不提
+# 預設刻意是 live——這個行為早就在生產環境跑了，預設關掉是倒退不是保護。
+P3B_SUGGEST_MODE = os.environ.get('P3B_SUGGEST_MODE', 'live')
 
 _busy = set()           # 正在處理的 application_id，避免同一場被跑兩次
 _lock = threading.Lock()
@@ -1469,6 +1474,37 @@ def build_prompt(ctx, skill_md):
     other_jobs = ctx.get('other_jobs') or []
     if other_jobs:
         cur_title = (job or {}).get('title') or app.get('job_title') or '這個職缺'
+        # 2026-09-18 P3-B 加：主動推薦其他職缺的「只想不說」安全開關。
+        #
+        # ⚠️ 預設是 live（維持 2026-09-15 起就在跑的現況），刻意**不**預設成 shadow——
+        # 這段主動推薦在生產環境已經運作一段時間並且真的發生過（吳秉洋那筆報告的
+        # 「建議送帆宣（無經驗軌）」就是），把它預設關掉等於讓現有功能倒退。
+        #
+        # shadow 模式的用途是：萬一發現阿財推薦的品質不穩、或候選人覺得被推銷，
+        # 可以在不改程式、不重新部署的情況下立刻讓它閉嘴，但仍然把它的判斷記錄
+        # 下來給顧問看——用來確認品質而不是直接停掉整個能力。
+        # 切換方式：launchd plist 的 EnvironmentVariables 設 P3B_SUGGEST_MODE=shadow，
+        # 然後 launchctl kickstart -k 重啟本 daemon。
+        if P3B_SUGGEST_MODE == 'shadow':
+            lines.append('\n【其他在辦職缺——本場只做被動簡答，不主動推薦】')
+            lines.append(f'  這場對話是「{cur_title}」的面談。候選人**主動問到**其他職缺時可以簡短回答'
+                         '（職稱／主要工作／地點／薪資的公開講法），回完拉回這場；'
+                         '**但你這場不可以主動提起任何其他職缺**，即使你覺得有更適合的也一樣。')
+            lines.append('  不過你還是要**在心裡判斷**：下面清單裡有沒有哪個職缺其實更適合這位候選人？'
+                         '如果有，請在輸出 JSON 的 note 欄位寫一句「（職缺名）可能更適合，符合：xxx，'
+                         '缺：xxx」——這一句只會給顧問看，不會給候選人看，由顧問決定要不要跟他提。')
+            for oj in other_jobs[:40]:
+                duties = (oj.get('main_duties') or '').replace('\n', ' ')[:100]
+                reqs = []
+                if oj.get('must_skills'): reqs.append('必要技能：' + str(oj['must_skills'])[:150])
+                if oj.get('required_conditions'): reqs.append('必要條件：' + str(oj['required_conditions'])[:150])
+                if oj.get('seniority'): reqs.append('職級：' + str(oj['seniority']))
+                lines.append(f'  · {oj.get("title")}（{oj.get("locations") or "地點未提供"}）'
+                             f'{"：" + duties if duties else ""}')
+                if reqs:
+                    lines.append('    ' + '；'.join(reqs))
+            other_jobs = []  # 跳過下面 live 模式那整段
+    if other_jobs:
         lines.append(f'\n【其他在辦職缺——被動簡答＋主動加值建議兩種用法】')
         lines.append(f'  這場對話是「{cur_title}」的面談，這個職缺永遠優先——不管是候選人問的、'
                      '還是你自己主動提的其他職缺，聊完都要拉回目前這個職缺繼續往下問，'

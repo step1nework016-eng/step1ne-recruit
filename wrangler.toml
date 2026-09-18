@@ -27,3 +27,12 @@ binding = "AI"
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "step1ne-files"
+
+# 2026-09-18 加：阿財 P3 的功能旗標。設 "1" 才啟用，其他值（含未設定）一律視為關閉。
+# 做成旗標而不是直接上線，是為了能一個一個打開、每個觀察一天，
+# 出問題時可以只關掉那一條而不是整批停擺。
+#   P3_IDLE_NUDGE_ENABLED      面談中斷超過 24 小時 → LINE 催候選人一次
+#   P3_FOLLOWUP_REMINDER_ENABLED  候選人約定的追蹤日期到期 → TG 提醒顧問（不碰候選人）
+[vars]
+P3_IDLE_NUDGE_ENABLED = "1"
+P3_FOLLOWUP_REMINDER_ENABLED = "1"
