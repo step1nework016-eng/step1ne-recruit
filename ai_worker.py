@@ -1427,7 +1427,84 @@ def promote_writebacks():
             log(f'  ⚠️ 寫回 {job["kind"]}（{jid[:8]}）失敗，先留著：{str(e)[:150]}')
 
 
+# ── 卡住的工作回收（2026-09-18 QA BUG 10）────────────────────────
+#
+# 問題：daemon 在工作執行到一半時重啟／當掉／被砍／機器重開，那筆工作會
+# 永遠停在 status='running'，沒有任何機制救得回來。今天實際發生過
+# （陳旻婕那筆，靠人工 UPDATE 才救回）。這不是 P3 的問題，是 ai_jobs 這個
+# 共用佇列本來就缺的一塊——任何 job kind 都會中獎。
+#
+# ⚠️ 設計決定：**白名單制，預設誰都不救**。
+# GPT 的原始建議是「全部都救，有不安全的再排除」，這裡刻意反過來做。
+# 理由：救回來重跑，對某些工作會**產生第二筆資料**而不是覆蓋。實例：
+# call_notes_summary 帶 also_note 時，寫回階段會 INSERT 一筆 candidate_notes
+# （ai_worker.py 的 promote_writebacks），重跑就會讓同一次電洽在候選人時間軸
+# 上出現兩次，顧問看了會以為真的聯絡過兩次。
+# 「先開放再排除」跟「先關閉再開放」在正常情況下結果一樣，但出錯時差很多。
+#
+# 只有滿足下面其中一個條件的 kind 才進白名單：
+#   (a) 寫回是 UPDATE 單一欄位（重跑只是覆蓋成新內容，沒有副作用）
+#   (b) 有 DB 唯一約束擋住重複（post_interview_rematch 的
+#       (source_report_id, recommended_job_slug) 唯一索引）
+RECOVERABLE_KINDS = (
+    'post_interview_rematch',  # (b) 唯一索引擋重複，且已實測重跑不會新增
+    'precall_card',            # (a) UPDATE applications.call_prep_md
+    'postcall_result',         # (a) UPDATE applications.post_call_result_json
+    'call_prep',               # (a) UPDATE applications.call_prep_md
+)
+# 不回收（需要人工判斷）：
+#   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄
+#   client_report_synthesize      → 由另一支 daemon 消費，且單次成本高
+#   sourced_client_report_synthesize / call_summary_client  → 同上
+
+# 逾時門檻。依 production 真實資料決定，不是憑感覺：
+#   client_report_synthesize  平均 210s／最長 437s
+#   post_interview_rematch    平均  97s／最長 158s
+#   claude CLI 本身的 TIMEOUT = 480s
+# 最長合法執行時間約 8 分鐘，門檻取 20 分鐘（約 2.5 倍餘裕），
+# 確保絕不會把還在正常跑的長工作搶回去重跑。
+STALE_RUNNING_MINUTES = int(os.environ.get('AI_JOBS_STALE_MINUTES', '20'))
+
+
+def recover_stale_jobs():
+    """把卡住的 running 工作退回 pending 讓別人重新認領；超過重試上限就標 failed。
+
+    放在 tick() 開頭而不是另開排程：Worker 自己負責自己佇列的生命週期，
+    系統已經有 21 個排程，不需要為了這件事再多一個。
+    """
+    kinds = ', '.join(q(k) for k in RECOVERABLE_KINDS)
+    rows = d1_http.query(
+        'SELECT id, kind, attempts, started_at, worker_id FROM ai_jobs '
+        f"WHERE status='running' AND kind IN ({kinds}) "
+        f"  AND started_at <= datetime('now','+8 hours','-{STALE_RUNNING_MINUTES} minutes')"
+    )['results'] or []
+    for j in rows:
+        attempts = j.get('attempts') or 0
+        mins = STALE_RUNNING_MINUTES
+        if attempts >= MAX_ATTEMPTS:
+            # 已經試滿還是卡住 → 標 failed 並留下原因，不要無限重跑燒額度
+            d1_http.query(
+                f"UPDATE ai_jobs SET status='failed', "
+                f"error={q(f'卡在 running 超過 {mins} 分鐘，且已達重試上限 {MAX_ATTEMPTS} 次')} "
+                f"WHERE id={q(j['id'])} AND status='running'")
+            log(f'  🚨 {j["kind"]}（{j["id"][:8]}）重試 {attempts} 次仍卡住，標為失敗不再重試')
+        else:
+            # 帶條件更新：萬一原本的 worker 其實還活著、剛好這一刻寫完了，
+            # 這個 UPDATE 會改到 0 筆，不會把人家做好的結果蓋掉。
+            r = d1_http.query(
+                f"UPDATE ai_jobs SET status='pending' WHERE id={q(j['id'])} AND status='running'")
+            if (r.get('meta') or {}).get('changes'):
+                log(f'  ♻️ 回收卡住的工作 {j["kind"]}（{j["id"][:8]}），'
+                    f'卡了超過 {mins} 分鐘（原機器 {j.get("worker_id")}），'
+                    f'退回重做 attempt {attempts}/{MAX_ATTEMPTS}')
+    return len(rows)
+
+
 def tick():
+    try:
+        recover_stale_jobs()
+    except Exception as e:
+        log(f'  ⚠️ 回收卡住工作這輪出錯（不影響其他工作）：{str(e)[:150]}')
     promote_writebacks()
     # 2026-09-18 P3-A：掃「面談完了但還沒算過替代職缺」的人排進佇列。
     # 預設關閉（P3_REMATCH_ENABLED 未設為 '1' 時整段跳過，連查都不查），
