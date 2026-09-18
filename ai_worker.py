@@ -778,6 +778,36 @@ def tick():
     return len(rows)
 
 
+SELF_UPDATE_CHECK_SEC = 300
+
+
+def _maybe_self_update(last_checked):
+    """2026-09-18 加：多裝置（Mac／WSL2）共跑同一份 ai_worker.py，撞過真實事故——
+    Mac 這邊修好 PreCall v2.0 的欄位規則（hard_gates 上限 3、source_channel 等），
+    WSL2 還在用舊版，兩台搶同一筆 ai_jobs 工作，WSL2 搶到就寫回舊格式，
+    Backend 判定不合格擋下來，顧問看到「明明生了卻沒有」，還得靠 Jacky
+    在兩邊之間傳話才發現是版本沒同步。改成每隔 SELF_UPDATE_CHECK_SEC 檢查一次
+    origin/main 有沒有新 commit，有的話自動 git pull 後重啟自己（os.execv 換掉
+    程式本身，不依賴 launchd/systemd 這類外部監督機制重啟，Mac／WSL2／任何
+    裝置都能用同一套邏輯）——這樣只要曾經手動重啟過一次裝上這個機制，之後
+    永遠不會再跑到舊版超過 5 分鐘。只在兩次工作之間檢查，不會打斷正在跑的工作。
+    """
+    now = time.time()
+    if now - last_checked < SELF_UPDATE_CHECK_SEC:
+        return last_checked
+    try:
+        subprocess.run(['git', 'fetch', 'origin', 'main', '--quiet'], cwd=HERE, timeout=30, check=True)
+        local = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=HERE, capture_output=True, text=True, timeout=10).stdout.strip()
+        remote = subprocess.run(['git', 'rev-parse', 'origin/main'], cwd=HERE, capture_output=True, text=True, timeout=10).stdout.strip()
+        if local and remote and local != remote:
+            log(f'🔄 偵測到新版本（{local[:7]}→{remote[:7]}），git pull 後重啟自己')
+            subprocess.run(['git', 'pull', 'origin', 'main', '--quiet'], cwd=HERE, timeout=30, check=True)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        log(f'⚠️ 自動更新檢查失敗（不影響這一輪處理，下次再試）：{str(e)[:150]}')
+    return now
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--once', action='store_true')
@@ -787,11 +817,13 @@ def main():
         log(f'跑完一輪，處理 {n} 件')
         return
     log(f'AI 工作佇列處理器啟動（每 {POLL_SEC} 秒撈一次，模型 {MODEL}）')
+    last_update_check = time.time()
     while True:
         try:
             tick()
         except Exception as e:
             log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
+        last_update_check = _maybe_self_update(last_update_check)
         time.sleep(POLL_SEC)
 
 
