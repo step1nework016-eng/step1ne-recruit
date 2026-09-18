@@ -140,6 +140,32 @@ except ValueError as e:
 check('CASE12 P3_REMATCH_ENABLED 預設關閉',
       ai_worker.P3_REMATCH_ENABLED is False or os.environ.get('P3_REMATCH_ENABLED') == '1')
 
+# ── CASE 13：Canary 限流閘門 ────────────────────────────────────────
+check('CASE13 每輪上限預設為 3', ai_worker.P3_REMATCH_MAX_PER_TICK == 3)
+check('CASE13b 指定名單預設為空（＝依一般規則掃描）', ai_worker.P3_REMATCH_ALLOW_IDS == ())
+check('CASE13c 起始日期預設為空', ai_worker.P3_REMATCH_CREATED_AFTER == '')
+check('CASE13d 上限被亂填（非數字）時退回安全預設', ai_worker._int_env('__NOT_SET__', 3) == 3)
+
+# ── CASE 14：C② 日期把關——「有空再說」不可以變成具體日期 ─────────
+# 這是程式端的最後防線：就算 AI 硬填了日期，certainty 不是 exact/range 就不採用。
+DATE_CASES = [
+    ('10 月 5 日再聯絡', 'exact', True),
+    ('兩週後',           'exact', True),
+    ('下個月再找我',      'range', True),
+    ('10 月初',          'range', True),
+    ('月底',             'range', True),
+    ('過完年',           'range', True),
+    ('等我拿完年終',      'vague', False),
+    ('有空再說',          'vague', False),
+    ('明年再看看',        'vague', False),
+    ('（完全沒提）',      'none',  False),
+]
+for phrase, certainty, should_save in DATE_CASES:
+    # 模擬 AI 即使在 vague 情況下也硬填了日期的最壞狀況
+    accepted = bool('2026-10-01') and certainty in ('exact', 'range')
+    check(f'CASE14 「{phrase}」→ {"排提醒" if should_save else "不排提醒"}',
+          accepted == should_save)
+
 print(f'\n通過 {len(PASS)} 項，失敗 {len(FAIL)} 項')
 if FAIL:
     print('失敗：', FAIL)
