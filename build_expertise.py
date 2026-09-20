@@ -185,10 +185,20 @@ PROMPT = '''你要為一個職缺建立「專業面談題庫」，讓 AI 面談�
 def build(job, force=False):
     slug = job['slug']
     if not force:
-        exist = d1(f"SELECT job_slug FROM job_expertise WHERE job_slug = {q(slug)}")
+        # ⚠️ 2026-09-20 修：原本只看「有沒有這一列」，不看列裡面有沒有題目。
+        # 產題失敗時列還是會寫進去（questions_json 是空陣列），這個守門員就
+        # 永遠判定「已經有了」，那個職缺再也不會重產——實測 28 個在辦職缺裡
+        # 有 8 個是這種空殼，阿財面談時拿到 0 題專業題。
+        exist = d1(f"SELECT questions_json FROM job_expertise WHERE job_slug = {q(slug)}")
         if exist:
-            log(f'{slug}：已經有題庫了，跳過（要重產加 --force）')
-            return None
+            try:
+                n = len(json.loads(exist[0].get('questions_json') or '[]'))
+            except Exception:
+                n = 0
+            if n:
+                log(f'{slug}：已經有 {n} 題了，跳過（要重產加 --force）')
+                return None
+            log(f'{slug}：有紀錄但題庫是空的（前一次產題失敗），重產')
 
     jd_parts = []
     for k, label in (('description', '工作內容'), ('requirements', '資格條件'),
@@ -235,9 +245,13 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     force = '--force' in sys.argv
     if '--all' in sys.argv:
+        # 空殼題庫（questions_json 是空陣列）也要撈出來重產，理由同 build() 裡
+        # 那段註解——只看「有沒有這一列」會讓產題失敗的職缺永遠卡住。
         jobs = d1("SELECT j.* FROM jobs j LEFT JOIN job_expertise e ON e.job_slug = j.slug "
-                  "WHERE e.job_slug IS NULL AND COALESCE(j.status,'open') != 'closed'")
-        log(f'還沒有題庫的職缺：{len(jobs)} 個')
+                  "WHERE COALESCE(j.status,'open') != 'closed' "
+                  "  AND (e.job_slug IS NULL "
+                  "       OR COALESCE(e.questions_json,'[]') IN ('[]','','null'))")
+        log(f'還沒有題庫（或題庫是空的）的職缺：{len(jobs)} 個')
         for job in jobs:
             try:
                 build(job, force)

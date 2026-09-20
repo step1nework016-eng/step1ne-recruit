@@ -1218,7 +1218,41 @@ def process(job):
     # →寫進推薦表→通知顧問」這一整條，所以在這裡單獨處理。
     if kind == 'post_interview_rematch':
         return _run_rematch(payload)
+    # 2026-09-20 加：顧問在後台按「產生題庫」。跟 rematch 同一類——不是「產一段
+    # 文字寫回某個欄位」，而是整條自己跑完（上網查該職務的專業內涵→出題→寫進
+    # job_expertise）。Worker（Cloudflare）跑不了本機的 claude CLI 與網路查證，
+    # 所以走 ai_jobs 佇列讓這台機器接。
+    if kind == 'expertise_build':
+        return _run_expertise_build(payload)
     return run_claude(builder(payload), want_json=want_json)
+
+
+def _run_expertise_build(payload):
+    """依 job_slug 產（或重產）專業題庫。實際出題邏輯完全沿用 build_expertise.py，
+    不在這裡複製第二套——那支才是題庫的單一定義。"""
+    slug = (payload or {}).get('job_slug')
+    if not slug:
+        return json.dumps({'error': 'missing job_slug'}, ensure_ascii=False)
+    import build_expertise as BE
+    rows = d1_http.query(f"SELECT * FROM jobs WHERE slug={q(slug)}")['results']
+    if not rows:
+        return json.dumps({'error': f'找不到職缺 {slug}'}, ensure_ascii=False)
+    # force=True：顧問是「明知道已經有了還按重產」，不該被那道守門員擋下來
+    res = BE.build(rows[0], force=bool((payload or {}).get('force', True)))
+    n = len(res.get('questions') or []) if isinstance(res, dict) else 0
+    _tg_expertise_done(slug, rows[0].get('title'), n)
+    return json.dumps({'job_slug': slug, 'questions': n}, ensure_ascii=False)
+
+
+def _tg_expertise_done(slug, title, n):
+    try:
+        if n:
+            rs._tg(f'✅ 「{title or slug}」的面談題庫產好了，共 {n} 題。\n'
+                f'阿財下一場這個職缺的面談就會用到。可以到後台「面談題庫」看看題目對不對。')
+        else:
+            rs._tg(f'⚠️ 「{title or slug}」的面談題庫產出來是空的，請看 aiworker.log。')
+    except Exception:
+        pass   # 通知失敗不該讓工作變成失敗
 
 
 def _run_rematch(payload):
@@ -1451,6 +1485,7 @@ RECOVERABLE_KINDS = (
     'precall_card',            # (a) UPDATE applications.call_prep_md
     'postcall_result',         # (a) UPDATE applications.post_call_result_json
     'call_prep',               # (a) UPDATE applications.call_prep_md
+    'expertise_build',         # (b) job_expertise 有 ON CONFLICT DO UPDATE，重跑只是覆蓋同一列
 )
 # 不回收（需要人工判斷）：
 #   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄

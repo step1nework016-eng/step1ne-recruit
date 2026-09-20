@@ -1920,10 +1920,13 @@ REPORT_JSON_SPEC = r'''
      "evidence": "他的原話一句"}
   ],
   "expertise_findings": [
-    {"topic": "考點名稱", "asked": "你實際問了什麼",
+    {"topic": "考點名稱", "skill": "這題在測的那個技能，例如「AutoCAD」「Revit」「月結」",
+     "asked": "你實際問了什麼",
      "answered": "他回答的重點，用他自己的說法整理，不要美化",
      "evidence": "他的原話直接引用一句（最能代表他真實程度的那句）",
      "depth": "具體|籠統|未談到",
+     "skill_level": 3,
+     "level_reason": "為什麼是這一級，引他講到／講不到的那件事",
      "note": "只寫可查證的事實，例如「說得出專案規模與工具」「講不出遇過的問題」"}
   ],
   "language_verification": {
@@ -1936,6 +1939,7 @@ REPORT_JSON_SPEC = r'''
   "fit_scores": {
     "dimensions": [
       {"name": "硬條件符合度", "score": 0, "evidence": "", "note": ""},
+      {"name": "專業技能深度", "score": 0, "evidence": "", "note": ""},
       {"name": "相關經驗深度", "score": 0, "evidence": "", "note": ""},
       {"name": "案例具體度",   "score": 0, "evidence": "", "note": ""},
       {"name": "動機明確度",   "score": 0, "evidence": "", "note": ""},
@@ -1990,12 +1994,23 @@ REPORT_JSON_RULES = (
     '   **不是報告本文**。報告沒寫沒關係，直接從履歷／表單抄進來。\n'
     '   `commute_note` 要自己算：拿 basics.residence 跟職缺的 locations 比，\n'
     '   寫成「距離約 X 公里／同縣市／人已在當地」這種一句話。算不出來才填 null。\n'
-    '7. `fit_scores` 的六個維度**名稱與順序固定**，不可增刪改名。每一維：\n'
+    '7. `fit_scores` 的七個維度**名稱與順序固定**，不可增刪改名。每一維：\n'
     '   - `score` 給 0–10 的整數。**面談中沒有談到、無從判斷的，score 一律填 null**，\n'
     '     不要用 5 分之類的中間值頂替——顧問要看得出哪幾維是真的沒資料。\n'
-    '   - `evidence` **必須是候選人的原話或履歷原文的直接引用**，不是你的轉述或總結。\n'
-    '     引不到原話就代表這一維沒有依據，`score` 就該是 null。\n'
+    '   - `evidence` **必須是直接引用**，不是你的轉述或總結。可以引用的來源有三種：\n'
+    '     候選人的原話、履歷原文、或顧問電訪摘要裡記載的具體事實。\n'
+    '     ⚠️ 2026-09-20 放寬第三種：先前規定只認逐字稿原話，導致顧問自己打電話\n'
+    '     整理的摘要被判定「無法引用原話」，七個維度全部 null、整份報告評不出分。\n'
+    '     實際查到 6 份報告是這樣廢掉的——而顧問親自打的那通電話，品質往往比\n'
+    '     阿財面談還高。電訪摘要要評分，但 `note` 要註明「依據顧問電訪摘要」，\n'
+    '     顧問才知道這個分數的來源跟逐字稿不同。\n'
+    '     三種都引不到，才代表這一維真的沒有依據，`score` 填 null。\n'
     '   - `note` 寫一句話說明這個分數怎麼來的，或為什麼無法評估。\n'
+    '7-1. ⚠️ `專業技能深度` 這一維專門對應職缺的關鍵技能（例如 BIM 工程師的\n'
+    '   AutoCAD／Revit、財會的月結與稅務申報），分數直接由 `expertise_findings`\n'
+    '   各題的 `skill_level` 決定——你只要把每一題的 `skill_level` 評好，\n'
+    '   這一維的 `score` 就照「所有題目 skill_level 的平均 × 2」填（四捨五入）。\n'
+    '   一題都沒問到就填 null。\n'
     '8. ⚠️ 評分只准依據「這個人能不能做好這份工作」的證據。\n'
     '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
     '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
@@ -2007,6 +2022,17 @@ REPORT_JSON_RULES = (
     '    判斷這個人的專業程度，轉述過的話就失去判斷價值了。\n'
     '12. `depth` 只描述「他講得多具體」，不是評價他專業好不好——\n'
     '    你不是這個領域的專家，不要下那種判斷。\n'
+    '12-1. ⚠️ `skill_level` 是 1–5 的整數，這把尺量的是**「他講得有多深」**，\n'
+    '    不是「他的答案對不對」。專業對錯留給顧問跟用人主管判斷，你判斷不了，\n'
+    '    但「一個真的做過的人會講得出什麼」你判斷得出來——這才是這把尺在量的東西：\n'
+    '      1＝只講得出「我會」「我用過」，講不出用它做過什麼\n'
+    '      2＝講得出做過什麼，但講不出細節、規模、頻率\n'
+    '      3＝講得出實際專案、常用哪些功能，但沒碰過難題\n'
+    '      4＝講得出遇過什麼問題、怎麼解的\n'
+    '      5＝講得出取捨與代價——為什麼選這個做法、放棄了什麼。做過的人才答得出來\n'
+    '    `level_reason` 要寫清楚憑哪一句判到這一級，不要只寫「回答具體」。\n'
+    '    ⚠️ 沒問到的題目 `skill_level` 填 null，不要填 1——「沒問」跟「問了答不出來」\n'
+    '    是兩件完全不同的事，填 1 會把沒問到的技能誣賴成不會。\n'
     '13. ⚠️ `consultant_followups` **有幾件寫幾件，不要湊數**。\n'
     '    2026-08-19 檢查十份報告，每一份都剛好三條——那是照格式湊出來的，\n'
     '    不是真的判斷有三件事要追。湊出來的第三條會擠掉真正該追的第四條。\n'
@@ -2078,7 +2104,7 @@ def _extract_json(text):
     return obj if isinstance(obj, dict) else None
 
 
-def _normalize_report_json(obj):
+def _normalize_report_json(obj, name=''):
     """把模型的輸出補成規格形狀。
 
     模型少給一兩個欄位是常態，為此整份丟掉不划算——補好比丟掉有用。
@@ -2182,10 +2208,25 @@ def _normalize_report_json(obj):
 
     # 專業題的逐題結果。這一段是「用人單位不用自己面談就能判斷」的關鍵：
     # 它給的不是我們的評價，是候選人講過的原話——主管看原話比看分數有用得多。
+    # ⚠️ 2026-09-20 加 skill / skill_level / level_reason：在這之前，專業題問得
+    # 再好都**不影響任何分數**——expertise_findings 只是報告上的一段文字，
+    # 底下 fit_scores 的計算完全不讀它。等於花錢產題庫、花 30 分鐘問、
+    # 候選人認真答，最後對「這個人行不行」的判斷是零貢獻。
+    # skill_level 是 1–5 的 BARS（尺規定義寫在上面 prompt 規則 12-1），
+    # 會餵進新的「專業技能深度」維度。
+    def _lvl(v):
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if 1 <= n <= 5 else None
+
     out['expertise_findings'] = [
-        {'topic': s(f.get('topic')), 'asked': s(f.get('asked')),
+        {'topic': s(f.get('topic')), 'skill': s(f.get('skill')), 'asked': s(f.get('asked')),
          'answered': s(f.get('answered')), 'evidence': s(f.get('evidence')),
          'depth': s(f.get('depth')) if s(f.get('depth')) in ('具體', '籠統', '未談到') else '未談到',
+         'skill_level': _lvl(f.get('skill_level')),
+         'level_reason': s(f.get('level_reason')),
          'note': s(f.get('note'))}
         for f in arr(obj.get('expertise_findings')) if isinstance(f, dict)]
 
@@ -2214,40 +2255,97 @@ def _normalize_report_json(obj):
     # ⚠️ score 是 null 的維度（面談沒談到）**不是 0 分**，是「不列入計算」——
     #    把沒問到的題目當 0 分會系統性地懲罰話少的場次。作法是把該維的權重
     #    從分母移除，並在 basis 裡標明是用幾維算的，顧問才知道這個分數多可信。
-    dims_spec = [('硬條件符合度', 30), ('相關經驗深度', 25), ('案例具體度', 15),
-                 ('動機明確度', 15), ('溝通清晰度', 10), ('工作穩定度', 5)]
+    # ⚠️ 2026-09-20 改成七維，並把「專業技能深度」加進來（權重 20）。
+    #    在這之前專業題對總分零貢獻，見上面 expertise_findings 那段的說明。
+    #    其餘六維等比例讓出 20 分：30→25、25→20、15→12、15→12、10→7、5→4。
+    dims_spec = [('硬條件符合度', 25), ('專業技能深度', 20), ('相關經驗深度', 20),
+                 ('案例具體度', 12), ('動機明確度', 12), ('溝通清晰度', 7),
+                 ('工作穩定度', 4)]
     fs = obj.get('fit_scores') if isinstance(obj.get('fit_scores'), dict) else {}
     by_name = {s(d.get('name')): d for d in arr(fs.get('dimensions')) if isinstance(d, dict)}
+
+    # 專業技能深度：以 expertise_findings 各題的 skill_level 平均 ×2 當分數。
+    # prompt 已經要求模型自己算好，但算術不交給模型（跟總分同一個理由——
+    # 同一份報告重跑兩次會給出不同數字，顧問就不能拿它排序了）。這裡一律重算，
+    # 模型填的值只有在完全沒有 expertise_findings 時才會被採用。
+    lvls = [f['skill_level'] for f in out['expertise_findings'] if f.get('skill_level')]
+    if lvls:
+        skill_avg = sum(lvls) / len(lvls)
+        by_name['專業技能深度'] = {
+            'name': '專業技能深度',
+            'score': round(skill_avg * 2),
+            'evidence': next((f['evidence'] for f in out['expertise_findings']
+                              if f.get('skill_level') and f.get('evidence')), ''),
+            'note': f'{len(lvls)} 題專業題平均 {skill_avg:.1f}/5 級'
+                    f'（' + '、'.join(
+                        f"{f.get('skill') or f.get('topic')} {f['skill_level']}級"
+                        for f in out['expertise_findings'] if f.get('skill_level')) + '）',
+        }
+
     dims, got, used_w = [], 0.0, 0
-    for name, w in dims_spec:
-        d = by_name.get(name) or {}
+    for dim_name, w in dims_spec:
+        d = by_name.get(dim_name) or {}
         try:
             sc = int(d.get('score'))
             sc = sc if 0 <= sc <= 10 else None
         except (TypeError, ValueError):
             sc = None
         ev = s(d.get('evidence'))
-        # 沒有原話當證據就不算分——這條跟 prompt 裡的規則是同一件事，
+        # 沒有引用當證據就不算分——這條跟 prompt 裡的規則是同一件事，
         # 在程式端再擋一次，模型忘記時才不會混進沒有依據的分數。
         if sc is not None and not ev:
             sc = None
         if sc is not None:
             got += sc / 10 * w
             used_w += w
-        dims.append({'name': name, 'weight': w, 'score': sc, 'evidence': ev,
+        dims.append({'name': dim_name, 'weight': w, 'score': sc, 'evidence': ev,
                      'note': s(d.get('note')) or ('面談中未涉及' if sc is None else '')})
+
+    missing = [d['name'] for d in dims if d['score'] is None]
     if used_w >= 50:   # 至少要有一半的權重有依據，總分才有意義
+        # 分母只算「有依據」的權重，缺的維度不當 0 分——不然話少的場次會被
+        # 系統性懲罰。這段本來就是對的，2026-09-20 查證過。
         total = round(got / used_w * 100)
         grade = 'A' if total >= 80 else 'B' if total >= 65 else 'C' if total >= 50 else 'D'
-        # ⚠️ 只有一半權重有依據也能算出 80 分＝A，但那個 A 跟六維都問到的 A
-        # 不是同一回事。等第後面掛一句話，顧問才不會把半份資料當完整評估。
-        if used_w < 75:
+        # ⚠️ 2026-09-20 改：原本是 used_w < 75 就掛「（依據不足，僅供參考）」。
+        #    問題是硬條件一項就佔 30（舊制），只要它缺——而它有 50% 的機率會缺
+        #    （最常見是「本次應徵未綁定特定職缺，無硬條件可比對」）——權重必定
+        #    掉到 70，警語必定觸發。42 份報告裡 13 份掛著這句，它變成常態而不是
+        #    警訊，看久了就會被忽略，等於沒有。
+        #    改成兩件事：門檻降到 60（真的只有一半資料才示警），而且**指名缺哪幾維**，
+        #    顧問才判斷得出來這個缺口對這個職缺重不重要。
+        # 兩個條件任一成立就示警：權重不到 60，或超過一半的維度根本沒評到
+        # （後者擋的是「只評到兩三個重權重維度」——權重看起來夠，實際上這場
+        #  只問到一小部分，拿去跟問滿七維的人排序並不公平）。
+        if used_w < 60 or len(missing) > len(dims_spec) / 2:
             grade += '（依據不足，僅供參考）'
-        basis = f'以 {len(dims_spec)} 維中有依據的 {sum(1 for d in dims if d["score"] is not None)} 維計算（權重 {used_w}/100）'
+        basis = (f'以 {len(dims_spec)} 維中有依據的 {len(dims_spec) - len(missing)} 維計算'
+                 f'（權重 {used_w}/100）')
+        if missing:
+            basis += f'；未評分：{"、".join(missing)}'
     else:
         total, grade = None, '資料不足無法評分'
-        basis = f'有依據的維度權重僅 {used_w}/100，低於 50 就不給總分，避免用半份資料排序候選人'
-    out['fit_scores'] = {'dimensions': dims, 'total': total, 'grade': grade, 'basis': basis}
+        basis = (f'有依據的維度權重僅 {used_w}/100，低於 50 就不給總分，'
+                 f'避免用半份資料排序候選人；未評分：{"、".join(missing)}')
+
+    # ⚠️ 2026-09-20 加：總分與 verdict 是兩套獨立產生的東西——總分是程式用固定
+    #    權重算的，verdict 是模型自由判斷的，中間從來沒有人對過帳。實際查到
+    #    王仁君「沒有分數」卻 verdict=值得轉給顧問、蘇雅婷 81 分 A 卻掛著依據不足。
+    #    這裡不自動改任何一邊（改了顧問就不知道模型原本怎麼想），只把矛盾標出來。
+    verdict = out.get('verdict')
+    conflict = None
+    if total is not None:
+        if verdict == '值得轉給顧問' and total < 50:
+            conflict = f'結論寫「值得轉給顧問」但總分只有 {total} 分（{grade}）'
+        elif verdict == '硬條件不符' and total >= 65:
+            conflict = f'結論寫「硬條件不符」但總分有 {total} 分（{grade}）'
+    elif verdict == '值得轉給顧問':
+        conflict = '結論寫「值得轉給顧問」但資料不足到算不出總分'
+    if conflict:
+        log(f'⚠️ {name or "報告"} 結論與分數不一致：{conflict}')
+
+    out['fit_scores'] = {'dimensions': dims, 'total': total, 'grade': grade,
+                         'basis': basis, 'score_verdict_conflict': conflict}
 
     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
     return out
@@ -2315,7 +2413,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
                    f'content_json 是空的。純文字報告正常，但 AI 配對與後台結構化欄位會看不到內容，'
                    f'請額度恢復後手動補產。', THREAD_DECIDE)
             return None
-        data = _normalize_report_json(obj)
+        data = _normalize_report_json(obj, name)
         blob = json.dumps(data, ensure_ascii=False)
         # 存進去之前先驗一次：解回來一定要是物件。多包一層的字串在後台看起來
         # 一切正常（欄位都在），只有產 PDF 那一刻才會炸掉。
