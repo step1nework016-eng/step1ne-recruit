@@ -30,7 +30,7 @@ TIMEOUT = 180
 POLL_SEC = 6
 
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
         'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']

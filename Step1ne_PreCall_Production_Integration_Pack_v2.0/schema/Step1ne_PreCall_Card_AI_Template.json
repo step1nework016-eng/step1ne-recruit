@@ -1,0 +1,57 @@
+{
+  "candidate": {
+    "name": "",
+    "target_role": "",
+    "source": "",
+    "current_role": "",
+    "years_experience": "",
+    "location": ""
+  },
+  "call_goal": "",
+  "hard_gates": [
+    {
+      "label": "",
+      "status": "unknown",
+      "evidence": ""
+    },
+    {
+      "label": "",
+      "status": "unknown",
+      "evidence": ""
+    },
+    {
+      "label": "",
+      "status": "unknown",
+      "evidence": ""
+    }
+  ],
+  "must_ask": [
+    {
+      "question": "",
+      "why": ""
+    },
+    {
+      "question": "",
+      "why": ""
+    },
+    {
+      "question": "",
+      "why": ""
+    }
+  ],
+  "risk_flags": [
+    {
+      "label": "",
+      "priority": "medium"
+    }
+  ],
+  "match_direction": {
+    "primary_role": "",
+    "match_reason": "",
+    "fallback_role": ""
+  },
+  "after_call": {
+    "decision": "",
+    "next_action": ""
+  }
+}

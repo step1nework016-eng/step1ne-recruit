@@ -39,7 +39,7 @@ TIMEOUT = 900   # 要上網查資料，比產報告久得多
 # 可以查資料，但不准碰這台電腦。跟 interview_daemon 的 NO_TOOLS 是同一個道理，
 # 只是這裡刻意把 WebSearch／WebFetch 留下來。
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,AskUserQuestion,TodoWrite,'
-        'BashOutput,KillShell,SlashCommand,Skill,Agent,Artifact,Monitor,'
+        'BashOutput,KillShell,Skill,Agent,Artifact,Monitor,'
         'CronCreate,CronDelete,CronList')
 # ⚠️ headless 模式下 WebSearch 會卡在權限提示（實測：模型回一句「需要您授權」
 # 就結束了）。要配 bypassPermissions 才跑得動——危險的工具已經在上面那份

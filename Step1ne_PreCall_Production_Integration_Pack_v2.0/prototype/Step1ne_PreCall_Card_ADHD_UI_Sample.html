@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Step1ne Pre-call Card｜ADHD UI Sample</title>
+<style>
+  :root{
+    --bg:#f4f7fb; --panel:#ffffff; --text:#132238; --muted:#6c7a90;
+    --line:#dbe4ef; --primary:#195fb4; --primary-2:#eaf3ff;
+    --good:#0f8a5f; --good-bg:#e9f8f2; --warn:#a86b00; --warn-bg:#fff5df;
+    --bad:#b54b4b; --bad-bg:#fff0f0; --shadow:0 8px 26px rgba(31,50,81,.08);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif;background:var(--bg);color:var(--text)}
+  .shell{max-width:980px;margin:0 auto;padding:24px}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px}
+  .title h1{font-size:24px;margin:0 0 6px}
+  .title p{margin:0;color:var(--muted);font-size:14px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap}
+  button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+  button.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden}
+  .card-h{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px}
+  .card-h h2{font-size:17px;margin:0}
+  .badge{font-size:12px;padding:6px 9px;border-radius:999px;background:var(--primary-2);color:var(--primary);font-weight:800}
+  .content{padding:18px}
+  .hero{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+  .candidate{padding:18px;background:linear-gradient(135deg,#eef5ff,#fff);border:1px solid #d7e6fb;border-radius:16px}
+  .candidate-name{font-size:26px;font-weight:900;margin-bottom:6px}
+  .meta{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-size:13px;background:#fff;border:1px solid var(--line);padding:7px 10px;border-radius:999px}
+  .goal{padding:18px;border-radius:16px;background:#132238;color:#fff}
+  .goal small{opacity:.7}
+  .goal strong{display:block;font-size:18px;line-height:1.5;margin-top:8px}
+  .gate-list{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .gate{padding:14px;border:1px solid var(--line);border-radius:14px}
+  .gate .row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .status{font-size:12px;padding:5px 8px;border-radius:999px;font-weight:800}
+  .status.good{background:var(--good-bg);color:var(--good)}
+  .status.warn{background:var(--warn-bg);color:var(--warn)}
+  .status.bad{background:var(--bad-bg);color:var(--bad)}
+  .gate p{margin:10px 0 0;font-size:13px;color:var(--muted);line-height:1.45}
+  .questions{display:grid;gap:10px}
+  .q{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:flex-start;padding:14px;border:1px solid var(--line);border-radius:14px}
+  .num{width:34px;height:34px;border-radius:10px;background:var(--primary-2);color:var(--primary);display:grid;place-items:center;font-weight:900}
+  .q strong{display:block;line-height:1.45}
+  .q small{display:block;color:var(--muted);margin-top:5px}
+  .check{margin-top:3px}
+  .risk{display:flex;gap:10px;align-items:flex-start;padding:13px;border-radius:12px;background:var(--warn-bg);color:#6f4b08}
+  .route{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .route .box{padding:14px;border:1px solid var(--line);border-radius:14px}
+  .route small{color:var(--muted)}
+  details{margin-top:8px}
+  summary{cursor:pointer;color:var(--primary);font-weight:800}
+  .secondary{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .field{border:1px dashed var(--line);border-radius:12px;padding:12px}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+  .editable{outline:none}
+  .editable:focus{box-shadow:0 0 0 2px #bfd8fb inset;border-radius:4px}
+  .footer-note{text-align:center;color:var(--muted);font-size:12px;padding:10px}
+  .blank-placeholder{color:#9aa7b7;font-style:italic}
+  @media(max-width:760px){
+    .shell{padding:14px}
+    .topbar{align-items:flex-start;flex-direction:column}
+    .hero,.gate-list,.route,.secondary{grid-template-columns:1fr}
+    .candidate-name{font-size:22px}
+    .q{grid-template-columns:38px 1fr}
+    .check{grid-column:2}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="title">
+      <h1>⚡ Pre-call Card</h1>
+      <p>60–90 秒看完｜AI 先填，顧問只確認</p>
+    </div>
+    <div class="actions">
+      <button id="sampleBtn">範例</button>
+      <button id="blankBtn">空白模板</button>
+      <button class="primary">開始電洽</button>
+    </div>
+  </div>
+
+  <section class="hero">
+    <div class="candidate">
+      <div class="candidate-name editable" id="name" contenteditable="true">王小明</div>
+      <div class="meta">
+        <span class="chip editable" id="role" contenteditable="true">BIM 工程師候選人</span>
+        <span class="chip editable" id="exp" contenteditable="true">1.5 年相關經驗</span>
+        <span class="chip editable" id="loc" contenteditable="true">新竹 / 苗栗可談</span>
+      </div>
+      <details>
+        <summary>看更多已知資訊</summary>
+        <div class="secondary">
+          <div class="field"><label>現職</label><div class="editable" id="current" contenteditable="true">建築顧問公司 BIM 助理工程師</div></div>
+          <div class="field"><label>工具</label><div class="editable" id="tools" contenteditable="true">Revit、AutoCAD</div></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="goal">
+      <small>🎯 這通電話只要確認</small>
+      <strong class="editable" id="goal" contenteditable="true">能不能推「半導體廠 BIM」：Revit 深度＋機電整合＋銅鑼/無塵室接受度</strong>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>🚪 1. Hard Gate</h2>
+      <span class="badge">最多 3 個</span>
+    </div>
+    <div class="content gate-list" id="gates">
+      <div class="gate">
+        <div class="row"><strong class="editable" contenteditable="true">Revit 實作</strong><span class="status warn">待確認</span></div>
+        <p class="editable" contenteditable="true">履歷有寫，但看不出是否可獨立建模。</p>
+      </div>
+      <div class="gate">
+        <div class="row"><strong class="editable" contenteditable="true">機電/管線整合</strong><span class="status warn">待確認</span></div>
+        <p class="editable" contenteditable="true">可能只有建築模型經驗。</p>
+      </div>
+      <div class="gate">
+        <div class="row"><strong class="editable" contenteditable="true">地點＋案場型態</strong><span class="status good">可能符合</span></div>
+        <p class="editable" contenteditable="true">需確認銅鑼與部分無塵室工作接受度。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>🔥 2. 今天只問這 3 題</h2>
+      <span class="badge">不要超過 3 題</span>
+    </div>
+    <div class="content questions" id="questions">
+      <div class="q">
+        <div class="num">1</div>
+        <div><strong class="editable" contenteditable="true">你現在用 Revit，通常是自己從零建模，還是接既有模型修改？</strong><small class="editable" contenteditable="true">驗證：Revit 實作深度</small></div>
+        <input class="check" type="checkbox" />
+      </div>
+      <div class="q">
+        <div class="num">2</div>
+        <div><strong class="editable" contenteditable="true">有沒有實際碰過機電、管線或設備整合？你自己負責到哪一段？</strong><small class="editable" contenteditable="true">驗證：MEP / 協作能力</small></div>
+        <input class="check" type="checkbox" />
+      </div>
+      <div class="q">
+        <div class="num">3</div>
+        <div><strong class="editable" contenteditable="true">如果工作在苗栗銅鑼，約 7 成辦公室、3 成無塵室現場，你會排斥嗎？</strong><small class="editable" contenteditable="true">驗證：地點＋工作型態</small></div>
+        <input class="check" type="checkbox" />
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>⚠️ 3. 只看 1 個風險</h2>
+      <span class="badge">必要才展開</span>
+    </div>
+    <div class="content">
+      <div class="risk"><strong>AI Flag：</strong><span class="editable" id="risk" contenteditable="true">履歷只有「協助 BIM 建模」，無法判斷是否可獨立完成模型。</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>➡️ 4. 電話後往哪走</h2>
+      <span class="badge">先想好路徑</span>
+    </div>
+    <div class="content route">
+      <div class="box"><small>符合</small><strong class="editable" contenteditable="true" style="display:block;margin-top:6px">推 BIM 工程師</strong></div>
+      <div class="box"><small>部分符合</small><strong class="editable" contenteditable="true" style="display:block;margin-top:6px">補技能證據 / 看其他工程職</strong></div>
+      <div class="box"><small>不符合</small><strong class="editable" contenteditable="true" style="display:block;margin-top:6px">人才池 / 不強推</strong></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>🧠 5. 顧問只要做的事</h2>
+      <span class="badge">10 秒檢查</span>
+    </div>
+    <div class="content">
+      <label><input type="checkbox"> 目標看得懂</label><br><br>
+      <label><input type="checkbox"> 3 個 Gate 沒有廢話</label><br><br>
+      <label><input type="checkbox"> 3 題真的能改變判斷</label><br><br>
+      <label><input type="checkbox"> 知道符合 / 不符合後怎麼走</label>
+    </div>
+  </section>
+
+  <div class="footer-note">ADHD 原則：少欄位、先重點、能勾選就不打字、次要資訊折疊。</div>
+</div>
+
+<script>
+const sample = {
+  name:"王小明", role:"BIM 工程師候選人", exp:"1.5 年相關經驗", loc:"新竹 / 苗栗可談",
+  current:"建築顧問公司 BIM 助理工程師", tools:"Revit、AutoCAD",
+  goal:"能不能推「半導體廠 BIM」：Revit 深度＋機電整合＋銅鑼/無塵室接受度",
+  risk:"履歷只有「協助 BIM 建模」，無法判斷是否可獨立完成模型。"
+}
+const blank = {
+  name:"候選人姓名", role:"目標職缺", exp:"相關年資", loc:"地點",
+  current:"＿＿＿＿＿＿", tools:"＿＿＿＿＿＿",
+  goal:"今天這通電話只要確認：＿＿＿＿＿＿＿＿＿＿＿＿",
+  risk:"AI 發現的最大疑點：＿＿＿＿＿＿＿＿＿＿＿＿"
+}
+function apply(data){
+  Object.keys(data).forEach(k=>{const el=document.getElementById(k); if(el) el.textContent=data[k]})
+}
+document.getElementById("sampleBtn").onclick=()=>apply(sample)
+document.getElementById("blankBtn").onclick=()=>apply(blank)
+</script>
+</body>
+</html>

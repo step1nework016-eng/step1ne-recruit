@@ -1,0 +1,7 @@
+{
+  "route": "CREATIVE_CONTENT",
+  "archetype_locked": true,
+  "calibration_result": "ROUTE_CALIBRATION_FAILED",
+  "candidates": [],
+  "run_summary": "see audit file brand-social-video-editor-neihu_20260918_calibration_failed.json (round 4, 1/5 MATCH, gate requires 4/5)"
+}

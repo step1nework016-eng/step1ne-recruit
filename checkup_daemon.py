@@ -46,7 +46,7 @@ SKILL_PATH = os.path.expanduser(
 #    並且一定要帶 --setting-sources ''，否則使用者全域 CLAUDE.md 的 agentacct 規則
 #    會在工具被關掉之後把輸出整個吃掉。）
 _BAN_TOOLS = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-              'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+              'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
               'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN_TOOLS,
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',

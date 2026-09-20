@@ -1,0 +1,158 @@
+{
+  "slug": "brand-social-video-editor-neihu",
+  "run_date": "2026-09-18",
+  "run_type": "INCREMENTAL_DAILY_RUN_CALIBRATION_ROUND_4",
+  "persistent_state": "LOADED - brand-social-video-editor-neihu_20260916_calibration_failed.json + brand-social-video-editor-neihu_20260917_calibration_failed.json",
+  "prior_run_reference": "2026-09-16 rounds 1-2 (0/5, 0/5); 2026-09-17 round 3 (0/5). Cumulative before this run: 3 rounds, 15 samples, 0 MATCH. Open human checkpoints: #2 (salary band), #3 (Cake/104/LinkedIn as primary discovery source).",
+  "candidate_memory_ledger_loaded": [
+    "陳禹瑞", "陳思傑", "黃亭維", "游佳偉", "Ziv(筆名)", "聖翔", "黃名毅", "羅喬綾",
+    "明室影像創辦人", "黑焦耳攝影工作室", "李中琪", "馮鈺婷", "葉韋廷", "李瑾潔/郭千儀",
+    "只要有人社群顧問(組織)"
+  ],
+  "route": {
+    "primary_ecosystem": "CREATIVE_CONTENT",
+    "secondary_ecosystem": "SALES_OPERATIONS",
+    "seniority": "mid",
+    "employment_mode": "permanent / onsite",
+    "evidence_mode": "portfolio + public-content",
+    "overlays": ["PORTFOLIO_REQUIRED", "SHIFT_OR_ATTENDANCE"],
+    "route_reconfirmed": "與 job-strategy-router.md 基準案例表『品牌社群影音編輯』該列一致。四輪下來 Route 代碼本身仍未被證偽；失敗點在來源生態與證據深度，不在路由選擇。"
+  },
+  "lock_audit_round_4": {
+    "purpose": "在重跑第四輪前，先稽核 Archetype Lock 是否含有『非 JD 推導』的過度限制，避免第四次重複同一失敗",
+    "revision_1": {
+      "item": "『純自由接案者（未驗證正職意願）』由 NEGATIVE ARCHETYPE 降級為 HARD GATE",
+      "justification": "JD 本文未排除接案者；must_skills 為『3年以上社群行銷**或**影音製作相關經驗』(OR)。且 full-prompt-v3.4 第五步已提供 CONTACT_AFTER_CONFIRMATION 類別專門處理未確認之 hard gate，前三輪以 MISMATCH 排除接案者屬框架誤用，非 JD 要求。",
+      "effect": "具3年以上實作經驗之個人影像/剪輯工作者本輪起可計 MATCH，正職意願改列待確認項"
+    },
+    "revision_2": {
+      "item": "月薪 40,000 由『薪資帶上限』更正為『下限』",
+      "justification": "JD salary_min=40000 / salary_unit=MONTH 為起薪下限，JD 未載明上限。前三輪將其當作成熟度天花板使用，屬 ASSUMPTION_TO_CONFIRM 被誤當 hard reject 依據。",
+      "effect": "薪資期待改列 CONTACT_AFTER_CONFIRMATION；僅在職級明確為創辦人/總監/營運長或20年以上資歷時才判 MISMATCH"
+    },
+    "revision_3": {
+      "item": "成熟度上限由 3-8 年放寬為 3-10 年",
+      "justification": "JD 僅載明『3年以上』，未設上限"
+    },
+    "unchanged_negatives": [
+      "創辦人/負責人/CEO/總監/經理級（full-prompt 第五步 Role level 規定）",
+      "CELEBRITY 知名度層級之 KOL/網紅本人",
+      "純策略/純投放、無影音 hands-on 證據者",
+      "純平面設計（無影音）、純 VFX 後期專才",
+      "3年以下經驗",
+      "組織頁無具名個人",
+      "僅筆名/單名、無法取得姓名＋兩項一致錨點者"
+    ],
+    "unchanged_ceiling": "VISIBILITY_TIER 限 EMERGING–GROWING"
+  },
+  "calibration_round_4": {
+    "source_families_tested": [
+      {"family": "個人作品集網站／about me 頁", "status": "FOUND_BUT_AGENCY_DOMINATED", "note": "命中為工作室與作品集平台工具文，非具名個人"},
+      {"family": "品牌 in-house 社群影音 具名人員", "status": "SEARCHED_NOT_FOUND", "note": "命中全為職缺頁(104/Yourator/Indeed/台北就業服務處)，非在職具名個人"},
+      {"family": "LinkedIn 公開個人頁（搜尋引擎可見）", "status": "HTTP_999_BLOCKED", "note": "tw.linkedin.com/in/wei-yi-huang、/in/dinowong97 經 WebFetch 均回 HTTP 999。記為技術阻擋狀態，未改寫為 NOT_FOUND，未嘗試任何登入或繞過。僅餘搜尋結果標題(姓名＋headline)，不足兩項一致錨點。"},
+      {"family": "Vimeo 台灣影像工作者", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "命中 HY FILMS、台灣多媒體、翹楚映像等公司/工作室帳號，無具名個人"},
+      {"family": "PRO360 達人網 公開專家頁", "status": "FOUND_VERIFIED", "note": "★本輪唯一產出『正確職級層』具名個人的來源家族：個人接案者，非創辦人、非名人"},
+      {"family": "Portaly 個人頁", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "命中 Louie Studio 等團隊帳號"},
+      {"family": "社群丼／社群行銷社群內容作者", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "具名貢獻者為『只要有人』(已在 ledger，CROSS_SOURCE_DUPLICATE) 與『阿力口』(彩妝品牌社群經理，經理級＋別名)"},
+      {"family": "重機/車業 YouTube 具名影音製作人員", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "命中 13N、康康嘴機車、教士、超激人、魯特、克里夫三 等 — 均為 KOL/頻道主本人，GROWING~CELEBRITY 層級，職能為出鏡創作者非品牌端編輯"},
+      {"family": "大學系所 系友專訪／校友動態", "status": "FOUND_BUT_ARCHETYPE_MISMATCH", "note": "世新/輔大/銘傳/臺藝大 公開具名者集中於『傑出校友』與金鐘得獎者，屬 ESTABLISHED 以上層級，超出知名度上限"},
+      {"family": "影像製作公司 官網團隊介紹頁", "status": "SEARCHED_NOT_FOUND", "note": "公司頁僅描述職能編制(導演/攝影/剪輯)，不列成員姓名"},
+      {"family": "數位行銷公司 官網團隊成員頁", "status": "SEARCHED_NOT_FOUND", "note": "同上，僅列服務項目與公司地址"},
+      {"family": "從業者職涯自述（部落格/內容平台）", "status": "SEARCHED_NOT_FOUND", "note": "命中短影音工具教學文與代操公司推薦文"}
+    ],
+    "samples": [
+      {
+        "name": "陳穎萱",
+        "company": "自由接案（個人；自營 YouTube 頻道）",
+        "role": "影片剪輯師",
+        "location": "台北市內湖區",
+        "source_url": "https://www.pro360.com.tw/service/390033",
+        "verdict": "MATCH",
+        "reason": "國立臺灣藝術大學畢業(符合專科以上)；畢業後即從事剪輯，現為自由接案並自營 YouTube 頻道，企劃、拍攝、後製一人包辦 — 與 JD『獨立完成短影片製作(腳本/畫面/拍攝/剪輯)』高度對應；地點台北內湖，與職缺同一行政區；非創辦人、非工作室負責人、非名人層級，VISIBILITY_TIER=EMERGING，符合知名度上限；40K 起薪對此成熟度合理。",
+        "open_hard_gates": ["3年以上年資未載明(平台顯示 0 筆成交、9 次瀏覽)", "FB/IG/YT/LINE/GMB 社群營運經驗無證據", "基礎美編能力無證據", "英文中等未驗證", "正職意願未確認"]
+      },
+      {
+        "name": "呂冠樺",
+        "company": "自由接案（個人）",
+        "role": "影片剪輯／平面設計",
+        "location": "新北市三重區",
+        "source_url": "https://www.pro360.com.tw/service/306055",
+        "verdict": "UNCERTAIN",
+        "reason": "同時具備影片剪輯／後製／YouTube 剪輯／vlog 與 LOGO、名片、平面設計 — 罕見地同時對應 JD 的『影音短片剪輯能力』與『基礎美編能力』兩項必要條件；三重可通勤內湖。但服務項目偏生日影片、旅遊影片等消費性案件，無任何品牌社群營運證據；年資未載明、平台 0 筆成交、無自述。證據深度不足以判 MATCH。",
+        "open_hard_gates": ["年資未知", "無品牌/社群端經驗證據", "正職意願未確認"]
+      },
+      {
+        "name": "蔣羽玟",
+        "company": "自由接案（個人）；曾任新聞台動畫部",
+        "role": "平面設計師（前 動畫/剪輯）",
+        "location": "新北市蘆洲區",
+        "source_url": "https://www.pro360.com.tw/service/278405",
+        "verdict": "MISMATCH",
+        "reason": "現職定位為自由接案平面設計師，服務項目 20 餘項全屬平面(LOGO/名片/海報/DM/插畫/LINE貼圖)，影音僅存在於『曾任新聞台動畫部』之過去經歷；作品集 2018-2022 可推得約 4 年年資且具基礎美編能力，但 JD 核心之『社群營運＋短影音一人包辦』無現期證據 — 命中 Lock 未變更之負向類型『純平面設計（無影音）』。",
+        "open_hard_gates": []
+      },
+      {
+        "name": "黄为益 (Wei-Yi Huang)",
+        "company": "未能取得",
+        "role": "動態影像設計師／剪輯師／新媒體藝術家",
+        "location": "台灣（由 tw.linkedin.com 網域推得，非直接證據）",
+        "source_url": "https://tw.linkedin.com/in/wei-yi-huang/zh-cn",
+        "verdict": "UNCERTAIN",
+        "reason": "IDENTITY_UNRESOLVED：LinkedIn 公開頁 WebFetch 回 HTTP 999 存取受阻，未嘗試登入或繞過，僅餘搜尋結果標題。可取得資訊僅姓名＋headline，無法滿足 full-prompt 第四步『姓名＋公司/學校/專案/技能/地點/角色/時間線中至少兩項一致錨點』。另 headline 含『新媒體藝術家』，有落入藝術創作生態之風險。依規不得寫入 Candidate Pool。",
+        "open_hard_gates": ["身分未解析", "現職未知", "年資未知"]
+      },
+      {
+        "name": "阿力口（別名）",
+        "company": "某彩妝品牌",
+        "role": "社群經理",
+        "location": "未載明",
+        "source_url": "https://medium.com/%E7%A4%BE%E7%BE%A4%E4%B8%BC-spotlight/about",
+        "verdict": "MISMATCH",
+        "reason": "職級為社群『經理』，且曾任臺灣吧角色經紀大總管 — 命中 Lock 未變更之負向類型『經理級』(full-prompt 第五步 Role level：主管不得因公開資料豐富而進 Direct Pool)；且僅有別名，無精確姓名，身分無法解析。",
+        "open_hard_gates": []
+      }
+    ],
+    "result": "1_OF_5_MATCH",
+    "gate_required": "4_OF_5",
+    "false_positive_pattern": "第四輪已主動放寬三項非 JD 推導的 Lock 限制（接案者、薪資上限、成熟度上限），排除了『Lock 過嚴』這個假設。結果仍為 1/5：公開網路上具名者依然系統性落在創辦人、經理級、工作室/公司帳號、KOL 頻道主與傑出校友；唯一產出正確職級層(執行層個人)的來源是接案媒合平台，但該類頁面結構性不揭露年資與受僱經歷，因此可取得的證據深度無法通過 JD 的『3年以上』與『社群營運』兩項必要條件驗證。失敗原因自前三輪的『職級層錯誤』轉變為『職級層正確但證據深度不足』。"
+  },
+  "cumulative_calibration": "4 rounds, 20 samples, 1 MATCH — 連續四輪未達 4/5 門檻",
+  "structural_conclusion": "『品牌端正職、一人包辦社群營運＋短影音製作、3-10年、台北內湖』這個原型在合法公開之非招募來源中不留下可歸屬且可驗證的個人證據：(a)品牌端與代理商官網不列執行層成員姓名；(b)業界標準作法建議員工不以個人帳號經營品牌頻道；(c)獎項只 credit 代理商不 credit 個人；(d)職訓結訓名冊屬個資未公開；(e)校友專訪只報導傑出/得獎校友；(f)接案平台雖產出正確職級層之具名個人，但不揭露受僱年資與品牌社群營運經歷。",
+  "key_new_finding": "PRO360 等接案媒合平台為四輪以來第一個產出『正確職級層』具名個人之來源家族（執行層個人，非創辦人/非名人），應標記 ACTIVE 而非 RETIRED。其缺口是證據深度而非人才方向 — 而年資與現職正是公開履歷平台(Cake/104)頁面會揭露的欄位。此為 checkpoint #3 提供了正面證據：授權公開履歷平台為主要發現來源，可直接補上目前唯一的缺口。",
+  "final_status": "ROUTE_CALIBRATION_FAILED",
+  "bulk_sourcing_executed": false,
+  "contact_enrichment_executed": false,
+  "delta_metrics": {
+    "new_unique_raw_leads": 0,
+    "calibration_samples_reviewed": 5,
+    "new_identities_seen_not_counted_as_leads": 5,
+    "identity_unresolved": 2,
+    "cross_source_duplicates": 1,
+    "qualified": 0,
+    "verified_email": 0,
+    "email_ready": 0,
+    "dual_channel": 0,
+    "linkedin_manual_queue": 0,
+    "client_ready": 0
+  },
+  "daily_success_level": "BLOCKED",
+  "auto_outreach_target_missed": true,
+  "source_memory_updates": [
+    {"source": "PRO360 達人網 公開專家頁", "new_state": "ACTIVE", "reason": "四輪來唯一產出正確職級層具名個人；缺口為證據深度非人才方向，不得 retire"},
+    {"source": "Tasker 出任務 公開專家頁", "new_state": "RERUN_ON_NEW_ANCHOR", "reason": "同屬接案媒合平台家族，前次僅得單名(聖翔)；若取得年資揭露路徑可重啟"},
+    {"source": "LinkedIn 公開個人頁", "new_state": "HUMAN_ACTION_REQUIRED", "reason": "HTTP 999 自動化存取阻擋（技術狀態，非 NOT_FOUND）；需人工以瀏覽器檢視公開頁"},
+    {"source": "大學系所 系友專訪／校友動態", "new_state": "RETIRED_FOR_THIS_JD", "reason": "具名者結構性為傑出校友/金鐘得獎者，超出知名度上限"},
+    {"source": "影像製作公司／數位行銷公司 官網團隊頁", "new_state": "RETIRED_FOR_THIS_JD", "reason": "不列成員姓名，兩輪 0 具名產出"},
+    {"source": "Vimeo／Portaly 台灣影像帳號", "new_state": "COOLDOWN_14D", "reason": "命中為公司/工作室帳號，0 具名執行層個人"},
+    {"source": "社群丼／社群行銷內容社群", "new_state": "RETIRED_FOR_THIS_JD", "reason": "具名貢獻者為顧問公司創辦人與經理級"},
+    {"source": "重機/車業 YouTube 頻道", "new_state": "RETIRED_FOR_THIS_JD", "reason": "具名者為 KOL/頻道主本人，職能與知名度層級均不符"},
+    {"source": "Behance", "new_state": "HUMAN_ACTION_REQUIRED", "reason": "前次 HTTP 403，技術狀態維持，未改寫為 NOT_FOUND"}
+  ],
+  "open_human_checkpoints": [
+    {"id": 2, "question": "40K/月薪資帶是否可上修", "status": "PARTIALLY_RESOLVED_BY_AGENT", "note": "本輪已稽核出 salary_min 係下限非上限，Lock 已更正；此點不再是失敗主因"},
+    {"id": 3, "question": "是否授權 Cake／104 等公開履歷平台頁升為主要發現來源（將突破 70% 非招募來源規則，須標記 SOURCE_MIX_PARTIAL）", "status": "STILL_OPEN_AND_NOW_EVIDENCE_BACKED", "note": "第四輪取得正面證據：正確職級層之人才確實存在且具名(PRO360)，唯一缺口是年資與受僱經歷之揭露，而這正是公開履歷頁的欄位"},
+    {"id": 4, "question": "【本輪新增】是否接受『個人接案影像工作者』為可直接接觸之候選人（正職意願列為面談確認項）", "status": "NEW_OPEN", "note": "Lock 已技術性放寬，但此為顧問與客戶的商業判斷，建議明示確認"}
+  ],
+  "next_action": "停在校準閘門，不執行批量搜尋與 Contact Enrichment。建議取得 checkpoint #3 授權（公開履歷平台升為主要發現來源並標記 SOURCE_MIX_PARTIAL）後重跑第五輪 5 人校準；此為四輪證據指向的唯一可望改變結果之路徑。checkpoint #4 可一併確認以擴大可用池。陳穎萱（內湖、臺藝大、一人包辦）保留於 IDENTITY_QUEUE，待授權後優先驗證年資與社群營運經歷，本輪未對其執行任何 Email／電話深查。",
+  "compliance": "僅使用合法公開資訊；未登入任何平台；未以任何帳號自動化操作 LinkedIn／Cake／PRO360 或其他平台；未繞過驗證碼、付費牆或登入限制（LinkedIn HTTP 999 與 Behance HTTP 403 均如實記為技術阻擋並改道）；未使用外洩資料庫；未以猜測方式產生任何 Email；未依就業服務法第5條保護項目（年齡、性別、婚姻、國籍、身心障礙、宗教等）進行篩選、排序或排除，全程僅以可觀察之工作行為證據（作品、技能、工具、地點、職級、年資）為判斷依據。"
+}

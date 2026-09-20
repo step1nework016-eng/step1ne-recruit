@@ -115,7 +115,7 @@ LINE_OA_URL = 'https://lin.ee/XcSWPzM'
 #    改用 --disallowed-tools 逐一列名（實測有效，只剩下無害的 plan/worktree 類）。
 #    ⚠️ 之後 Claude Code 新增工具時要回來補這份清單。
 _BAN_TOOLS = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-              'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+              'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
               'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN_TOOLS,
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
@@ -144,6 +144,7 @@ _lock = threading.Lock()
 # 下一輪自動重試），改用長一點的鎖節流，額度重置後自然接上，候選人不用重講一次。
 RATE_LIMIT_RETRY_SEC = 300      # 額度打滿時，同一場隔多久才重試一次
 RATE_LIMIT_NOTIFY_COOLDOWN_SEC = 1800  # 同一次額度事故只提醒 Jacky 一次，不要洗版
+REPORT_JSON_MAX_ATTEMPTS = 2    # 產結構化報告撞額度時的重試次數（見 report_to_json）
 _rate_limit_notified_at = 0.0
 
 
@@ -1087,8 +1088,13 @@ def _fetch_static(app_id):
         oj = d1(f"SELECT slug, title, main_duties, locations, salary_note, service_line, "
                 f"seniority, must_skills, required_conditions, nice_to_have_skills, "
                 f"language_requirement, personality_traits "
+                # ⚠️ 2026-09-20 修：原本寫 ORDER BY created_at，但 jobs 表根本沒有
+                # 這個欄位（只有 updated_at），所以這段從 2026-09-16 加上去那天起
+                # 就 100% 拋例外——被 except 吞掉只留一行警告，「跨職缺簡答／主動
+                # 推薦其他職缺」這個功能等於從來沒生效過，阿財拿到的 other_jobs
+                # 一直是空的。
                 f"FROM jobs WHERE status='open' AND slug != {q(cur_slug)} "
-                f"ORDER BY created_at DESC LIMIT 40")
+                f"ORDER BY updated_at DESC LIMIT 40")
         static['other_jobs'] = oj
     except Exception as e:
         log(f'⚠️ 其他在辦職缺清單載入失敗（面談照常，只是少了跨職缺簡答功能）：{e}')
@@ -2247,7 +2253,7 @@ def _normalize_report_json(obj):
     return out
 
 
-def report_to_json(report, ctx, name='', app_id=None):
+def report_to_json(report, ctx, name='', app_id=None, attempt=0):
     """把已經產好的純文字報告轉成結構化 JSON，回傳字串；任何失敗都回 None。
 
     ⚠️ 這個函式**不准往外丟例外**。它失敗只代表 content_json 存 NULL，
@@ -2281,8 +2287,33 @@ def report_to_json(report, ctx, name='', app_id=None):
         log_token_usage(app_id, 'report_json', prompt, _before_files)
         obj = _extract_json(r.stdout)
         if obj is None:
+            out = (r.stdout or '') + (r.stderr or '')
+            # ⚠️ 2026-09-20 加：撞到額度上限時，CLI 吐的是「You've hit your limit」
+            # 而不是 JSON，_extract_json 回 None，這裡就把 content_json 存成 NULL
+            # 而且永遠不再重試——全系統沒有任何一支程式會回頭補（grep
+            # 'content_json IS NULL' 是零命中）。
+            #
+            # 實際損失：59 筆報告裡有 12 筆是 NULL（2026-07-30～08-12）。
+            # 徐振倫 8/12 那筆就是這樣壞的。更嚴重的是林均緯——他的純文字報告
+            # 白紙黑字寫「❌ 不接受派遣（問兩次，明確拒絕）」，但 P3 推薦引擎
+            # 只讀 content_json，讀到 NULL，等於完全沒看到這個拒絕，只能拿應徵
+            # 表單的「有 Revit 證照」去配對。那次剛好配到全職職缺沒出事，
+            # 但這是運氣，不是設計。
+            #
+            # 對談那條路早就有 _is_rate_limit_error() 的保護（延長鎖、稍後重試），
+            # 報告這條路一直沒有。補上：額度問題就重試，不要把它當成「這份報告
+            # 本來就沒有結構化內容」而永久寫死。
+            if _is_rate_limit_error(Exception(out)) and attempt < REPORT_JSON_MAX_ATTEMPTS:
+                log(f'⏳ {name} 產結構化報告撞到額度上限，'
+                    f'{RATE_LIMIT_RETRY_SEC} 秒後重試（第 {attempt + 1}/{REPORT_JSON_MAX_ATTEMPTS} 次）')
+                time.sleep(RATE_LIMIT_RETRY_SEC)
+                return report_to_json(report, ctx, name, app_id, attempt + 1)
             log(f'⚠️ {name} 結構化報告解析失敗，content_json 存 NULL'
-                f'（純文字報告不受影響）：{(r.stdout or r.stderr or "")[:200]}')
+                f'（純文字報告不受影響）：{out[:200]}')
+            if _is_rate_limit_error(Exception(out)):
+                tg(f'⚠️ {name} 的結構化報告因為額度上限重試 {REPORT_JSON_MAX_ATTEMPTS} 次仍失敗，'
+                   f'content_json 是空的。純文字報告正常，但 AI 配對與後台結構化欄位會看不到內容，'
+                   f'請額度恢復後手動補產。', THREAD_DECIDE)
             return None
         data = _normalize_report_json(obj)
         blob = json.dumps(data, ensure_ascii=False)

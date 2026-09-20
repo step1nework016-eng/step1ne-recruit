@@ -40,7 +40,7 @@ TIMEOUT = 240
 API = 'https://step1ne-backoffice-worker.aiagentg888.workers.dev'
 
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
         'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']

@@ -36,7 +36,7 @@ TIMEOUT = 240
 
 # 這支不需要上網，所以工具全禁——跟產報告那支同一套標準。
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
         'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']

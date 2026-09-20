@@ -384,7 +384,7 @@ def run_claude(prompt):
     r = subprocess.run(
         ['claude', '-p', sanitize(prompt), '--model', POST_MODEL,
          '--disallowed-tools', 'Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-                                'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+                                'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
                                 'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList',
          '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
          '--setting-sources', '', '--output-format', 'text'],

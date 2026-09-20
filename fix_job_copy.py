@@ -46,7 +46,7 @@ TIMEOUT = 420
 SITE = 'https://step1ne.com'
 
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
         'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']

@@ -1,0 +1,19 @@
+{
+  "package": "Step1ne_PreCall_Production_Integration_Pack",
+  "version": "2.0",
+  "date": "2026-09-17",
+  "phase": "Phase 1 - Read-only Pre-call Card",
+  "docs_complete": "00-09",
+  "includes_integration_audit": true,
+  "includes_ui_reference": true,
+  "includes_prototype": true,
+  "includes_schema_template": true,
+  "phase_2_3_locked": true,
+  "pending_product_decisions": [
+    "precall_card_json cache timing",
+    "consultant question editing timing",
+    "pre-call route preview",
+    "partial UI copy"
+  ],
+  "missing_sources": []
+}

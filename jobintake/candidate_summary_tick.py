@@ -53,7 +53,7 @@ TIMEOUT = 180
 # 跟 interview_daemon.py 的 NO_TOOLS 同一個道理：純文字改寫，不需要查資料、
 # 也不准碰這台電腦。
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,SlashCommand,Skill,'
+        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
         'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
 NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']

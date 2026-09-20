@@ -1,0 +1,289 @@
+{
+  "slug": "brand-social-video-editor-neihu",
+  "run_date": "2026-09-19",
+  "run_type": "INCREMENTAL_DAILY_RUN_CALIBRATION_ROUND_5",
+  "persistent_state": "LOADED - 20260916_calibration_failed.json + 20260917_calibration_failed.json + 20260918_calibration_failed.json",
+  "prior_run_reference": "2026-09-16 rounds 1-2 (0/5, 0/5); 2026-09-17 round 3 (0/5); 2026-09-18 round 4 (1/5). Cumulative before this run: 4 rounds, 20 samples, 1 MATCH. Open human checkpoints: #2 (PARTIALLY_RESOLVED), #3 (public resume platforms as primary discovery source), #4 (accept freelance imaging workers as direct candidates).",
+  "candidate_memory_ledger_loaded": [
+    "陳禹瑞",
+    "陳思傑",
+    "黃亭維",
+    "游佳偉",
+    "Ziv(筆名)",
+    "聖翔",
+    "黃名毅",
+    "羅喬綾",
+    "明室影像創辦人",
+    "黑焦耳攝影工作室",
+    "李中琪",
+    "馮鈺婷",
+    "葉韋廷",
+    "李瑾潔/郭千儀",
+    "只要有人社群顧問(組織)",
+    "陳穎萱(MATCH, IDENTITY_QUEUE)",
+    "呂冠樺(UNCERTAIN)",
+    "蔣羽玟(MISMATCH)",
+    "黄为益(IDENTITY_UNRESOLVED)",
+    "阿力口(MISMATCH)"
+  ],
+  "ledger_dedup_result": "本輪 5 位樣本與 20 筆既有身分逐一比對（精確姓名、正規化姓名、別名、組織、專案、技能、地點、Username、時間線），0 筆重複；陳穎萱維持 IDENTITY_QUEUE，本輪未對其執行任何 Email／電話深查（校準未通過，依規不得進入 Contact Enrichment）。",
+  "route": {
+    "primary_ecosystem": "CREATIVE_CONTENT",
+    "secondary_ecosystem": "SALES_OPERATIONS",
+    "seniority": "mid",
+    "employment_mode": "permanent / onsite",
+    "evidence_mode": "portfolio + public-content",
+    "overlays": [
+      "PORTFOLIO_REQUIRED",
+      "SHIFT_OR_ATTENDANCE"
+    ],
+    "route_reconfirmed": "與 job-strategy-router.md 基準案例表『品牌社群影音編輯』該列一致。五輪下來 Route 代碼本身仍未被證偽；失敗點在可取得之公開證據深度，不在路由選擇。"
+  },
+  "archetype_lock": {
+    "status": "ARCHETYPE_LOCKED",
+    "carried_from": "round 4 revised lock（三項放寬維持不變，本輪未再放寬，避免無限降低標準）",
+    "positive": [
+      "in-house 品牌社群小編兼剪輯（腳本→拍攝→剪輯一人包）",
+      "車業/戶外/運動用品品牌或代理商 marketing content specialist",
+      "廣告/活動行銷公司 social content producer／影音企劃 執行層",
+      "機車/汽車媒體 編輯兼影音製作",
+      "具3年以上實作經驗之個人影像/剪輯工作者（正職意願列 CONTACT_AFTER_CONFIRMATION）"
+    ],
+    "negative": [
+      "創辦人/負責人/CEO/總監/經理級",
+      "CELEBRITY 層級 KOL/網紅本人",
+      "純策略/純投放無影音 hands-on",
+      "純平面設計（無影音）",
+      "純 VFX 後期專才",
+      "3年以下經驗",
+      "組織頁無具名個人",
+      "僅筆名/單名、無法取得精確姓名＋兩項一致錨點者",
+      "藝術家/藝廊創作者"
+    ],
+    "maturity": "3-10 years",
+    "visibility_ceiling": "EMERGING to GROWING",
+    "salary_note": "月薪 40,000 為下限（round 4 已更正）；薪資期待列 CONTACT_AFTER_CONFIRMATION",
+    "blocked_source_ecosystems": [
+      "VIRTUAL_CREATOR_LIVESTREAM",
+      "GAME_STREAMER",
+      "ENG_CONSTRUCTION"
+    ]
+  },
+  "round_5_hypothesis": "Round 4 的 next_action 指向 checkpoint #3：公開履歷平台（Cake/CakeResume）會揭露 round 4 唯一缺口——年資與受僱經歷。本輪在使用者明示『公開頁面用瀏覽器/搜尋看得到的內容可以引用，需要登入才看得到的一律不用』的授權範圍內，直接測試此假設。",
+  "calibration_round_5": {
+    "source_families_tested": [
+      {
+        "family": "Cake 公開作品集索引頁（q=社群經營／短影音／影音剪輯）",
+        "status": "FOUND_VERIFIED",
+        "note": "★本輪最高產：單次查詢即產出 12 位『正確職級層』具名個人（執行層個人，非創辦人/非名人），且作品主題直接對應 JD 的短影音企劃、剪輯、社群經營與平面美編。人才方向命中率為五輪之最。"
+      },
+      {
+        "family": "Cake 公開個人 Profile 頁（/me/<slug> 格式）",
+        "status": "PARTIAL_PUBLIC_ONLY",
+        "note": "★關鍵發現：此格式之公開視圖僅顯示自我介紹、技能關鍵字與作品標題；『經歷（公司＋起訖日期）』、『學歷』、『地點』欄位需登入才能檢視。依使用者硬性規則與 daily-agent-loop 安全邊界，未嘗試登入、未繞過任何存取控制，如實記為部分公開。"
+      },
+      {
+        "family": "Cake 舊版全公開 Profile 頁（/<slug> 格式）",
+        "status": "FOUND_VERIFIED",
+        "note": "少數舊版頁面完整公開經歷與學歷（例：/natasha-liang）。但本輪取得之樣本經歷停在 2019 年，違反 Qualified Gate 第1項『current/recent employability』。"
+      },
+      {
+        "family": "品牌／代理商『員工專訪』具名執行層人員",
+        "status": "SEARCHED_NOT_FOUND",
+        "note": "命中全為行銷公司自我介紹頁與服務介紹，無具名在職執行層個人"
+      },
+      {
+        "family": "品牌官方 YouTube 影片說明欄工作人員署名（拍攝/剪輯 credit）",
+        "status": "SEARCHED_NOT_FOUND",
+        "note": "命中為頻道經營教學文；反向證據再度出現：品牌頻道說明欄慣例不列個人 credit"
+      },
+      {
+        "family": "IG／Threads 個人自介（品牌社群＋影音剪輯）",
+        "status": "SEARCHED_NOT_FOUND",
+        "note": "命中為平台趨勢文與一則討論『三年資社群小編薪資』的貼文（職缺需求端討論，非具名在職者）"
+      },
+      {
+        "family": "個人網站／about me 作品集（在職專員）",
+        "status": "SEARCHED_NOT_FOUND",
+        "note": "與 round 4 同樣為工具教學文與代操公司頁，重複率高，維持低產"
+      }
+    ],
+    "samples": [
+      {
+        "name": "強世穎",
+        "company": "未公開（公開視圖不含經歷欄位）",
+        "role": "活動企劃／專案規劃（執行層，斜槓經營美食 IG 粉專）",
+        "location": "未公開",
+        "source_url": "https://www.cake.me/me/lr870613/portfolios",
+        "verdict": "UNCERTAIN",
+        "reason": "公開視圖自述『3年以上』活動企劃/專案規劃/異業合作，並具『影音拍攝&剪輯能力』與自營美食 IG 之社群經營實作 — 職級層正確（個人貢獻者，非創辦人非經理非名人），VISIBILITY_TIER=EMERGING，能力方向對應 JD 的剪輯與社群兩項必要條件。但：(a) 3年資歷屬『活動企劃/專案規劃』，非 JD 指定之『社群行銷或影音製作』3年，年資歸屬無法驗證；(b) 公司、地點、學歷欄位需登入，無法取得現職與到班可能性證據，Qualified Gate 第1、5 項無法通過。證據深度不足以判 MATCH。",
+        "open_hard_gates": [
+          "現職與公司未知",
+          "地點/到班可能性未知",
+          "3年年資之職能歸屬未驗證",
+          "學歷未知",
+          "英文中等未驗證"
+        ]
+      },
+      {
+        "name": "辛郁褘",
+        "company": "未公開（公開視圖不含經歷欄位）",
+        "role": "短影音企劃／剪輯（作品含 TikTok 短影音、社群圖文、服務流程資訊設計）",
+        "location": "未公開",
+        "source_url": "https://www.cake.me/me/uuyi/portfolios",
+        "verdict": "UNCERTAIN",
+        "reason": "5 件公開作品中『TikTok 短影音企劃與剪輯』直接對應 JD『獨立完成短影片製作（腳本撰寫…剪輯）』，『驗屋科普社群圖文』對應社群圖文與基礎美編 — 為本輪能力覆蓋最完整者之一。但公開視圖無經歷、無年資、無地點；且作品集首項為 2026 年起持續開發之『AI 多益學習平台個人 Side Project』，存在轉往產品/開發方向之訊號（候選人轉行方向檢查），需本人確認。無法滿足 3年以上與現職兩項驗證。",
+        "open_hard_gates": [
+          "現職與公司未知",
+          "年資未知",
+          "地點未知",
+          "職涯方向可能轉往產品/開發，待確認"
+        ]
+      },
+      {
+        "name": "Maisy（單名，未取得精確姓名）",
+        "company": "未公開",
+        "role": "影像製作／短影音／攝影",
+        "location": "未公開（作品含台北國際食品展、桃園市政府案）",
+        "source_url": "https://www.cake.me/me/maisyyy/portfolios",
+        "verdict": "MISMATCH",
+        "reason": "能力證據為本輪最強：8 件公開作品涵蓋 2025 台北國際食品展回顧影片、桃園市政府 2026 新春拜年、品牌形象十週年紀念影片、合作廠商訪談影片、短影音作品、攝影作品與紀錄片 — 品牌端與公部門客戶、企劃到成片、並具攝影構圖能力（對應 JD nice_to_have）。但僅有單名 Maisy，無法取得精確姓名，命中 Archetype Lock 未變更之負向類型『僅筆名/單名、無法取得姓名＋兩項一致錨點者』；依 full-prompt 第四步，無精確姓名不得寫入 Candidate Pool。此為身分解析失敗，非能力不符 — 已記入 IDENTITY_QUEUE 待人工以瀏覽器檢視是否另有公開全名。",
+        "open_hard_gates": [
+          "精確姓名未取得（IDENTITY_UNRESOLVED）"
+        ]
+      },
+      {
+        "name": "Yuli_Su（Username，未取得精確姓名）",
+        "company": "未公開",
+        "role": "短影音企劃／影音剪輯企劃／動態圖像／視覺平面設計",
+        "location": "未公開",
+        "source_url": "https://www.cake.me/me/Yuli_su/portfolios",
+        "verdict": "MISMATCH",
+        "reason": "6 件公開作品同時涵蓋『影音剪輯企劃＋短影音企劃』與『視覺平面設計＋實體廣告物』，罕見地同時對應 JD 兩項必要條件（影音短片剪輯能力＋基礎美編能力），職級層正確。但僅有 Username，無精確姓名、無公司、無地點、無年資 — 同樣命中『僅筆名/單名』負向類型，依規不得進入 Candidate Pool。",
+        "open_hard_gates": [
+          "精確姓名未取得（IDENTITY_UNRESOLVED）"
+        ]
+      },
+      {
+        "name": "梁羽寧 (Natasha Liang)",
+        "company": "台灣柏釧（業務助理，2019/03–2019/06）",
+        "role": "業務助理（前：跨境電商營運相關）",
+        "location": "桃園；台北",
+        "source_url": "https://www.cake.me/natasha-liang",
+        "verdict": "MISMATCH",
+        "reason": "本輪唯一取得完整公開經歷與學歷之樣本（舊版全公開 Profile 格式），技能欄確實同時含 FB 粉專與 LINE 2.0 官方帳號建置（社群營運）、Premiere（剪輯）與 Photoshop/Illustrator/InDesign（美編），技能組合與 JD 高度重疊。但公開經歷僅 2018–2019 共約 1–2 年且職稱為業務助理，未達 JD 必要條件『3年以上社群行銷或影音製作相關經驗』；公開經歷停在 2019 年，亦不符 Qualified Gate 第1項 current/recent employability。",
+        "open_hard_gates": []
+      }
+    ],
+    "result": "0_OF_5_MATCH",
+    "gate_required": "4_OF_5",
+    "false_positive_pattern": "本輪失敗型態與前四輪皆不同，且直接證偽了 round 4 的核心假設。公開履歷平台確實一次產出大量『正確職級層＋正確職能』的具名個人（人才方向終於命中），但在不登入的前提下，Cake 新版 /me/ Profile 的『經歷（公司＋起訖）』、『學歷』、『地點』欄位不公開，僅公開自我介紹、技能關鍵字與作品標題；而少數完整公開經歷的舊版頁面，其經歷本身已過時（停在 2019）。因此 JD 的兩項可驗證必要條件『3年以上相關經驗』與『現職/近期受僱證據』依舊無法成立。缺口從 round 4 的『來源不揭露年資』轉為『揭露年資的欄位在登入牆後，而使用者硬性規則與本 Skill 安全邊界均禁止登入』。另有兩位能力證據最強者（Maisy、Yuli_Su）卡在只有單名/Username，屬身分解析失敗而非能力不符。"
+  },
+  "cumulative_calibration": "5 rounds, 25 samples, 1 MATCH — 連續五輪未達 4/5 門檻",
+  "checkpoint_3_resolution": {
+    "question": "是否授權 Cake／104 等公開履歷平台頁升為主要發現來源",
+    "status": "TESTED_AND_DISCONFIRMED_UNDER_NO_LOGIN_CONSTRAINT",
+    "finding": "在『只用不需登入即可見之公開內容』的合規前提下，公開履歷平台可以解決『找不到正確職級層的人』（發現層），但解決不了『驗證 3年年資與現職』（驗證層），因為該欄位正是平台的登入牆內容。故 checkpoint #3 即使獲得授權，也不會改變校準結果 — 除非改變的是驗證方式（見 next_action），而非來源。"
+  },
+  "structural_conclusion": "五輪累計證據顯示：『品牌端正職、一人包辦社群營運＋短影音製作、3–10年、台北內湖』這個原型，在不登入的合法公開資訊中，能力證據（作品）大量可得，但身分與受僱證據（全名、公司、年資、地點）系統性不可得。兩者恰好分屬不同頁面層級：作品在公開層，經歷在登入層。這不是路由錯誤，也不再是 Lock 過嚴，而是本職缺的驗證條件與合規邊界之間的結構性衝突。",
+  "final_status": "ROUTE_CALIBRATION_FAILED",
+  "bulk_sourcing_executed": false,
+  "contact_enrichment_executed": false,
+  "delta_metrics": {
+    "new_unique_raw_leads": 0,
+    "calibration_samples_reviewed": 5,
+    "new_identities_seen_not_counted_as_leads": 5,
+    "additional_named_individuals_observed_not_sampled": 17,
+    "identity_unresolved": 2,
+    "cross_source_duplicates": 0,
+    "evidence_updates": 0,
+    "qualified": 0,
+    "verified_email": 0,
+    "email_ready": 0,
+    "dual_channel": 0,
+    "linkedin_manual_queue": 0,
+    "client_ready": 0
+  },
+  "daily_success_level": "BLOCKED",
+  "auto_outreach_target_missed": true,
+  "source_memory_updates": [
+    {
+      "source": "Cake 公開作品集索引頁（q=社群經營/短影音/影音剪輯）",
+      "new_state": "ACTIVE",
+      "reason": "五輪來人才方向命中率最高之來源（單頁 12 位正確職級層具名個人）；缺口在驗證層非發現層，不得 retire。標記 SOURCE_MIX_PARTIAL（履歷平台不計入 70% 非招募來源配額）"
+    },
+    {
+      "source": "Cake 新版 /me/ 公開 Profile 頁",
+      "new_state": "RERUN_ON_NEW_ANCHOR",
+      "reason": "公開視圖缺經歷/學歷/地點；僅在取得新的公司、專案或全名錨點後重啟交叉驗證"
+    },
+    {
+      "source": "Cake 舊版 /<slug> 全公開 Profile 頁",
+      "new_state": "ACTIVE",
+      "reason": "完整揭露經歷與學歷，是唯一可通過驗證層的頁面格式；但樣本經歷偏舊，需搭配現職交叉驗證"
+    },
+    {
+      "source": "品牌/代理商員工專訪",
+      "new_state": "RETIRED_FOR_THIS_JD",
+      "reason": "兩輪 0 具名在職執行層產出"
+    },
+    {
+      "source": "品牌官方 YouTube 說明欄 credit",
+      "new_state": "RETIRED_FOR_THIS_JD",
+      "reason": "取得反向證據：品牌頻道慣例不列個人 credit"
+    },
+    {
+      "source": "IG／Threads 個人自介",
+      "new_state": "COOLDOWN_14D",
+      "reason": "命中為平台趨勢文與需求端討論，0 具名在職者"
+    },
+    {
+      "source": "個人網站／about me 作品集",
+      "new_state": "COOLDOWN_30D",
+      "reason": "與 round 4 重複率高，連續兩輪 0 產出"
+    },
+    {
+      "source": "PRO360 達人網 公開專家頁",
+      "new_state": "ACTIVE",
+      "reason": "維持 round 4 狀態；本輪未重跑（避免等價重複查詢），陳穎萱仍在 IDENTITY_QUEUE"
+    },
+    {
+      "source": "LinkedIn 公開個人頁",
+      "new_state": "HUMAN_ACTION_REQUIRED",
+      "reason": "HTTP 999 自動化存取阻擋狀態延續；本輪未重試、未登入、未繞過"
+    },
+    {
+      "source": "Behance",
+      "new_state": "HUMAN_ACTION_REQUIRED",
+      "reason": "HTTP 403 技術狀態延續"
+    }
+  ],
+  "open_human_checkpoints": [
+    {
+      "id": 3,
+      "question": "公開履歷平台升為主要發現來源",
+      "status": "CLOSED_BY_EVIDENCE",
+      "note": "本輪已實測：解決發現層、無法解決驗證層（年資/現職在登入牆後）。不建議再以此為重跑理由。"
+    },
+    {
+      "id": 4,
+      "question": "是否接受『個人接案影像工作者』為可直接接觸之候選人（正職意願列面談確認項）",
+      "status": "STILL_OPEN",
+      "note": "若接受，round 4 的陳穎萱（內湖、臺藝大、企劃/拍攝/後製一人包辦）可立即轉入 Qualified 並執行 Contact Enrichment"
+    },
+    {
+      "id": 5,
+      "question": "【本輪新增】是否接受『作品證據充分但年資/現職需於初次通話確認』作為 Qualified 標準（即把 3年以上 由公開驗證項改為電訪確認項）",
+      "status": "NEW_OPEN",
+      "note": "這是五輪證據指向的唯一能同時保住合規邊界與產出量的調整：公開層可驗證能力與職級，年資與現職改由本人確認。若採用，本輪的強世穎、辛郁褘可立即轉為 CONTACT_AFTER_CONFIRMATION。"
+    },
+    {
+      "id": 6,
+      "question": "【本輪新增】是否授權人工以瀏覽器檢視 Cake 公開作品集頁，補回全名（Maisy、Yuli_Su 等）",
+      "status": "NEW_OPEN",
+      "note": "屬人工 HUMAN_ACTION_REQUIRED 路徑，非自動化登入；可解鎖本輪能力證據最強的兩位"
+    }
+  ],
+  "next_action": "停在校準閘門，不執行批量搜尋與 Contact Enrichment，candidates 留空。五輪已分別證偽『路由錯誤』『Lock 過嚴』『來源生態錯誤』『來源不揭露年資』四個假設，本輪並關閉 checkpoint #3。建議不要再以同一標準重跑第六輪（預期同樣結果），改由顧問就 checkpoint #4/#5/#6 擇一裁示：(a) 接受接案影像工作者 → 陳穎萱立即可動；(b) 將『3年以上』改為電訪確認項 → 強世穎、辛郁褘立即可動，且 Cake 公開作品集索引可直接支撐 10–20 人批量；(c) 授權人工瀏覽器補全名 → Maisy、Yuli_Su 可動。任一裁示皆可在不違反任何硬性規則的前提下解除目前的結構性卡點。",
+  "compliance": "僅使用合法公開資訊；未登入任何平台；未以任何帳號自動化操作 Cake／LinkedIn／PRO360 或其他平台；Cake 需登入才顯示之經歷/學歷/地點欄位一律未取用並如實記錄為部分公開；未繞過驗證碼、付費牆或登入限制；未使用外洩資料庫；未以猜測方式產生任何 Email（本輪 0 筆 Email 產出，校準階段依規未執行任何 Email／電話深查，梁羽寧頁面上偶遇之公開聯絡欄位僅記錄存在、未取用亦未影響 Fit）；未依就業服務法第5條保護項目（年齡、性別、婚姻、國籍、身心障礙、宗教等）進行篩選、排序或排除，全程僅以可觀察之工作行為證據（作品、技能、工具、職級、年資、地點）為判斷依據。"
+}

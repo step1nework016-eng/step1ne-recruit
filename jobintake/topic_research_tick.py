@@ -47,7 +47,7 @@ LOCK = '/tmp/step1ne-topic-research.lock'
 # 跟 build_expertise.py 同一個道理：可以查資料，但不准碰這台電腦。
 # headless 模式下 WebSearch 要配 bypassPermissions 才不會卡在權限提示。
 _BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,AskUserQuestion,TodoWrite,'
-        'BashOutput,KillShell,SlashCommand,Skill,Agent,Artifact,Monitor,'
+        'BashOutput,KillShell,Skill,Agent,Artifact,Monitor,'
         'CronCreate,CronDelete,CronList')
 RESEARCH_TOOLS = ['--disallowed-tools', _BAN, '--setting-sources', '',
                    '--permission-mode', 'bypassPermissions']
