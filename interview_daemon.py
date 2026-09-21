@@ -25,7 +25,9 @@ CLAUDE_BIN = shutil.which('claude') or 'claude'
 # 同理，npx 在 Windows 是 npx.cmd，不帶副檔名會 FileNotFoundError。
 NPX_BIN = shutil.which('npx') or 'npx'
 DB = 'step1ne-recruit'
-POLL_SEC = 8
+# 2026-09-21：8 秒改 3 秒。人選講完話之後，光是「被發現」就要白等最多 8 秒，
+# 而那時候他正盯著螢幕。查詢很輕（一次 D1 撈在談的房間），成本遠小於那 8 秒。
+POLL_SEC = 3
 MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–400MB。
                         # 設 5 會在剩 2.3GB 可用記憶體時開始 swap，
                         # 那會讓「所有」進行中的面談一起變慢，不只排隊的。
@@ -1186,6 +1188,13 @@ def context_for(app_id):
             _STATIC_CACHE[app_id] = static
 
     ctx = dict(static)  # 淺拷貝，不要讓下面塞 conversation 汙染到快取本體
+    # 事先擬好的題目計畫（do_plan 產的）。讀不到就是沒有，走原本「現場想」那條路。
+    try:
+        _pl = d1(f"SELECT interview_plan_json FROM applications WHERE id={q(app_id)}")
+        if _pl and _pl[0].get('interview_plan_json'):
+            ctx['plan'] = json.loads(_pl[0]['interview_plan_json'])
+    except Exception as e:
+        log(f'讀題目計畫失敗（不影響面談，改走現場生成）：{str(e)[:80]}')
     ctx['conversation'] = d1(f"SELECT role, content, created_at FROM messages "
                              f"WHERE application_id = {q(app_id)} ORDER BY id ASC LIMIT 200")
     return ctx
@@ -1522,6 +1531,13 @@ def build_prompt(ctx, skill_md):
         if job.get('salary_note'):
             lines.append(f'  💰 薪資的正式說法（要照這個講，不要自己換算成數字）：{job["salary_note"]}')
         lines.append('  ⚠️ 薪資規則：')
+        lines.append('     - 🚨 **開場介紹職缺時不要報薪資**（2026-09-21 Jacky 拍板）。'
+                     '開場只講職位、地點、工作內容三件事。一開場就丟數字，'
+                     '後面整場都會被那個數字綁住——覺得高就開始推銷自己、'
+                     '覺得低就心不在焉，而我們要知道的是他實際做過什麼。')
+        lines.append('     - ⚠️ 但「開場不報數字」不等於「整場不談薪資」：'
+                     '他問了就照下面的口徑答，不要迴避；他沒問，你也要在中後段'
+                     '主動問他的期望待遇並說明薪資結構。')
         lines.append('     - salary_min 是「至少」，不是「開這個價」。'
                      '只有 salary_max 也有值的時候，才可以講成一個區間。')
         # ⚠️ 2026-09-09 修：這裡原本寫「X 萬以上」，跟 SKILL.md 那條「薪資開場用
@@ -1748,6 +1764,37 @@ def build_prompt(ctx, skill_md):
         else:
             lines.append('  現在還在中段，先專心把經歷問清楚，'
                          '補履歷與 LINE 的事等接近收尾時再講，不要現在打斷節奏。')
+
+    # ── 事先擬好的題目計畫（2026-09-21 加，見 PLAN_PROMPT 上面那段說明）──
+    # 有計畫時，這一輪阿財的任務從「自己想下一題」降級成「回一句＋照計畫挑下一題」。
+    # 實測 56 秒 → 17～20 秒，而且追問能力沒掉。
+    plan = ctx.get('plan') or {}
+    qs = plan.get('questions') or []
+    if qs and conv:      # 開場那一輪不套：第一句還是照原本的方式生成，語氣比較自然
+        lines.append('\n─────────  這場的題目計畫（面談開始前就擬好的）  ─────────')
+        lines.append('  下面每一題都附了「他答得含糊時要追問什麼」。')
+        for i, x in enumerate(qs, 1):
+            lines.append(f'   {i}. {x.get("q")}')
+            if x.get('why'):
+                lines.append(f'      想確認：{x["why"]}')
+            if x.get('followup'):
+                lines.append(f'      他含糊就追問：{x["followup"]}')
+        faq = plan.get('faq') or []
+        if faq:
+            lines.append('\n  【他可能會問你的事，答案先準備好了】')
+            lines.append('   ⚠️ 只有下面有寫的才照著答。沒寫的、或寫「轉給顧問」的，'
+                         '一律說「這個我幫你問顧問」——**不要當場自己編薪資或福利的答案**。')
+            for x in faq:
+                lines.append(f'   ・Q：{x.get("q")}')
+                lines.append(f'     A：{x.get("a")}')
+        lines.append('\n  ⚠️ **這一輪你不用自己想新題目。** 只做兩件事：')
+        lines.append('   ① 針對他剛剛講的回一句（一句就好，不要總結、不要評價）')
+        lines.append('   ② 接著問——他上一題答得含糊就用附的追問；'
+                     '答得夠具體就問下一個還沒問過的題目')
+        lines.append('  計畫是**建議不是腳本**：他自己講到計畫外的重點、'
+                     '或某一題其實已經在別的回答裡交代過了，你照樣可以調整順序或跳過。'
+                     '照稿念會變回「問履歷上寫過的東西」那種沒效率的面談。')
+        lines.append('  題目的原句可以順一下語氣接進對話，但不要改掉要問的重點。')
 
     lines.append('\n─────────  輸出格式  ─────────')
     lines.append(SCHEMA_HINT)
@@ -2859,7 +2906,7 @@ def handle(app):
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
         _notify_cross_job_interest(app, ctx)
-        talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
+        talk_prompt = build_prompt(ctx, talk_skill(ctx))
         # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
         # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
         #
@@ -2964,6 +3011,170 @@ def handle(app):
             release_lock(app_id)
         with _lock:
             _busy.discard(app_id)
+
+
+# ── 面談題目計畫（2026-09-21 加）──────────────────────────────
+#
+# ## 為什麼要有
+#
+# 量出來的事實：人選講完一句話，阿財**中位數要 53 秒**才回得出來，38% 的
+# 回覆讓人等超過一分鐘，最久一次 12 分鐘。文字對談等一分鐘，體感就是已讀不回。
+#
+# 一開始我以為是提示詞太長（49,285 字）。實測推翻了：
+#   完整提示詞 49k 字 → 56.5 秒
+#   砍掉一半  26k 字 → 56.8 秒   ← 輸入砍一半，時間完全沒變
+#   同樣 40k 字、但任務改成「從清單挑一題」→ **5.6 秒**
+#
+# **慢的不是「讀」，是「想」。** 每一輪都要阿財從頭讀完整套面談規範、再自己
+# 決定下一題問什麼，那是一次完整的推理。
+#
+# 所以把「想」搬到面談開始之前：趁候選人還沒進房間（或剛在看開場白）的時候，
+# 先把這一場要問的題目擬好存起來。真正對話時阿財只要做兩件小事——
+# 回應他剛說的話、照計畫挑下一題（或用計畫裡附好的追問）。
+#
+# 實測改完之後：**56 秒 → 17～20 秒**，而且追問能力沒有掉（測試中它自己判斷
+# 「上一題答得含糊」就改用追問，沒有硬跳下一題）。
+#
+# ⚠️ 計畫是**建議不是腳本**。候選人講到計畫外的事、或某一題已經在別的回答裡
+#    交代過了，阿財照樣可以調整——這一點寫在 runtime 的指示裡。把它當腳本念
+#    就會變回「問履歷上寫過的東西」那種沒效率的面談。
+PLAN_PROMPT = (
+    '你是資深獵頭顧問，正在替一場「即將開始」的文字面談擬題目計畫。\n'
+    '這份計畫會給 AI 面談助理阿財在對談當下照著走——他不會再自己想題目，\n'
+    '所以這裡要一次擬好。\n\n'
+    '【擬 8–12 題，照該問的順序排】\n'
+    '每一題都要附一個「他答得含糊時的追問」。\n'
+    '規則：\n'
+    '1. **不要問履歷或應徵表單上已經寫清楚的事**。那等於浪費一題。\n'
+    '   要確認的話用確認語氣（「您表單填 9/15 可到職，這個還準嗎？」），\n'
+    '   那種不算一題。\n'
+    '2. 到職障礙（能不能來上班）排在專業題前面。人再好，簽證下不來就是到不了職。\n'
+    '3. 專業題庫裡的題目要用進去，但用你自己的話問，不要照稿念。\n'
+    '4. 一題只問一件事。兩個問題塞同一則，人選只會答其中一個。\n'
+    '5. 不准出現年齡、性別、婚育、國籍、外貌相關的題目（就業服務法第 5 條）。\n\n'
+    '【另外預測 5–8 個「這位候選人很可能會問」的問題，並寫好答案】\n'
+    '答案只能根據下面提供的職缺資料，**不知道就寫「這題要轉給顧問」**——\n'
+    '寧可轉人工，也不要當場編一個薪資或福利的答案出去。\n\n'
+    '只輸出這個 JSON，不要有其他文字：\n'
+    '{"questions":[{"q":"要問的題目原句","why":"想確認什麼","followup":"他含糊時追問這句"}],\n'
+    ' "faq":[{"q":"他可能會問的問題","a":"回答；不確定就填「這題要轉給顧問」"}]}'
+)
+
+
+def plan_candidates():
+    """還沒擬題目計畫的人。條件跟開場白預熱一樣——中高階免測驗、其他人要先交卷。
+
+    ⚠️ 也撈「已經在面談中但還沒有計畫」的：計畫功能上線前就已經進房間的人，
+       以及預熱那輪剛好失敗的人，都要補上，不然他們整場都走慢的那條路。
+    """
+    return d1("""
+        SELECT a.id, a.name, a.job_slug FROM applications a
+         LEFT JOIN jobs j ON j.slug = a.job_slug
+         WHERE a.interview_plan_json IS NULL
+           AND (
+             (a.status = 'ready'
+              AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+              AND (COALESCE(j.seniority, 'mid') = 'senior'
+                   OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
+             OR a.interview_state = 'active'
+           )
+         ORDER BY (a.interview_state = 'active') DESC, a.created_at DESC LIMIT 5
+    """)
+
+
+def do_plan(app):
+    """替一位候選人擬好這一場的題目計畫。
+
+    ⚠️ 跟開場白預熱一樣：這支絕對不能讓候選人等。失敗就算了——沒有計畫時
+       阿財會走回原本「現場自己想」那條路，只是慢，不會卡住任何人。
+    """
+    app_id, name = app['id'], app['name']
+    try:
+        ctx = context_for(app_id)
+        # 用同一份 build_prompt 當素材（職缺、履歷、專業題庫、到職障礙都在裡面），
+        # 只把最後的任務換掉——素材蒐集的邏輯只維護一份，不要另外抄一套。
+        material = build_prompt(ctx, '（面談規範這裡不需要，你只是在擬題目）')
+        _before = _snapshot_session_files()
+        result = run_claude(material + '\n\n─────────────\n' + PLAN_PROMPT)
+        log_token_usage(app_id, 'plan', material, _before)
+        qs = [x for x in (result.get('questions') or []) if isinstance(x, dict) and x.get('q')]
+        if not qs:
+            log(f'⚠️ {name}：題目計畫產出是空的，這場照舊走現場生成')
+            return
+        plan = {'questions': qs[:12],
+                'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        d1(f"UPDATE applications SET interview_plan_json={q(json.dumps(plan, ensure_ascii=False))}, "
+           f"interview_plan_at={q(now)} WHERE id={q(app_id)} AND interview_plan_json IS NULL")
+        log(f'{name}：題目計畫已擬好（{len(plan["questions"])} 題、預測 {len(plan["faq"])} 個提問）')
+    except Exception as e:
+        log(f'⚠️ {name}（{app_id}）擬題目計畫失敗（不影響面談）：{e}')
+    finally:
+        release_lock(app_id)
+        with _lock:
+            _busy.discard(app_id)
+
+
+# ── 對談中的精簡人設（2026-09-21 加）────────────────────────────
+#
+# 完整的 SKILL.md 有 22,945 字，每一輪都整份重讀一次。量到的結果：
+#   完整規範＋自己想題目          → 50 秒
+#   完整規範＋照計畫問            → 25 秒
+#   **精簡人設＋照計畫問**        → **11 秒**
+#
+# 為什麼可以精簡：SKILL.md 大部分在教「怎麼設計一場面談」——題目怎麼配、
+# 預算怎麼分、四個面向各問到什麼層次。那些在**擬計畫**那一步已經用過了
+# （do_plan 讀的是完整素材）。對談當下需要的只剩語氣與紅線。
+#
+# ⚠️ 什麼時候**不能**用精簡版（這三種都要完整版）：
+#   ① 開場那一輪——職缺介紹的四件事、薪資口徑「平均薪資 X 起」都在開場段落
+#   ② 接近收尾——收尾要講什麼、沒履歷要補什麼，規則都在完整版裡
+#   ③ 沒有題目計畫——那阿財還是得自己想，需要完整的方法論
+TALK_LITE = """你是「阿財」，德仁管理顧問的 AI 面談助理，正在跟候選人文字對談。
+
+【語氣】
+・像一個認真但不端架子的顧問。口語、短句，一則訊息只講一件事。
+・不要條列、不要用「首先／其次」、不要總結對方講過的話。
+・不要用「但想確認得更具體一點」「這樣說明清楚嗎」這種逼問式句型——
+  整場語氣被當成查核清單在跑，聽起來會像詐騙電話。
+・偶爾一個表情符號就好，不要每則都放。
+
+【紅線】
+・年齡、性別、婚育、國籍、外貌一律不問、不評論、不寫進任何地方（就業服務法第 5 條）。
+・**不要主動多講薪資。** 需要提到時只能用「平均薪資 X 起」「平均薪資 X–Y」，
+  不准說成「月薪 X 以上」——後者聽起來像保證底薪，但實際核薪會依學歷、
+  科系相關性、經歷調整。也不要自己換算年薪或加上加班費。
+・薪資有沒有彈性、能不能加碼、合約細節、客戶最終要不要這個人——
+  這幾件一律回「這個我幫你問顧問」，你問不到答案也不該猜。
+・不知道的事就說「這個我幫你問顧問」，不要當場編。
+・不要評價他的答案對不對（「這個答案不錯」這種都不行）——你不是這個領域的專家，
+  專業對錯留給顧問跟用人主管判斷。
+・不要主動說出用人單位的公司名稱。
+
+【這一輪】
+一次最多兩則訊息：第一則回應他剛講的，第二則問下一題。"""
+
+
+def talk_skill(ctx):
+    """這一輪要用完整規範還是精簡人設。
+
+    ⚠️ near_end 的算法要跟 build_prompt 裡那段**完全一致**（第一版我寫成
+       ctx.get('elapsed_min')，那個欄位根本不存在，等於永遠判不出「時間到了」，
+       接近收尾時還會用精簡版——而收尾規則只在完整版裡）。
+    """
+    conv = ctx.get('conversation') or []
+    plan = (ctx.get('plan') or {}).get('questions') or []
+    started, mins = (ctx.get('application') or {}).get('interview_started_at'), None
+    if started:
+        try:
+            mins = int((datetime.datetime.now()
+                        - datetime.datetime.fromisoformat(str(started))).total_seconds() // 60)
+        except (TypeError, ValueError):
+            mins = None
+    near_end = (len(conv) >= MAX_TURNS - 12) or (mins is not None and mins >= SOFT_TARGET_MIN - 12)
+    if plan and len(conv) >= 2 and not near_end:
+        return TALK_LITE
+    return skill('talk', ctx.get('job'))
 
 
 def prewarm_candidates():
@@ -3148,6 +3359,14 @@ def tick():
         log(f'查詢待預熱名單失敗：{e}')
         prewarm_rows = []
 
+    # 題目計畫也是預熱性質，同樣排最後。⚠️ 但「已經在面談中卻還沒有計畫」的人
+    # 排在前面（plan_candidates 的 ORDER BY 有處理）——他們每一輪都在等 56 秒。
+    try:
+        plan_rows = plan_candidates()
+    except Exception as e:
+        log(f'查詢待擬題目計畫名單失敗：{e}')
+        plan_rows = []
+
     # 收尾之後才問的問題。優先權排在強制收尾之後、一般回話之前——
     # 這些人已經等了一段時間（沒有人在盯著這個房間），不該再排到最後。
     try:
@@ -3161,7 +3380,8 @@ def tick():
             + [(a, handle) for a in pending(remaining)]
             + [(a, wrap_up) for a in stale(remaining)]
             + [(a, close_paused) for a in held]
-            + [(a, do_prewarm) for a in prewarm_rows])
+            + [(a, do_prewarm) for a in prewarm_rows]
+            + [(a, do_plan) for a in plan_rows])
     for app, fn in jobs:
         with _lock:
             if app['id'] in _busy or len(_busy) >= MAX_PARALLEL:
