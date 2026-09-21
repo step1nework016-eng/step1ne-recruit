@@ -2674,6 +2674,59 @@ async function handleLineEvent(env, ev) {
   // 要在最上面單獨處理，跟查進度那條 message 流程完全分開。
   if (ev.type === 'postback' && ev.postback && ev.replyToken) {
     const data = String(ev.postback.data || '');
+
+    // ── P3-B：阿財主動推薦其他職缺，候選人按鈕回覆 ──────────────
+    // 2026-09-21 加。三顆按鈕：想了解看看／這次不用／我有問題。
+    //
+    // ⚠️ 這段第一版寫在 step1ne-backoffice-worker 裡，結果按鈕按了完全沒反應——
+    //    LINE 的 webhook 實際上是打到 step1ne-messaging-relay，再轉給
+    //    **step1ne-recruit-api**（這支），不是 backoffice。以後加 LINE 事件
+    //    處理一律先查 /v2/bot/channel/webhook/endpoint，不要憑印象挑檔案。
+    //
+    // ⚠️ postback 帶的是 recommendation_id，不是 line_user_id。實際查到有候選人
+    //    （許珅慈）同一個 LINE 綁了兩筆應徵——用 line_user_id 回推的話，
+    //    「有興趣」會被歸到錯的那一筆應徵，顧問後台就顯示在錯的人選卡上。
+    //
+    // ⚠️ 這裡只寫狀態＋通知顧問，**絕不代替候選人回答任何職缺問題**。
+    //    「我有問題」一律轉人工，不讓 AI 即席回答薪資能不能談這種事。
+    if (data.startsWith('p3b:')) {
+      const [, resp, recId] = data.split(':');
+      const rec = await env.DB.prepare(
+        `SELECT r.id, r.application_id, r.recommended_job_slug, r.outreach_status,
+                a.name AS candidate_name, j.title AS job_title
+           FROM candidate_job_recommendations r
+           LEFT JOIN applications a ON a.id = r.application_id
+           LEFT JOIN jobs j ON j.slug = r.recommended_job_slug
+          WHERE r.id = ?`).bind(String(recId || '')).first();
+      if (!rec) return lineReply(env, ev.replyToken, '不好意思，這則訊息已經過期了，麻煩直接跟顧問聯繫。');
+      // 已經回過就不要再改狀態——重複點按鈕不該覆蓋掉第一次的答案。
+      if (rec.outreach_status && String(rec.outreach_status).startsWith('candidate_')) {
+        return lineReply(env, ev.replyToken, '這則我們已經收到您的回覆了，顧問會再跟您聯繫 🙏');
+      }
+      const P3B_MAP = { interested: 'candidate_interested', declined: 'candidate_declined', question: 'candidate_question' };
+      const next = P3B_MAP[resp];
+      if (!next) return lineReply(env, ev.replyToken, '不好意思，這個操作無法辨識，麻煩直接跟顧問聯繫。');
+      const nowT = nowTaipei();
+      await env.DB.prepare(
+        `UPDATE candidate_job_recommendations
+            SET outreach_status=?, candidate_response=?, candidate_responded_at=?, updated_at=?
+          WHERE id=?`).bind(next, resp, nowT, nowT, rec.id).run();
+      const who = `${rec.candidate_name || ''}（${rec.job_title || rec.recommended_job_slug}）`;
+      if (resp === 'interested') {
+        await notify(env, `🟢 ${who} 對阿財推薦的這個職缺按了「想了解看看」，麻煩接手聯繫。`,
+          { message_thread_id: THREAD.decide });
+        return lineReply(env, ev.replyToken, '好的，已經記下來了，顧問會再跟您聯繫說明細節 🙌');
+      }
+      if (resp === 'declined') {
+        // 紅線 6：說「這次不用」→ 同一職缺不再推。狀態本身就是紀錄。
+        return lineReply(env, ev.replyToken,
+          '好的，謝謝您的回覆，這個就不打擾您了。之後有其他合適的機會再跟您分享 🙏');
+      }
+      await notify(env, `❓ ${who} 對阿財推薦的這個職缺按了「我有問題」，麻煩直接跟他說明。`,
+        { message_thread_id: THREAD.decide });
+      return lineReply(env, ev.replyToken, '好的，已經通知顧問了，會由顧問直接跟您說明，謝謝您 🙏');
+    }
+
     if (data.startsWith('confirm_appt:')) {
       const [, token, ...rest] = data.split(':');
       const slotAt = rest.join(':');   // slot_at 本身含冒號（HH:MM），要接回去
