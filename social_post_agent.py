@@ -750,6 +750,10 @@ def line_community_link_suffix(account_id):
 # 所以折衷：句子放資料庫（social_accounts.cta_template，可以隨時改不用重新
 # 部署），但**連結永遠由程式補**——`{link}` 這個佔位符會被換成該帳號的
 # line_link。沒填 cta_template 就用原本那句，保證任何情況下都有真連結。
+# 認領後多久沒產出草稿，就當作那台機器掛了，放回佇列讓別人接。
+# 20 分鐘：產一篇草稿含客戶名稱重產最多幾分鐘，這個門檻遠超過正常耗時。
+STALE_CLAIM_MIN = 20
+
 DEFAULT_CTA = '👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n{link}'
 
 
@@ -1304,6 +1308,36 @@ def tick():
     # 的請求互不卡隊。3 這個數字是刻意壓低的：機器是 8GB、今天才因為
     # 多個 Claude session 同時跑撞過資源緊張的問題，不要為了發文順暢
     # 又把同一台機器榨乾。
+    # ⚠️ 2026-09-21 加：回收卡住的認領。
+    #
+    # 下面那段「先搶再做」的認領（2026-09-17 加的，防兩台重複產文）有個漏洞：
+    # 它先把 status 改成 'claimed'，才去產草稿。如果程序在這中間被砍掉，
+    # 那一列就**永遠卡在 claimed 而且沒有草稿**——認領的條件是 `status IS NULL`，
+    # 所以任何一台機器都不會再撿它，顧問按了發文卻永遠收不到審核通知。
+    #
+    # 真的發生過：2026-09-21 顧問 12:20–12:42 按了 16 篇，WSL2 那台為了更新
+    # 程式碼用 pkill -9 重啟，結果 12 篇卡死、只有 4 篇跑完。顧問完全不知道，
+    # 只知道「都沒收到」。
+    #
+    # 這跟 ai_jobs 的 recover_stale_jobs() 是同一個問題、同一個解法：
+    # 卡太久就放回佇列。門檻取 STALE_CLAIM_MIN 分鐘——產一篇草稿含重產
+    # 最多幾分鐘，20 分鐘遠超過正常耗時，不會誤搶還在跑的。
+    try:
+        # COALESCE：claimed_at 是 2026-09-21 才加的欄位，在那之前認領的
+        # 舊資料沒有值，退回用 requested_at 判斷（那些本來就都是很久以前的）。
+        stale = d1(
+            "SELECT id FROM social_post_queue WHERE status='claimed' AND draft IS NULL "
+            "AND COALESCE(claimed_at, requested_at) <= "
+            f"datetime('now','+8 hours','-{STALE_CLAIM_MIN} minutes')")
+        if stale:
+            ids = ','.join(str(x['id']) for x in stale)
+            d1(f"UPDATE social_post_queue SET status=NULL WHERE id IN ({ids}) "
+               "AND status='claimed' AND draft IS NULL")
+            log(f'♻️ 回收 {len(stale)} 筆卡住的認領（認領後沒產出草稿，'
+                f'多半是程序被中斷）：{ids}')
+    except Exception as e:
+        log(f'⚠️ 回收卡住的認領失敗（不影響這一輪）：{str(e)[:120]}')
+
     queue_rows = d1("SELECT * FROM social_post_queue WHERE status IS NULL ORDER BY requested_at ASC")
     if not queue_rows:
         log('沒有需要產貼文的新職缺／話題')
@@ -1316,8 +1350,13 @@ def tick():
     # 同一套寫法），搶不到的（meta.changes==0）代表已經被另一台搶走，跳過即可。
     claimed_rows = []
     for qrow in queue_rows:
+        # claimed_at 一定要記：回收機制要靠它判斷「這台認領多久了」。
+        # 2026-09-21 第一版回收寫成用 requested_at（顧問按下發文的時間）——
+        # 那是錯的：一筆在佇列裡躺了兩小時才被正常認領的，會在下一輪就被
+        # 當成卡住而搶走，等於兩台互相搶同一筆，比原本的 bug 更糟。
         meta = d1_raw(
-            f"UPDATE social_post_queue SET status='claimed' "
+            f"UPDATE social_post_queue SET status='claimed', "
+            f"claimed_at=datetime('now','+8 hours') "
             f"WHERE id={qrow['id']} AND status IS NULL"
         ).get('meta', {})
         if meta.get('changes'):
