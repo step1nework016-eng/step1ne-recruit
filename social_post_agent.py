@@ -359,7 +359,25 @@ def format_job_requirement(job):
         # 有完整區間時保留原字眼，區間本身已經夠具體，不算誤導。
         unit = job.get('salary_unit') or '月薪'
         lo, hi = job.get('salary_min'), job.get('salary_max')
-        if lo and hi:
+        # ⚠️ 2026-09-21 加：主管職不公開薪資下限。
+        #
+        # 由來：美德「集團資訊主管 Group IT Head」年薪 100–200 萬的貼文
+        # （id=465，DR 帳號 09-19 發）在 Threads 被大量反應「薪水太低、
+        # 根本不符合這個職缺」。6,593 次瀏覽、20 則留言、**0 人應徵**。
+        #
+        # 問題不在上限，在**下限變成第一印象**：年薪 100 萬換算月薪約 7 萬，
+        # 那是中階工程師的價碼。資深人選看到「100 萬起」就判定這家公司不懂
+        # 這個職位的價值，連點進去都不會。區間拉到 2 倍寬更糟——上限像誘餌、
+        # 下限像真心話。
+        #
+        # 所以主管職對外只講上限與「面議」，完整區間留在後台給顧問講。
+        # 判準用「年薪」而不是職稱關鍵字：年薪計價本身就代表這是管理職或
+        # 高階職，比猜職稱可靠（職稱寫法太多種）。
+        if _is_leadership_pay(job) and lo and hi:
+            add('薪資', f"{unit}最高 {hi}，面議（依資歷核定）")
+            lines.append('  ⚠️ 這是主管職，**貼文不要寫出薪資下限**，只能寫上限或「面議」。'
+                         '公開下限會讓目標人選直接略過（2026-09-19 美德集團資訊主管的教訓）。')
+        elif lo and hi:
             add('薪資', f"{unit} {lo}–{hi}")
         else:
             add('薪資', f"平均薪資 {lo or hi} 起")
@@ -392,6 +410,91 @@ def run_claude(prompt):
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
     return r.stdout.strip()
+
+
+# ── 發文前的價格體檢（2026-09-21 加）────────────────────────────────
+#
+# 這支存在的理由：在它之前，草稿產生前唯一的自動檢查是「有沒有洩漏客戶名」，
+# **薪資從頭到尾沒人看過一眼**，職缺開多少就照抄多少進貼文。
+# 2026-09-19 美德集團資訊主管那則（年薪 100–200 萬）被 Threads 大量吐槽
+# 「薪水太低」，6,593 瀏覽 / 20 留言 / 0 應徵——不是曝光不足，是價格把人擋在門外。
+#
+# 設計原則：**只警告，不擋下**。程式判斷不了「這個客戶就是只有這個預算、
+# 但仍值得試」。硬擋會讓顧問學會忽略警告，那才是真正的風險
+# （跟上面客戶名遮蔽那段註解同一個理由）。
+
+# 主管職年薪下限低於這個數字就示警。抓的是「下限低到會勸退目標人選」，
+# 不是「這個薪水合不合理」——後者沒有單一答案。
+# 市場參考（2026-09 查證）：IT Director 最高 380 萬、CIO 通常 300 萬以上。
+LEADERSHIP_FLOOR_YEARLY = 1_500_000
+
+# 區間寬度上限。超過就示警——人選只會記得下限，區間越寬下限的殺傷力越大。
+SALARY_SPREAD_LIMIT = 1.8
+
+
+def _is_leadership_pay(job):
+    """用年薪計價視為管理職／高階職。
+
+    不用職稱關鍵字判斷：職稱寫法太多種（主管／Head／Director／處長／長／
+    Manager／Lead…），漏一個就漏一個。用年薪計價當判準比較可靠——
+    台灣用年薪開的缺，實務上就是管理職或高階專業職。
+    """
+    return str((job or {}).get('salary_unit') or '').upper() == 'YEAR'
+
+
+def salary_sanity_warnings(job):
+    """回傳 list[str]，每條是一句給顧問看的白話警告。沒問題就回空陣列。"""
+    warns = []
+    lo, hi = job.get('salary_min'), job.get('salary_max')
+    try:
+        lo = float(lo) if lo else None
+        hi = float(hi) if hi else None
+    except (TypeError, ValueError):
+        return warns
+
+    if _is_leadership_pay(job) and lo and lo < LEADERSHIP_FLOOR_YEARLY:
+        warns.append(
+            f'主管職年薪下限只有 {int(lo / 10000)} 萬'
+            f'（市場行情：IT/營運總監級 300 萬以上）。'
+            f'公開這個下限，目標人選多半直接略過。')
+
+    if lo and hi and lo > 0 and hi / lo > SALARY_SPREAD_LIMIT:
+        warns.append(
+            f'薪資區間 {round(hi / lo, 1)} 倍寬（{int(lo)}–{int(hi)}）。'
+            f'人選只會記得下限，上限會被當成誘餌。建議收窄或改成面議。')
+
+    # 同一個客戶內部一致性：帶團隊的職缺，下限不該低於不帶團隊的職缺。
+    # 美德就是這個情況——營運發展主管不帶人開 120 萬起，集團資訊主管帶
+    # 海外 IT 團隊卻開 100 萬起。人選看得出來，而且會質疑這家公司。
+    client = job.get('client_name')
+    if client and lo and job.get('leads_team'):
+        # ⚠️ 用這支自己的 d1()，不是 d1_http——第一版寫成 d1_http.query() 會拋
+        # NameError，然後被下面的 except 吞掉，這條規則等於永遠不會觸發而且
+        # 完全沒有跡象。這正是今天早上才查出來的那類 bug（jobs 表沒有
+        # created_at，錯誤被 except 吃掉，跨職缺推薦功能三天都是空的）。
+        # 所以這裡的 except 一定要把錯誤印出來，不准靜默。
+        try:
+            rows = d1(
+                'SELECT title, salary_min FROM jobs '
+                f'WHERE client_name={q(client)} AND slug!={q(job.get("slug"))} '
+                "AND COALESCE(salary_unit,'')='YEAR' AND salary_min IS NOT NULL "
+                'AND (leads_team IS NULL OR leads_team NOT LIKE \'%是%\')'
+            ) or []
+        except Exception as e:
+            log(f'⚠️ 價格體檢的同客戶比對查詢失敗，這一項略過：{str(e)[:120]}')
+            rows = []
+        for r in rows:
+            try:
+                other = float(r['salary_min'])
+            except (TypeError, ValueError):
+                continue
+            if other > lo:
+                warns.append(
+                    f'同客戶內部不一致：「{r["title"]}」不帶團隊卻開 '
+                    f'{int(other / 10000)} 萬起，這個帶團隊反而只有 '
+                    f'{int(lo / 10000)} 萬起。')
+                break
+    return warns
 
 
 def tg_with_buttons(text, buttons, thread=None, retries=3):
@@ -934,11 +1037,22 @@ def process_job(queue_row, job, repost=False):
                     # 不講的話沒有人會發現通知跑錯地方。
                     log(f'⚠️ 帳號「{acct_label}」沒有設定 tg_thread_id，'
                         f'這則通知會送到共用主題 {TG_THREAD_SOCIAL}')
+        # 價格體檢放在審核訊息最上面，不是附註——顧問按「確認發布」之前
+        # 一定會看到。放下面會被草稿本文擠掉（2026-09-19 那則就是沒人攔）。
+        pay_warns = salary_sanity_warnings(job)
+        pay_block = ''
+        if pay_warns:
+            pay_block = ('\n⚠️ 這則貼文的「價格」可能會被吐槽，發之前看一下：\n'
+                         + '\n'.join(f'・{w}' for w in pay_warns)
+                         + '\n建議：改成「面議（依資歷核定）」，或先跟客戶確認價格。\n')
+            log(f'⚠️ {title}：價格體檢有 {len(pay_warns)} 項提醒，已附在審核訊息裡')
+
         msg_id = tg_with_buttons(
             f"📱 全民獵才貼文草稿\n"
             f"帳號：{acct_label or '（未指定帳號）'}\n"
             f"職缺：{title}{'　（重新產出）' if repost else ''}\n"
             + (f"公式：{style_row['name']}\n" if style_row else '')
+            + pay_block
             + f"\n── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
             [
