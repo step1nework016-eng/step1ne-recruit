@@ -727,11 +727,11 @@ def line_community_link_suffix(account_id):
     連結存在帳號自己的 line_link 欄位，換連結改資料庫就好，不用重新部署。"""
     if not account_id:
         return ''
-    acc = d1(f"SELECT platform, line_link, cta_template FROM social_accounts WHERE id={q(account_id)}")
-    if acc and acc[0].get('platform') == 'line_community':
+    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'line_community' and acc[0].get('line_link'):
         # 2026-09-11 再改：Jacky 看到光禿禿一個網址就退回——LINE 社群裡的人
         # 不知道點進去要幹嘛，要有一句「有興趣就點這裡聯繫顧問」帶著點進去。
-        return _cta_text(acc[0])
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
     return ''
 
 
@@ -795,9 +795,13 @@ def job_raw_format_line_suffix(account_id, style_row):
     照舊，不在這裡動。"""
     if style_row or not account_id:
         return ''
-    acc = d1(f"SELECT platform, line_link, cta_template FROM social_accounts WHERE id={q(account_id)}")
-    if acc and acc[0].get('platform') == 'threads':
-        return _cta_text(acc[0])
+    # ⚠️ 2026-09-21：這裡刻意維持「固定一句 + 連結」，不要改成各顧問自訂。
+    # 當天一度改成讀 cta_template（各顧問一句自己的話 + 自己的連結），
+    # 但 Jacky 澄清後確認方向錯了：**原始格式這條路要保留連結、維持原樣**，
+    # 要換成純 CTA 的是「純CTA型公式」那條路（見 generate_draft_job_styled）。
+    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'threads' and acc[0].get('line_link'):
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
     return ''
 
 
@@ -820,14 +824,41 @@ def generate_draft(job, account_id):
 # CTA_KEYWORD 目前還沒有職缺專屬的關鍵字欄位（下一步才接），先讓模型自己
 # 挑一個好記、跟這個職缺有關的詞（通常是地點或職稱關鍵字），不要空著或
 # 留下未替換的 {{CTA_KEYWORD}} 字樣。
-def generate_draft_job_styled(job, style_row):
+def generate_draft_job_styled(job, style_row, account_id=None):
+    """套寫作公式產職缺文。
+
+    ⚠️ 2026-09-21 改：把顧問自己的風格提示詞疊進來。
+
+    在這之前這支**只用公式**，完全沒帶進那位顧問的風格提示詞——結果十二個
+    帳號選同一個公式，寫出來的東西幾乎一模一樣。顧問反映的
+    「CTA 都會是同一個格式、成效比較不好、有可能是太過雷同」，根源就在這裡：
+    不是最後那句 CTA 的問題，是**選了公式之後整篇文章的個人風格就消失了**
+    ——Anna 的親切、Dan H 的忠厚老實、法蘭克的市場鉤子全都不見。
+
+    Jacky 要的是：**底稿還是那位顧問的原始格式（語氣、人設、結構），
+    公式只負責改變收尾的做法**（純CTA型＝留言互動、不放連結）。
+
+    所以順序是：顧問風格在前（決定「誰在講話」），公式在後（決定「這篇怎麼收」），
+    並明確告訴模型衝突時聽誰的。
+    """
     facts = format_job_requirement(job)
     style_body = style_row['body'].replace(
         '{{CTA_KEYWORD}}',
         '（你自己想一個好記、跟這個職缺有關的關鍵字，通常是地點或職稱裡的一個詞，例如地名或職稱簡稱）'
     )
+    persona = skill(account_id) if account_id else ''
+    head = ''
+    if persona:
+        head = (persona
+                + '\n\n---\n\n【這一篇要套一個寫法公式】\n'
+                  '上面是你平常的寫法，**人設、語氣、用字、符號習慣一律照上面走**'
+                  '——讀的人要看得出來這是同一個人寫的。\n'
+                  '下面的公式只決定兩件事：這篇的**結構**，以及**結尾怎麼收**。\n'
+                  '⚠️ 兩邊衝突時：**風格聽上面的，結尾與連結規則聽下面的。**\n'
+                  '尤其如果下面的公式說「不放連結」，那就真的不要放，'
+                  '即使你平常的寫法會附連結。\n\n---\n\n')
     prompt = (
-        style_body
+        head + style_body
         + '\n\n【這個職缺的原始資料——自由運用，挑對這篇公式有幫助的部分即可，'
           '不用照抄成清單格式，也不用全部用到】\n' + facts
         + WRAP_INSTRUCTION
@@ -1069,7 +1100,8 @@ def process_job(queue_row, job, repost=False):
     style_row = _style_by_id(style_id) if style_id else None
 
     def gen():
-        return generate_draft_job_styled(job, style_row) if style_row else generate_draft(job, account_id)
+        return (generate_draft_job_styled(job, style_row, account_id) if style_row
+                else generate_draft(job, account_id))
 
     try:
         log(f'{title}（{slug}）：產生貼文草稿中…' + (f'（套用「{style_row["name"]}」）' if style_row else ''))
