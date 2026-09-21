@@ -727,12 +727,55 @@ def line_community_link_suffix(account_id):
     連結存在帳號自己的 line_link 欄位，換連結改資料庫就好，不用重新部署。"""
     if not account_id:
         return ''
-    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
-    if acc and acc[0].get('platform') == 'line_community' and acc[0].get('line_link'):
+    acc = d1(f"SELECT platform, line_link, cta_template FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'line_community':
         # 2026-09-11 再改：Jacky 看到光禿禿一個網址就退回——LINE 社群裡的人
         # 不知道點進去要幹嘛，要有一句「有興趣就點這裡聯繫顧問」帶著點進去。
-        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+        return _cta_text(acc[0])
     return ''
+
+
+
+# ⚠️ 2026-09-21 改：CTA 句子改成每個顧問可以有自己的一句。
+#
+# 顧問反映：「社群發文 CTA 都會是同一個格式……發現 CTA 成效都比較不好，
+# 有可能是太過雷同。」十二個帳號各自有 1300–4000 字的專屬寫作風格，
+# 貼文前面讀起來都不一樣，**最後一段卻一模一樣**。
+#
+# 但不能單純改回「讓各顧問自己在 skill_prompt 裡寫」——2026-09-14 就是因為
+# 那樣壞掉才改成統一的：DR 的 prompt 甚至寫死「不放連結」、Phoebe 的連結
+# 過期、Bob／Anna／Dan H／Eileen S／法蘭克／宥恩的 CTA 只有「私訊我」
+# 沒有真的網址。
+#
+# 所以折衷：句子放資料庫（social_accounts.cta_template，可以隨時改不用重新
+# 部署），但**連結永遠由程式補**——`{link}` 這個佔位符會被換成該帳號的
+# line_link。沒填 cta_template 就用原本那句，保證任何情況下都有真連結。
+DEFAULT_CTA = '👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n{link}'
+
+
+def _cta_kind(account_id, style_row):
+    """這則貼文用了哪一種 CTA，寫進 social_post_queue.cta_type 供事後比對成效。"""
+    if style_row:
+        return 'formula'          # 寫作公式自帶的 CTA 規則
+    if not account_id:
+        return 'none'
+    acc = d1(f"SELECT cta_template FROM social_accounts WHERE id={q(account_id)}")
+    if acc and (acc[0].get('cta_template') or '').strip():
+        return 'own'              # 顧問自己的句子
+    return 'default'              # 共用的那句
+
+
+def _cta_text(acc):
+    """組出這個帳號的 CTA。acc 要有 cta_template 與 line_link。"""
+    link = (acc or {}).get('line_link') or ''
+    if not link:
+        return ''
+    tpl = ((acc or {}).get('cta_template') or '').strip() or DEFAULT_CTA
+    # 顧問可能忘了寫 {link}——那就把連結補在最後，不要讓貼文變成沒有連結。
+    # 這是整段設計的底線：句子可以各寫各的，連結不可以不見。
+    if '{link}' not in tpl:
+        tpl = tpl.rstrip() + '\n{link}'
+    return '\n\n' + tpl.replace('{link}', link)
 
 
 def job_raw_format_line_suffix(account_id, style_row):
@@ -748,9 +791,9 @@ def job_raw_format_line_suffix(account_id, style_row):
     照舊，不在這裡動。"""
     if style_row or not account_id:
         return ''
-    acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
-    if acc and acc[0].get('platform') == 'threads' and acc[0].get('line_link'):
-        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+    acc = d1(f"SELECT platform, line_link, cta_template FROM social_accounts WHERE id={q(account_id)}")
+    if acc and acc[0].get('platform') == 'threads':
+        return _cta_text(acc[0])
     return ''
 
 
@@ -963,8 +1006,11 @@ def process_topic(queue_row, topic):
         post = post + line_community_link_suffix(account_id)
         mission_tag = {'ai': 'trust_building', 'general': 'engagement'}.get(topic.get('category'), 'general')
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
+        # cta_type 同上（見 _cta_kind 的說明）。話題文走的是
+        # line_community_link_suffix，一樣吃 cta_template。
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
-           f"content_mission={q(mission_tag)}, content_length={q(length_tag)} WHERE id={qid}")
+           f"content_mission={q(mission_tag)}, content_length={q(length_tag)}, "
+           f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
@@ -1106,8 +1152,13 @@ def process_job(queue_row, job, repost=False):
         post = post + line_community_link_suffix(account_id) + job_raw_format_line_suffix(account_id, style_row)
         formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
+        # 2026-09-21 補記 cta_type：顧問反映「CTA 成效不好、可能太過雷同」，
+        # 但這個欄位 381 筆全是空的——沒有它，改了 CTA 也無從驗證有沒有變好。
+        # 'own' = 用顧問自己的句子，'default' = 用共用的那句，'formula' = 走
+        # 寫作公式自帶的 CTA 規則。兩週後就能比出哪一種有效。
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
-           f"content_formula={q(formula_tag)}, content_length={q(length_tag)} WHERE id={qid}")
+           f"content_formula={q(formula_tag)}, content_length={q(length_tag)}, "
+           f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
