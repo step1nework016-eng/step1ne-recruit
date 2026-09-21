@@ -968,6 +968,44 @@ def stale(rows):
     return out
 
 
+
+# 面談結束後才冒出來的問題（2026-09-21 加）
+#
+# 為什麼 active_sessions() 不夠：它只撈 interview_state='active'。面談收尾後
+# 狀態會轉成 paused 或 done，阿財就**再也看不到這個人的訊息**——但面談室的
+# 頁面還在，候選人照樣打得出字。
+#
+# 邱萬豪 2026-09-21 就是這樣：13:56 被 120 分鐘上限強制收尾，阿財的收尾詞
+# 說「不管有沒有下一步都會通知您」，他 13:57 回
+# 「如果我有想到可以再提問嗎？想了解何時會有進一步消息、流程怎麼進行」
+# ——結果沒有任何人回，是人工補的。收尾訊息才剛說可以問，問了沒人理，
+# 體感就是已讀不回。
+#
+# 撈的條件：面談已結束、但最後一則是候選人講的、而且在 N 天內。
+# 加時間窗是因為三個月前的舊面談室不該還會自動回話——那時候職缺、
+# 顧問、甚至候選人的狀況都變了，阿財講的話會過期。
+POST_WRAP_REPLY_DAYS = 7
+
+
+def post_wrap_questions():
+    """面談已收尾，但候選人事後又問了東西、還沒有人回。"""
+    return d1(f"""
+        SELECT a.id, a.name, a.job_slug, a.interview_started_at,
+               (SELECT m.role FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) AS last_role,
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) AS last_at,
+               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
+               a.start_notified_at, a.job_title
+          FROM applications a
+         WHERE a.interview_state IN ('done', 'paused')
+           AND (SELECT m.role FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1) = 'candidate'
+           AND (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+                 ORDER BY m.id DESC LIMIT 1)
+               >= datetime('now', '+8 hours', '-{POST_WRAP_REPLY_DAYS} days')
+    """) or []
+
 def expired(rows):
     """房間開了滿一小時的强制關閉——不管候選人還在不在、聊到哪。
 
@@ -985,8 +1023,26 @@ def expired(rows):
                 r['interview_started_at'], '%Y-%m-%d %H:%M:%S')
         except Exception:
             continue
-        if (now - started).total_seconds() >= ROOM_HARD_LIMIT_MIN * 60:
-            out.append(r)
+        if (now - started).total_seconds() < ROOM_HARD_LIMIT_MIN * 60:
+            continue
+        # ⚠️ 2026-09-21 加「已經收尾過就不再收一次」。
+        #
+        # 在這之前只看時間，所以房間一超過 120 分鐘就**永遠**被歸進強制收尾，
+        # 而 tick() 裡 expired 的優先權最高、會把這個人從 remaining 裡拿掉，
+        # 等於**再也輪不到 pending()（回話）那條路**。
+        #
+        # 邱萬豪 2026-09-21 就是這樣：13:56:25 阿財說「時間到了，先告一段落」，
+        # 他 13:57:36 回「如果我有想到可以再提問嗎？想了解何時會有進一步消息」
+        # ——收尾訊息才剛說可以問，問了卻沒有人回，體感就是已讀不回。
+        # Jacky 選的處置是「收尾後仍然回答問題」，所以這裡要放行。
+        #
+        # 判準用 reports：timeout_close() 會產報告，有報告就代表收過尾了。
+        # 不用 interview_state，因為 close=False 時它本來就還是 active
+        #（房間刻意留著讓人選能繼續問）。
+        done = d1(f"SELECT 1 FROM reports WHERE application_id={q(r['id'])} LIMIT 1")
+        if done:
+            continue
+        out.append(r)
     return out
 
 
@@ -2768,6 +2824,31 @@ def handle(app):
         n = len(ctx.get('conversation') or [])
         _notify_cross_job_interest(app, ctx)
         talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
+        # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
+        # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
+        #
+        # 由來：邱萬豪 13:56 被 120 分鐘上限強制收尾，阿財說「時間到了，先告一
+        # 段落……不管有沒有下一步都會通知您」，他 13:57 回「如果我有想到可以
+        # 再提問嗎？想了解何時會有進一步消息、流程怎麼進行」。收尾訊息才剛說
+        # 可以問，問了沒人回，體感就是已讀不回。
+        #
+        # 處置（Jacky 拍板）：繼續回答，但只回「流程、時程、怎麼聯絡」這類，
+        # 不要再開新的面談題——報告都產完了，再問也進不去那份報告。
+        already_reported = bool(d1(
+            f"SELECT 1 FROM reports WHERE application_id={q(app_id)} LIMIT 1"))
+        if already_reported:
+            talk_prompt += (
+                '\n\n---\n\n🚨 **這場面談已經收尾、報告也已經產出了。**\n'
+                '候選人現在是在收尾之後追問，不是面談還在進行。所以：\n'
+                '・**不要再問新的面談題目，也不要深挖經歷**——問了也進不了報告，'
+                '只會讓對方以為面談又重新開始。\n'
+                '・只回答他問的事：後續流程、大概什麼時候會有消息、還能不能再聯絡、'
+                '以及這個職缺本身他還想確認的資訊。\n'
+                '・時程不要給明確日期，講「這幾個工作天內」這種就好，'
+                '不要替顧問承諾你不知道的事。\n'
+                '・如果他補充了跟面談有關的新資訊，謝謝他並說會一起轉給顧問，'
+                '不要當場評價。\n'
+                '・語氣照常，簡短就好，不用再導回面談流程。')
         _before_files = _snapshot_session_files()
         result = run_claude(talk_prompt)
         log_token_usage(app_id, 'talk', talk_prompt, _before_files)
@@ -2804,7 +2885,10 @@ def handle(app):
         snap_signals(app_id, now)
         log(f'{name}：回了 {len(msgs)} 則')
 
-        if result.get('end') or n >= MAX_TURNS:
+        # ⚠️ 2026-09-21：收尾後的追問也會走到這裡（見 post_wrap_questions）。
+        # 那些人報告早就產完了，不能再 finish() 一次——會多產一份報告、
+        # 多寄一封通知信給候選人，顧問後台也會看到同一個人兩份報告。
+        if (result.get('end') or n >= MAX_TURNS) and not already_reported:
             finish(app_id, name, app['job_slug'], ctx)
 
     except Exception as e:
@@ -3028,7 +3112,16 @@ def tick():
         log(f'查詢待預熱名單失敗：{e}')
         prewarm_rows = []
 
+    # 收尾之後才問的問題。優先權排在強制收尾之後、一般回話之前——
+    # 這些人已經等了一段時間（沒有人在盯著這個房間），不該再排到最後。
+    try:
+        post_wrap = post_wrap_questions()
+    except Exception as e:
+        log(f'查詢收尾後提問失敗：{e}')
+        post_wrap = []
+
     jobs = ([(a, timeout_close) for a in expired_rows]
+            + [(a, handle) for a in post_wrap]
             + [(a, handle) for a in pending(remaining)]
             + [(a, wrap_up) for a in stale(remaining)]
             + [(a, close_paused) for a in held]
