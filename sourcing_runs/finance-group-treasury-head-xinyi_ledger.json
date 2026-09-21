@@ -1,0 +1,163 @@
+{
+  "job_slug": "finance-group-treasury-head-xinyi",
+  "first_run": "2026-09-21",
+  "identities": [
+    {
+      "name": "王冠傑",
+      "company": "中化合成生技股份有限公司（1762，中化製藥集團關係企業）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E4%B8%AD%E5%8C%96%E7%94%9F-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1-%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E5%8F%8A%E4%BB%A3%E7%90%86%E7%99%BC%E8%A8%80%E4%BA%BA%E7%95%B0%E5%8B%95-071400186.html",
+      "first_seen": "2026-09-21",
+      "gate": "DIRECT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "江佳燕",
+      "company": "力新國際科技股份有限公司（5202，前職）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E5%8A%9B%E6%96%B0-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%99%BC%E7%94%9F%E7%95%B0%E5%8B%95-021100938.html",
+      "first_seen": "2026-09-21",
+      "gate": "DIRECT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "李慧珍（Jessie Lee）",
+      "company": "恆隆行貿易股份有限公司（大型私人代理通路集團）",
+      "source_url": "https://ai-taiwan.com.tw/2026/industry_ground/agenda/571",
+      "first_seen": "2026-09-21",
+      "gate": "CONTACT_AFTER_CONFIRMATION",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "詹孟恭",
+      "company": "逸達生物科技股份有限公司（6576，前職）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%80%B8%E9%81%94-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E5%8F%8A%E7%99%BC%E8%A8%80%E4%BA%BA%E7%95%B0%E5%8B%95-230400739.html",
+      "first_seen": "2026-09-21",
+      "gate": "ADJACENT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "黃國書",
+      "company": "擎邦國際科技工程股份有限公司（6122）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E6%93%8E%E9%82%A6-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E9%95%B7-%E7%99%BC%E8%A8%80%E4%BA%BA-%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E5%8F%8A%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-093900295.html",
+      "first_seen": "2026-09-21",
+      "gate": "CONTACT_AFTER_CONFIRMATION",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "鄭志慧",
+      "company": "醣基生醫股份有限公司（6586）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%86%A3%E5%9F%BA-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%91%A3%E4%BA%8B%E6%9C%83%E9%80%9A%E9%81%8E%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95%E6%A1%88-075400803.html",
+      "first_seen": "2026-09-21",
+      "gate": "CONTACT_AFTER_CONFIRMATION",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "陳美智",
+      "company": "點序科技股份有限公司（6485）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%BB%9E%E5%BA%8F-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-062400007.html",
+      "first_seen": "2026-09-21",
+      "gate": "CONTACT_AFTER_CONFIRMATION",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "梁嘉文",
+      "company": "經貿聯網科技股份有限公司（7841，CyberSoft）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E7%B6%93%E8%B2%BF%E8%81%AF%E7%B6%B2-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E6%9A%A8%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-011900989.html",
+      "first_seen": "2026-09-21",
+      "gate": "DIRECT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "蕭湘澐",
+      "company": "微電能源股份有限公司（6883）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E5%BE%AE%E9%9B%BB%E8%83%BD%E6%BA%90-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E8%88%87%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-081400403.html",
+      "first_seen": "2026-09-21",
+      "gate": "CONTACT_AFTER_CONFIRMATION",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "黃宇彤",
+      "company": "精華生醫股份有限公司（7806）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E7%B2%BE%E8%8F%AF%E7%94%9F%E9%86%AB-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E7%99%BC%E8%A8%80%E4%BA%BA-%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E5%8F%8A%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-080400958.html",
+      "first_seen": "2026-09-21",
+      "gate": "ADJACENT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "黃景鴻",
+      "company": "上福全球科技股份有限公司（6128）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E4%B8%8A%E7%A6%8F-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%91%A3%E4%BA%8B%E6%9C%83%E9%80%9A%E9%81%8E%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-100900732.html",
+      "first_seen": "2026-09-21",
+      "gate": "ADJACENT_TARGET",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "周于瑄",
+      "company": "力新國際科技股份有限公司（5202）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E5%8A%9B%E6%96%B0-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%99%BC%E7%94%9F%E7%95%B0%E5%8B%95-100400236.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "蔡文晃",
+      "company": "醣基生醫股份有限公司（6586）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%86%A3%E5%9F%BA-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%91%A3%E4%BA%8B%E6%9C%83%E9%80%9A%E9%81%8E%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95%E6%A1%88-075400803.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "陳韻如",
+      "company": "醫影科技股份有限公司（6637）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%86%AB%E5%BD%B1-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E7%99%BC%E8%A8%80%E4%BA%BA-%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E6%9A%A8%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-081900225.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "張琪琪",
+      "company": "創新服務股份有限公司（7828）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E5%89%B5%E6%96%B0%E6%9C%8D%E5%8B%99-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E9%95%B7%E6%9A%A8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-070900815.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "陳怡芬",
+      "company": "創新服務股份有限公司（7828）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E5%89%B5%E6%96%B0%E6%9C%8D%E5%8B%99-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E9%95%B7%E6%9A%A8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-070900815.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "邵婷婷",
+      "company": "達爾膚生醫科技股份有限公司（6523）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E9%81%94%E7%88%BE%E8%86%9A-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E7%99%BC%E8%A8%80%E4%BA%BA-%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1-%E6%9C%83%E8%A8%88%E4%B8%BB%E7%AE%A1%E6%9A%A8%E5%85%AC%E5%8F%B8%E6%B2%BB%E7%90%86%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-061300902.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    },
+    {
+      "name": "王秝家",
+      "company": "攸泰科技股份有限公司（6928）",
+      "source_url": "https://tw.stock.yahoo.com/news/%E6%94%B8%E6%B3%B0%E7%A7%91%E6%8A%80-%E5%85%AC%E5%91%8A%E6%9C%AC%E5%85%AC%E5%8F%B8%E8%B2%A1%E5%8B%99%E4%B8%BB%E7%AE%A1%E7%95%B0%E5%8B%95-081900318.html",
+      "first_seen": "2026-09-21",
+      "gate": "LONG_TERM_POOL",
+      "contact_status": "CONTACT_NOT_PUBLIC_AFTER_DEEP_SEARCH"
+    }
+  ],
+  "identity_conflicts": [
+    "郭盈君（擎邦6122 vs 彬台3379，同名同職稱）",
+    "達爾膚6523 前任財務長姓名，兩筆公開摘要衝突"
+  ],
+  "excluded": [
+    "陳素瑩（特昇-KY，前職馬來西亞，工作權/到班待確認）"
+  ],
+  "source_memory": {
+    "mops_財務主管異動公告": "ACTIVE→本輪末期重複率升高，標記 RERUN_ON_NEW_ANCHOR",
+    "論壇講者議程": "ACTIVE",
+    "LinkedIn/Cake 中文X-Ray": "COOLDOWN_14D（0 命中）",
+    "聯貸新聞稿": "ACTIVE，僅產出財務長級（referral）"
+  }
+}

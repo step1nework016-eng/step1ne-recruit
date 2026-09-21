@@ -1,0 +1,136 @@
+{
+  "slug": "brand-social-video-editor-neihu",
+  "run_date": "2026-09-21",
+  "run_id": "brand-social-video-editor-neihu_20260921_091147",
+  "run_type": "INCREMENTAL_DAILY_AGENT_ROUND_6_CALIBRATION",
+  "persistent_state": {
+    "prior_runs_loaded": ["2026-09-16 (round 1,2)", "2026-09-17 (round 3)", "2026-09-18 (round 4)", "2026-09-19 (round 5)"],
+    "prior_samples": 25,
+    "prior_matches": 1,
+    "ledger_status": "MISSING_BEFORE_THIS_RUN - 本輪補建 sourcing_runs/brand-social-video-editor-neihu_ledger.json，回填 25 筆 + 新增 5 筆 = 30 筆",
+    "open_human_checkpoints_inherited": [
+      "#3 是否授權公開履歷平台升為主要發現來源（round 5 已自行證偽，關閉）",
+      "#4 是否接受個人接案影像工作者為可接受原型（未裁示）",
+      "#5 是否將『3年以上』改為電訪確認項而非公開證據門檻（未裁示）",
+      "#6 是否授權人工瀏覽器補全名（未裁示）"
+    ]
+  },
+  "route": {
+    "primary_ecosystem": "CREATIVE_CONTENT",
+    "secondary_ecosystem": "SALES_OPERATIONS",
+    "seniority": "mid",
+    "employment_mode": "permanent / onsite",
+    "evidence_mode": "portfolio + public-content",
+    "overlays": ["PORTFOLIO_REQUIRED", "SHIFT_OR_ATTENDANCE"],
+    "route_basis": "與 job-strategy-router.md 第五節基準案例表『品牌社群影音編輯 → CREATIVE_CONTENT / SALES_OPERATIONS』該列一致。六輪下來 Route 代碼本身從未被證偽；失敗點在來源生態的證據深度，不在路由。"
+  },
+  "archetype_lock": {
+    "status": "ARCHETYPE_LOCKED",
+    "basis": "沿用 round 1 建立、round 4 稽核放寬後之鎖定版本（unambiguous prior context，未再向人類補問）",
+    "positive": [
+      "品牌端 in-house 社群小編兼剪輯（腳本→拍攝→剪輯一人包）",
+      "車業/戶外/運動用品品牌或代理商 marketing content specialist",
+      "廣告或數位行銷公司 social content producer / 影音企劃 執行層",
+      "機車/汽車媒體 編輯兼影音製作"
+    ],
+    "negative": ["創辦人／負責人", "製片公司老闆", "KOL／網紅本人", "行銷總監／經理級", "純平面設計無影音", "純VFX後期專才", "無3年經驗者", "僅筆名/單名/Username 無法解析身分者"],
+    "maturity": "3-8 years",
+    "visibility_ceiling": "EMERGING to GROWING",
+    "hard_gate_recruitability": "月薪40K起（台北內湖onsite）",
+    "blocked_source_ecosystems": ["VIRTUAL_CREATOR_LIVESTREAM", "GAME_STREAMER", "ENG_CONSTRUCTION"]
+  },
+  "round_6_source_strategy": {
+    "rationale": "依 daily-agent-loop-v1.md『不得重跑已耗盡的等價查詢』，本輪迴避前五輪已 COOLDOWN／RETIRED 的查詢類別（IOH 職涯講座、代理商案例與獎項、接案媒合平台、Cake 公開 Profile），改用三個本 slug 從未作為發現錨點的來源家族。",
+    "new_query_classes": [
+      {"class": "目標公司優先（八大來源 #7）— 重機/汽車/動力運動代理商 in-house 行銷", "status": "LOW_YIELD", "finding": "僅產出經營層（海德生董事長徐宜生、總經理陳政成 — 且為客戶方人員，非候選人）。安東貿易（Triumph/KTM 總代理）等同業官網無具名行銷團隊頁。判定 COOLDOWN_30D。"},
+      {"class": "課程／職訓結業具名成果（八大來源 #2）— 勞動部產業新尖兵、臺北市勞動大學短影音班", "status": "SEARCHED_NOT_FOUND", "finding": "課程頁均載明有『成果發表會』與『作品集整合』，但公開網頁一律不揭露結業學員名單。判定 RETIRED_FOR_THIS_JD（結構性不具名）。"},
+      {"class": "搜尋引擎 X-Ray 公開專業檔案索引（身分驗證用途）", "status": "PARTIAL_YIELD", "finding": "首度穩定產出『職級正確＋職能正確＋品牌端 in-house』的具名個人（影音企劃 @ 寶雅／牧羊人集團／寰宇教育）。但直接存取一律 HTTP 999，僅能取得搜尋引擎索引摘要，年資與起訖多數不可得。"},
+      {"class": "個人作品集自架站（本輪新發現之高價值錨點）", "status": "HIGH_VALUE_LOW_VOLUME", "finding": "當人選同時具備 in-house 職位與自架作品集站時，年資、起訖、學歷即成為可驗證公開資訊（Ching 為唯一實例）。此為六輪來唯一能同時滿足 JD 兩項可驗證必要條件的證據組合，但難以用查詢規模化——需先有姓名才找得到其作品集站。"}
+    ]
+  },
+  "calibration_round_6": {
+    "dedup_check": "5 位樣本全數比對 ledger 30 筆，0 筆重複，全為 NEW_UNIQUE 身分",
+    "contact_deep_search_performed": false,
+    "samples": [
+      {
+        "name": "Ching（公開頁以 Ching 具名）",
+        "company": "MR. LIVING 居家先生（現職）／杉木藝術有限公司 Sunwood Art（2021/05 起）",
+        "role": "資深內容營運企劃（行銷部，主責短影音企劃與執行）",
+        "source_url": "https://a0988617286.wixsite.com/ching",
+        "secondary_source_url": "https://www.linkedin.com/in/ching-yu-9a82b71a8/",
+        "verdict": "MATCH",
+        "identity_anchors": ["公司（MR. LIVING 居家先生 / 杉木藝術）", "學校（國立臺灣科技大學設計系 2016-2020）", "技能（影音企劃/拍攝/剪輯＋社群經營＋平面設計）", "時間線（2021/05 起）", "Username（@_ching1997、Chingの生活雜貨店）"],
+        "reason": "六輪來唯一同時滿足 JD 兩項可驗證必要條件者。(1) 3年以上經驗：自架作品集站載明 2021/05 起於杉木藝術任 YouTube 頻道企劃／主持／攝影／剪輯並兼策展人，至今 4.4 年，超過 JD 門檻；(2) 現職/近期受僱證據：公開專業檔案索引顯示現任 MR. LIVING 居家先生行銷部資深內容營運企劃，主責短影音企劃與執行。(3) 職能全覆蓋：短影音企劃→拍攝→剪輯一人包辦（對應 main_duties 第4項）、社群內容經營與 IG Reels 實作（對應社群營運）、台科大工業設計背景與平面設計技能（對應必要條件『基礎美編能力』）。(4) 職級與知名度：個人貢獻者，非創辦人／非經理／非工作室負責人／非 KOL，VISIBILITY_TIER=EMERGING，落在 Lock 允許區間。",
+        "residual_risk": "未違反 Lock，但有四項 ASSUMPTION_TO_CONFIRM：工作地點（MR. LIVING 據點在新北新莊，內湖到班意願未知）、40K 薪資帶接受度、英文中等程度、重機駕照（加分項）。依 full-prompt 第五步，此四項屬 CONTACT_AFTER_CONFIRMATION 範疇，不影響 MATCH 判定。",
+        "incidental_contact_observed": "作品集頁公開顯示 Email 字串 chingyo999@gamil.com。網域拼寫疑為本人筆誤，但依硬性規則不得推定修正為 gmail.com（推定即屬猜測 Email）。原樣記錄，標記 HUMAN_ACTION_REQUIRED，未計入任何 Verified Email 成果，亦未影響 Fit。"
+      },
+      {
+        "name": "Hsiao-Ai Liang",
+        "company": "寶雅國際股份有限公司",
+        "role": "影音企劃（2021/04 起）",
+        "source_url": "https://www.linkedin.com/in/hsiao-ai-liang-42101611b/",
+        "verdict": "UNCERTAIN",
+        "reason": "職能與職級正確：品牌端 in-house 影音企劃、IC 層、國立臺北藝術大學、公開索引顯示 2021/04 迄今任職寶雅，前為自由接案影像＋社群行銷 2019/06-2021/04，再前為噪咖網路短劇導演／編劇／剪輯 2017-2019。但三項阻卻：(a) 影像資歷自 2017 起算約 9 年，超出 Lock 成熟度上限 3-8 年，且上市公司 9 年資歷者接受 40K 不現實 — 命中校準規則『太資深／太貴者不得算 MATCH』；(b) 寶雅國際總部位於台南市，JD 為台北內湖 onsite，公開資料無法確認其實際辦公地，地點風險未解；(c) 全部證據僅來自單一 LinkedIn 公開頁，WebFetch 回 HTTP 999 存取受阻，未能直接查證，僅有搜尋引擎索引摘要，不符『兩個獨立一致錨點』的理想強度。"
+      },
+      {
+        "name": "陳姝妤",
+        "company": "牧羊人集團 ShepherdTech（汪喵星球母公司）",
+        "role": "影音企劃",
+        "source_url": "https://www.linkedin.com/in/%E5%A7%9D%E5%A6%A4-%E9%99%B3-aaa774a0/",
+        "verdict": "UNCERTAIN",
+        "reason": "原型方向完全正確——台灣品牌端（寵物食品集團，該集團以動漫尾牙短影音破千萬觀看著稱）in-house 影音企劃，台北，IC 職級，非禁止類型。但公開可得資訊僅姓名＋職稱＋公司三項；無年資、無起訖日期、無學歷、無地點、無個人作品集。交叉搜尋牧羊人集團／汪喵星球之影音內容與媒體報導，均未取得個人 credit（品牌影音掛在官方帳號下）。JD 必要條件『3年以上社群行銷或影音製作相關經驗』無法驗證 — 與 round 4/5 完全相同的證據深度缺口。"
+      },
+      {
+        "name": "ZHIJIE LIU",
+        "company": "寰宇教育事業機構（台北市）",
+        "role": "影音企劃",
+        "source_url": "https://tw.linkedin.com/in/zhijie-liu-928225239",
+        "verdict": "UNCERTAIN",
+        "reason": "組織端 in-house 影音企劃、台北市、IC 職級，原型方向正確。WebFetch 回 HTTP 999 存取受阻（記錄技術狀態，未改寫為 NOT_FOUND，未嘗試登入或繞過）。無年資、無作品集、無學歷可得；教育事業體之影音企劃是否涵蓋『社群營運（FB/IG/YouTube/LINE/GMB）』亦無證據。必要條件『3年以上』與『基礎美編能力』皆無法驗證。"
+      },
+      {
+        "name": "游聖寅",
+        "company": "一二三生活科技",
+        "role": "社群行銷",
+        "source_url": "https://de.linkedin.com/in/%E8%81%96%E5%AF%85-%E6%B8%B8-21738bb6/?_l=en",
+        "verdict": "MISMATCH",
+        "reason": "職稱與公開可得資訊皆為純社群行銷職能，無任何影音拍攝、剪輯、腳本或作品證據。JD 必要條件『具備影音短片剪輯能力』與 main_duties 第4項『獨立完成短影片製作』為零證據，非證據不足而是方向不符。"
+      }
+    ],
+    "result": "1_OF_5_MATCH",
+    "gate_requirement": "4_OF_5",
+    "gate_outcome": "FAILED",
+    "false_positive_pattern": "第六輪改用三個全新來源家族（目標公司優先、職訓結業成果、搜尋引擎 X-Ray 專業檔案索引），失敗型態確認為 round 4/5 缺口的結構性延續，並新增一項反向證據。正面進展：X-Ray 專業檔案索引首度穩定產出『品牌端 in-house＋執行層＋影音企劃』的具名個人（陳姝妤、ZHIJIE LIU、Hsiao-Ai Liang 三位方向全對），證明人才確實存在且可具名定位，前五輪『職級層錯誤』的問題已解決。阻卻點單一化為：這些人的『年資起訖』與『現職受僱證明』一律落在 HTTP 999 存取牆之後，而使用者硬性規則與本 Skill 安全邊界均禁止登入與繞過。唯一突破此牆的證據組合是『in-house 職位＋本人自架作品集站』（Ching），但該組合無法用查詢規模化——必須先由其他管道取得姓名，才可能找到其作品集站，因此每輪僅能偶然產出 1 位，結構上無法在 5 人樣本中湊足 4 位。另確認兩項來源已可退役：目標公司優先在此垂直產業只產出經營層；職訓課程結業名單結構性不具名。"
+  },
+  "final_status": "ROUTE_CALIBRATION_FAILED",
+  "bulk_sourcing_executed": false,
+  "contact_enrichment_executed": false,
+  "delta_metrics": {
+    "new_unique_raw_leads": 5,
+    "evidence_updates": 0,
+    "cross_source_duplicates": 0,
+    "identity_conflicts": 0,
+    "qualified_gate_reviews": 0,
+    "qualified": 0,
+    "verified_email": 0,
+    "verified_phone": 0,
+    "verified_social": 0,
+    "email_ready": 0,
+    "linkedin_manual_queue": 3,
+    "dual_channel": 0,
+    "client_ready": 0,
+    "note": "5 筆新身分僅為校準樣本，未通過校準閘門，依 job-route-calibration-v1.md『Scaling rule』不得計入可用 Candidate Pool，不得執行 Qualified Gate 與 Contact Enrichment。"
+  },
+  "daily_success_level": "DISCOVERY_ONLY",
+  "auto_outreach_target_missed": true,
+  "source_access_log": [
+    {"source": "LinkedIn 公開 Profile（4 個 URL）", "status": "HTTP_999_BLOCKED", "note": "記錄技術狀態，未改寫為 NOT_FOUND；未嘗試登入、未繞過驗證碼或付費牆。僅使用搜尋引擎公開索引摘要。"},
+    {"source": "個人作品集自架站 a0988617286.wixsite.com/ching", "status": "FOUND_VERIFIED", "note": "完整公開經歷、學歷、技能與本人自行公開之聯絡字串"},
+    {"source": "海德生貿易 / indianmotorcycle.com.tw / hdsmoto.com", "status": "PARTIAL", "note": "僅揭露董事長與總經理，無行銷團隊具名頁；且為客戶方人員"},
+    {"source": "安東貿易（Triumph／KTM 總代理）官網", "status": "SEARCHED_NOT_FOUND", "note": "無具名行銷團隊頁"},
+    {"source": "勞動部產業新尖兵／臺北市勞動大學短影音班", "status": "SEARCHED_NOT_FOUND", "note": "有成果發表會但公開頁不揭露學員名單"},
+    {"source": "牧羊人集團／汪喵星球 官網與媒體報導", "status": "SEARCHED_NOT_FOUND", "note": "影音內容掛官方帳號，無個人 credit"}
+  ],
+  "next_action": "停在校準閘門，不執行批量搜尋與 Contact Enrichment，candidates 留空。六輪累計 30 位樣本 2 MATCH。本輪已證實人才可具名定位（職級層問題已解決），剩餘阻卻為單一且明確的『年資／現職欄位在登入牆後』。建議顧問就下列擇一裁示，任一皆可在不違反任何硬性規則下解除卡點：(a) checkpoint #5 — 將『3年以上』與『現職受僱』改列為電訪確認項（CONTACT_AFTER_CONFIRMATION）而非公開證據門檻，則陳姝妤、ZHIJIE LIU、Hsiao-Ai Liang 及同類 in-house 影音企劃立即可批量化，X-Ray 索引足以支撐 10-20 人；(b) checkpoint #4 — 接受個人接案影像工作者，則 round 4 之陳穎萱（內湖、臺藝大、一人包辦）立即可動；(c) 放寬成熟度上限至 10 年並上修薪資帶，則 Hsiao-Ai Liang 轉為可動（仍須確認台南／台北辦公地）。Ching 一人已具備完整公開證據，可在取得任一裁示前先行單獨推進，惟其 Email 字串網域疑為筆誤，需人工目視確認，不得推定。",
+  "compliance": "僅使用合法公開資訊；未登入任何平台帳號、未以帳號自動化操作 LinkedIn／Cake／任何平台、未繞過驗證碼或付費牆、未使用外洩資料庫；未猜測或推定任何 Email 格式（含未將疑似筆誤之 gamil.com 自行修正）；未依年齡、性別、婚姻、國籍、身心障礙、宗教等就業服務法第5條保護項目篩選、排序或排除任何候選人（註：一名樣本之公開 Username 含疑似出生年份數字，已明確排除於所有判斷之外）。"
+}

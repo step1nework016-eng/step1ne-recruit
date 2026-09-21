@@ -32,12 +32,51 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
 
+
+def log(msg):
+    """這支模組原本完全沒有輸出管道——被 ai_worker 匯入使用，訊息都靠呼叫端印。
+    2026-09-21 加了「報告內容不足就不配對」這種**會靜默跳過整個人**的規則之後，
+    沒有紀錄就等於查不出「為什麼這個人沒有推薦」，所以補一支最小的 log。
+    格式跟 ai_worker.log() 對齊，兩邊的輸出混在同一個 log 檔裡才看得懂。"""
+    print(f'[{datetime.datetime.now():%H:%M:%S}] {msg}', flush=True)
+
 PROMPT_VERSION = 'p3a-2026-09-18'
 
 # 薪資容忍度：職缺薪資上限只要不低於候選人底線的 (1 - 這個比例)，就不直接擋掉，
 # 改成標成「需注意」交給顧問判斷。實務上一成以內的差距是可以談的，
 # 系統不該替顧問把這種機會殺掉（2026-09-18 陳旻婕案例，見 hard_safety_filter 註解）。
 SALARY_TOLERANCE = 0.15
+
+# ── 2026-09-21 推薦品質稽核（16 筆全看過）後加的四道閘門 ──────────────
+#
+# 稽核結論：安全面 0 個 BLOCKER，但品質面有系統性偏差。以下每個常數都對應
+# 一個實際看到的案例，不是憑感覺訂的。
+
+# 期望薪資落差上限。超過就降級（不是擋掉——顧問仍看得到，只是排後面）。
+# 16 筆推薦裡有 6 筆落差 >20%：全筱琪 −33% 與 −40%、劉柔諍 −27%、
+# 王仁君 −33%、郭鑑宸 −45%。全部都是 POSSIBLE_MATCH，顧問看不出哪些值得打。
+# Jacky 2026-09-21 判斷：落差 25% 以上不值得打這通電話。
+# ⚠️ 這裡用的是「期望薪資」不是「底線」——底線那條走 SALARY_TOLERANCE，
+# 兩者是不同的東西：底線是硬的（擋掉），期望是軟的（降級）。
+EXPECTED_SALARY_GAP_LIMIT = 0.25
+
+# 一筆推薦至少要有幾條佐證。全筱琪那筆只有 1 條，而且跟同一人另一筆是
+# 同一句話（一句玩笑話），等於沒有依據。
+MIN_EVIDENCE = 2
+
+# 面談報告至少要有多少內容，才准拿來配對。林均緯那筆的 content_json 是
+# NULL（2026-08 的額度 bug 造成），推薦引擎只讀 content_json，讀到空的就
+# 只能拿應徵表單的「有 Revit 證照」去配，完全沒看到報告裡白紙黑字的
+# 「❌ 不接受派遣（問兩次，明確拒絕）」。那次剛好配到全職職缺沒出事，
+# 是運氣不是設計。
+MIN_REPORT_CHARS = 200
+
+# 離職原因出現這些字眼時，派遣／約聘類職缺要降級。
+# 劉柔諍的離職原因是「重視長期穩定發展」，系統推了一個 15 個月定期派遣。
+# AI 自己有把矛盾寫進 blockers（很好），但方向檢查只看「職種方向」，
+# 沒看「僱用型態」——這是護理師那個 bug 的弱化版。
+STABILITY_KEYWORDS = ('長期', '穩定', '安定', '正職', '長久', '久待')
+TEMPORARY_EMPLOYMENT_HINTS = ('派遣', '約聘', '定期', '短期', '專案型', 'DISPATCH', 'CONTRACT', 'TEMP')
 
 # ── 可推薦職缺的唯一定義 ────────────────────────────────────────────
 # 稽核發現同一個概念全站有三種寫法（`status='open'` / `IN ('open','active')` /
@@ -140,6 +179,34 @@ def build_candidate_snapshot(application_id):
     )['results']
     report = rep_rows[0] if rep_rows else None
     rj = _json_loads(report.get('content_json'), {}) if report else {}
+
+    # ⚠️ 2026-09-21 加：報告內容不足就不配對。
+    #
+    # 這一條的由來是林均緯。他的 content_json 是 NULL（2026-08 額度上限造成的
+    # 靜默失敗，見 interview_daemon.report_to_json 的註解），但 content_md 有
+    # 1084 字、白紙黑字寫著「❌ 不接受派遣（問兩次，第一次給選項…第二次再確認，
+    # 候選人明確回覆「先排除好了」）」。
+    #
+    # 推薦引擎只讀 content_json，讀到空的 → 完全沒看到這個拒絕 → 只能拿應徵
+    # 表單的「有 Revit 證照」「可接受苗栗台中」去配對。那次剛好配到全職職缺
+    # 沒出事，但那是運氣。
+    #
+    # 這裡不只擋 content_json 為空，連 content_md 太短也一起擋——面談中斷、
+    # 逐字稿只有兩句的那種報告，配出來的推薦沒有依據可言。
+    # 回 (None, None) 的效果跟「找不到這個人」一樣：不產推薦、不寫任何資料。
+    if report:
+        md_len = len(report.get('content_md') or '')
+        if not rj and md_len < MIN_REPORT_CHARS:
+            log(f'⏭️ {app.get("name")}：面談報告內容不足'
+                f'（結構化欄位空、純文字只有 {md_len} 字），不配對')
+            return None, None
+        if not rj:
+            # 有純文字但沒有結構化欄位：這是 2026-08 那批壞掉的報告。
+            # 已經用 scripts/backfill_report_json.py 補過一輪，之後若再出現
+            # 代表額度重試也失敗了，要人工補，不該讓它靜默地用半份資料配對。
+            log(f'⚠️ {app.get("name")}：報告有 {md_len} 字純文字但沒有結構化欄位，'
+                f'不配對。請跑 scripts/backfill_report_json.py 補完再說')
+            return None, None
 
     snapshot = {
         'application_id': app['id'],
@@ -263,11 +330,135 @@ def hard_safety_filter(recommendations, snapshot, llm_out, jobs_by_slug, existin
             except (TypeError, ValueError):
                 pass
 
+        # ── 2026-09-21 加的降級規則 ─────────────────────────────────
+        # 以下四項**不擋掉推薦**，只降級並補上 blocker。理由：擋掉等於系統
+        # 替顧問做了取捨，而稽核顯示這些情況多半「值得看一眼但不該排第一」。
+        # 降級的做法是把 match_status 降到 INSUFFICIENT_DATA，後台會排在後面。
+        if reason is None and job:
+            demote = []
+
+            # (1) 期望薪資落差過大。用期望不是底線——底線那條在上面已經處理過。
+            want = _expected_salary_monthly(snapshot)
+            try:
+                jmax = float(job.get('salary_max') or job.get('salary_min') or 0)
+            except (TypeError, ValueError):
+                jmax = 0
+            if want and jmax and jmax < want * (1 - EXPECTED_SALARY_GAP_LIMIT):
+                gap = round((1 - jmax / want) * 100)
+                demote.append(f'薪資落差 {gap}%：職缺上限 {int(jmax)}，候選人期望 {int(want)}')
+
+            # (2) 佐證太少。一條佐證撐不起一個推薦。
+            ev = [e for e in (rec.get('evidence') or []) if e]
+            if len(ev) < MIN_EVIDENCE:
+                demote.append(f'佐證只有 {len(ev)} 條（至少要 {MIN_EVIDENCE} 條）')
+
+            # (3) 職缺地點不在候選人表單勾選的範圍內。
+            # ⚠️ 刻意只降級不擋掉：「沒勾」不等於「拒絕」，硬擋會讓
+            # BIM→半導體那種「跨區但值得談」的案子整個消失。但表單是主動
+            # 多選，沒勾仍是有意義的訊號——Yi-yun Guo 連續兩筆都被推到她
+            # 沒勾的地方，顧問會覺得系統沒在看表單。
+            if _location_outside_form(snapshot, job):
+                demote.append(f"工作地點不在應徵表單勾選的範圍：{job.get('locations')}")
+
+            # (4) 重視長期穩定的人，不該優先推派遣／約聘。
+            if _wants_stability(snapshot, llm_out) and _is_temporary(job):
+                demote.append('候選人離職原因提到重視長期穩定，此職缺屬派遣／約聘型')
+
+            if demote:
+                rec['match_status'] = 'INSUFFICIENT_DATA'
+                rec['blockers'] = ((rec.get('blockers') or []) + demote)[:4]
+                rec['demoted_reasons'] = demote
+
         if reason:
             dropped.append({'job_slug': slug, 'reason': reason})
         else:
             kept.append(rec)
     return kept, dropped
+
+
+def _expected_salary_monthly(snapshot):
+    """從應徵表單的 expected_salary 抽出月薪數字。抽不出來就回 None。
+
+    ⚠️ 這個值**不是底線**，不可以拿去擋掉推薦（見 SALARY_TOLERANCE 的註解，
+    2026-09-18 陳旻婕就是被當成底線而誤殺）。只能拿來降級排序。
+    """
+    import re
+    # ⚠️ 表單欄位是包在 snapshot['form'] 底下，不是頂層（build_candidate_snapshot）
+    raw = str(((snapshot or {}).get('form') or {}).get('expected_salary') or '')
+    if not raw:
+        return None
+    t = raw.replace(',', '').replace('，', '')
+    # 年薪：出現「年」或數字後接「萬」且 >= 50，視為年薪換算月薪
+    years = re.findall(r'(\d{2,4})\s*萬', t)
+    if years and ('年' in t or int(years[0]) >= 50):
+        return int(years[0]) * 10000 / 12
+    # ⚠️ k/K 寫法要先抓。「41-43K」裡的 41、43 不到 4 位數，先跑純數字會抓不到，
+    # 但更糟的是「50000-60000K」這種混寫會被純數字先吃掉。實測林巧昀的表單
+    # 就是寫「41-43K」。
+    ks = [int(k) * 1000 for k in re.findall(r'(\d{2,3})\s*[kK-]', t) if 20 <= int(k) <= 300]
+    if 'k' in t.lower():
+        nums = ks or [int(n) for n in re.findall(r'(\d{4,7})', t)]
+    else:
+        nums = [int(n) for n in re.findall(r'(\d{4,7})', t)]
+    if not nums:
+        wan = [int(w) * 10000 for w in re.findall(r'(\d{1,2})\s*萬', t)]
+        nums = wan
+    return min(nums) if nums else None
+
+
+def _location_outside_form(snapshot, job):
+    """職缺地點有沒有落在候選人表單勾選的範圍內。
+
+    location_ok 是一整句自由文字（例如「台北・新北、桃園・新竹、海外外派」），
+    沒有結構化。所以只做**保守**判斷：表單有填、職缺有地點，而且兩邊沒有任何
+    一個地名對得上（含區域縮寫展開），才算「不在範圍」。任何一邊是空的就
+    回 False——寧可不降級，也不要因為資料缺漏誤判。
+    """
+    form = str(((snapshot or {}).get('form') or {}).get('location_ok') or '')
+    loc = str((job or {}).get('locations') or '')
+    if not form.strip() or not loc.strip():
+        return False
+    # 職缺地點裡的每個地名，只要有一個能在表單裡找到（或透過縮寫對上）就算命中
+    for kw, aliases in list(REGION_ALIASES.items()) + [(k, []) for k in REJECTION_KEYWORDS]:
+        if kw in loc or any(a in loc for a in aliases):
+            if kw in form or any(a in form for a in aliases):
+                return False
+    # 再做一次純字面的雙向包含，抓上面字典沒收錄的地名
+    for token in ('台北', '新北', '基隆', '宜蘭', '花蓮', '台東', '澎湖', '金門', '南投', '日本', '海外'):
+        if token in loc and token in form:
+            return False
+    # 職缺地點完全沒有任何已知地名時，不判斷（可能是「全台」「不限」這種）
+    known = any(k in loc for k in list(REGION_ALIASES) + list(REJECTION_KEYWORDS)
+                + ['台北', '新北', '基隆', '宜蘭', '花蓮', '台東', '南投', '日本', '海外'])
+    return known
+
+
+def _wants_stability(snapshot, llm_out):
+    """候選人的離職原因／動機裡有沒有「重視長期穩定」這類訊號。"""
+    parts = []
+    # ⚠️ 面談報告的欄位在 snapshot['interview'] 底下，不是頂層
+    # （build_candidate_snapshot 的結構）。llm_out 則是平的。
+    sources = [llm_out or {}, (snapshot or {}).get('interview') or {}, snapshot or {}]
+    for src in sources:
+        for k in ('why_leaving', 'motivation', 'leave_reason', 'role_direction',
+                  'top_risk', 'summary'):
+            v = (src or {}).get(k)
+            if isinstance(v, str):
+                parts.append(v)
+            elif isinstance(v, dict):
+                parts.extend(str(x) for x in v.values())
+            elif isinstance(v, list):
+                parts.extend(str(x) for x in v)
+    text = ' '.join(parts)
+    return any(k in text for k in STABILITY_KEYWORDS)
+
+
+def _is_temporary(job):
+    """職缺是不是派遣／約聘／定期型。"""
+    hay = ' '.join(str((job or {}).get(k) or '') for k in
+                   ('employment', 'title', 'employment_period', 'service_line',
+                    'dispatch_client', 'salary_note')).upper()
+    return any(h.upper() in hay for h in TEMPORARY_EMPLOYMENT_HINTS)
 
 
 def existing_job_slugs_for_candidate(application_id, name=None, email=None):
