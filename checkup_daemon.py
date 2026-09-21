@@ -15,6 +15,7 @@
     python3 checkup_daemon.py --once    # 跑一輪就結束（測試用）
 """
 import json, os, subprocess, sys, threading, time, datetime, tempfile, urllib.parse, urllib.request
+import autoupdate  # 自動更新（見 autoupdate.py 檔頭）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
@@ -964,6 +965,7 @@ def tick():
 def main():
     once = '--once' in sys.argv
     log(f'健檢對談引擎（阿福）啟動（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
+    last_update_check = time.time()
     while True:
         tick()
         if once:
@@ -974,6 +976,11 @@ def main():
                         break
                 time.sleep(1)
             return
+        # 自動更新。阿福跟阿財一樣是跟真人對話的，正在聊的時候重啟會讓對方
+        # 看到訊息卡住——所以一樣用 _busy 當閘門，有人在聊就這輪不更新。
+        last_update_check = autoupdate.maybe_self_update(
+            last_update_check, log,
+            can_restart=lambda: not _busy, name='阿福健檢')
         time.sleep(POLL_SEC)
 
 

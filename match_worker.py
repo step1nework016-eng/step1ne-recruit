@@ -18,6 +18,7 @@
 花費照記（call_type='match'），後台看得到；也用來估算「未來改用 API 要多少錢」。
 """
 import datetime
+import autoupdate  # 自動更新（見 autoupdate.py 檔頭）
 import json
 import os
 import subprocess
@@ -161,7 +162,11 @@ def handle(req):
 
 def main():
     log(f'職缺配對引擎啟動（每 {POLL_SEC} 秒檢查一次）')
+    last_update_check = time.time()
     while True:
+        # 配對沒有真人在等對話，兩輪之間隨時可以重啟，不用 can_restart 閘門
+        last_update_check = autoupdate.maybe_self_update(
+            last_update_check, log, name='配對')
         try:
             rows = d1("SELECT id, input_text, shortlist_json FROM match_requests "
                       "WHERE status='pending' ORDER BY created_at LIMIT 3")

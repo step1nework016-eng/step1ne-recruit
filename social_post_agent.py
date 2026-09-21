@@ -20,6 +20,7 @@ LinkedIn 還沒申請，之後金鑰到位後一樣是加在 Worker 那個 callb
 """
 import ast, json, os, re, subprocess, sys, time, datetime, urllib.request
 from concurrent.futures import ThreadPoolExecutor
+import autoupdate  # 自動更新（見 autoupdate.py 檔頭）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = 'step1ne-recruit'
@@ -1344,9 +1345,15 @@ if __name__ == '__main__':
         # 如果之後發現D1負載真的被推高（查D1 timeout變頻繁），要退回更慢
         # 的間隔，或改做「Worker直接喚醒本機」這種事件觸發式設計。
         log('社群發文 agent 啟動（常駐，每 90 秒掃一次）')
+        last_update_check = time.time()
         while True:
             try:
                 tick()
             except Exception as e:
                 log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
+            # 自動更新。發文沒有真人在等回覆，兩輪之間隨時可以重啟。
+            # 這支特別需要——2026-09-21 加了審稿與價格體檢之後，WSL2 那台
+            # 沒有自動更新就等於兩道新關卡完全不存在。
+            last_update_check = autoupdate.maybe_self_update(
+                last_update_check, log, name='社群發文')
             time.sleep(90)

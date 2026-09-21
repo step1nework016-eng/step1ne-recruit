@@ -15,6 +15,7 @@
 """
 import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urllib.request, urllib.error
 import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
+import autoupdate                    # 自動更新（見 autoupdate.py 檔頭）
 import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -3033,11 +3034,38 @@ def tick():
         threading.Thread(target=fn, args=(app,), daemon=True).start()
 
 
+def _safe_to_restart():
+    """現在重啟會不會打斷任何人？
+
+    ⚠️ 這是自動更新最重要的一道閘門。自動更新是 os.execv 換掉整個程序——
+    阿財正在跟候選人對話時重啟，那個人就會看到對話卡住、沒有回應。
+    2026-09-21 王美日已經因為別的原因遇過一次「系統出了點狀況」然後沒下文，
+    差點跑掉；不能再讓自動更新製造第二次。
+
+    兩層都要檢查：
+      _busy       這個 process 正在處理的場次（記憶體）
+      D1          任何一台機器上還開著的面談室（跨機器）
+    任何一個有人就不重啟。新版最多晚幾分鐘生效，但不會有人被踢掉。
+    """
+    with _lock:
+        if _busy:
+            return False
+    rows = d1("SELECT COUNT(*) n FROM applications WHERE interview_state='active'")
+    return not (rows and rows[0].get('n'))
+
+
 def main():
     once = '--once' in sys.argv
     log(f'面談引擎啟動（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
+    last_update_check = time.time()
     while True:
         tick()
+        # 自動更新：兩台機器（Mac／WSL2）靠 git 同步程式碼，沒有這個就得人工
+        # 上去 pull——實際出過事（WSL2 跑舊版不認得新的工作類型，王仁君的
+        # rematch 直接失敗）。放在 tick() 之後、sleep 之前，只在兩輪之間檢查。
+        if not once:
+            last_update_check = autoupdate.maybe_self_update(
+                last_update_check, log, can_restart=_safe_to_restart, name='面談引擎')
         if once:
             time.sleep(1)
             while True:
