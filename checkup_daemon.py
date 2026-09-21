@@ -14,7 +14,7 @@
     python3 checkup_daemon.py           # 常駐
     python3 checkup_daemon.py --once    # 跑一輪就結束（測試用）
 """
-import json, os, subprocess, sys, threading, time, datetime, tempfile, urllib.parse, urllib.request
+import json, os, re, subprocess, sys, threading, time, datetime, tempfile, urllib.parse, urllib.request
 import autoupdate  # 自動更新（見 autoupdate.py 檔頭）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -264,8 +264,21 @@ def sanitize(t):
 # 邏輯照抄 interview_daemon.py 的 log_token_usage()（同一台機器、同一個
 # claude CLI、同一個 session jsonl 目錄），差別只在 call_type 前面加
 # checkup_ 前綴，後台才分得出這筆是阿福還是阿財。
+# ⚠️ 2026-09-21 改成自動推算，不要再寫死。
+#
+# Claude Code 把每個工作目錄的 session 紀錄放在
+# ~/.claude/projects/<把路徑的非英數字元都換成 dash> 底下。寫死會壞兩次：
+#
+#   1. Mac 這邊寫死的是 `-Users-user---------step1ne-recruit`，那是 2026-09-07
+#      搬家**之前**的路徑（/Users/user/工作流程技能包/…）。搬到 claude-projects/
+#      之後就一直讀那個舊目錄——而舊目錄還在，所以完全不會報錯，token 用量
+#      統計靜默地讀了兩星期的空資料。
+#   2. WSL2 那台路徑是 /home/jack/…，只能自己改一行，結果那台永遠有本機修改，
+#      `git pull` 直接 abort，自動更新每 5 分鐘失敗一次還沒人知道。
+#
+# 從 HERE（這個檔案自己的位置）推算就兩台通用，也不會因為搬家而過期。
 CLAUDE_PROJECTS_DIR = os.path.expanduser(
-    '~/.claude/projects/-Users-user---------step1ne-recruit')
+    '~/.claude/projects/' + re.sub(r'[^a-zA-Z0-9]', '-', HERE))
 
 
 def _snapshot_session_files():
