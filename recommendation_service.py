@@ -338,12 +338,15 @@ def hard_safety_filter(recommendations, snapshot, llm_out, jobs_by_slug, existin
             demote = []
 
             # (1) 期望薪資落差過大。用期望不是底線——底線那條在上面已經處理過。
-            want = _expected_salary_monthly(snapshot)
+            want = _expected_salary_monthly(snapshot) or _salary_floor_from_interview(snapshot)
             try:
                 jmax = float(job.get('salary_max') or job.get('salary_min') or 0)
             except (TypeError, ValueError):
                 jmax = 0
-            if want and jmax and jmax < want * (1 - EXPECTED_SALARY_GAP_LIMIT):
+            # ⚠️ 2026-09-21 改 < 為 <=：王仁君期望 60K、職缺上限 45K，落差剛好
+            # 25.0%，卡在邊界上被放過。門檻的意思是「差到 25% 就該提醒」，
+            # 不是「要超過 25%」。
+            if want and jmax and jmax <= want * (1 - EXPECTED_SALARY_GAP_LIMIT):
                 gap = round((1 - jmax / want) * 100)
                 demote.append(f'薪資落差 {gap}%：職缺上限 {int(jmax)}，候選人期望 {int(want)}')
 
@@ -424,8 +427,18 @@ def _location_outside_form(snapshot, job):
             if kw in form or any(a in form for a in aliases):
                 return False
     # 再做一次純字面的雙向包含，抓上面字典沒收錄的地名
-    for token in ('台北', '新北', '基隆', '宜蘭', '花蓮', '台東', '澎湖', '金門', '南投', '日本', '海外'):
+    for token in ('台北', '新北', '基隆', '宜蘭', '花蓮', '台東', '澎湖', '金門', '南投'):
         if token in loc and token in form:
+            return False
+    # ⚠️ 2026-09-21 加：海外是一個家族，不是一個地名。呂書帆表單勾的是
+    # 「海外外派」，職缺寫「日本・長野縣北安曇郡白馬村」——逐字比對永遠對不上，
+    # 結果一位**現職就在白馬當旅館支配人**的人選被標成「地點不符」。
+    # 只要職缺在海外、而表單有表達願意外派，就算對上，不去比對是哪一國。
+    overseas_job = ('日本', '海外', '外派', '國外', '越南', '泰國', '新加坡',
+                    '馬來西亞', '印尼', '菲律賓', '中國', '大陸', '美國')
+    overseas_form = ('海外', '外派', '國外', '不限', '皆可')
+    if any(t in loc for t in overseas_job):
+        if any(t in form for t in overseas_form) or any(t in form for t in overseas_job):
             return False
     # 職缺地點完全沒有任何已知地名時，不判斷（可能是「全台」「不限」這種）
     known = any(k in loc for k in list(REGION_ALIASES) + list(REJECTION_KEYWORDS)
@@ -454,11 +467,65 @@ def _wants_stability(snapshot, llm_out):
 
 
 def _is_temporary(job):
-    """職缺是不是派遣／約聘／定期型。"""
+    """職缺是不是派遣／約聘／定期型。
+
+    ⚠️ 2026-09-21 修兩個誤判來源（蘇微閔被誤標「這是派遣」，實際上銅鑼那個
+    BIM 職缺 2026-08-21 就已經從派遣改成正職）：
+
+    1. **不掃 salary_note。** 那是顧問內部備註，裡面寫的是「原為派遣，已改為
+       正職僱用」這種沿革說明——關鍵字命中的是歷史，不是現況。內部備註不能
+       當判斷依據，這跟「不要把顧問備註外流給候選人」是同一條原則的延伸。
+    2. **employment 是結構化欄位，它說了算。** 明寫 FULL_TIME／正職 就直接
+       回 False，不要再被其他自由文字欄位翻盤。
+    """
+    emp = str((job or {}).get('employment') or '').upper()
+    if any(k in emp for k in ('FULL_TIME', 'FULLTIME', '正職', '正式')) and \
+       not any(h.upper() in emp for h in TEMPORARY_EMPLOYMENT_HINTS):
+        return False
     hay = ' '.join(str((job or {}).get(k) or '') for k in
                    ('employment', 'title', 'employment_period', 'service_line',
-                    'dispatch_client', 'salary_note')).upper()
+                    'dispatch_client')).upper()
     return any(h.upper() in hay for h in TEMPORARY_EMPLOYMENT_HINTS)
+
+
+# 面談摘要裡的「轉職門檻」「期望年薪」這類句子。⚠️ 一定要排除「現職」「目前」
+# ——郭鑑宸的摘要同一句裡就同時有「現職年薪約90萬」與「轉職門檻約110–120萬」，
+# 抓錯那個會把落差算反。
+_SALARY_WANT_ANCHORS = ('轉職門檻', '期望年薪', '期望月薪', '希望年薪', '希望月薪',
+                        '要求年薪', '薪資門檻', '期待年薪', '期望待遇')
+_SALARY_NOW_ANCHORS = ('現職', '目前', '原本', '現在年薪', '現領')
+
+
+def _salary_floor_from_interview(snapshot):
+    """表單沒填期望薪資時，退而從面談摘要裡找「轉職門檻／期望薪資」。
+
+    2026-09-21 加。郭鑑宸的表單期望薪資是空的，但面談摘要白紙黑字寫
+    「轉職門檻約110–120萬」，而職缺是月薪 50–60K（年約 60–72 萬）——
+    落差近一倍，閘門卻完全沒反應，因為它只看表單。
+
+    抓不到就回 None。這是**降級用**的訊號，不擋推薦。
+    """
+    import re
+    iv = (snapshot or {}).get('interview') or {}
+    text = ' '.join(str(iv.get(k) or '') for k in ('summary', 'top_risk'))
+    if not text:
+        return None
+    for anchor in _SALARY_WANT_ANCHORS:
+        i = text.find(anchor)
+        if i < 0:
+            continue
+        seg = text[i:i + 30]
+        if any(n in seg for n in _SALARY_NOW_ANCHORS):
+            continue
+        wan = re.findall(r'(\d{2,4})\s*[–\-~到]?\s*(?:\d{2,4})?\s*萬', seg)
+        if wan:
+            v = int(wan[0])
+            # 50 萬以上視為年薪（台灣月薪不會寫成「50萬」），換算月薪
+            return v * 10000 / 12 if v >= 50 else v * 10000
+        k = re.findall(r'(\d{2,3})\s*[kK]', seg)
+        if k:
+            return int(k[0]) * 1000
+    return None
 
 
 def existing_job_slugs_for_candidate(application_id, name=None, email=None):
