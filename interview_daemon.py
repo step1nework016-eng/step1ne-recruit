@@ -2376,7 +2376,11 @@ def _normalize_report_json(obj, name=''):
         # 分母只算「有依據」的權重，缺的維度不當 0 分——不然話少的場次會被
         # 系統性懲罰。這段本來就是對的，2026-09-20 查證過。
         total = round(got / used_w * 100)
-        grade = 'A' if total >= 80 else 'B' if total >= 65 else 'C' if total >= 50 else 'D'
+        # ⚠️ 2026-09-21 改字母為中文：等第原本是 A/B/C/D，但 Jacky 的分工圖裡
+        #    第 5 步的「A 優先聯繫／B 需顧問判斷／C 可轉其他職缺／D 人才池／
+        #    E Hard Gate Fail」也是 A–E。兩組意思完全不同的東西共用同一批字母，
+        #    顧問看到「B」無從分辨是分數還是分流。分數改用中文，字母留給分流。
+        grade = '優' if total >= 80 else '良' if total >= 65 else '中' if total >= 50 else '待加強'
         # ⚠️ 2026-09-20 改：原本是 used_w < 75 就掛「（依據不足，僅供參考）」。
         #    問題是硬條件一項就佔 30（舊制），只要它缺——而它有 50% 的機率會缺
         #    （最常見是「本次應徵未綁定特定職缺，無硬條件可比對」）——權重必定
@@ -2416,6 +2420,38 @@ def _normalize_report_json(obj, name=''):
 
     out['fit_scores'] = {'dimensions': dims, 'total': total, 'grade': grade,
                          'basis': basis, 'score_verdict_conflict': conflict}
+
+    # ── 分流 A–E ──────────────────────────────────────────────────
+    # 2026-09-21 加。來源是 Jacky 的「阿財 × 真人顧問分工圖」第 5 步：
+    # 阿財談完要直接把人分成五類，顧問一打開就知道今天先打給誰。
+    #
+    # 在這之前阿財只給 verdict 四選一（值得轉給顧問／資訊不足建議補問／
+    # 硬條件不符／待顧問判斷）。缺的正好是最有用的兩類：「優先聯繫」與
+    # 「人才池」——顧問最想知道的「先打誰」「誰先放著」，系統從來沒回答過。
+    #
+    # ⚠️ 分流**由程式從既有結構化欄位推導，不問模型**。理由跟總分一樣：
+    #    同一份報告重跑兩次要得到同一個分流，顧問才能拿它排工作順序。
+    #    模型的自由判斷仍然保留在 verdict 裡，兩者不一致時顧問看得到。
+    hard_fail = (verdict == '硬條件不符') or any(
+        h.get('verdict') == '不符' for h in out.get('hard_conditions') or [])
+    if hard_fail:
+        # 硬條件沒過，但這個人本身條件不差——那是「這個職缺不適合」，
+        # 不是「這個人不適合」，該轉去看別的職缺，不是直接判出局。
+        if total is not None and total >= 50:
+            route = ('C', '可轉其他職缺', f'這個職缺硬條件沒過，但整體分數 {total} 分，值得看其他職缺')
+        else:
+            route = ('E', 'Hard Gate 沒過', '硬條件不符，且整體分數不足以轉介其他職缺')
+    elif total is None:
+        route = ('B', '需顧問判斷', '這場問到的資料不足以算出分數，需要顧問自己看一眼')
+    elif verdict == '資訊不足建議補問':
+        route = ('B', '需顧問判斷', f'總分 {total} 分，但阿財認為還有關鍵資訊沒問到')
+    elif total >= 65:
+        route = ('A', '優先聯繫', f'總分 {total} 分（{grade}），硬條件無不符，建議優先安排電洽')
+    elif total >= 50:
+        route = ('B', '需顧問判斷', f'總分 {total} 分（{grade}），落在中間帶，由顧問決定要不要推')
+    else:
+        route = ('D', '人才池', f'總分 {total} 分（{grade}），目前不推這個職缺，先留在人才池')
+    out['route'] = {'code': route[0], 'label': route[1], 'reason': route[2]}
 
     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
     return out

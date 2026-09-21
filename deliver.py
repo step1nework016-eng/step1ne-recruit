@@ -504,7 +504,22 @@ def _fit(data):
     if not dims:
         return ''
     total, grade = fs.get('total'), fs.get('grade') or ''
-    head = ('<div style="display:flex;align-items:baseline;gap:14px;margin:0 0 10px">'
+    # 2026-09-21 加：分流 A–E 放在分數前面，而且用色塊。顧問開報告最想知道的
+    # 第一件事是「這個人我現在要不要打電話」，不是「他幾分」——分數是排序用的
+    # 第二層資訊。色碼照 Jacky 分工圖：A 綠、B 藍、C 橘、D 紫、E 紅。
+    rt = data.get('route') or {}
+    _ROUTE_COLOR = {'A': '#1a7f4b', 'B': '#1c5fa8', 'C': '#c2600d', 'D': '#6b3fa0', 'E': '#a32b21'}
+    route_html = ''
+    if rt.get('code'):
+        c = _ROUTE_COLOR.get(rt['code'], '#5d6672')
+        route_html = (f'<div style="margin:0 0 10px;padding:10px 12px;border-left:5px solid {c};'
+                      f'background:#f6f8fa">'
+                      f'<span style="font-size:18px;font-weight:800;color:{c}">'
+                      f'{e(rt["code"])}｜{e(rt.get("label") or "")}</span>'
+                      f'<div style="font-size:12px;color:#5d6672;margin-top:3px">'
+                      f'{e(rt.get("reason") or "")}</div></div>')
+    head = (route_html
+            + '<div style="display:flex;align-items:baseline;gap:14px;margin:0 0 10px">'
             + (f'<span style="font-size:30px;font-weight:800;color:#0b3d5c">{total}</span>'
                f'<span style="font-size:15px;font-weight:700">等第 {e(grade)}</span>'
                if total is not None else
@@ -1317,6 +1332,12 @@ def closing_message(data, meta, degraded=False, reason=''):
         if reason:
             lines.append(f'原因：{reason}')
     else:
+        # 2026-09-21 加：TG 通知第一行就給分流，顧問在手機上不用點開 PDF
+        # 就知道這個人要不要現在打電話。
+        _rt = data.get('route') or {}
+        if _rt.get('code'):
+            lines += ['', f'分流：{_rt["code"]}｜{_rt.get("label") or ""}'
+                          f'（{_rt.get("reason") or ""}）']
         lines += ['', f'判定：{data.get("verdict") or "待顧問判斷"}',
                   f'定位：{data.get("one_liner") or "—"}']
         if data.get('top_risk'):
