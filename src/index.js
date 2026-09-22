@@ -47,6 +47,13 @@ const ORIGINS = [
   'https://www.step1ne.com',
   'https://enterprise.step1ne.com',
   'https://step1ne-enterprise.pages.dev',
+  // 2026-09-22 加：新版顧問後台（frontend_v2）部署在這裡。
+  // 它的「客戶／BD → 企業用人需求」分頁打的是這支 Worker 的
+  // /hiring-mode/submissions，但這個網域不在允許清單裡，瀏覽器直接擋掉，
+  // 畫面顯示「Failed to fetch」。同一頁其他分頁都正常，因為它們打的是
+  // step1ne-backoffice-worker，那支早就加過這個網域了。
+  // ⚠️ 以後新版後台要打哪一支 Worker，那支的 ORIGINS 都要加這一行。
+  'https://step1ne-consultant-staging.pages.dev',
 ];
 
 // ── Telegram 主題分工（2026-08-10 跟 Jacky 對齊）──
