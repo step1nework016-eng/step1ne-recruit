@@ -24,9 +24,15 @@
     hook-library／templates 這幾份在這個整合裡沒被用到，找題＋評分
     才是這支真的在跑的部分。
 
-排程：launchd 每天一次，找 1 篇最高分話題，寫進 topic_prompts +
-social_post_queue（topic_id 指過去），下一輪 social_post_agent.py
-排程跑到就會自動產草稿送審——不用另外通知，跟其他排隊項目走同一條路。
+排程：launchd 每天一次。
+
+⚠️ 2026-09-22 Jacky 改版：從「自動挑 1 題直接發」改成「每天生一份 10 題菜單」。
+    舊行為（挑最高分 1 題 → 塞進 social_post_queue → 自動產稿送審）已經拿掉，
+    因為那等於系統自己決定要發什麼；Jacky 要的是自己看菜單挑。
+    現在這支只負責：每天生 10 題（企業端 5＋求職端 5），寫進 topic_prompts
+    （source='daily_menu'、audience_side 標 enterprise／jobseeker），**不排隊、不產稿**。
+    顧問在後台「今日話題」那個 tab 看到這 10 題，挑一題、指定一位顧問，
+    才會呼叫 /admin/social-post-request 走既有的產稿＋審核流程。
 """
 import datetime
 import json
@@ -116,8 +122,8 @@ def build_prompt():
     today = datetime.datetime.now().strftime('%Y-%m-%d')
 
     return f'''你現在執行 headhunter-social-content-skill 技能包（見下方內容）的
-research_topics + score_topics 兩個階段，只到「評完分、選出最高分那一題」為止，
-不要寫 Threads 文案（那是下一個階段，交給別人做）。
+research_topics + score_topics 兩個階段，只到「評完分、選好題」為止，
+不要寫 Threads 文案（那是下一個階段，顧問在後台挑題後才由別人做）。
 
 今天日期：{today}
 
@@ -138,21 +144,38 @@ research_topics + score_topics 兩個階段，只到「評完分、選出最高�
 {avoid_txt}
 
 請實際用 WebSearch 查近期（優先近7天內）真實的求職／招募／職場議題，
-找 6～10 題候選，依 topic-scoring.md 評分，選出分數最高的 1 題——
-如果按規則判斷「近期沒有夠格的即時題」，可以選一個常青題，但要在
-warnings 裡明講「這題是常青題，不是今日即時話題」。
+一共選出 10 題，分成兩組，各 5 題：
+
+【企業端 enterprise】——說給「在找人的老闆／HR／用人主管」聽的角度：
+    徵才困難、留才、薪酬行情、面試怎麼看人、用人單位常踩的雷、
+    組織與管理、產業人力趨勢這一類。受眾是決定要不要花錢找人的那一方。
+
+【求職端 jobseeker】——說給「在看機會的求職者／上班族」聽的角度：
+    轉職時機、談薪、履歷、面試準備、職涯選擇、職場處境、被資遣怎麼辦
+    這一類。受眾是決定要不要動的那一方。
+
+兩組都要是近期真實話題，各自依 topic-scoring.md 評分。
+如果某一組實在湊不滿 5 題夠格的即時題，可以補常青題，但要在那題的
+warnings 裡標明「常青題」。企業端與求職端的題目不要重複同一個角度。
 
 只輸出一個 JSON 物件，不要有 ```json 這種包裹符號、不要有其他文字：
 {{
-  "topic": "一句話描述這個話題",
-  "primary_ta": "主要目標受眾",
-  "angle": "這題可以怎麼從獵頭視角切入，2-3句話講清楚切入角度跟立場",
-  "source_url": "主要引用來源的網址，沒有就填空字串",
-  "source_note": "來源說明，例如「這是常青題，不是今日即時話題」",
-  "score_total": 0,
-  "score_note": "簡短說明為什麼給這個分數",
-  "warnings": []
-}}'''
+  "enterprise": [
+    {{
+      "topic": "一句話描述這個話題",
+      "angle": "從獵頭視角怎麼切，2-3句話講清楚切入角度跟立場",
+      "source_url": "主要引用來源網址，沒有就空字串",
+      "source_note": "來源說明，例如「常青題」",
+      "score_total": 0,
+      "score_note": "為什麼給這個分數",
+      "warnings": []
+    }}
+  ],
+  "jobseeker": [
+    {{ "同上格式": "共 5 題" }}
+  ]
+}}
+enterprise 與 jobseeker 各放 5 個物件。'''
 
 
 def run_claude(prompt):
@@ -186,41 +209,37 @@ def main():
             log(f'❌ 研究失敗：{err[:300]}')
             return
         data = extract_json(out)
-        if not data or not data.get('topic'):
+        if not data or not (data.get('enterprise') or data.get('jobseeker')):
             log(f'❌ 沒抓到有效 JSON：{(out or "")[:200]}')
             return
 
-        name = str(data['topic']).strip()[:120]
-        body_parts = [
-            f"切入角度：{data.get('angle', '')}",
-            f"主要受眾：{data.get('primary_ta', '')}",
-            f"來源：{data.get('source_url') or '（無）'}　{data.get('source_note', '')}",
-            f"評分：{data.get('score_total', '')}／30　{data.get('score_note', '')}",
-        ]
-        if data.get('warnings'):
-            body_parts.append('⚠️ ' + '；'.join(data['warnings']))
-        body = '\n'.join(body_parts)
+        def one_body(t):
+            parts = [
+                f"切入角度：{t.get('angle', '')}",
+                f"來源：{t.get('source_url') or '（無）'}　{t.get('source_note', '')}",
+                f"評分：{t.get('score_total', '')}／30　{t.get('score_note', '')}",
+            ]
+            if t.get('warnings'):
+                parts.append('⚠️ ' + '；'.join(t['warnings']))
+            return '\n'.join(parts)
 
-        # ⚠️ 2026-09-03 修：category 這欄本來就是「一鍵發文」話題下拉選單在用的
-        # 分類（general／ai），跟「這則是不是AI自動研究產生的」是兩件事，
-        # 一開始誤把 category 寫成 'AI研究'，會讓這筆話題在那個下拉選單裡
-        # 完全選不到（category 對不上 general/ai 任何一個）。這裡的話題是
-        # 一般時事討論（不是針對阿財面談的話題），category 用 'general' 才對；
-        # 「AI自動產的」改記在獨立的 source 欄位，不跟 category 混在一起。
-        ins = d1_raw(f"INSERT INTO topic_prompts (name, body, created_at, updated_at, category, source) "
-                     f"VALUES ({q(name)}, {q(body)}, datetime('now','+8 hours'), datetime('now','+8 hours'), "
-                     f"{q('general')}, {q('ai_research')})")
-        # last_row_id 要從「這次 INSERT 呼叫自己回傳的 meta」拿，不能另外開一次
-        # SELECT last_insert_rowid()——wrangler d1 execute 每次呼叫都是新連線，
-        # 跨呼叫查 last_insert_rowid() 拿到的不會是剛剛那筆。
-        topic_id = (ins.get('meta') or {}).get('last_row_id')
-        if not topic_id:
-            log('❌ topic_prompts 寫入後拿不到 id，中止排隊')
-            return
-
-        d1(f"INSERT INTO social_post_queue (job_slug, account_id, topic_id, requested_at) "
-           f"VALUES ({q('💬 AI研究話題：' + name)}, NULL, {topic_id}, datetime('now','+8 hours'))")
-        log(f'✅ 已排入話題：{name}（topic_id={topic_id}），下一輪 social_post_agent.py 會自動產草稿送審')
+        # ⚠️ category 一律 general——那是「產稿要用哪種語氣」在看的欄位
+        # （general/ai），不是拿來分企業／求職的。企業端 vs 求職端存在
+        # 獨立的 audience_side 欄位；「這批是每天自動生的菜單」記在 source。
+        # source='daily_menu' 讓後台「今日話題」tab 撈得到今天這批。
+        n_ok = 0
+        for side, key in (('enterprise', 'enterprise'), ('jobseeker', 'jobseeker')):
+            for t in (data.get(key) or [])[:5]:
+                name = str(t.get('topic') or '').strip()[:120]
+                if not name:
+                    continue
+                d1(f"INSERT INTO topic_prompts "
+                   f"(name, body, created_at, updated_at, category, source, audience_side) "
+                   f"VALUES ({q(name)}, {q(one_body(t))}, datetime('now','+8 hours'), "
+                   f"datetime('now','+8 hours'), {q('general')}, {q('daily_menu')}, {q(side)})")
+                n_ok += 1
+        log(f'✅ 已生成今日話題菜單：{n_ok} 題（企業端＋求職端），'
+            f'顧問到後台「今日話題」tab 挑題後才會產稿')
     finally:
         try:
             os.remove(LOCK)
