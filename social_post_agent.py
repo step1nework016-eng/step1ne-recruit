@@ -45,6 +45,56 @@ def log(msg):
     print(f"[{datetime.datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
+# ── 回報給專案管理（pm.aijob.com.tw 的「顧問版社群發文草稿」那張卡片）──
+# 2026-09-22 Jacky 要求。顧問按了發文之後，這支要幾分鐘才會把草稿推到 TG；
+# 中間那段時間他完全不知道是在跑、還是這台機器根本沒開。心跳解決「還活著嗎」，
+# 活動紀錄解決「剛剛產了誰的稿」。
+#
+# ⚠️ 送不出去就算了，絕不能讓專案管理擋住產稿。
+_TB_TOKEN = None
+_TB_LAST_BEAT = 0.0
+
+
+def _tb_token():
+    global _TB_TOKEN
+    if _TB_TOKEN is None:
+        _TB_TOKEN = ''
+        p = os.path.expanduser('~/.config/workflow-os/taskboard.env')
+        if os.path.exists(p):
+            for line in open(p, encoding='utf-8'):
+                if line.startswith('TASKBOARD_SOCIALPOST_TOKEN='):
+                    _TB_TOKEN = line.strip().split('=', 1)[1]
+    return _TB_TOKEN
+
+
+def _tb_post(path, payload):
+    tok = _tb_token()
+    if not tok:
+        return
+    try:
+        req = urllib.request.Request(
+            f'https://pm.aijob.com.tw/api/v1/agent-hook/{path}',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'X-Agent-Token': tok, 'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass
+
+
+def taskboard(action, detail, level='INFO'):
+    _tb_post('logs', {'action': str(action)[:80], 'level': level,
+                      'detail': str(detail)[:500]})
+
+
+def taskboard_beat(status='idle'):
+    """心跳，最多每 60 秒一次。"""
+    global _TB_LAST_BEAT
+    if time.time() - _TB_LAST_BEAT < 60:
+        return
+    _TB_LAST_BEAT = time.time()
+    _tb_post('heartbeat', {'status': status})
+
+
 def env_with_cf():
     env = dict(os.environ)
     for conf in ('~/.config/workflow-os/cf.env',):
@@ -1046,6 +1096,8 @@ def process_topic(queue_row, topic):
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_mission={q(mission_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
+        taskboard('產出話題文草稿',
+                  f'{topic.get("name") or topic.get("title") or ""}｜{len(post)} 字', 'SUCCESS')
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
@@ -1195,6 +1247,9 @@ def process_job(queue_row, job, repost=False):
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_formula={q(formula_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
+        taskboard('產出職缺文草稿',
+                  f'{job.get("title") or job.get("slug")}｜公式 {formula_tag}｜{len(post)} 字',
+                  'SUCCESS')
 
         end_idx = raw.find(POST_END)
         analysis = raw[end_idx + len(POST_END):].strip() if end_idx >= 0 else ''
@@ -1467,12 +1522,15 @@ if __name__ == '__main__':
         # 如果之後發現D1負載真的被推高（查D1 timeout變頻繁），要退回更慢
         # 的間隔，或改做「Worker直接喚醒本機」這種事件觸發式設計。
         log('社群發文 agent 啟動（常駐，每 90 秒掃一次）')
+        taskboard('發文 agent 啟動', '常駐，每 90 秒掃一次待產稿的排隊紀錄')
         last_update_check = time.time()
         while True:
             try:
                 tick()
             except Exception as e:
                 log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
+                taskboard('這一輪出錯', str(e)[:300], 'ERROR')
+            taskboard_beat()
             # 自動更新。發文沒有真人在等回覆，兩輪之間隨時可以重啟。
             # 這支特別需要——2026-09-21 加了審稿與價格體檢之後，WSL2 那台
             # 沒有自動更新就等於兩道新關卡完全不存在。
