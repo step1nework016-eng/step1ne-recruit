@@ -160,6 +160,59 @@ def log(msg):
     print(f"[{datetime.datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
+# ── 回報給專案管理（pm.aijob.com.tw 的「阿財－面談引擎」那張卡片）──
+# 2026-09-22 Jacky 要求：他不想為了知道阿財有沒有在做事而去翻後台或 TG。
+# 這裡只做兩件事：定時心跳（卡片上的「從未連線」會變成連線中），
+# 以及每場面談結束時回報一行。
+#
+# ⚠️ 硬規則：送不出去就算了。面談是候選人正在等的即時流程，
+# 絕對不可以因為專案管理掛掉而卡住或噴錯。
+_TB_BASE = 'https://pm.aijob.com.tw'
+_TB_TOKEN = None
+_TB_LAST_BEAT = 0.0
+
+
+def _tb_token():
+    global _TB_TOKEN
+    if _TB_TOKEN is None:
+        _TB_TOKEN = ''
+        p = os.path.expanduser('~/.config/workflow-os/taskboard.env')
+        if os.path.exists(p):
+            for line in open(p, encoding='utf-8'):
+                if line.startswith('TASKBOARD_ACAI_TOKEN='):
+                    _TB_TOKEN = line.strip().split('=', 1)[1]
+    return _TB_TOKEN
+
+
+def _tb_post(path, payload):
+    tok = _tb_token()
+    if not tok:
+        return
+    try:
+        req = urllib.request.Request(
+            f'{_TB_BASE}/api/v1/agent-hook/{path}',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'X-Agent-Token': tok, 'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass  # 專案管理掛掉不能影響面談
+
+
+def taskboard(action, detail, level='INFO'):
+    """回報一則活動紀錄。level：INFO／SUCCESS／ERROR。"""
+    _tb_post('logs', {'action': str(action)[:80], 'level': level,
+                      'detail': str(detail)[:500]})
+
+
+def taskboard_beat(status='idle'):
+    """心跳，最多每 60 秒送一次（主迴圈每 3 秒跑一輪，不能每輪都送）。"""
+    global _TB_LAST_BEAT
+    if time.time() - _TB_LAST_BEAT < 60:
+        return
+    _TB_LAST_BEAT = time.time()
+    _tb_post('heartbeat', {'status': status})
+
+
 def env_with_cf():
     env = dict(os.environ)
     for conf in ('~/.config/workflow-os/cf.env',):
@@ -941,6 +994,8 @@ def notify_started(rows):
                f'\n\n面談跑完會自動把報告推過來，不用盯著。')
             d1(f"UPDATE applications SET start_notified_at = datetime('now','+8 hours') "
                f"WHERE id = {q(r['id'])}")
+            taskboard('候選人進面談室',
+                      f'{r.get("name")}（{r.get("job_title") or r.get("job_slug")}）')
         except Exception as e:
             log(f'進場通知失敗（下一輪會再試）：{e}')
 
@@ -2721,6 +2776,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     if not rid:
         tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
            f'必要時我可以把報告內容貼進這個對話讓你手動處理。')
+        taskboard('報告存檔失敗', f'{name}（{job_slug}）報告有產出但沒存進資料庫', 'ERROR')
 
     notify_candidate(app_id, abandoned)
 
@@ -2734,6 +2790,22 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
            f'{name} 完成 AI 面談並產出初篩報告'
            + ('（候選人中途離開）' if abandoned else ''),
            {'candidate': name, 'job': job_slug, 'abandoned': bool(abandoned)})
+    # 同一件事也回報給專案管理，Jacky 在那邊一眼看得到阿財今天談了誰、
+    # 結論是什麼，不用翻 TG 也不用進後台。
+    try:
+        rt = (report_json_obj.get('route') or {})
+        fs = (report_json_obj.get('fit_scores') or {})
+        bits = [f'{name}（{job_slug}）']
+        if rt.get('code'):
+            bits.append(f'分流 {rt["code"]} {rt.get("label") or ""}'.strip())
+        if fs.get('total') is not None:
+            bits.append(f'{fs["total"]} 分 {fs.get("grade") or ""}'.strip())
+        if abandoned:
+            bits.append('候選人中途離開')
+        taskboard('完成面談', '｜'.join(bits),
+                  'INFO' if abandoned else 'SUCCESS')
+    except Exception:
+        pass
     log(f'{name} 面談{"中斷" if abandoned else "結束"}，報告已存 {rid}')
 
     # 連結給不了在外面的人。把兩版 PDF、履歷、結語直接推過去，手機上點開就能讀。
@@ -2777,6 +2849,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         deliver_after_interview(app_id, name, job_slug, report_json, abandoned)
     except Exception as ex:
         log(f'❌ {name} 面談交付失敗（報告已存 D1，不影響面談）：{ex}')
+        taskboard('報告推送失敗', f'{name}（{job_slug}）報告已存但 PDF／履歷沒推出去：{ex}', 'ERROR')
         # 保底：交付整個掛掉時，至少還原成舊的最小通知，顧問才知道有這場要看
         tg(f'{head}：{name}（{job_slug}）\n'
            f'{rec or "（報告已產出）"}\n'
@@ -3420,8 +3493,13 @@ def main():
     once = '--once' in sys.argv
     log(f'面談引擎啟動（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
     last_update_check = time.time()
+    taskboard('面談引擎啟動', f'輪詢 {POLL_SEC} 秒，同時最多 {MAX_PARALLEL} 場')
     while True:
         tick()
+        # 心跳：專案管理那張卡片靠這個判斷阿財還活著。最多每分鐘一次。
+        with _lock:
+            busy_n = len(_busy)
+        taskboard_beat(f'面談中 {busy_n} 場' if busy_n else 'idle')
         # 自動更新：兩台機器（Mac／WSL2）靠 git 同步程式碼，沒有這個就得人工
         # 上去 pull——實際出過事（WSL2 跑舊版不認得新的工作類型，王仁君的
         # rematch 直接失敗）。放在 tick() 之後、sleep 之前，只在兩輪之間檢查。
