@@ -1046,7 +1046,9 @@ def process_topic(queue_row, topic):
     qid = queue_row['id']
     title = topic['name']
     account_id = queue_row.get('account_id')
-    style_row = _consultant_style_for_topic(account_id)
+    # 2026-09-22 加：顧問在「今日話題」挑題時可以直接選公式（style_id）。
+    # 有選就用那套公式；沒選才退回這位顧問預設的話題風格。
+    style_row = _style_by_id(queue_row.get('style_id')) or _consultant_style_for_topic(account_id)
     try:
         log(f'{title}（話題）：產生貼文草稿中…')
         raw, post = generate_draft_topic(topic, style_row)
