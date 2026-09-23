@@ -1351,6 +1351,7 @@ def _run_style_extract(payload):
         # is_own 由抓取結果決定，不要信呼叫端的自述——走得通 API 就代表確實是
         # 這個帳號發的；走瀏覽器代表不是（或 token 失效），兩者都該如實記錄。
         payload['is_own'] = 1 if got['via'] == 'api' else 0
+        payload['parts'] = got.get('parts')   # 串文幾則，給 TG 訊息標「已全部讀入」
         d1_http.query(
             f"UPDATE style_extractions SET post_text={q(got['text'])}, "
             f"source_author={q(got['author'] or '')}, is_own={payload['is_own']}, "
@@ -1377,25 +1378,50 @@ def _style_extract_tg_thread(payload):
     return int(tid) if tid else None
 
 
+def _format_style_extract(data, payload):
+    """拆解結果的 TG 版面（2026-09-23 跟 Jacky 定案）。
+
+    刻意全純文字、不用 markdown：這支 TG 沒開 parse_mode，
+    寫 **粗體** 會把星號原樣印出來，更醜。
+    區塊之間一定要空行，小標用「▍」，骨架逐條編號一行一條——
+    Jacky 原話：「不要字體都接在一起」。
+    """
+    a = data.get('analysis') or {}
+    zh = {'dialog': '對話討論型', 'pure': '純CTA型', 'original': '原始格式'}
+    is_own = payload.get('is_own')
+    parts = payload.get('parts')
+    L = ['🧩 拆解好了，等你確認', '', f"　{data['name']}", '', '─────────────',
+         f"來源　@{payload.get('source_author') or '未知'}（{'自家顧問' if is_own else '對標帳號'}）"]
+    if parts and parts > 1:
+        L.append(f"　　　串文 {parts} 則，已全部讀入")
+    if payload.get('source_url'):
+        L.append(f"　　　{payload['source_url']}")
+    L += ['─────────────', '', '▍開場怎麼抓人', f"　{a.get('hook') or '—'}", '', '▍段落骨架']
+    for i, step in enumerate(a.get('structure') or [], 1):
+        L.append(f"　{i}. {step}")
+    L += ['', '▍語氣', f"　{a.get('tone') or '—'}", '']
+    if a.get('devices'):
+        L.append('▍用了哪些手法')
+        L += [f"　・{x}" for x in a['devices']]
+        L.append('')
+    L += ['▍結尾怎麼收', f"　{a.get('cta') or '—'}", '',
+          '▍為什麼這樣寫會有人看', f"　{a.get('why_it_works') or '—'}", '',
+          '─────────────',
+          f"AI 建議分類：{zh.get(data.get('subtype_suggestion'), '對話討論型')}",
+          '（只是建議，存的時候你要自己選）', '',
+          f"寫作指令已產好（{len(data.get('prompt_body') or '')} 字）"]
+    return '\n'.join(L)
+
+
 def _tg_style_extract_ready(payload, data):
     try:
-        a = data.get('analysis') or {}
-        zh = {'dialog': '對話討論型', 'pure': '純CTA型', 'original': '原始格式'}
-        lines = [
-            f"🧩 拆解好了：{data['name']}",
-            f"來源：{payload.get('source_url') or '（手動貼上的內文）'}",
-            '',
-            f"開場：{a.get('hook') or '—'}",
-            '骨架：' + ' → '.join((a.get('structure') or [])[:6]),
-            f"語氣：{a.get('tone') or '—'}",
-            f"為什麼有效：{a.get('why_it_works') or '—'}",
-            '',
-            f"AI 建議分類：{zh.get(data.get('subtype_suggestion'), '對話討論型')}"
-            "（**存的時候你要自己選，這只是建議**）",
-            '',
-            '到顧問後台「社群 → 設定 → 公式」確認內容後存進公式庫。',
-        ]
-        rs._tg('\n'.join(lines), thread=_style_extract_tg_thread(payload))
+        ext_id = payload.get('extraction_id')
+        rs._tg_buttons(
+            _format_style_extract(data, payload),
+            [[{'text': '✅ 存進公式庫', 'callback_data': f'sx_save:{ext_id}'},
+              {'text': '👀 看完整指令', 'callback_data': f'sx_view:{ext_id}'}],
+             [{'text': '🗑 丟掉', 'callback_data': f'sx_drop:{ext_id}'}]],
+            thread=_style_extract_tg_thread(payload))
     except Exception:
         pass   # 通知失敗不該讓拆解結果跟著作廢
 
