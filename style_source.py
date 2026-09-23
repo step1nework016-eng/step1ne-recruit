@@ -106,12 +106,43 @@ def fetch_own(url, access_token, platform_user_id):
     return {'author': handle, 'text': '\n\n---\n\n'.join(parts), 'parts': len(parts), 'via': 'api'}
 
 
-def fetch_public(url):
-    """別人的貼文：無頭瀏覽器跑完 JS 再讀，這樣串文後續才看得到。"""
-    from playwright.sync_api import sync_playwright
+def fetch_public_http(url):
+    """沒有瀏覽器時的退路：純 HTTP 抓公開頁面的 og:description。
+
+    ⚠️ 這條路**只拿得到串文的第一則**（後續那幾則要跑 JS 才載入）。
+    回傳會標 via='http_partial'，呼叫端要照實告訴顧問「這是不完整的」，
+    不可以當成抓完整了——不然顧問會拿一份缺了一半的內容去產公式。
+    """
+    import html
     handle, _ = parse_permalink(url)
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+    req = urllib.request.Request(url, headers={'User-Agent': 'facebookexternalhit/1.1'})
+    body = urllib.request.urlopen(req, timeout=25).read().decode('utf-8', 'replace')
+    m = re.search(r'<meta property="og:description" content="([^"]*)"', body)
+    return {'author': handle, 'text': html.unescape(m.group(1)) if m else '',
+            'parts': None, 'via': 'http_partial'}
+
+
+def fetch_public(url):
+    """別人的貼文：無頭瀏覽器跑完 JS 再讀，這樣串文後續才看得到。
+
+    ⚠️ 兩台機器（Mac／WSL2）不一定都裝了 playwright。裝不起來就退回純 HTTP，
+    寧可給一份標明「只有第一則」的內容，也不要整個拆解直接失敗。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return fetch_public_http(url)
+    handle, _ = parse_permalink(url)
+    try:
+        pw_ctx = sync_playwright()
+    except Exception:
+        return fetch_public_http(url)
+    with pw_ctx as pw:
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except Exception:
+            # chromium 沒下載、或這台機器跑不動無頭瀏覽器
+            return fetch_public_http(url)
         try:
             page = browser.new_page(user_agent=BROWSER_UA)
             page.goto(url, timeout=45000, wait_until='domcontentloaded')

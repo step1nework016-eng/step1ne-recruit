@@ -1352,6 +1352,7 @@ def _run_style_extract(payload):
         # 這個帳號發的；走瀏覽器代表不是（或 token 失效），兩者都該如實記錄。
         payload['is_own'] = 1 if got['via'] == 'api' else 0
         payload['parts'] = got.get('parts')   # 串文幾則，給 TG 訊息標「已全部讀入」
+        payload['via'] = got.get('via')       # http_partial 代表這台沒瀏覽器，只抓到第一則
         d1_http.query(
             f"UPDATE style_extractions SET post_text={q(got['text'])}, "
             f"source_author={q(got['author'] or '')}, is_own={payload['is_own']}, "
@@ -1394,6 +1395,11 @@ def _format_style_extract(data, payload):
          f"來源　@{payload.get('source_author') or '未知'}（{'自家顧問' if is_own else '對標帳號'}）"]
     if parts and parts > 1:
         L.append(f"　　　串文 {parts} 則，已全部讀入")
+    if payload.get('via') == 'http_partial':
+        # 這台機器沒有瀏覽器，只抓得到第一則。一定要講——顧問看到完整的
+        # 拆解版面會以為讀完了，拿一份缺一半的內容去產公式。
+        L.append('　　　⚠️ 這台機器沒有瀏覽器，只讀到第一則')
+        L.append('　　　　 如果原文是串文，後面幾則沒被拆進去')
     if payload.get('source_url'):
         L.append(f"　　　{payload['source_url']}")
     L += ['─────────────', '', '▍開場怎麼抓人', f"　{a.get('hook') or '—'}", '', '▍段落骨架']
