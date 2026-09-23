@@ -5238,6 +5238,18 @@ export default {
 
           // 職缺文｜選寫法類型。純CTA／原始格式選完就結束，
           // 對話討論型還要再挑是哪一個公式（跟後台表單同一套 style_prompts）。
+          // 職缺文與話題文共用：從 session 判斷現在在處理哪一種，
+          // 組出 spFinish 要的欄位。多一個 isTopic 分支比複製第二套流程安全——
+          // 複製的那一套一定會在某次改動時跟這套走偏。
+          const spTarget = () => {
+            const isTopic = !sess.data.slug && sess.data.label;
+            return isTopic
+              ? { jobSlug: `💬 ${sess.data.label}`, mission: sess.data.mission,
+                  head: `話題：${sess.data.label}\n種類：${sess.data.missionLabel}` }
+              : { jobSlug: sess.data.slug, mission: null,
+                  head: `職缺：${sess.data.jobTitle}` };
+          };
+
           if (spCq.data.startsWith('sp_way:')) {
             const way = spCq.data.slice('sp_way:'.length);
             await spAns();
@@ -5252,19 +5264,23 @@ export default {
                 return new Response('ok');
               }
               // 公式表空的就不要卡住顧問，當成沒指定公式的對話討論型存下去
-              await spFinish({ jobSlug: sess.data.slug, formula: 'dialog',
-                summary: `職缺：${sess.data.jobTitle}\n寫法：對話討論型（沒有可選的公式）` });
+              const t0 = spTarget();
+              await spFinish({ jobSlug: t0.jobSlug, mission: t0.mission, formula: 'dialog',
+                summary: `${t0.head}\n寫法：對話討論型（沒有可選的公式）` });
               return new Response('ok');
             }
             if (way === 'pure') {
               const pure = await env.DB.prepare(
                 `SELECT id FROM style_prompts WHERE subtype='pure' LIMIT 1`).first();
-              await spFinish({ jobSlug: sess.data.slug, styleId: pure && pure.id, formula: 'pure',
-                summary: `職缺：${sess.data.jobTitle}\n寫法：純CTA型` });
+              const t1 = spTarget();
+              await spFinish({ jobSlug: t1.jobSlug, mission: t1.mission,
+                styleId: pure && pure.id, formula: 'pure',
+                summary: `${t1.head}\n寫法：純CTA型` });
               return new Response('ok');
             }
-            await spFinish({ jobSlug: sess.data.slug, formula: 'default',
-              summary: `職缺：${sess.data.jobTitle}\n寫法：原始格式` });
+            const t2 = spTarget();
+            await spFinish({ jobSlug: t2.jobSlug, mission: t2.mission, formula: 'default',
+              summary: `${t2.head}\n寫法：原始格式` });
             return new Response('ok');
           }
 
@@ -5272,8 +5288,9 @@ export default {
             const styleId = spCq.data.slice('sp_sty:'.length);
             const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=?`).bind(styleId).first();
             await spAns();
-            await spFinish({ jobSlug: sess.data.slug, styleId, formula: 'dialog',
-              summary: `職缺：${sess.data.jobTitle}\n寫法：${(st && st.name) || '對話討論型'}` });
+            const t3 = spTarget();
+            await spFinish({ jobSlug: t3.jobSlug, mission: t3.mission, styleId, formula: 'dialog',
+              summary: `${t3.head}\n寫法：${(st && st.name) || '對話討論型'}` });
             return new Response('ok');
           }
 
@@ -5282,11 +5299,24 @@ export default {
           if (spCq.data.startsWith('sp_mis:')) {
             const kind = spCq.data.slice('sp_mis:'.length);
             await spAns();
-            await spFinish({
-              jobSlug: `💬 ${sess.data.label}`,
+            // 2026-09-23 改：話題文以前選完種類就直接存，**從來沒問過寫法與公式**。
+            // 職缺文那條有問、話題文沒問，結果成效表上話題文的 content_formula
+            // 幾乎全是空的，「哪一種寫法有效」這個問題在話題文上永遠答不出來。
+            // 現在兩條路徑接同一個尾巴：種類 → 寫法 → （對話討論型才）公式。
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way', {
+              ...sess.data,
               mission: kind === 'ai' ? 'trust_building' : 'engagement',
-              summary: `話題：${sess.data.label}\n種類：${kind === 'ai' ? 'AI阿財話題' : '通用文'}`,
+              missionLabel: kind === 'ai' ? 'AI阿財話題' : '通用文',
             });
+            await ncSend(env, spChatId, spThreadId2,
+              `這篇話題文用哪一種寫法？（${sess.data.label}）`, {
+                inline_keyboard: [[
+                  { text: '純CTA型', callback_data: 'sp_way:pure' },
+                  { text: '對話討論型', callback_data: 'sp_way:dialog' },
+                ], [
+                  { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+                ]],
+              });
             return new Response('ok');
           }
         }
