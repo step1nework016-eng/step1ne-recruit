@@ -59,13 +59,46 @@ def variants(name, aliases=None):
 
 
 def load_clients(d1_query):
-    """d1_query 是一個 callable，吃 SQL 回傳 list[dict]。抽成參數是為了能離線測試。"""
-    rows = d1_query(
-        "SELECT name, aliases, relation, blocked_reason, via_client, owner FROM clients") or []
-    out = []
-    for r in rows:
-        al = [x.strip() for x in (r.get('aliases') or '').split('\n') if x.strip()]
-        out.append({**r, '_variants': variants(r.get('name'), al)})
+    """d1_query 是一個 callable，吃 SQL 回傳 list[dict]。抽成參數是為了能離線測試。
+
+    ⚠️ 2026-09-23 修的重大缺口：這支原本只讀 `clients`（9 筆），但顧問後台、
+    客戶 portal、成交紀錄實際在用的是 `client_companies`（16 筆）。兩張表長期
+    不同步，結果是**弘昌、築樂等 7 家已簽約客戶從來沒被保護過**——
+    開發系統本來就有可能寄信去敲自己的客戶，而且沒有任何地方會發現。
+
+    現在讀兩張表的聯集。`clients` 有 blocked_reason／via_client 這些欄位，
+    `client_companies` 用 relation_note 當同一個角色，對應過來即可。
+    重複的以 `clients` 為準（那張是專門為這個防護維護的）。
+    """
+    out, seen = [], set()
+
+    def add(name, aliases, relation, reason, via, owner):
+        key = (name or '').strip()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        al = [x.strip() for x in (aliases or '').split('\n') if x.strip()]
+        out.append({'name': key, 'aliases': aliases, 'relation': relation,
+                    'blocked_reason': reason, 'via_client': via, 'owner': owner,
+                    '_variants': variants(key, al)})
+
+    for r in (d1_query(
+            "SELECT name, aliases, relation, blocked_reason, via_client, owner "
+            "FROM clients") or []):
+        add(r.get('name'), r.get('aliases'), r.get('relation'),
+            r.get('blocked_reason'), r.get('via_client'), r.get('owner'))
+
+    # ⚠️ 讀不到不要讓整個防護掛掉——但也不要靜默通過。
+    #    寧可少擋一張表，也不要因為一個欄位改名就讓開發信全部失去保護。
+    try:
+        rows2 = d1_query(
+            "SELECT display_name, aliases, relation, relation_note, via_client, owner "
+            "FROM client_companies") or []
+    except Exception:
+        rows2 = []
+    for r in rows2:
+        add(r.get('display_name'), r.get('aliases'), r.get('relation'),
+            r.get('relation_note'), r.get('via_client'), r.get('owner'))
     return out
 
 
