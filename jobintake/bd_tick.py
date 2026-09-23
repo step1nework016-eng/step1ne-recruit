@@ -213,6 +213,88 @@ LETTER_PROMPT = """你是 Step1ne（德仁管理顧問）的業務開發。目�
 """
 
 
+FORWARD_PROMPT = """你要做的是「正向開發」：不帶人選，直接用「我們能幫你持續補人」這個服務去敲門。
+
+跟反向開發（手上有一個強人選去問誰要）完全不同。這裡的賣點不是某一個人，
+而是「你們一直在補人，這件事可以外包給我們」。
+
+## 適合的目標
+
+**正在大量、持續徵人的連鎖品牌**——門市人員、儲備幹部、美容顧問、櫃點人員這一類。
+判斷依據（一定要是你查得到的事實，不可以憑印象）：
+- 在 104／1111 的企業頁同時開著多個同類職缺
+- 同一批職缺長期掛著或反覆重新上架（代表補不滿）
+- 全台多點展店、或近期有展店新聞
+
+## 你要產出
+
+只輸出 JSON，不要有其他文字：
+
+{
+  "segment_note": "這一批鎖定的族群，一句話",
+  "targets": [
+    {
+      "company": "公司全名",
+      "why": "為什麼是這家。**必須講出你實際查到的徵才跡象**，例如『104 企業頁同時開著 12 個門市人員職缺、分布 6 個縣市』。只寫『規模大』『知名品牌』一律不接受",
+      "evidence_url": "你看到那個徵才跡象的網址，沒有就寫 null",
+      "open_roles": "他們現在在徵什麼，一句話",
+      "contact_name": "招募窗口職稱或姓名，查不到寫 null",
+      "contact_email": "查到才寫，查不到寫 null。⛔ 絕對不可以用猜的或套公式（hr@、recruit@ 這種）——寄到不存在的信箱比沒寄更糟，而且沒人會發現",
+      "subject": "信件主旨",
+      "body": "信件全文，用 Jacky 的第一人稱"
+    }
+  ]
+}
+
+## 信怎麼寫
+
+- **第一句就講你觀察到什麼**，例如「看到貴公司最近在幾個縣市同時補門市人員」。
+  不要先自我介紹，那會讓人直接關掉。
+- 第二段講我們能承接什麼，用下面【服務事實】裡的內容，**不可以自己加沒寫的東西**。
+- 第三段給一個低門檻的下一步：「先聊 15 分鐘看合不合用」這種，不要要求對方做決定。
+- 結尾要給退場：「如果目前人力都補得上，就當我沒說」。
+- 全文 200-300 字。**長信沒人看。**
+- 不要用「優質」「專業團隊」「一條龍服務」這種空話，講得出來的才寫。
+
+## 【服務事實】只能寫這些，不可以加碼
+
+- 三種委託方式：高階獵頭、正職招募、人力派遣
+- **成功後才收費，人選沒到職原則上不收費**
+- 正職招募：平均約 1.5 個月薪起，依職務彈性，實際費率依委任合約約定
+- 人力派遣：依派遣人數與職務報價；派遣員工與我們簽勞動契約，招募、勞健保、薪資由我們處理
+- 保固期內離職，提供免費替補（條件依合約）
+- 大量招募的常見用法：內部 HR 人力吃緊時的常態委外
+
+⛔ 不可以寫：具體百分比費率、保證多久到位、保證錄取、「業界最低價」、
+   任何官網沒寫的承諾。寫了就是對客戶說謊，而且是白紙黑字的。
+
+## 署名固定
+
+Jacky Chen｜德仁管理顧問有限公司（Step1ne）
+電話／LINE ID：0958616744
+就業服務許可：北市就服字第 0363 號｜臺北市政府勞動局 114 年度評鑑 A 級
+https://step1ne.com/commission-recruiting/
+
+## 挑公司的規矩
+
+- 挑 5-8 家，寧可少而準。
+- **不要挑同業**（人力銀行、獵頭、派遣公司、人資顧問）。
+- 不要挑我們既有客戶（系統之後會再比對一次，但你能判斷的先排除）。
+- 同一個集團底下不要重複挑多家。
+"""
+
+
+def forward_ask(r):
+    """正向開發的需求描述。跟反向開發不同——這裡沒有人選，只有『要打哪一群公司』。"""
+    parts = [f"要開發的族群：{r.get('role_family') or '（未指定）'}"]
+    for k, lb in (('industry', '產業'), ('region', '地區'),
+                  ('service_line', '主打的委託方式'), ('note', '顧問交代')):
+        if r.get(k):
+            parts.append(f'{lb}：{r[k]}')
+    parts.append(f"要幾家：{r.get('target_count') or 6}")
+    return '\n'.join(parts)
+
+
 def ask_text(r):
     parts = [f"職缺類型：{r['role_family']}"]
     for k, lb in (('industry', '產業'), ('region', '地區'), ('note', '顧問交代')):
@@ -290,6 +372,105 @@ def make_anon_pdf(app_id, workdir):
              f"({D.q(fid)}, {i}, {D.q(b64[i * 90000:(i + 1) * 90000])})")
     log(f'✅ 匿名履歷 PDF 已存（{len(b)//1024} KB，{chunks} chunk）')
     return fid
+
+
+def handle_forward(req):
+    """正向開發：不帶人選，直接用委託招募的服務去敲正在大量徵人的公司。
+
+    跟 handle()（反向開發）刻意共用同一批把關與同一張 bd_outreach 表——
+    客戶名單比對、就服法掃描、顧問核准、送達追蹤都是一模一樣的流程，
+    不要為了新模式另開一條平行的路，那條一定會在某次改動之後跟主線走偏。
+
+    唯一的差別是「拿什麼去敲門」：反向拿人選，正向拿服務。
+    """
+    rid = req['id']
+    D.d1(f"UPDATE bd_requests SET status='working', updated_at=datetime('now','+8 hours') "
+         f"WHERE id={D.q(rid)}")
+    workdir = os.path.join(WORK, rid[:8])
+
+    prompt = FORWARD_PROMPT + '\n\n## 這次要開發的\n\n' + forward_ask(req) + '\n'
+    try:
+        spec = run_commander(prompt, workdir, tag='forward', timeout=1800)
+    except Exception as e:
+        D.d1(f"UPDATE bd_requests SET status='failed', result_note={D.q(str(e)[:300])}, "
+             f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
+        tg_bd.send_head(f"⚠️ 正向開發「{req.get('role_family')}」跑不下去：{str(e)[:200]}")
+        return
+
+    targets = spec.get('targets') or []
+    if not targets:
+        why = spec.get('reason') or '總指揮沒有挑出任何目標公司'
+        D.d1(f"UPDATE bd_requests SET status='failed', result_note={D.q(why)}, "
+             f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
+        tg_bd.send_head(f"🟡 正向開發「{req.get('role_family')}」沒有出信\n原因：{why}")
+        return
+
+    # 客戶名單比對：已簽約／洽談中／終端客戶一律整家移除（跟反向開發同一份名單、
+    # 同一支 filter_targets，不要自己再寫一套比對邏輯）
+    clients = G.load_clients(D.d1)
+    targets, blocked, warned = G.filter_targets(targets, clients)
+    for w in warned:
+        log(f"⚠️ {w.get('company')}：{w.get('why')}（沒擋，但顧問要留意）")
+    if not targets:
+        D.d1(f"UPDATE bd_requests SET status='failed', result_note='目標全部在客戶名單上', "
+             f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
+        tg_bd.send_head(f"🟡 正向開發「{req.get('role_family')}」沒有出信\n"
+                        f"原因：挑出來的公司全部已經是我們的客戶或洽談中")
+        return
+
+    law = scrub(spec)
+    for lb, w in law:
+        log(f'⚠️ 就服法第 5 條保護特徵出現在{lb}：「{w}」')
+
+    # 沒有信箱的不要送審——顧問按了也寄不出去，只是製造一則白按的通知。
+    # ⛔ 也不要幫它補一個猜的信箱：寄到不存在的地方比沒寄更糟，而且沒人會發現。
+    no_mail = [t for t in targets if not (t.get('contact_email') or '').strip()]
+    targets = [t for t in targets if (t.get('contact_email') or '').strip()]
+
+    batch = str(uuid.uuid4())[:8]
+    rows = []
+    for t in targets:
+        bid = str(uuid.uuid4())
+        rows.append((bid, t))
+        D.d1(f"""INSERT INTO bd_outreach
+          (id, created_at, batch_id, request_id, candidate_ref, candidate_card, company,
+           why_company, contact_name, contact_email, subject, body, status, updated_at,
+           job_title, job_source, job_url)
+          VALUES ({D.q(bid)}, datetime('now','+8 hours'), {D.q(batch)}, {D.q(rid)},
+                  {D.q('SVC-' + batch)}, NULL,
+                  {D.q(t.get('company'))}, {D.q(t.get('why'))}, {D.q(t.get('contact_name'))},
+                  {D.q(t.get('contact_email'))}, {D.q(t.get('subject'))}, {D.q(t.get('body'))},
+                  'pending', datetime('now','+8 hours'),
+                  {D.q(t.get('open_roles'))}, 'forward_bd', {D.q(t.get('evidence_url'))})""")
+
+    head = (f"🎯 正向開發（賣委託招募服務）：{req.get('role_family')}\n"
+            f"{spec.get('segment_note') or ''}\n\n"
+            f"{len(rows)} 家出信"
+            + (f"　·　⛔ {len(blocked)} 家已是客戶" if blocked else '')
+            + (f"　·　📭 {len(no_mail)} 家查不到窗口信箱" if no_mail else ''))
+    if blocked:
+        head += '\n\n【客戶名單擋下，不會寄】\n' + '\n'.join(
+            f"・{b.get('company')}：{b.get('why')}" for b in blocked)
+    if warned:
+        head += '\n\n【有關聯但沒擋，請顧問確認】\n' + '\n'.join(
+            f"・{w.get('company')}：{w.get('why')}" for w in warned)
+    if no_mail:
+        # 這幾家不是沒價值，是缺一塊資料——講出來顧問才有機會自己去補
+        head += '\n\n【查不到窗口信箱，沒有送審】\n' + '\n'.join(
+            f"・{t.get('company')}：{t.get('open_roles') or ''}" for t in no_mail)
+    if law:
+        head += '\n\n⚠️ 就服法保護特徵：' + '、'.join(w for _, w in law)
+
+    tg_bd.send_head(head)
+    for bid, t in rows:
+        mid = tg_bd.send_letter(bid, t, has_cv=False)
+        if mid:
+            D.d1(f"UPDATE bd_outreach SET tg_message_id={mid} WHERE id={D.q(bid)}")
+
+    D.d1(f"UPDATE bd_requests SET status='done', batch_id={D.q(batch)}, "
+         f"result_note={D.q(f'出信 {len(rows)} 家；客戶名單擋 {len(blocked)}；無信箱 {len(no_mail)}')}, "
+         f"updated_at=datetime('now','+8 hours') WHERE id={D.q(rid)}")
+    log(f'✅ 正向開發送審 {len(rows)} 封，顧問核准前一封都不會寄。')
 
 
 def handle(req):
@@ -415,7 +596,12 @@ def main():
     log(f'撿到 {len(reqs)} 張開發需求')
     for r in reqs:
         try:
-            handle(r)
+            # mode 決定拿什麼去敲門：reverse＝帶人選（預設，舊資料沒有這欄）、
+            # forward＝不帶人選，直接賣委託招募服務。兩邊之後的把關完全一樣。
+            if (r.get('mode') or 'reverse') == 'forward':
+                handle_forward(r)
+            else:
+                handle(r)
         except Exception as e:
             log(f'❌ 需求 {r["id"][:8]} 失敗：{e}')
             D.d1(f"UPDATE bd_requests SET status='failed', result_note={D.q(str(e)[:300])}, "
