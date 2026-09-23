@@ -18,7 +18,7 @@ LinkedIn 還沒申請，之後金鑰到位後一樣是加在 Worker 那個 callb
     python3 social_post_agent.py <slug>    # 只處理指定職缺（測試用）
     python3 social_post_agent.py --repost <slug>   # 職缺內容改過，重新產一次草稿
 """
-import ast, json, os, re, subprocess, sys, time, datetime, urllib.request
+import ast, json, os, re, socket, subprocess, sys, time, datetime, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 import autoupdate  # 自動更新（見 autoupdate.py 檔頭）
 
@@ -657,7 +657,9 @@ def tg_with_buttons(text, buttons, thread=None, retries=3):
         return None
     body = {
         'chat_id': e['TG_CHAT_ID'], 'text': text,
-        'reply_markup': json.dumps({'inline_keyboard': [buttons]}),
+        # buttons 給空的就不要帶 reply_markup——Telegram 收到空的按鈕列會報錯，
+        # 整則通知就消失了（2026-09-23：接手通知是純文字沒有按鈕，踩到這個）。
+        **({'reply_markup': json.dumps({'inline_keyboard': [buttons]})} if buttons else {}),
     }
     tid = thread if thread is not None else e.get('TG_THREAD_ID')
     if tid:
@@ -818,6 +820,37 @@ def line_community_link_suffix(account_id):
 # 認領後多久沒產出草稿，就當作那台機器掛了，放回佇列讓別人接。
 # 20 分鐘：產一篇草稿含客戶名稱重產最多幾分鐘，這個門檻遠超過正常耗時。
 STALE_CLAIM_MIN = 20
+# 這台機器的名字。Mac 與 WSL2 兩台同時跑同一支 agent，認領時記下來，
+# 才知道某一筆是誰接走的、以及是誰罷工了。
+THIS_HOST = os.environ.get('SOCIALPOST_HOST') or socket.gethostname().split('.')[0]
+
+# 主力／備援。2026-09-23 Jacky 定案：WSL2 是主力，Mac 只補位。
+#   primary（預設）＝照舊，看到沒人認領的就立刻撿
+#   standby        ＝先讓主力有 STANDBY_GRACE_MIN 分鐘的優先權，
+#                    過了那段時間還沒人認領，才代表主力沒在做事，這時才撿
+# 兩台都跑 primary 不會壞（認領是原子性的，不會重複產稿），只是會互相搶；
+# 分主備是為了讓「誰該做什麼」可預期，出事時也看得出是誰沒做。
+ROLE = (os.environ.get('SOCIALPOST_ROLE') or 'primary').strip().lower()
+STANDBY_GRACE_MIN = int(os.environ.get('SOCIALPOST_STANDBY_GRACE_MIN') or 5)
+
+
+def _tg_takeover(n, detail, taker):
+    """某台機器認領後沒做完，被這台接手時通知。
+
+    為什麼要通知：接手本身是好事（系統自己修好了），但「有一台在罷工」
+    是壞消息，而且是會持續發生的壞消息。沒有這則通知，系統看起來一切正常，
+    實際上有一半的產能是死的。
+    """
+    try:
+        tg_with_buttons(f'♻️ 社群產稿接手通知\n\n'
+           f'有 {n} 筆發文需求被認領後超過 {STALE_CLAIM_MIN} 分鐘沒產出草稿，'
+           f'已經放回佇列由「{taker}」接手。\n\n'
+           f'原本認領的是：{detail}\n\n'
+           f'那台機器可能關機、當掉或網路斷了，請確認。\n'
+           f'（這批稿子不會遺失，接手的機器會重產）',
+           [], thread=TG_THREAD_SOCIAL)
+    except Exception:
+        pass   # 通知失敗不該讓回收跟著失敗
 
 # 客戶名稱／禁刊字眼稽核沒過，最多自動重產幾次才放棄改交人工審。
 # 2026-09-23 從「只重產一次」改成這個：原本重產一次還沒過就整篇卡住等
@@ -1481,21 +1514,39 @@ def tick():
         # COALESCE：claimed_at 是 2026-09-21 才加的欄位，在那之前認領的
         # 舊資料沒有值，退回用 requested_at 判斷（那些本來就都是很久以前的）。
         stale = d1(
-            "SELECT id FROM social_post_queue WHERE status='claimed' AND draft IS NULL "
+            "SELECT id, claimed_by FROM social_post_queue WHERE status='claimed' AND draft IS NULL "
             "AND COALESCE(claimed_at, requested_at) <= "
             f"datetime('now','+8 hours','-{STALE_CLAIM_MIN} minutes')")
         if stale:
             ids = ','.join(str(x['id']) for x in stale)
-            d1(f"UPDATE social_post_queue SET status=NULL WHERE id IN ({ids}) "
+            d1(f"UPDATE social_post_queue SET status=NULL, claimed_by=NULL WHERE id IN ({ids}) "
                "AND status='claimed' AND draft IS NULL")
-            log(f'♻️ 回收 {len(stale)} 筆卡住的認領（認領後沒產出草稿，'
-                f'多半是程序被中斷）：{ids}')
+            # 哪一台丟下的。兩台都有可能，所以照實統計，不要假設是對方。
+            by = {}
+            for x in stale:
+                key = x.get('claimed_by') or '（不明，可能是加這個欄位之前認領的）'
+                by[key] = by.get(key, 0) + 1
+            detail = '、'.join(f'{k} {v} 筆' for k, v in by.items())
+            log(f'♻️ 回收 {len(stale)} 筆卡住的認領（{detail}）：{ids}')
+            # ⚠️ 一定要推 TG。這件事以前完全無聲——2026-09-22 WSL2 停擺，
+            # 隔了一整天才被人發現，中間顧問按的發文全部沒產出也沒人知道。
+            others = [k for k in by if k != THIS_HOST]
+            if others:
+                _tg_takeover(len(stale), detail, THIS_HOST)
     except Exception as e:
         log(f'⚠️ 回收卡住的認領失敗（不影響這一輪）：{str(e)[:120]}')
 
-    queue_rows = d1("SELECT * FROM social_post_queue WHERE status IS NULL ORDER BY requested_at ASC")
+    where = 'status IS NULL'
+    if ROLE == 'standby':
+        # 備援模式：只看「已經放著超過 grace 分鐘還沒人認領」的。
+        # 用 requested_at 判斷就夠了——只要主力活著，它在幾十秒內就會認領，
+        # 這一筆的 status 就不再是 NULL，根本不會進到這個查詢。
+        where += (" AND requested_at <= datetime('now','+8 hours',"
+                  f"'-{STANDBY_GRACE_MIN} minutes')")
+    queue_rows = d1(f"SELECT * FROM social_post_queue WHERE {where} ORDER BY requested_at ASC")
     if not queue_rows:
-        log('沒有需要產貼文的新職缺／話題')
+        log('沒有需要產貼文的新職缺／話題'
+            + ('（備援模式：主力還在處理中的不算）' if ROLE == 'standby' else ''))
         return
     # 2026-09-17 加：Mac 跟 WSL2 兩台機器同時跑這支時發現的真實 race——
     # 原本抓到 status IS NULL 的就直接處理，狀態要等處理完才寫回，中間完全
@@ -1509,9 +1560,11 @@ def tick():
         # 2026-09-21 第一版回收寫成用 requested_at（顧問按下發文的時間）——
         # 那是錯的：一筆在佇列裡躺了兩小時才被正常認領的，會在下一輪就被
         # 當成卡住而搶走，等於兩台互相搶同一筆，比原本的 bug 更糟。
+        # claimed_by：2026-09-23 加。原本只知道「有人認領了」，不知道是哪一台，
+        # 所以某台機器罷工時後台只看得到「卡住」，查不出是 Mac 還是 WSL2 死了。
         meta = d1_raw(
             f"UPDATE social_post_queue SET status='claimed', "
-            f"claimed_at=datetime('now','+8 hours') "
+            f"claimed_at=datetime('now','+8 hours'), claimed_by={q(THIS_HOST)} "
             f"WHERE id={qrow['id']} AND status IS NULL"
         ).get('meta', {})
         if meta.get('changes'):

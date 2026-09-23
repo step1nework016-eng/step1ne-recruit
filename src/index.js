@@ -5009,6 +5009,132 @@ export default {
           }
         }
 
+        // ── 2026-09-23：把一篇貼文拆解成寫法公式 ──
+        // 兩個入口共用這一段：TG 匯入完成後的「順便拆解」，以及顧問直接在
+        // 主題裡貼網址 + 按拆解。真正的拆解在本機 ai_worker.py（Worker 跑不了
+        // claude CLI，也開不了瀏覽器抓別人的貼文），這裡只負責建工作與收確認。
+        if (spCq && String(spCq.data || '').startsWith('sx_')) {
+          const sxChatId = spCq.message.chat.id;
+          const sxThreadId = spCq.message.message_thread_id;
+          const sxAns = async (t) => {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: spCq.id, text: t || '' }),
+            }).catch(() => {});
+          };
+
+          if (spCq.data === 'sx_skip') {
+            await sxAns('好，不拆解');
+            await ncClearSession(env, sxChatId, spCq.from.id);
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sx_go:')) {
+            const sess2 = await ncSession(env, sxChatId, spCq.from.id);
+            const url = sess2 && sess2.data && sess2.data.url;
+            if (!url) {
+              await sxAns('這個流程過期了，重貼一次網址');
+              return new Response('ok');
+            }
+            const accountId = Number(spCq.data.slice('sx_go:'.length)) || null;
+            await sxAns('開始拆解');
+            await ncClearSession(env, sxChatId, spCq.from.id);
+            const now = nowTaipei();
+            const ins = await env.DB.prepare(
+              `INSERT INTO style_extractions
+                 (source_url, account_id, requested_by, origin, status, created_at, updated_at)
+               VALUES (?,?,?,'telegram','pending',?,?)`
+            ).bind(url, accountId, spCq.from.first_name || String(spCq.from.id), now, now).run();
+            const extId = ins.meta.last_row_id;
+            await env.DB.prepare(
+              `INSERT INTO ai_jobs (id, kind, payload_json, status, created_at)
+               VALUES (?, 'style_extract', ?, 'pending', ?)`
+            ).bind(crypto.randomUUID(), JSON.stringify({
+              extraction_id: String(extId), source_url: url,
+              account_id: accountId, tg_thread_id: sxThreadId,
+            }), now).run();
+            await ncSend(env, sxChatId, sxThreadId,
+              '🧩 收到，開始拆解這篇。\n\n'
+              + '要先把原文抓下來（別人的文要開瀏覽器跑一次），再讓 AI 拆解，'
+              + '大概 1–3 分鐘。\n拆好會在這裡給你看，不用等在這邊。');
+            return new Response('ok');
+          }
+
+          // 以下三顆是拆解結果那則訊息上的按鈕
+          const sxId = spCq.data.split(':')[1];
+          const row = sxId ? await env.DB.prepare(
+            `SELECT * FROM style_extractions WHERE id=?`).bind(sxId).first() : null;
+          if (!row) { await sxAns('找不到這筆拆解結果'); return new Response('ok'); }
+
+          if (spCq.data.startsWith('sx_view:')) {
+            await sxAns();
+            let body = '';
+            try { body = (JSON.parse(row.result_json) || {}).prompt_body || ''; } catch { body = ''; }
+            // Telegram 單則上限 4096 字，長的要切開送，不要靜默截斷
+            const chunks = (body || '（沒有內容）').match(/[\s\S]{1,3500}/g) || [];
+            for (let i = 0; i < chunks.length; i += 1) {
+              await ncSend(env, sxChatId, sxThreadId,
+                (i === 0 ? '📄 完整寫作指令\n\n' : `（續 ${i + 1}/${chunks.length}）\n\n`) + chunks[i]);
+            }
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sx_drop:')) {
+            await sxAns('丟掉了');
+            await env.DB.prepare(
+              `UPDATE style_extractions SET status='dropped', updated_at=? WHERE id=?`
+            ).bind(nowTaipei(), sxId).run();
+            await ncSend(env, sxChatId, sxThreadId, '🗑 已丟掉，沒有存進公式庫。');
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sx_save:')) {
+            await sxAns();
+            // Jacky 2026-09-23：分類每次都要自己選，不吃 AI 的建議值
+            await ncSend(env, sxChatId, sxThreadId,
+              '要存成哪一種？\n\n只有「對話討論型」會出現在今日話題／一鍵發文的公式清單裡。', {
+                inline_keyboard: [
+                  [{ text: '💬 對話討論型', callback_data: `sx_sub:${sxId}:dialog` }],
+                  [{ text: '📣 純CTA型', callback_data: `sx_sub:${sxId}:pure` }],
+                  [{ text: '📝 原始格式', callback_data: `sx_sub:${sxId}:original` }],
+                ],
+              });
+            return new Response('ok');
+          }
+
+          if (spCq.data.startsWith('sx_sub:')) {
+            const subtype = spCq.data.split(':')[2];
+            if (!['dialog', 'pure', 'original'].includes(subtype)) {
+              await sxAns('分類不對'); return new Response('ok');
+            }
+            if (row.style_prompt_id) {
+              await sxAns('這筆已經存過了');
+              return new Response('ok');
+            }
+            let data = {};
+            try { data = JSON.parse(row.result_json) || {}; } catch { data = {}; }
+            if (!data.prompt_body) { await sxAns('這筆沒有內容可以存'); return new Response('ok'); }
+            await sxAns('存好了');
+            const now2 = nowTaipei();
+            const sp = await env.DB.prepare(
+              `INSERT INTO style_prompts (name, body, subtype, created_at, updated_at)
+               VALUES (?,?,?,?,?)`
+            ).bind(String(data.name).slice(0, 100), String(data.prompt_body).slice(0, 20000),
+                   subtype, now2, now2).run();
+            await env.DB.prepare(
+              `UPDATE style_extractions SET status='saved', style_prompt_id=?, updated_at=? WHERE id=?`
+            ).bind(sp.meta.last_row_id, now2, sxId).run();
+            const zh = { dialog: '對話討論型', pure: '純CTA型', original: '原始格式' }[subtype];
+            await ncSend(env, sxChatId, sxThreadId,
+              `✅ 已存進公式庫\n\n　${data.name}\n　分類：${zh}\n\n`
+              + (subtype === 'dialog'
+                ? '下次產稿選「對話討論型」就挑得到它了。'
+                : '⚠️ 這個分類不會出現在產稿的公式清單裡，只會留在內容庫。'));
+            return new Response('ok');
+          }
+          return new Response('ok');
+        }
+
         if (spCq && String(spCq.data || '').startsWith('sp_')) {
           const spAns = async (t) => {
             await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
@@ -5076,7 +5202,20 @@ export default {
             ).bind(row.jobSlug, sess.data.accountId, 'posted', nowTaipei(), nowTaipei(),
                    sess.data.url, row.styleId || null, row.formula || null, row.mission || null).run();
             await ncClearSession(env, spChatId, spCq.from.id);
-            await ncSend(env, spChatId, spThreadId2, `✅ 已匯入成效追蹤\n${row.summary}`);
+            // 2026-09-23 加：匯入完順便問要不要把這篇拆解成公式。
+            // 刻意放在「已匯入」之後而不是之前——匯入成效是本來就要做的事，
+            // 不該被一個可選的附加問題卡住；顧問忽略這一題也不影響匯入結果。
+            await ncSend(env, spChatId, spThreadId2,
+              `✅ 已匯入成效追蹤\n${row.summary}\n\n順便問一下——`
+              + `\n要不要讓 AI 把這篇拆解成一個可以重複用的寫法公式？`, {
+                inline_keyboard: [[
+                  { text: '🧩 拆解成公式', callback_data: `sx_go:${sess.data.accountId || 0}` },
+                  { text: '不用', callback_data: 'sx_skip' },
+                ]],
+              });
+            // 網址要留著給拆解用（session 已清掉，所以另外存一份短期的）
+            await ncSetSession(env, spChatId, spCq.from.id, 'sx_offer',
+              { url: sess.data.url, accountId: sess.data.accountId });
           };
 
           if (spCq.data.startsWith('sp_job:')) {
@@ -5099,6 +5238,18 @@ export default {
 
           // 職缺文｜選寫法類型。純CTA／原始格式選完就結束，
           // 對話討論型還要再挑是哪一個公式（跟後台表單同一套 style_prompts）。
+          // 職缺文與話題文共用：從 session 判斷現在在處理哪一種，
+          // 組出 spFinish 要的欄位。多一個 isTopic 分支比複製第二套流程安全——
+          // 複製的那一套一定會在某次改動時跟這套走偏。
+          const spTarget = () => {
+            const isTopic = !sess.data.slug && sess.data.label;
+            return isTopic
+              ? { jobSlug: `💬 ${sess.data.label}`, mission: sess.data.mission,
+                  head: `話題：${sess.data.label}\n種類：${sess.data.missionLabel}` }
+              : { jobSlug: sess.data.slug, mission: null,
+                  head: `職缺：${sess.data.jobTitle}` };
+          };
+
           if (spCq.data.startsWith('sp_way:')) {
             const way = spCq.data.slice('sp_way:'.length);
             await spAns();
@@ -5113,19 +5264,23 @@ export default {
                 return new Response('ok');
               }
               // 公式表空的就不要卡住顧問，當成沒指定公式的對話討論型存下去
-              await spFinish({ jobSlug: sess.data.slug, formula: 'dialog',
-                summary: `職缺：${sess.data.jobTitle}\n寫法：對話討論型（沒有可選的公式）` });
+              const t0 = spTarget();
+              await spFinish({ jobSlug: t0.jobSlug, mission: t0.mission, formula: 'dialog',
+                summary: `${t0.head}\n寫法：對話討論型（沒有可選的公式）` });
               return new Response('ok');
             }
             if (way === 'pure') {
               const pure = await env.DB.prepare(
                 `SELECT id FROM style_prompts WHERE subtype='pure' LIMIT 1`).first();
-              await spFinish({ jobSlug: sess.data.slug, styleId: pure && pure.id, formula: 'pure',
-                summary: `職缺：${sess.data.jobTitle}\n寫法：純CTA型` });
+              const t1 = spTarget();
+              await spFinish({ jobSlug: t1.jobSlug, mission: t1.mission,
+                styleId: pure && pure.id, formula: 'pure',
+                summary: `${t1.head}\n寫法：純CTA型` });
               return new Response('ok');
             }
-            await spFinish({ jobSlug: sess.data.slug, formula: 'default',
-              summary: `職缺：${sess.data.jobTitle}\n寫法：原始格式` });
+            const t2 = spTarget();
+            await spFinish({ jobSlug: t2.jobSlug, mission: t2.mission, formula: 'default',
+              summary: `${t2.head}\n寫法：原始格式` });
             return new Response('ok');
           }
 
@@ -5133,8 +5288,9 @@ export default {
             const styleId = spCq.data.slice('sp_sty:'.length);
             const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=?`).bind(styleId).first();
             await spAns();
-            await spFinish({ jobSlug: sess.data.slug, styleId, formula: 'dialog',
-              summary: `職缺：${sess.data.jobTitle}\n寫法：${(st && st.name) || '對話討論型'}` });
+            const t3 = spTarget();
+            await spFinish({ jobSlug: t3.jobSlug, mission: t3.mission, styleId, formula: 'dialog',
+              summary: `${t3.head}\n寫法：${(st && st.name) || '對話討論型'}` });
             return new Response('ok');
           }
 
@@ -5143,11 +5299,24 @@ export default {
           if (spCq.data.startsWith('sp_mis:')) {
             const kind = spCq.data.slice('sp_mis:'.length);
             await spAns();
-            await spFinish({
-              jobSlug: `💬 ${sess.data.label}`,
+            // 2026-09-23 改：話題文以前選完種類就直接存，**從來沒問過寫法與公式**。
+            // 職缺文那條有問、話題文沒問，結果成效表上話題文的 content_formula
+            // 幾乎全是空的，「哪一種寫法有效」這個問題在話題文上永遠答不出來。
+            // 現在兩條路徑接同一個尾巴：種類 → 寫法 → （對話討論型才）公式。
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way', {
+              ...sess.data,
               mission: kind === 'ai' ? 'trust_building' : 'engagement',
-              summary: `話題：${sess.data.label}\n種類：${kind === 'ai' ? 'AI阿財話題' : '通用文'}`,
+              missionLabel: kind === 'ai' ? 'AI阿財話題' : '通用文',
             });
+            await ncSend(env, spChatId, spThreadId2,
+              `這篇話題文用哪一種寫法？（${sess.data.label}）`, {
+                inline_keyboard: [[
+                  { text: '純CTA型', callback_data: 'sp_way:pure' },
+                  { text: '對話討論型', callback_data: 'sp_way:dialog' },
+                ], [
+                  { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+                ]],
+              });
             return new Response('ok');
           }
         }

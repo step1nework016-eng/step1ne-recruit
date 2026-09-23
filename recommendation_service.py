@@ -594,6 +594,37 @@ def save_recommendations(application_id, source_job_slug, source_report_id, kept
     return saved
 
 
+def _tg_buttons(text, keyboard, thread=None):
+    """跟 _tg 一樣，但帶 inline 按鈕。
+
+    keyboard 是二維陣列（每個子陣列是一排按鈕）。
+    ⚠️ 空的按鈕列 Telegram 會直接回錯、整則訊息消失，所以沒按鈕就走 _tg。
+    """
+    if not keyboard or not any(keyboard):
+        return _tg(text, thread=thread)
+    import json as _json
+    import os
+    import urllib.parse
+    import urllib.request
+    try:
+        e = dict(
+            l.strip().split('=', 1)
+            for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
+            if '=' in l and not l.startswith('#')
+        )
+        body = {'chat_id': e['TG_CHAT_ID'], 'text': text,
+                'reply_markup': _json.dumps({'inline_keyboard': keyboard})}
+        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        if tid:
+            body['message_thread_id'] = tid
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+            data=urllib.parse.urlencode(body).encode(), timeout=20).read()
+        return True
+    except Exception:
+        return False
+
+
 def _tg(text, thread=None):
     """推 Telegram 給顧問。
 
