@@ -523,7 +523,27 @@ def handle_forward(req):
     for lb, w in law:
         log(f'⚠️ 就服法第 5 條保護特徵出現在{lb}：「{w}」')
 
-    # 沒有信箱的不要送審——顧問按了也寄不出去，只是製造一則白按的通知。
+    # 沒信箱的先自動跑一次窗口查找再說。
+    # ⚠️ 2026-09-23：這一關原本沒接進來，結果 B 類第一次跑 6 家有 5 家因為
+    #    「查不到信箱」被丟掉，只出了 1 封——公司找得很準卻寄不出去，
+    #    等於前面的功全白做。瓶頸從來不是找公司，是找人。
+    missing = [t for t in targets if not (t.get('contact_email') or '').strip()]
+    if missing:
+        try:
+            import contact_lookup
+            found, _sum = contact_lookup.lookup([t['company'] for t in missing], workdir)
+            for t in missing:
+                c = found.get(t['company']) or {}
+                mail = (c.get('contact_email') or '').strip()
+                if contact_lookup.is_recruiting_mail(mail):
+                    t['contact_email'] = mail
+                    t['contact_name'] = c.get('contact_name') or t.get('contact_name')
+                    t['contact_level'] = c.get('contact_level')
+                    log(f"  🔎 補到窗口：{t['company']} → {mail}")
+        except Exception as e:
+            log(f'⚠️ 窗口查找失敗（不影響已有信箱的）：{str(e)[:150]}')
+
+    # 還是沒有信箱的不送審——顧問按了也寄不出去，只是製造一則白按的通知。
     # ⛔ 也不要幫它補一個猜的信箱：寄到不存在的地方比沒寄更糟，而且沒人會發現。
     no_mail = [t for t in targets if not (t.get('contact_email') or '').strip()]
     targets = [t for t in targets if (t.get('contact_email') or '').strip()]
@@ -533,16 +553,28 @@ def handle_forward(req):
     for t in targets:
         bid = str(uuid.uuid4())
         rows.append((bid, t))
+        import bd_sig
+        import json as _json
+        # ⚠️ scenario／difficulty_type／angle／subject_alts／followup／crm 一定要一起存。
+        #    2026-09-23 第一次跑 B 類時這些全掉了，等於判斷做了但沒人看得到，
+        #    追信也沒東西可寄。
         D.d1(f"""INSERT INTO bd_outreach
           (id, created_at, batch_id, request_id, candidate_ref, candidate_card, company,
-           why_company, contact_name, contact_email, subject, body, status, updated_at,
-           job_title, job_source, job_url)
+           why_company, contact_name, contact_email, contact_level, subject, body,
+           status, updated_at, job_title, job_source, job_url,
+           scenario, difficulty_type, angle, subject_alts, followup1, followup2, crm_json)
           VALUES ({D.q(bid)}, datetime('now','+8 hours'), {D.q(batch)}, {D.q(rid)},
                   {D.q('SVC-' + batch)}, NULL,
                   {D.q(t.get('company'))}, {D.q(t.get('why'))}, {D.q(t.get('contact_name'))},
-                  {D.q(t.get('contact_email'))}, {D.q(t.get('subject'))}, {D.q(t.get('body'))},
+                  {D.q(t.get('contact_email'))}, {D.q(t.get('contact_level'))},
+                  {D.q(t.get('subject'))}, {D.q(bd_sig.ensure(t.get('body')))},
                   'pending', datetime('now','+8 hours'),
-                  {D.q(t.get('open_roles'))}, 'forward_bd', {D.q(t.get('evidence_url'))})""")
+                  {D.q(t.get('open_roles'))}, 'forward_bd', {D.q(t.get('evidence_url'))},
+                  {D.q(t.get('scenario'))}, {D.q(t.get('difficulty_type'))}, {D.q(t.get('angle'))},
+                  {D.q(_json.dumps(t.get('subject_alts') or [], ensure_ascii=False))},
+                  {D.q(bd_sig.ensure(t.get('followup1')) if t.get('followup1') else None)},
+                  {D.q(bd_sig.ensure(t.get('followup2')) if t.get('followup2') else None)},
+                  {D.q(_json.dumps(t.get('crm') or {}, ensure_ascii=False))})""")
 
     head = (f"🎯 正向開發（賣委託招募服務）：{req.get('role_family')}\n"
             f"{spec.get('segment_note') or ''}\n\n"
