@@ -824,6 +824,15 @@ STALE_CLAIM_MIN = 20
 # 才知道某一筆是誰接走的、以及是誰罷工了。
 THIS_HOST = os.environ.get('SOCIALPOST_HOST') or socket.gethostname().split('.')[0]
 
+# 主力／備援。2026-09-23 Jacky 定案：WSL2 是主力，Mac 只補位。
+#   primary（預設）＝照舊，看到沒人認領的就立刻撿
+#   standby        ＝先讓主力有 STANDBY_GRACE_MIN 分鐘的優先權，
+#                    過了那段時間還沒人認領，才代表主力沒在做事，這時才撿
+# 兩台都跑 primary 不會壞（認領是原子性的，不會重複產稿），只是會互相搶；
+# 分主備是為了讓「誰該做什麼」可預期，出事時也看得出是誰沒做。
+ROLE = (os.environ.get('SOCIALPOST_ROLE') or 'primary').strip().lower()
+STANDBY_GRACE_MIN = int(os.environ.get('SOCIALPOST_STANDBY_GRACE_MIN') or 5)
+
 
 def _tg_takeover(n, detail, taker):
     """某台機器認領後沒做完，被這台接手時通知。
@@ -1528,9 +1537,17 @@ def tick():
     except Exception as e:
         log(f'⚠️ 回收卡住的認領失敗（不影響這一輪）：{str(e)[:120]}')
 
-    queue_rows = d1("SELECT * FROM social_post_queue WHERE status IS NULL ORDER BY requested_at ASC")
+    where = 'status IS NULL'
+    if ROLE == 'standby':
+        # 備援模式：只看「已經放著超過 grace 分鐘還沒人認領」的。
+        # 用 requested_at 判斷就夠了——只要主力活著，它在幾十秒內就會認領，
+        # 這一筆的 status 就不再是 NULL，根本不會進到這個查詢。
+        where += (" AND requested_at <= datetime('now','+8 hours',"
+                  f"'-{STANDBY_GRACE_MIN} minutes')")
+    queue_rows = d1(f"SELECT * FROM social_post_queue WHERE {where} ORDER BY requested_at ASC")
     if not queue_rows:
-        log('沒有需要產貼文的新職缺／話題')
+        log('沒有需要產貼文的新職缺／話題'
+            + ('（備援模式：主力還在處理中的不算）' if ROLE == 'standby' else ''))
         return
     # 2026-09-17 加：Mac 跟 WSL2 兩台機器同時跑這支時發現的真實 race——
     # 原本抓到 status IS NULL 的就直接處理，狀態要等處理完才寫回，中間完全
