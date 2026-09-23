@@ -1091,6 +1091,68 @@ def _wrap_postcall_result(ai_data, payload):
     }
 
 
+def prompt_style_extract(p):
+    """把一篇真實貼文拆解成「可以重複使用的寫法公式」。
+
+    為什麼不是直接叫 AI「模仿這篇」：模仿會把**這一篇的主題**也一起抄走，
+    產出的公式只能寫同一個題目。我們要的是抽掉主題、只留下結構與語氣規則，
+    換任何題目都套得上。
+
+    產出的 prompt_body 會原封不動存進 style_prompts.body，
+    之後 social_post_agent.py 直接整段丟給 AI 當寫作規則——所以它必須是
+    「一份可以獨立運作的指令」，不是一篇分析報告。
+    """
+    text = (p.get('post_text') or '').strip()
+    extra = (p.get('extra_text') or '').strip()
+    if extra:
+        text += '\n\n【顧問補貼的後續串文】\n' + extra
+    author = p.get('source_author') or '未知'
+    own = '這是我們自家顧問發的文' if p.get('is_own') else '這是別人（對標帳號）發的文'
+
+    return f"""你是社群文案的結構分析師。下面是一篇 Threads 貼文的原文（{own}，作者 @{author}）。
+
+請把它拆解成一份「可以重複使用的寫法公式」。
+
+<貼文原文>
+{text}
+</貼文原文>
+
+最重要的一條規則：
+**把主題抽掉，只留下結構與語氣。**
+這篇在講什麼題目完全不重要。你產出的公式要能拿去寫任何其他題目——
+如果你的公式裡出現了這篇的具體主題、人名、數字、產業，就是錯的，要改掉。
+
+請嚴格只輸出這個 JSON，不要有任何其他文字：
+
+{{"name":"公式名稱，8-20字，要講得出這套寫法的特徵，不是這篇的主題。例如「數字反直覺開場＋兩段對照」",
+"subtype_suggestion":"dialog|pure|original，dialog=引導討論的、pure=純粹導流的、original=沒有明顯套路的",
+"analysis":{{"hook":"開頭怎麼抓住人，一句話","structure":["這篇的段落骨架，一段一項，3-7項，每項講『這一段在做什麼』不是『這一段寫了什麼』"],"tone":"語氣特徵，一句話","devices":["用了哪些手法，例如：反問、數字對比、第一人稱經驗、留白不講完，最多5個"],"cta":"結尾怎麼收、有沒有引導互動，一句話","why_it_works":"為什麼這樣寫會有人看，兩句話以內"}},
+"prompt_body":"完整的寫作指令，繁體中文，markdown 格式。這段會被原封不動拿去當 AI 的寫作規則，所以要寫成『你要怎麼寫』的第二人稱指令，不是『這篇文章如何如何』的分析。必須包含：# 標題、## 這套寫法在做什麼、## 開頭怎麼寫（含可直接套用的句型骨架）、## 中段結構（逐段說明）、## 語氣規則（要什麼、不要什麼，至少各3條）、## 結尾怎麼收、## 絕對不要做的事（至少3條）。長度 600-1500 字。裡面不可以出現原貼文的主題、人名、公司名或具體數字。"}}
+
+其他規則：
+- analysis 是給顧問看的「為什麼這篇有效」，prompt_body 是給 AI 用的指令，兩者不要互相複製
+- 不要吹捧這篇寫得多好，只要講清楚它的做法
+- 如果這篇根本沒有明顯的寫作套路（例如只是一句話公告），name 就老實叫「無明顯套路」，
+  subtype_suggestion 給 original，prompt_body 照樣要寫但要明講「這篇沒有可複製的結構」"""
+
+
+def _validate_style_extract(d):
+    """壞掉的形狀不要寫進公式庫——顧問會看到一張空卡片而且不知道為什麼。"""
+    if not isinstance(d, dict):
+        raise ValueError('拆解結果不是物件')
+    if not (d.get('name') or '').strip():
+        raise ValueError('缺少公式名稱')
+    body = (d.get('prompt_body') or '').strip()
+    if len(body) < 200:
+        raise ValueError(f'prompt_body 太短（{len(body)} 字），不像一份可用的寫作指令')
+    a = d.get('analysis')
+    if not isinstance(a, dict) or not isinstance(a.get('structure'), list) or not a['structure']:
+        raise ValueError('analysis.structure 缺少或不是陣列')
+    if d.get('subtype_suggestion') not in ('dialog', 'pure', 'original'):
+        d['subtype_suggestion'] = 'dialog'   # 不致命，給個安全預設
+    return d
+
+
 HANDLERS = {
     'call_summary_client': (prompt_call_summary_client, False),
     'call_notes_summary': (prompt_call_notes_summary, False),
@@ -1100,6 +1162,7 @@ HANDLERS = {
     'post_interview_rematch': (prompt_post_interview_rematch, True),
     'client_report_synthesize': (prompt_client_report_synthesize, True),
     'sourced_client_report_synthesize': (prompt_sourced_client_report_synthesize, True),
+    'style_extract': (prompt_style_extract, True),
 }
 
 
@@ -1224,6 +1287,10 @@ def process(job):
     # 所以走 ai_jobs 佇列讓這台機器接。
     if kind == 'expertise_build':
         return _run_expertise_build(payload)
+    # 2026-09-23：把一篇真實貼文拆解成可重複使用的寫法公式。跟 rematch 同一類，
+    # 自己把「拆解→寫回 style_extractions→通知顧問」整條跑完，不走 promote_writebacks。
+    if kind == 'style_extract':
+        return _run_style_extract(payload)
     return run_claude(builder(payload), want_json=want_json)
 
 
@@ -1253,6 +1320,93 @@ def _tg_expertise_done(slug, title, n):
             rs._tg(f'⚠️ 「{title or slug}」的面談題庫產出來是空的，請看 aiworker.log。')
     except Exception:
         pass   # 通知失敗不該讓工作變成失敗
+
+
+def _run_style_extract(payload):
+    """拆解一篇貼文成公式，結果寫進 style_extractions 等顧問確認。
+
+    刻意**不直接寫進 style_prompts**：公式是 AI 產稿時整段照做的規則，
+    沒人看過就進庫，等於讓一份沒審過的指令去決定之後所有貼文怎麼寫。
+    一定要留一道人看的關卡。
+    """
+    ext_id = (payload or {}).get('extraction_id')
+    if not ext_id:
+        return json.dumps({'error': 'missing extraction_id'}, ensure_ascii=False)
+    # 內文可以由呼叫端直接給（顧問自己貼的），沒給就照網址自己去抓。
+    # 抓取分兩條路（自己人走 API、別人走無頭瀏覽器），細節在 style_source.py。
+    if not (payload.get('post_text') or '').strip():
+        url = (payload.get('source_url') or '').strip()
+        if not url:
+            raise RuntimeError('既沒有內文也沒有網址，沒東西可以拆解')
+        import style_source
+        account = None
+        if payload.get('account_id'):
+            rows = d1_http.query(
+                'SELECT access_token, platform_user_id FROM social_accounts '
+                f"WHERE id={q(str(payload['account_id']))}")['results']
+            account = rows[0] if rows else None
+        got = style_source.fetch(url, account)
+        payload['post_text'] = got['text']
+        payload['source_author'] = payload.get('source_author') or got['author']
+        # is_own 由抓取結果決定，不要信呼叫端的自述——走得通 API 就代表確實是
+        # 這個帳號發的；走瀏覽器代表不是（或 token 失效），兩者都該如實記錄。
+        payload['is_own'] = 1 if got['via'] == 'api' else 0
+        d1_http.query(
+            f"UPDATE style_extractions SET post_text={q(got['text'])}, "
+            f"source_author={q(got['author'] or '')}, is_own={payload['is_own']}, "
+            f"updated_at=datetime('now','+8 hours') WHERE id={q(str(ext_id))}")
+    try:
+        out = run_claude(prompt_style_extract(payload), want_json=True)
+        data = _validate_style_extract(json.loads(out))
+    except Exception as e:
+        d1_http.query(
+            f"UPDATE style_extractions SET status='failed', error={q(str(e)[:400])}, "
+            f"updated_at=datetime('now','+8 hours') WHERE id={q(str(ext_id))}")
+        _tg_style_extract_failed(payload, str(e))
+        raise
+    d1_http.query(
+        f"UPDATE style_extractions SET status='ready', result_json={q(json.dumps(data, ensure_ascii=False))}, "
+        f"error=NULL, updated_at=datetime('now','+8 hours') WHERE id={q(str(ext_id))}")
+    _tg_style_extract_ready(payload, data)
+    return json.dumps({'extraction_id': ext_id, 'name': data['name']}, ensure_ascii=False)
+
+
+def _style_extract_tg_thread(payload):
+    """推回發起的那個顧問主題；找不到就退回社群總主題，不要安靜消失。"""
+    tid = (payload or {}).get('tg_thread_id')
+    return int(tid) if tid else None
+
+
+def _tg_style_extract_ready(payload, data):
+    try:
+        a = data.get('analysis') or {}
+        zh = {'dialog': '對話討論型', 'pure': '純CTA型', 'original': '原始格式'}
+        lines = [
+            f"🧩 拆解好了：{data['name']}",
+            f"來源：{payload.get('source_url') or '（手動貼上的內文）'}",
+            '',
+            f"開場：{a.get('hook') or '—'}",
+            '骨架：' + ' → '.join((a.get('structure') or [])[:6]),
+            f"語氣：{a.get('tone') or '—'}",
+            f"為什麼有效：{a.get('why_it_works') or '—'}",
+            '',
+            f"AI 建議分類：{zh.get(data.get('subtype_suggestion'), '對話討論型')}"
+            "（**存的時候你要自己選，這只是建議**）",
+            '',
+            '到顧問後台「社群 → 設定 → 公式」確認內容後存進公式庫。',
+        ]
+        rs._tg('\n'.join(lines), thread=_style_extract_tg_thread(payload))
+    except Exception:
+        pass   # 通知失敗不該讓拆解結果跟著作廢
+
+
+def _tg_style_extract_failed(payload, err):
+    try:
+        rs._tg(f"⚠️ 這篇拆解失敗了：{payload.get('source_url') or ''}\n原因：{err[:200]}\n"
+               '可以到後台重試，或把內文直接貼進「新增公式」自己寫。',
+               thread=_style_extract_tg_thread(payload))
+    except Exception:
+        pass
 
 
 def _run_rematch(payload):
@@ -1485,6 +1639,7 @@ RECOVERABLE_KINDS = (
     'precall_card',            # (a) UPDATE applications.call_prep_md
     'postcall_result',         # (a) UPDATE applications.post_call_result_json
     'call_prep',               # (a) UPDATE applications.call_prep_md
+    'style_extract',           # (a) 只 UPDATE style_extractions 同一列，重跑覆蓋掉舊結果
     'expertise_build',         # (b) job_expertise 有 ON CONFLICT DO UPDATE，重跑只是覆蓋同一列
 )
 # 不回收（需要人工判斷）：
