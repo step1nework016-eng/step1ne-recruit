@@ -819,6 +819,12 @@ def line_community_link_suffix(account_id):
 # 20 分鐘：產一篇草稿含客戶名稱重產最多幾分鐘，這個門檻遠超過正常耗時。
 STALE_CLAIM_MIN = 20
 
+# 客戶名稱／禁刊字眼稽核沒過，最多自動重產幾次才放棄改交人工審。
+# 2026-09-23 從「只重產一次」改成這個：原本重產一次還沒過就整篇卡住等
+# 顧問手動按「再產一次」，Jacky 反應這種情況應該讓系統自己多試幾次。
+# 3 不會太貴——單篇貼文重產一次的成本遠低於卡住不發或漏發排程。
+MAX_REGEN_RETRIES = 3
+
 DEFAULT_CTA = '👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n{link}'
 
 
@@ -1107,21 +1113,19 @@ def process_topic(queue_row, topic):
             return
 
         hits = audit_client_names(post)
-        if hits:
-            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，重產一次')
+        retry = 0
+        while hits and retry < MAX_REGEN_RETRIES:
+            retry += 1
+            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，自動重產第 {retry} 次')
             raw2, post2 = generate_draft_topic(topic, style_row)
             hits2 = audit_client_names(post2 or '')
-            if post2 and not hits2:
-                raw, post, hits = raw2, post2, []
-            else:
-                hits = hits2 or hits
-                if post2:
-                    raw, post = raw2, post2
+            if post2:
+                raw, post, hits = raw2, post2, hits2
         if hits:
-            log(f'🚫 {title}：重產後仍有客戶名稱 {hits}，不自動送審')
+            log(f'🚫 {title}：自動重產 {retry} 次後仍有客戶名稱 {hits}，不自動送審')
             d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
             tg_with_buttons(
-                f'🚫 <b>{title}</b>（話題）的社群草稿出現客戶公司名稱，已擋下來沒有送審。\n'
+                f'🚫 <b>{title}</b>（話題）的社群草稿出現客戶公司名稱，已自動重產 {retry} 次仍未過，擋下來沒有送審。\n'
                 f'命中：{"、".join(hits)}\n\n'
                 f'社群一律不提客戶名稱。下面這份要用的話請自己改掉再發：\n\n{post}',
                 [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
@@ -1131,21 +1135,19 @@ def process_topic(queue_row, topic):
             return
 
         law5 = audit_law5(post)
-        if law5:
-            log(f'⚠️ {title}（話題）：草稿出現禁刊字眼 {law5}，重產一次')
+        retry = 0
+        while law5 and retry < MAX_REGEN_RETRIES:
+            retry += 1
+            log(f'⚠️ {title}（話題）：草稿出現禁刊字眼 {law5}，自動重產第 {retry} 次')
             raw2, post2 = generate_draft_topic(topic, style_row)
             law5_2 = audit_law5(post2 or '')
-            if post2 and not law5_2:
-                raw, post, law5 = raw2, post2, []
-            else:
-                law5 = law5_2 or law5
-                if post2:
-                    raw, post = raw2, post2
+            if post2:
+                raw, post, law5 = raw2, post2, law5_2
         if law5:
-            log(f'🚫 {title}（話題）：重產後仍有禁刊字眼 {law5}，不自動送審')
+            log(f'🚫 {title}（話題）：自動重產 {retry} 次後仍有禁刊字眼 {law5}，不自動送審')
             d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
             tg_with_buttons(
-                f'🚫 <b>{title}</b>（話題）的社群草稿出現就業服務法第5條禁刊字眼，已擋下來沒有送審。\n'
+                f'🚫 <b>{title}</b>（話題）的社群草稿出現就業服務法第5條禁刊字眼，已自動重產 {retry} 次仍未過，擋下來沒有送審。\n'
                 f'命中：{"、".join(law5)}\n\n'
                 f'下面這份要用的話請自己改掉再發：\n\n{post}',
                 [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
@@ -1251,21 +1253,19 @@ def process_job(queue_row, job, repost=False):
         # 貼到社群，撤不回來——寧可重產一次也不要送出去。
         # 重產一次還是漏，就不自動送審，改成明著警告顧問，讓人來決定。
         hits = audit_client_names(post)
-        if hits:
-            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，重產一次')
+        retry = 0
+        while hits and retry < MAX_REGEN_RETRIES:
+            retry += 1
+            log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，自動重產第 {retry} 次')
             raw2, post2 = gen()
             hits2 = audit_client_names(post2 or '')
-            if post2 and not hits2:
-                raw, post, hits = raw2, post2, []
-            else:
-                hits = hits2 or hits
-                if post2:
-                    raw, post = raw2, post2
+            if post2:
+                raw, post, hits = raw2, post2, hits2
         if hits:
-            log(f'🚫 {title}：重產後仍有客戶名稱 {hits}，不自動送審')
+            log(f'🚫 {title}：自動重產 {retry} 次後仍有客戶名稱 {hits}，不自動送審')
             d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
             tg_with_buttons(
-                f'🚫 <b>{title}</b> 的社群草稿出現客戶公司名稱，已擋下來沒有送審。\n'
+                f'🚫 <b>{title}</b> 的社群草稿出現客戶公司名稱，已自動重產 {retry} 次仍未過，擋下來沒有送審。\n'
                 f'命中：{"、".join(hits)}\n\n'
                 f'社群一律不提客戶名稱（網站頁面可以具名是另一回事）。'
                 f'下面這份要用的話請自己改掉再發：\n\n{post}',
@@ -1276,23 +1276,22 @@ def process_job(queue_row, job, repost=False):
             return
 
         # ── 就業服務法第5條稽核（第三道防線）──
-        # 邏輯跟上面客戶名稱那段一致：重產一次，還有就擋下不送審，交給顧問處理。
+        # 邏輯跟上面客戶名稱那段一致：自動重產最多 MAX_REGEN_RETRIES 次，
+        # 還有就擋下不送審，交給顧問處理。
         law5 = audit_law5(post)
-        if law5:
-            log(f'⚠️ {title}：草稿出現禁刊字眼 {law5}，重產一次')
+        retry = 0
+        while law5 and retry < MAX_REGEN_RETRIES:
+            retry += 1
+            log(f'⚠️ {title}：草稿出現禁刊字眼 {law5}，自動重產第 {retry} 次')
             raw2, post2 = gen()
             law5_2 = audit_law5(post2 or '')
-            if post2 and not law5_2:
-                raw, post, law5 = raw2, post2, []
-            else:
-                law5 = law5_2 or law5
-                if post2:
-                    raw, post = raw2, post2
+            if post2:
+                raw, post, law5 = raw2, post2, law5_2
         if law5:
-            log(f'🚫 {title}：重產後仍有禁刊字眼 {law5}，不自動送審')
+            log(f'🚫 {title}：自動重產 {retry} 次後仍有禁刊字眼 {law5}，不自動送審')
             d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
             tg_with_buttons(
-                f'🚫 <b>{title}</b> 的社群草稿出現就業服務法第5條禁刊字眼，已擋下來沒有送審。\n'
+                f'🚫 <b>{title}</b> 的社群草稿出現就業服務法第5條禁刊字眼，已自動重產 {retry} 次仍未過，擋下來沒有送審。\n'
                 f'命中：{"、".join(law5)}\n\n'
                 f'下面這份要用的話請自己改掉再發：\n\n{post}',
                 [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
