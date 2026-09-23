@@ -32,6 +32,11 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+# ⚠️ ROOT 也要進 sys.path。下面用 importlib 載 interview_daemon.py 是「照路徑載」，
+# 不會順便把它旁邊的模組（autoupdate 等）加進搜尋路徑——interview_daemon 在
+# 2026-09 加了 `import autoupdate` 之後，這支就每次啟動都 ModuleNotFoundError，
+# 而且錯誤只寫進 log 沒有任何通知，開發客戶那條線靜默停擺超過兩週才被發現。
+sys.path.insert(0, ROOT)
 
 import client_guard as G          # noqa: E402
 import tg_bd                      # noqa: E402

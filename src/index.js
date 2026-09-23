@@ -651,8 +651,40 @@ async function fileB64(env, fileId) {
 // ⚠️ 一定要帶兩個附件（2026-08-11 Jacky 定）：匿名履歷 PDF ＋ 公司簡介 PDF。
 //    信裡只寫 3-4 條重點精華，完整經歷放在附件——
 //    對方要的是「這個人能不能用」，那要看履歷，不是看信裡的形容詞。
+// 寄出前先問「這個網域到底收不收信」。
+//
+// 為什麼要做：開發信的窗口信箱是 AI 從 104／官網推斷出來的，推錯的成本很高——
+// 9/3 那批有一封寄到 recuit@mail.ruentex.com.tw（recruit 少一個 r），
+// 沒人發現。網域查詢擋不掉打錯的帳號名，但擋得掉整個編出來的網域，
+// 那是最糟的一種錯（信連寄都寄不出去，卻顯示「已寄出」）。
+//
+// 用 Cloudflare 的 DNS over HTTPS：Workers 不能直接查 DNS。
+// ⚠️ 查不到就放行，不要擋。這是輔助檢查，不該因為 DNS 暫時不通就卡住業務。
+async function domainAcceptsMail(domain) {
+  try {
+    const r = await fetch(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=MX`,
+      { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return true;
+    const d = await r.json();
+    if (Array.isArray(d.Answer) && d.Answer.length) return true;
+    // 沒有 MX 不一定收不到（有些網域用 A record 收信），再確認一次
+    const r2 = await fetch(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=A`,
+      { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(6000) });
+    const d2 = r2.ok ? await r2.json() : {};
+    return Array.isArray(d2.Answer) && d2.Answer.length > 0;
+  } catch {
+    return true;   // 查不到就放行
+  }
+}
+
+// 2026-09-23 改：回傳 {ok, id, error} 而不是布林值。
+// Resend 送出時會回一個信件編號，那是唯一能把之後的「送達／退信／開信」
+// 對回這封信的鑰匙。原本 `return r.ok` 直接把它丟掉，等於寄出去就斷線——
+// 9/3 那批 7 封信 0 回覆，到今天都還不知道有幾封根本沒送到。
 async function sendBdMail(env, to, subject, body, cvFileId) {
-  if (!env.RESEND_API_KEY || !to) return false;
+  if (!env.RESEND_API_KEY || !to) return { ok: false, error: '沒有 API key 或收件人' };
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const html =
     `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;font-size:15px;` +
@@ -682,9 +714,15 @@ async function sendBdMail(env, to, subject, body, cvFileId) {
       }),
       signal: AbortSignal.timeout(20000),
     });
-    return r.ok;
-  } catch {
-    return false;
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // Resend 的錯誤訊息要留著——「信箱格式錯」「網域被擋」這類原因
+      // 是最有價值的回饋，吞掉就只剩一句「寄送失敗」。
+      return { ok: false, error: (out && (out.message || out.name)) || `HTTP ${r.status}` };
+    }
+    return { ok: true, id: out && out.id };
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 200) };
   }
 }
 
@@ -4024,6 +4062,79 @@ export default {
     // 2026-09-02補：架構拆分Phase3把/health搬去了step1ne-public-worker，
     // 但這裡沒查清楚有沒有外部監控（uptime monitor之類）在打這支網址檢查
     // 這個Worker還活著——刪掉風險不明，成本又是0，兩邊都留一份最安全。
+    // ── Resend 寄信結果回報（2026-09-23）──
+    //
+    // 為什麼需要：開發信寄出去之後完全沒人知道下場。9/3 那批 7 封信 0 回覆，
+    // 但其中至少一封寄到 recuit@...（recruit 少一個 r），退信了也沒有任何人
+    // 會發現。沒有這條線，加大寄信量只會把「0 回覆」放大成「0 回覆而且還是
+    // 不知道為什麼」。
+    //
+    // 認證方式：Resend 的 webhook 只能設定網址、不能帶自訂 header，
+    // 所以把密鑰放在路徑裡（走 HTTPS，等同 header 的保護強度）。
+    if (p.startsWith('/webhook/resend/') && request.method === 'POST') {
+      const token = p.slice('/webhook/resend/'.length);
+      if (!env.RESEND_WEBHOOK_TOKEN || token !== env.RESEND_WEBHOOK_TOKEN) {
+        return new Response('forbidden', { status: 403 });
+      }
+      let ev;
+      try { ev = await request.json(); } catch { return new Response('bad json', { status: 400 }); }
+      const type = String(ev.type || '');
+      const d = ev.data || {};
+      const emailId = d.email_id || d.id || null;
+      const to = Array.isArray(d.to) ? d.to[0] : d.to;
+      const when = ev.created_at || nowTaipei();
+      const now = nowTaipei();
+
+      await env.DB.prepare(
+        `INSERT INTO outreach_events (resend_id, event, recipient, detail, occurred_at, created_at)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(emailId, type, to || null,
+             JSON.stringify(d).slice(0, 2000), when, now).run().catch(() => {});
+
+      // 對回是哪一封開發信：優先用 Resend 的信件編號；
+      // 舊資料沒有編號（那批是在存 resend_id 之前寄的），退而用收件人比對最後一封。
+      let row = emailId ? await env.DB.prepare(
+        `SELECT * FROM bd_outreach WHERE resend_id=?`).bind(emailId).first() : null;
+      if (!row && to) {
+        row = await env.DB.prepare(
+          `SELECT * FROM bd_outreach WHERE contact_email=? ORDER BY sent_at DESC LIMIT 1`
+        ).bind(to).first();
+      }
+      if (!row) return json(request, { ok: true, matched: false });
+
+      const setEvent = async (sql, binds) => {
+        await env.DB.prepare(sql).bind(...binds).run().catch(() => {});
+      };
+      if (type === 'email.delivered') {
+        await setEvent(
+          `UPDATE bd_outreach SET delivery_status='delivered', delivered_at=?, last_event_at=? WHERE id=?`,
+          [when, now, row.id]);
+      } else if (type === 'email.bounced' || type === 'email.complained') {
+        const reason = (d.bounce && (d.bounce.message || d.bounce.subType)) || type;
+        await setEvent(
+          `UPDATE bd_outreach SET delivery_status=?, bounced_at=?, bounce_reason=?, last_event_at=? WHERE id=?`,
+          [type === 'email.bounced' ? 'bounced' : 'complained', when, String(reason).slice(0, 300), now, row.id]);
+        // 退信一定要當下就講。這是整條線最值錢的一個訊號：
+        // 代表這家公司的窗口信箱是錯的，再寄幾次都不會到。
+        // 推到開發信原本那一則通知的主題，顧問就在那裡看信
+        await notify(env,
+          `📭 開發信退信\n\n`
+          + `公司：${row.company}\n窗口：${row.contact_name || '—'}\n`
+          + `信箱：${row.contact_email}\n\n原因：${String(reason).slice(0, 200)}\n\n`
+          + `這個信箱寄不到，要重新找窗口。`,
+          row.tg_message_id ? { reply_to_message_id: row.tg_message_id } : undefined).catch(() => {});
+      } else if (type === 'email.opened') {
+        await setEvent(
+          `UPDATE bd_outreach SET delivery_status=CASE WHEN delivery_status IN ('bounced','complained')
+             THEN delivery_status ELSE 'opened' END,
+             opened_at=COALESCE(opened_at, ?), open_count=COALESCE(open_count,0)+1, last_event_at=? WHERE id=?`,
+          [when, now, row.id]);
+      } else {
+        await setEvent(`UPDATE bd_outreach SET last_event_at=? WHERE id=?`, [now, row.id]);
+      }
+      return json(request, { ok: true, matched: true, event: type });
+    }
+
     if (p === '/health') return json(request, { ok: true });
 
     // 2026-09-17 加：查進度 LIFF 頁（step1ne-stopgap-site/progress/）給已綁定的
@@ -5752,11 +5863,20 @@ export default {
             await ans('這封還沒有收件人 email，先去後台補上再核准');
             return new Response('ok');
           } else {
-            const ok2 = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
-            if (!ok2) { await ans('⚠️ 寄送失敗，信沒有送出去'); return new Response('ok'); }
+            const dom = String(row.contact_email).split('@')[1] || '';
+            if (dom && !(await domainAcceptsMail(dom))) {
+              await ans(`⛔ 沒有寄出：${dom} 這個網域查不到任何收信設定，信箱可能是推斷錯的`);
+              return new Response('ok');
+            }
+            const res2 = await sendBdMail(env, row.contact_email, row.subject, row.body, row.cv_file_id);
+            if (!res2.ok) {
+              await ans(`⚠️ 寄送失敗：${res2.error || '不明原因'}`);
+              return new Response('ok');
+            }
             await env.DB.prepare(
-              `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=? WHERE id=?`
-            ).bind(who, now, now, now, bid).run();
+              `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=?,
+                 resend_id=?, delivery_status='sent' WHERE id=?`
+            ).bind(who, now, now, now, res2.id || null, bid).run();
             label = `📤 ${who} 已核准，信已寄至 ${row.contact_email}`;
             await ans('📤 寄出去了');
           }
