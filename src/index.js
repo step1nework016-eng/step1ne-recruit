@@ -651,6 +651,18 @@ async function fileB64(env, fileId) {
 // ⚠️ 一定要帶兩個附件（2026-08-11 Jacky 定）：匿名履歷 PDF ＋ 公司簡介 PDF。
 //    信裡只寫 3-4 條重點精華，完整經歷放在附件——
 //    對方要的是「這個人能不能用」，那要看履歷，不是看信裡的形容詞。
+// 加 N 個工作天（跳過六日）。追信節奏用的——第 5 個工作天落在週末就沒人看。
+function addWorkdays(from, n) {
+  const d = new Date(from.getTime() + 8 * 3600 * 1000);   // 先轉台北時間
+  let left = n;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const w = d.getUTCDay();
+    if (w !== 0 && w !== 6) left -= 1;
+  }
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 // 寄出前先問「這個網域到底收不收信」。
 //
 // 為什麼要做：開發信的窗口信箱是 AI 從 104／官網推斷出來的，推錯的成本很高——
@@ -5124,6 +5136,66 @@ export default {
         // 兩個入口共用這一段：TG 匯入完成後的「順便拆解」，以及顧問直接在
         // 主題裡貼網址 + 按拆解。真正的拆解在本機 ai_worker.py（Worker 跑不了
         // claude CLI，也開不了瀏覽器抓別人的貼文），這裡只負責建工作與收確認。
+        // ── 2026-09-23：追信的三顆按鈕 ──
+        // 跟第一封開發信刻意用不同的前綴（fu1_／fu2_）：寄的是 followup 欄位的內容、
+        // 要標不同的已寄時間、而且「不再追」要寫 followup_stopped。
+        // 共用 bd_ok 的話一定會寄錯內容。
+        if (spCq && /^fu[12]_(ok|sk|no):/.test(String(spCq.data || ''))) {
+          const m = String(spCq.data).match(/^fu([12])_(ok|sk|no):(.+)$/);
+          const n = m[1], act = m[2], bid = m[3];
+          const fuAns = async (t) => {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: spCq.id, text: t || '' }),
+            }).catch(() => {});
+          };
+          const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id=?`).bind(bid).first();
+          if (!row) { await fuAns('找不到這封'); return new Response('ok'); }
+          const now = nowTaipei();
+
+          if (act === 'no') {
+            await fuAns('好，不再追這家');
+            await env.DB.prepare(
+              `UPDATE bd_outreach SET followup_stopped=?, updated_at=? WHERE id=?`
+            ).bind(`顧問在追信${n}時喊停`, now, bid).run();
+            return new Response('ok');
+          }
+          if (act === 'sk') {
+            // 跳過＝這次不寄，但不要永久停——往後推 3 個工作天再問一次
+            const next = addWorkdays(new Date(), 3);
+            await fuAns('好，3 個工作天後再問你一次');
+            await env.DB.prepare(
+              `UPDATE bd_outreach SET followup${n}_due=?, updated_at=? WHERE id=?`
+            ).bind(next, now, bid).run();
+            return new Response('ok');
+          }
+
+          // 真的寄出
+          const fuBody = row[`followup${n}`];
+          if (!fuBody) { await fuAns('這封沒有追信內容'); return new Response('ok'); }
+          const res3 = await sendBdMail(env, row.contact_email,
+            `Re: ${row.subject || ''}`, fuBody, null);
+          if (!res3.ok) { await fuAns(`⚠️ 寄送失敗：${res3.error || '不明'}`); return new Response('ok'); }
+          await fuAns('📤 追信寄出去了');
+          if (n === '1') {
+            // 追信 2 排在約一週後（框架：Follow-up 2 建議再隔約一週）
+            const due2 = addWorkdays(new Date(), 5);
+            await env.DB.prepare(
+              `UPDATE bd_outreach SET followup1_sent_at=?, followup2_due=?, updated_at=? WHERE id=?`
+            ).bind(now, due2, now, bid).run();
+          } else {
+            // 框架明訂：Follow-up 2 之後原則上停止主動追信
+            await env.DB.prepare(
+              `UPDATE bd_outreach SET followup2_sent_at=?, followup_stopped='追信 2 已寄，依規則停止主動追信', updated_at=? WHERE id=?`
+            ).bind(now, now, bid).run();
+          }
+          await ncSend(env, spCq.message.chat.id, spCq.message.message_thread_id,
+            `📤 追信 ${n} 已寄至 ${row.contact_email}（${row.company}）`
+            + (n === '1' ? '\n\n下一封追信我會在約一週後提醒你。'
+                         : '\n\n依規則這家不再主動追信了。'));
+          return new Response('ok');
+        }
+
         if (spCq && String(spCq.data || '').startsWith('sx_')) {
           const sxChatId = spCq.message.chat.id;
           const sxThreadId = spCq.message.message_thread_id;
@@ -5873,10 +5945,15 @@ export default {
               await ans(`⚠️ 寄送失敗：${res2.error || '不明原因'}`);
               return new Response('ok');
             }
+            // 2026-09-23：寄出的當下就把第一封追信排進去。
+            // B2B 開發的回覆大多發生在第二、第三封，第一封沒回就放掉等於白做——
+            // 但人不會記得五天後要追，所以一定要讓系統記。
+            // 5 個工作天（跳過週末）：Jacky 定的節奏，見 references/開發信框架.md
+            const due1 = addWorkdays(new Date(), 5);
             await env.DB.prepare(
               `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=?,
-                 resend_id=?, delivery_status='sent' WHERE id=?`
-            ).bind(who, now, now, now, res2.id || null, bid).run();
+                 resend_id=?, delivery_status='sent', followup1_due=? WHERE id=?`
+            ).bind(who, now, now, now, res2.id || null, due1, bid).run();
             label = `📤 ${who} 已核准，信已寄至 ${row.contact_email}`;
             await ans('📤 寄出去了');
           }

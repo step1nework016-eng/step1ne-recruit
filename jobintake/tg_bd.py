@@ -66,15 +66,25 @@ def send_head(text):
     return _post('sendMessage', {'text': text, 'disable_web_page_preview': True})
 
 
-def buttons(bid):
+def buttons(bid, prefix='bd'):
+    """prefix 決定這組按鈕代表哪一封：
+    bd＝第一封開發信、fu1／fu2＝第一、二封追信。
+    追信要走不同的處理（寄的是 followup 欄位的內容、要標不同的已寄時間），
+    所以 callback 前綴一定要分開，不能共用 bd_ok。"""
+    if prefix == 'bd':
+        return {'inline_keyboard': [[
+            {'text': '📤 核准寄出', 'callback_data': f'bd_ok:{bid}'},
+            {'text': '✏️ 重寫',     'callback_data': f'bd_rw:{bid}'},
+            {'text': '❌ 不寄',     'callback_data': f'bd_no:{bid}'},
+        ]]}
     return {'inline_keyboard': [[
-        {'text': '📤 核准寄出', 'callback_data': f'bd_ok:{bid}'},
-        {'text': '✏️ 重寫',     'callback_data': f'bd_rw:{bid}'},
-        {'text': '❌ 不寄',     'callback_data': f'bd_no:{bid}'},
+        {'text': '📤 寄出追信', 'callback_data': f'{prefix}_ok:{bid}'},
+        {'text': '⏭ 這次跳過', 'callback_data': f'{prefix}_sk:{bid}'},
+        {'text': '🛑 不再追',   'callback_data': f'{prefix}_no:{bid}'},
     ]]}
 
 
-def send_letter(bid, t, has_cv=True):
+def send_letter(bid, t, has_cv=True, prefix='bd'):
     """一封信一則訊息。
 
     顧問要判斷的第一件事是「這封有沒有錨點」——
@@ -99,7 +109,7 @@ def send_letter(bid, t, has_cv=True):
             f"{_esc((t.get('body') or '')[:2400])}")
     return _post('sendMessage', {
         'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True,
-        'reply_markup': buttons(bid)})
+        'reply_markup': buttons(bid, prefix)})
 
 
 def _esc(s):
