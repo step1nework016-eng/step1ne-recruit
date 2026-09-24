@@ -265,11 +265,27 @@ def topic_voice_tail(account_id):
             + card
             + '\n\n⚠️ 優先順序：\n'
               '1. 安全底線永遠最大：上面的硬性規則、全篇繁體中文（台灣用語）、不得出現任何客戶公司名稱、'
-              '不得編造數字或事實、篇幅比照 Threads 貼文。語氣卡跟這些衝突時，聽安全底線。\n'
+              '不得編造數字或事實、篇幅比照 Threads 貼文。'
+              '也不得編造真人經歷：話題簡報裡沒有的朋友、候選人、同事、對話、案例一律不准寫。'
+              '語氣卡跟這些衝突時，聽安全底線。\n'
               '2. 結構：有公式就照公式，沒有就照上面的規則。上面公式裡的範例句**只是在示範結構與節奏**，'
               '不要照抄它們的口吻、用字、emoji。\n'
               '3. **每一句話的講法、用詞、符號習慣照這張話題語氣卡**。\n'
               '寫完自己讀一遍：認識這位顧問的人，看得出來是他本人在聊天嗎？看不出來就改用字，不要改結構。\n')
+
+
+def topic_voice_status(account_id):
+    """TG 草稿內部資訊用：這篇話題文實際吃到哪張語氣卡。跟 topic_voice_tail() 同一套判斷，
+    只讀欄位、不觸發抽卡。"""
+    try:
+        if topic_voice_card(account_id):
+            return '已套用'
+        rows = d1(f"SELECT voice_card FROM social_accounts WHERE id={q(account_id)}") if account_id else []
+        if rows and (rows[0].get('voice_card') or '').strip():
+            return '未套用（沿用招募語氣卡）'
+        return '未套用（這個帳號沒有語氣卡）'
+    except Exception as e:
+        return f'查不到（{str(e)[:60]}）'
 
 
 SITE = 'https://step1ne.com'
@@ -1258,7 +1274,10 @@ def process_topic(queue_row, topic):
     account_id = queue_row.get('account_id')
     # 2026-09-22 加：顧問在「今日話題」挑題時可以直接選公式（style_id）。
     # 有選就用那套公式；沒選才退回這位顧問預設的話題風格。
-    style_row = _style_by_id(queue_row.get('style_id')) or _consultant_style_for_topic(account_id)
+    picked = _style_by_id(queue_row.get('style_id'))
+    style_row = picked or _consultant_style_for_topic(account_id)
+    # 2026-09-24：TG 草稿內部資訊區顯示這篇實際用了哪一層，一眼看出是哪一層沒吃到
+    style_src = '這次指定' if picked else ('顧問預設話題公式' if style_row else '')
     try:
         log(f'{title}（話題）：產生貼文草稿中…')
         raw, post = generate_draft_topic(topic, style_row, account_id)
@@ -1354,7 +1373,12 @@ def process_topic(queue_row, topic):
             f"話題：{title}\n"
             + (f"風格：{style_row['name']}\n" if style_row else '')
             + f"\n── 以下會被公開發布 ──\n{post}\n\n"
-            f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
+            f"── 以下只有你看得到，不會發布 ──\n"
+            f"公式｜{style_row['name'] + '（' + style_src + '）' if style_row else '沒有公式（用話題基礎規則）'}\n"
+            f"話題語氣卡｜{topic_voice_status(account_id)}\n"
+            f"topic_voice_card｜{(acct_label or '未指定帳號') + (f'（#{account_id}）' if account_id else '')}\n"
+            f"content_type｜topic\n\n"
+            f"{analysis or '（無額外分析）'}",
             [
                 {'text': '✅ 確認發布', 'callback_data': f'soc_approve:{qid}'},
                 {'text': '🔄 重新產一次', 'callback_data': f'soc_regen:{qid}'},
