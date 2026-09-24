@@ -306,6 +306,56 @@ def recompute_profile(job_slug):
         f" accuracy_rate=excluded.accuracy_rate, decline_rate=excluded.decline_rate, "
         f" a_grade_settled_n=excluded.a_grade_settled_n, updated_at=excluded.updated_at")
 
+    recompute_acai_view(job_slug)
+
+
+# ── 「阿財的理解」卡片快照 ──
+# 2026-09-24（Jacky 交辦）：顧問要確認「阿財理解得對不對」，卡片內容一定要是
+# 阿財面談前實際讀到的東西，不能另外叫 AI 生一份摘要——所以這裡直接呼叫
+# interview_daemon.py 撈資料／組結構用的同一支函式（fetch_job_understanding_sources／
+# job_understanding），跟面談是同一個資料來源，不會走鐘。
+# Worker（Cloudflare）跑不了這支 Python，所以本機算好存成快照，Worker 只負責讀。
+_DAEMON = None
+
+
+def _daemon():
+    global _DAEMON
+    if _DAEMON is not None:
+        return _DAEMON
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_interview_daemon_for_job_card',
+                                                   os.path.join(HERE, 'interview_daemon.py'))
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except SystemExit:
+        pass
+    _DAEMON = mod
+    return mod
+
+
+def recompute_acai_view(job_slug):
+    try:
+        D = _daemon()
+        jobs = d1(f"SELECT * FROM jobs WHERE slug={q(job_slug)}")
+        if not jobs:
+            return
+        src = D.fetch_job_understanding_sources(job_slug)
+        view = D.job_understanding(jobs[0], src.get('blockers'), src.get('expertise'),
+                                   src.get('job_card_summary'))
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # 這張卡不需要職缺卡有任何回饋/經驗值才存在——阿財對職缺的理解來自
+        # jobs／job_expertise，跟職缺卡的匯入紀錄是兩件獨立的事，用
+        # INSERT..ON CONFLICT 保證就算 job_card_profile 這列還沒被
+        # recompute_profile() 建過，這張「理解卡」也能先算出來。
+        d1_http.query(
+            f"INSERT INTO job_card_profile (job_slug, acai_view_json, acai_view_updated_at) "
+            f"VALUES ({q(job_slug)}, {q(json.dumps(view, ensure_ascii=False))}, {q(now)}) "
+            f"ON CONFLICT(job_slug) DO UPDATE SET acai_view_json=excluded.acai_view_json, "
+            f"acai_view_updated_at=excluded.acai_view_updated_at")
+    except Exception as e:
+        log(f'⚠️ {job_slug}：「阿財的理解」快照重算失敗（不影響經驗值/等級，只是這張卡沒更新）：{str(e)[:200]}')
+
 
 # ── 匯入客戶回饋（文字或截圖）──
 # 2026-09-24：顧問後台按「匯入」→ Worker 把工作丟進 ai_jobs（kind='job_card_feedback'）
@@ -442,6 +492,18 @@ def _print_profile(job_slug):
         f'婉拒率 {p.get("decline_rate")}　A級樣本數 {p.get("a_grade_settled_n")}')
 
 
+def recompute_all_acai_views():
+    """「阿財的理解」卡跟職缺卡的經驗值/等級是兩條獨立的線——沒有回饋/推薦
+    紀錄的職缺（job_card_events 從來沒有事件）不會被 sync_events() 摸到，
+    但職缺欄位、題庫還是可能被顧問改過，這張卡也該跟著更新。--sync 每輪
+    順便把所有招募中的職缺都重算一次，職缺/題庫的編輯最長等下一輪（現在
+    排程是每 2 小時）就會反映，不用另外接一堆觸發點。"""
+    rows = d1("SELECT slug FROM jobs WHERE status='open'")
+    for r in rows:
+        recompute_acai_view(r['slug'])
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sync', nargs='?', const='__all__', default=None)
@@ -450,6 +512,7 @@ def main():
     ap.add_argument('--text', default=None)
     ap.add_argument('--image', default=None)
     ap.add_argument('--actor', default=None)
+    ap.add_argument('--recompute-acai', dest='recompute_acai_slug', nargs='?', const='__all__', default=None)
     a = ap.parse_args()
 
     if a.import_slug:
@@ -458,10 +521,22 @@ def main():
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return
 
+    if a.recompute_acai_slug is not None:
+        if a.recompute_acai_slug == '__all__':
+            n = recompute_all_acai_views()
+            log(f'✅ 「阿財的理解」卡重算完成，共 {n} 個招募中的職缺')
+        else:
+            recompute_acai_view(a.recompute_acai_slug)
+            log(f'✅ {a.recompute_acai_slug}：「阿財的理解」卡重算完成')
+        return
+
     if a.sync is not None:
         slug = None if a.sync == '__all__' else a.sync
         touched = sync_events(slug)
         log(f'✅ 對帳完成，更新了 {len(touched)} 個職缺卡：{", ".join(sorted(touched)) or "（沒有新事件）"}')
+        if slug is None:
+            n = recompute_all_acai_views()
+            log(f'✅ 「阿財的理解」卡也一併重算，共 {n} 個招募中的職缺')
         return
 
     if a.check is not None:

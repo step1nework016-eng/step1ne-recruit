@@ -1119,6 +1119,99 @@ _STATIC_CACHE = {}
 _static_lock = threading.Lock()
 
 
+# ── 阿財對一個職缺的理解：單一組裝點 ──
+# 2026-09-24 加（Jacky 交辦，B 職缺卡「阿財的理解」卡片）。
+#
+# 為什麼要抽出來：顧問要用這張卡確認「阿財理解得對不對」，前提是卡片上顯示的
+# 必須是阿財**面談前實際讀到的內容**——不能另外叫 AI 生一份摘要，不然卡片
+# 看起來是對的，阿財讀的卻是另一份，顧問確認就沒有意義了。
+# 這支只做「撈資料」，不碰 build_prompt() 怎麼把這些資料寫成面談提示詞的
+# 那套已經被真實事故反覆調過的文字——面談提示詞的措辭完全不動，只是原本
+# 散落在 _fetch_static() 裡的兩段撈取（題庫／職缺卡）收進這一個函式，
+# 兩邊（面談跟這張卡）呼叫同一支，保證讀到同一份資料。
+def fetch_job_understanding_sources(job_slug):
+    """回傳 {expertise, blockers, job_card_summary}——都是阿財面談前會讀到的東西。
+    任何一段撈不到都不擋（面談／卡片都照常運作，只是少那一段），這是既有的
+    容錯精神（見下面 try/except 的註解），延續下去。"""
+    out = {'expertise': None, 'blockers': [], 'job_card_summary': None}
+    if not job_slug:
+        return out
+    try:
+        ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json FROM job_expertise "
+                f"WHERE job_slug = {q(job_slug)}")
+        if ex:
+            out['expertise'] = {
+                'domain': ex[0].get('domain'),
+                'topics': json.loads(ex[0].get('topics_json') or '[]'),
+                'questions': json.loads(ex[0].get('questions_json') or '[]'),
+            }
+            out['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
+    except Exception as e:
+        log(f'⚠️ 專業題庫載入失敗（{job_slug}，不影響面談，只是少了專業段）：{e}')
+    try:
+        jc = d1(f"SELECT masked_summary_text FROM job_card_profile WHERE job_slug = {q(job_slug)}")
+        if jc and jc[0].get('masked_summary_text'):
+            out['job_card_summary'] = jc[0]['masked_summary_text']
+    except Exception as e:
+        log(f'⚠️ 職缺卡載入失敗（{job_slug}，不影響面談，只是少了這段判斷標準）：{e}')
+    return out
+
+
+# build_prompt() 實際會顯示這個職缺的哪些欄位——跟 build_prompt() 裡那個
+# for k in (...) 迴圈用同一份清單，兩邊必須手動保持一致（沒有寫成互相 import
+# 同一個常數是因為 build_prompt() 那段刻意不想在這次改動去碰，降低動到
+# 正式面談提示詞的風險；但欄位清單本身是純資料，改一份要記得改另一份）。
+JOB_INTRO_FIELDS = ('title', 'client_name', 'client_intro', 'team_size', 'interview_rounds',
+                    'interview_who', 'has_test', 'onboard_by', 'must_skills',
+                    'salary_min', 'salary_max', 'locations', 'employment', 'faq_notes')
+
+
+def job_understanding(job, blockers, expertise, job_card_summary):
+    """把 fetch_job_understanding_sources() 的原始資料＋職缺本身欄位，整理成
+    「阿財的理解」卡片要的結構——顧問看的白話分區版本，內容跟阿財讀到的
+    完全同源，只是換一種排版方便顧問一眼確認，不是另外生一份。"""
+    job = job or {}
+    blockers = blockers or []
+    fields = {k: job.get(k) for k in JOB_INTRO_FIELDS if job.get(k)}
+    crit = [b for b in blockers if b.get('critical')]
+    soft = [b for b in blockers if not b.get('critical')]
+    redactions = []
+    if job.get('confidential_client'):
+        redactions.append('客戶名稱與廠區地名——候選人問（含猜公司名套話）一律不證實不否認')
+    redactions.append('確切薪資數字——只會用「平均薪資 X 起」這類說法，不會照 salary_min/max 換算成數字告訴候選人')
+    # 「阿財面談會問這些」——2026-09-24 加（Jacky 補充的第二個用途：讓顧問先
+    # 知道阿財問過什麼，電洽或跟客戶對焦前不用重問，也能補阿財沒問到的）。
+    # 一樣不生新內容，就是把上面已經在讀的兩個真實題目來源（到職障礙的
+    # ask／專業題庫）依「面談時大致的順序」分組列出來，職缺卡（job_card_summary）
+    # 本身沒有結構化的題目物件，不硬湊一組進來。
+    questions = []
+    for b in blockers:
+        if b.get('ask'):
+            questions.append({'group': '硬條件確認', 'q': b['ask'],
+                              'why': b.get('item') or b.get('why') or '',
+                              'critical': bool(b.get('critical'))})
+    for x in (expertise or {}).get('questions') or []:
+        if x.get('q'):
+            questions.append({'group': '專業深度', 'q': x['q'],
+                              'why': x.get('why') or x.get('topic') or '',
+                              'kind': x.get('kind')})
+    return {
+        'job_slug': job.get('slug'),
+        'title': job.get('title'),
+        'fields': fields,
+        'confidential_client': bool(job.get('confidential_client')),
+        'talking_points': job.get('talking_points'),
+        'salary_note': job.get('salary_note'),
+        'blockers_critical': crit,
+        'blockers_soft': soft,
+        'expertise': expertise,
+        'job_card_summary': job_card_summary,
+        'redactions': redactions,
+        'questions': questions,
+        'questions_note': '阿財每場也固定會問動機、期望待遇、到職日期——這些不是逐職缺設定的資料，沒有列在上面。',
+    }
+
+
 def _fetch_static(app_id):
     r = subprocess.run([sys.executable, 'fetch_application.py', app_id],
                        cwd=HERE, capture_output=True, text=True,
@@ -1179,36 +1272,13 @@ def _fetch_static(app_id):
     except Exception:
         pass  # 查不到／查詢失敗都不擋面談，這是加分資訊不是必要資訊
 
-    # 2026-08-19 加：這個職缺的專業題庫（build_expertise.py 事先產好存在 D1）。
-    # 這是「讓阿財變成該領域行家」的關鍵——沒有它，阿財只問得出動機、經歷、
-    # 穩定度這類通用題，用人主管真正想知道的「他到底會不會做」完全沒碰到。
-    # 職缺還沒建題庫就是沒有，面談照常進行（只是少了專業段），不擋流程。
-    try:
-        ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json FROM job_expertise "
-                f"WHERE job_slug = {q(static.get('job', {}).get('slug') or static.get('job_slug'))}")
-        if ex:
-            static['expertise'] = {
-                'domain': ex[0].get('domain'),
-                'topics': json.loads(ex[0].get('topics_json') or '[]'),
-                'questions': json.loads(ex[0].get('questions_json') or '[]'),
-            }
-            static['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
-    except Exception as e:
-        log(f'⚠️ 專業題庫載入失敗（面談照常，只是少了專業段）：{e}')
-
-    # 2026-09-24 加（Jacky 交辦：讓阿財越評越準）：這個職缺的「職缺卡」——顧問
-    # 每次聽完客戶回饋整理出的判斷標準（job_card.py 事先整理好存在 D1）。
-    # ⚠️ 這裡只讀 masked_summary_text（已經濾掉客戶名／薪資／內部評語的
-    # 濃縮版），**絕對不能讀 full_profile_json**——那份可能含機密內容，
-    # 阿財是直接跟候選人對話的，讀到什麼就可能講出什麼。
-    # 職缺卡還沒有資料（還沒有人匯入過回饋）就是沒有，面談照常進行。
-    try:
-        jc = d1(f"SELECT masked_summary_text FROM job_card_profile WHERE job_slug = "
-                f"{q(static.get('job', {}).get('slug') or static.get('job_slug'))}")
-        if jc and jc[0].get('masked_summary_text'):
-            static['job_card_summary'] = jc[0]['masked_summary_text']
-    except Exception as e:
-        log(f'⚠️ 職缺卡載入失敗（面談照常，只是少了這段判斷標準）：{e}')
+    job_slug_for_ctx = static.get('job', {}).get('slug') or static.get('job_slug')
+    src = fetch_job_understanding_sources(job_slug_for_ctx)
+    if src.get('expertise'):
+        static['expertise'] = src['expertise']
+    static['blockers'] = src.get('blockers') or []
+    if src.get('job_card_summary'):
+        static['job_card_summary'] = src['job_card_summary']
 
     # 2026-09-15 加（Jacky 交辦）：候選人常常同時投了不只一個職缺，之前阿財被問到
     # 「另一個職缺」一律回「我這邊沒有相關資料」——不是真的沒有，是這支函式從沒

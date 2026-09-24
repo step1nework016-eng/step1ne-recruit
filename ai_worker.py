@@ -1312,6 +1312,13 @@ def _run_expertise_build(payload):
     res = BE.build(rows[0], force=bool((payload or {}).get('force', True)))
     n = len(res.get('questions') or []) if isinstance(res, dict) else 0
     _tg_expertise_done(slug, rows[0].get('title'), n)
+    # 2026-09-24 加：題庫重建完，「阿財的理解」卡片裡「阿財面談會問這些」那段
+    # 就跟著過期了——不等下一輪排程（最長 2 小時），這裡順手重算。
+    try:
+        import job_card as JC
+        JC.recompute_acai_view(slug)
+    except Exception as e:
+        log(f'  ⚠️ 題庫重建完，「阿財的理解」卡重算失敗（不影響題庫本身）：{str(e)[:150]}')
     return json.dumps({'job_slug': slug, 'questions': n}, ensure_ascii=False)
 
 
