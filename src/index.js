@@ -915,6 +915,69 @@ async function ncClearSession(env, chatId, userId) {
   await env.DB.prepare(`DELETE FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`)
     .bind(String(chatId), String(userId)).run();
 }
+// ── TG 匯入貼文（2026-09-24 改成跟後台「一鍵發文」同一個問法順序）──
+//   職缺文：哪一種 → 寫法 → （純CTA／對話討論）公式 → 客戶 → 職缺 → 存
+//   通用文／AI阿財：哪一種 → 選話題（清單＋自己打字）→ 存
+// Jacky：「希望能依照一鍵發文的邏輯去問」。兩邊順序一樣，顧問不用記兩套。
+// 寫入集中在這一支，按鈕流程跟打字流程都呼叫它，不要各寫一份 INSERT。
+async function spImportFinish(env, chatId, threadId, userId, data, row) {
+  await env.DB.prepare(
+    `INSERT INTO social_post_queue
+       (job_slug, account_id, status, requested_at, posted_at, url,
+        style_id, content_formula, content_mission, topic_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(row.jobSlug, data.accountId, 'posted', nowTaipei(), nowTaipei(),
+         data.url, row.styleId || null, row.formula || null, row.mission || null,
+         row.topicId || null).run();
+  await ncClearSession(env, chatId, userId);
+  // 匯入完順便問要不要把這篇拆解成公式（可忽略，不影響匯入結果）
+  await ncSend(env, chatId, threadId,
+    `✅ 已匯入成效追蹤\n${row.summary}\n\n順便問一下——`
+    + `\n要不要讓 AI 把這篇拆解成一個可以重複用的寫法公式？`, {
+      inline_keyboard: [[
+        { text: '🧩 拆解成公式', callback_data: `sx_go:${data.accountId || 0}` },
+        { text: '不用', callback_data: 'sx_skip' },
+      ]],
+    });
+  await ncSetSession(env, chatId, userId, 'sx_offer', { url: data.url, accountId: data.accountId });
+}
+
+const SP_MISSION = {
+  general: { mission: 'engagement', label: '通用文' },
+  ai: { mission: 'trust_building', label: 'AI阿財話題' },
+};
+
+// 話題清單：跟一鍵發文同一份 topic_prompts。全部有 36 則，TG 按鈕只列最新 8 則，
+// 清單外的用「自己打字」補——匯入的是已經發出去的文，不一定是清單裡的題目。
+async function spAskTopic(env, chatId, threadId, userId, data, kind) {
+  const m = SP_MISSION[kind] || SP_MISSION.general;
+  const { results } = await env.DB.prepare(
+    `SELECT id, name FROM topic_prompts WHERE category=? ORDER BY id DESC LIMIT 8`).bind(kind).all();
+  await ncSetSession(env, chatId, userId, 'sp_pick_topic',
+    { ...data, kind, mission: m.mission, missionLabel: m.label });
+  const rows = (results || []).map((t) => ([{
+    text: String(t.name || '').slice(0, 40), callback_data: `sp_tp:${t.id}` }]));
+  rows.push([{ text: '✏️ 清單裡沒有，自己打字', callback_data: 'sp_tp:new' }]);
+  await ncSend(env, chatId, threadId, `是哪一個話題？（${m.label}）`, { inline_keyboard: rows });
+}
+
+// 職缺文最後兩步：先選客戶再選職缺（跟一鍵發文「依客戶分組」同一個道理）
+async function spAskCompany(env, chatId, threadId, userId, data) {
+  const { results: companies } = await env.DB.prepare(
+    `SELECT c.id, c.display_name, COUNT(*) as n FROM jobs j
+       JOIN client_companies c ON c.id = j.company_id
+      WHERE j.status IN ('open','active') GROUP BY c.id ORDER BY c.display_name`
+  ).all();
+  if (!companies || !companies.length) {
+    await ncSend(env, chatId, threadId, '目前沒有開放中的職缺，這篇沒辦法當職缺文匯入。要當話題文的話請重新貼一次網址。');
+    await ncClearSession(env, chatId, userId);
+    return;
+  }
+  await ncSetSession(env, chatId, userId, 'sp_pick_company', data);
+  await ncSend(env, chatId, threadId, '這篇是哪個客戶？',
+    { inline_keyboard: companies.map((c) => ([{ text: `${c.display_name}（${c.n}）`, callback_data: `sp_co:${c.id}` }])) });
+}
+
 async function ncSend(env, chatId, threadId, text, replyMarkup) {
   await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -5104,8 +5167,10 @@ export default {
                 { url: resolvedUrl, accountId: account.id, accountLabel: account.label });
               await ncSend(env, spRow.chat.id, spThreadId, `${replacedNote}這篇是哪一種？（帳號：${account.label}）`, {
                 inline_keyboard: [[
-                  { text: '📋 這是職缺文', callback_data: 'sp_type_job' },
-                  { text: '💬 這是話題／時事文', callback_data: 'sp_type_topic' },
+                  { text: '📋 職缺文', callback_data: 'sp_type_job' },
+                ], [
+                  { text: '💼 通用文', callback_data: 'sp_mis:general' },
+                  { text: '🤖 AI阿財話題', callback_data: 'sp_mis:ai' },
                 ]],
               });
               return new Response('ok');
@@ -5113,6 +5178,14 @@ export default {
           }
 
           // 話題文最後一步：等顧問打字回覆主題描述（不是網址才會走到這裡）
+          if (spSess && spSess.step === 'sp_await_label' && spText && spSess.data.mission) {
+            // 新流程：種類已經在第一題選好，打完主題就存
+            const label = spText.slice(0, 200);
+            await spImportFinish(env, spRow.chat.id, spThreadId, spRow.from.id, spSess.data, {
+              jobSlug: `💬 ${label}`, mission: spSess.data.mission,
+              summary: `話題：${label}\n種類：${spSess.data.missionLabel}` });
+            return new Response('ok');
+          }
           if (spSess && spSess.step === 'sp_await_label' && spText) {
             // 2026-09-08 改：打完主題不再直接寫進去。原本匯入只存網址跟職缺／主題，
             // 完全沒問寫法，結果 110 篇 Threads 貼文裡有 9 篇是「未標記」——
@@ -5338,26 +5411,17 @@ export default {
           }
 
           if (spCq.data === 'sp_type_job') {
-            // 2026-09-03 修：① status 原本只認 'open'，漏了 'active'（例如日本主管特助
-            // 那筆），跟客戶匯入 job_slug 一樣要對齊 social_post_agent.py 已經在用的
-            // 「open/active 都算開放中」這個判斷，不要各自維護一份標準。
-            // ② 24 個職缺全部平鋪成一排按鈕滑到底才找得到，改成先選客戶收斂範圍，
-            // 遊戲橘子集團一家就佔10個，混在一起很難找。
-            const { results: companies } = await env.DB.prepare(
-              `SELECT c.id, c.display_name, COUNT(*) as n FROM jobs j
-                 JOIN client_companies c ON c.id = j.company_id
-                WHERE j.status IN ('open','active') GROUP BY c.id ORDER BY c.display_name`
-            ).all();
-            if (!companies || !companies.length) {
-              await spAns();
-              await ncSend(env, spChatId, spThreadId2, '目前沒有開放中的職缺，改用話題方式匯入：請打字回覆這篇在談什麼主題。');
-              await ncSetSession(env, spChatId, spCq.from.id, 'sp_await_label', sess.data);
-              return new Response('ok');
-            }
+            // 2026-09-24：順序改成跟一鍵發文一樣——寫法 → 公式 → 客戶 → 職缺
             await spAns();
-            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_company', sess.data);
-            const coRows = companies.map((c) => ([{ text: `${c.display_name}（${c.n}）`, callback_data: `sp_co:${c.id}` }]));
-            await ncSend(env, spChatId, spThreadId2, '這篇是哪個客戶？', { inline_keyboard: coRows });
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way', { ...sess.data, kind: 'job' });
+            await ncSend(env, spChatId, spThreadId2, '職缺文要用哪一種寫法？', {
+              inline_keyboard: [[
+                { text: '純CTA型', callback_data: 'sp_way:pure' },
+                { text: '對話討論型', callback_data: 'sp_way:dialog' },
+              ], [
+                { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+              ]],
+            });
             return new Response('ok');
           }
 
@@ -5376,35 +5440,25 @@ export default {
           // 匯入的最後一步共用：真正寫進 social_post_queue。
           // ⚠️ style_id／content_formula／content_mission 一定要一起寫，
           //    少寫就會變成成效表上比不了的「未標記」。
-          const spFinish = async (row) => {
-            await env.DB.prepare(
-              `INSERT INTO social_post_queue
-                 (job_slug, account_id, status, requested_at, posted_at, url,
-                  style_id, content_formula, content_mission)
-               VALUES (?,?,?,?,?,?,?,?,?)`
-            ).bind(row.jobSlug, sess.data.accountId, 'posted', nowTaipei(), nowTaipei(),
-                   sess.data.url, row.styleId || null, row.formula || null, row.mission || null).run();
-            await ncClearSession(env, spChatId, spCq.from.id);
-            // 2026-09-23 加：匯入完順便問要不要把這篇拆解成公式。
-            // 刻意放在「已匯入」之後而不是之前——匯入成效是本來就要做的事，
-            // 不該被一個可選的附加問題卡住；顧問忽略這一題也不影響匯入結果。
-            await ncSend(env, spChatId, spThreadId2,
-              `✅ 已匯入成效追蹤\n${row.summary}\n\n順便問一下——`
-              + `\n要不要讓 AI 把這篇拆解成一個可以重複用的寫法公式？`, {
-                inline_keyboard: [[
-                  { text: '🧩 拆解成公式', callback_data: `sx_go:${sess.data.accountId || 0}` },
-                  { text: '不用', callback_data: 'sx_skip' },
-                ]],
-              });
-            // 網址要留著給拆解用（session 已清掉，所以另外存一份短期的）
-            await ncSetSession(env, spChatId, spCq.from.id, 'sx_offer',
-              { url: sess.data.url, accountId: sess.data.accountId });
+          const spFinish = (row) => spImportFinish(env, spChatId, spThreadId2, spCq.from.id, sess.data, row);
+
+          // 新流程的職缺文：寫法／公式先選好（還沒有 slug），存進 session 後去選客戶
+          const spJobFirst = () => sess.data.kind === 'job' && !sess.data.slug;
+          const spKeepStyle = async (styleId, formula, wayLabel) => {
+            await spAskCompany(env, spChatId, spThreadId2, spCq.from.id,
+              { ...sess.data, styleId: styleId || null, formula, wayLabel });
           };
 
           if (spCq.data.startsWith('sp_job:')) {
             const slug = spCq.data.slice('sp_job:'.length);
             const job = await env.DB.prepare(`SELECT title FROM jobs WHERE slug=?`).bind(slug).first();
             await spAns();
+            if (sess.data.formula) {
+              await spFinish({ jobSlug: slug, styleId: sess.data.styleId, formula: sess.data.formula,
+                summary: `職缺：${(job && job.title) || slug}\n寫法：${sess.data.wayLabel}` });
+              return new Response('ok');
+            }
+            // 舊流程（改版前就按到一半的訊息）：選完職缺才問寫法
             await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way',
               { ...sess.data, slug, jobTitle: (job && job.title) || slug });
             await ncSend(env, spChatId, spThreadId2,
@@ -5447,6 +5501,7 @@ export default {
                 return new Response('ok');
               }
               // 公式表空的就不要卡住顧問，當成沒指定公式的對話討論型存下去
+              if (spJobFirst()) { await spKeepStyle(null, 'dialog', '對話討論型（沒有可選的公式）'); return new Response('ok'); }
               const t0 = spTarget();
               await spFinish({ jobSlug: t0.jobSlug, mission: t0.mission, formula: 'dialog',
                 summary: `${t0.head}\n寫法：對話討論型（沒有可選的公式）` });
@@ -5466,12 +5521,14 @@ export default {
                 return new Response('ok');
               }
               const pure = pures && pures[0];
+              if (spJobFirst()) { await spKeepStyle(pure && pure.id, 'pure', '純CTA型'); return new Response('ok'); }
               const t1 = spTarget();
               await spFinish({ jobSlug: t1.jobSlug, mission: t1.mission,
                 styleId: pure && pure.id, formula: 'pure',
                 summary: `${t1.head}\n寫法：純CTA型` });
               return new Response('ok');
             }
+            if (spJobFirst()) { await spKeepStyle(null, 'default', '原始格式'); return new Response('ok'); }
             const t2 = spTarget();
             await spFinish({ jobSlug: t2.jobSlug, mission: t2.mission, formula: 'default',
               summary: `${t2.head}\n寫法：原始格式` });
@@ -5484,6 +5541,7 @@ export default {
             const styleId = spCq.data.slice('sp_psty:'.length);
             const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=? AND subtype='pure'`).bind(styleId).first();
             await spAns();
+            if (spJobFirst()) { await spKeepStyle(styleId, 'pure', `純CTA型・${(st && st.name) || ''}`); return new Response('ok'); }
             const tp = spTarget();
             await spFinish({ jobSlug: tp.jobSlug, mission: tp.mission, styleId, formula: 'pure',
               summary: `${tp.head}\n寫法：純CTA型・${(st && st.name) || ''}` });
@@ -5494,6 +5552,7 @@ export default {
             const styleId = spCq.data.slice('sp_sty:'.length);
             const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=?`).bind(styleId).first();
             await spAns();
+            if (spJobFirst()) { await spKeepStyle(styleId, 'dialog', (st && st.name) || '對話討論型'); return new Response('ok'); }
             const t3 = spTarget();
             await spFinish({ jobSlug: t3.jobSlug, mission: t3.mission, styleId, formula: 'dialog',
               summary: `${t3.head}\n寫法：${(st && st.name) || '對話討論型'}` });
@@ -5502,27 +5561,32 @@ export default {
 
           // 話題文｜通用文 vs AI阿財話題。存 content_mission，
           // 對應顧問後台成效頁面 classify() 的判斷（engagement／trust_building）。
+          if (spCq.data.startsWith('sp_tp:')) {
+            const tid = spCq.data.slice('sp_tp:'.length);
+            await spAns();
+            if (tid === 'new') {
+              await ncSetSession(env, spChatId, spCq.from.id, 'sp_await_label', sess.data);
+              await ncSend(env, spChatId, spThreadId2, '請打字回覆這篇在談什麼主題（例如：面試後沒收到通知）');
+              return new Response('ok');
+            }
+            const t = await env.DB.prepare(`SELECT id, name FROM topic_prompts WHERE id=?`).bind(tid).first();
+            const label = (t && t.name) || '（話題已刪除）';
+            await spFinish({ jobSlug: `💬 ${label}`.slice(0, 200), mission: sess.data.mission, topicId: t && t.id,
+              summary: `話題：${label}\n種類：${sess.data.missionLabel}` });
+            return new Response('ok');
+          }
+
           if (spCq.data.startsWith('sp_mis:')) {
             const kind = spCq.data.slice('sp_mis:'.length);
             await spAns();
-            // 2026-09-23 改：話題文以前選完種類就直接存，**從來沒問過寫法與公式**。
-            // 職缺文那條有問、話題文沒問，結果成效表上話題文的 content_formula
-            // 幾乎全是空的，「哪一種寫法有效」這個問題在話題文上永遠答不出來。
-            // 現在兩條路徑接同一個尾巴：種類 → 寫法 → （對話討論型才）公式。
-            await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_way', {
-              ...sess.data,
-              mission: kind === 'ai' ? 'trust_building' : 'engagement',
-              missionLabel: kind === 'ai' ? 'AI阿財話題' : '通用文',
-            });
-            await ncSend(env, spChatId, spThreadId2,
-              `這篇話題文用哪一種寫法？（${sess.data.label}）`, {
-                inline_keyboard: [[
-                  { text: '純CTA型', callback_data: 'sp_way:pure' },
-                  { text: '對話討論型', callback_data: 'sp_way:dialog' },
-                ], [
-                  { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
-                ]],
-              });
+            if (!sess.data.label) {
+              await spAskTopic(env, spChatId, spThreadId2, spCq.from.id, sess.data, kind);
+              return new Response('ok');
+            }
+            // 改版前就打好主題、停在這一步的：跟一鍵發文一樣話題文不問寫法，直接存
+            const mm = SP_MISSION[kind] || SP_MISSION.general;
+            await spFinish({ jobSlug: `💬 ${sess.data.label}`, mission: mm.mission,
+              summary: `話題：${sess.data.label}\n種類：${mm.label}` });
             return new Response('ok');
           }
         }
