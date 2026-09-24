@@ -402,6 +402,9 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 - 不要 git push、不要跑 publish_job.py、不要動 {os.path.expanduser('~/claude-projects/step1ne-stopgap-site')} 底下任何檔案。
   你的工作到寫出上面兩個檔案為止。
 - 不要加 FAQPage schema。
+- **薪資的組成細節不上公開頁面**（例：月薪內含幾小時固定加班費、年終攤提進月薪、獎金怎麼算）。
+  頁面只寫總額區間；組成細節寫進 `notes`，標註「對外不寫，顧問電洽說明」。
+  FAQ 問到實際拿多少，就回答「薪資怎麼組成，顧問在電話初談時會一次說清楚」。（2026-09-24 Jacky 指示）
 - client_code 不得出現在任何對外欄位。
 - 全部繁體中文。
 
