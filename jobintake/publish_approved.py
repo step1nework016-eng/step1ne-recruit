@@ -105,7 +105,7 @@ def link_client(intake, spec):
         DJ.log(f"🆕 客戶名單新增：{name}")
     else:
         cid = hit['id']
-        DJ.log(f"🔗 客戶對到既有的：{hit[chr(39)+chr(39)]}")
+        DJ.log(f"🔗 客戶對到既有的：{hit.get('display_name')}")
 
     D.d1(f"UPDATE jobs SET company_id={D.q(cid)} WHERE slug={D.q(slug)}")
 

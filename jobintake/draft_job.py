@@ -281,6 +281,7 @@ JSON_SHAPE = '''{
   "client_name": "真實公司名（只寫進 D1 內部欄位；client_named=0 時不得出現在任何對外欄位）",
   "employment": ["FULL_TIME"],
   "salary_min": 0, "salary_max": 0,
+  "salary_note": "薪資補充（會給阿財跟社群發文看）；不是台幣時一定要寫幣別",
   "years_min": 0,
   "must_skills": "分號分隔",
   "benefits": "",
@@ -405,6 +406,8 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 - **薪資的組成細節不上公開頁面**（例：月薪內含幾小時固定加班費、年終攤提進月薪、獎金怎麼算）。
   頁面只寫總額區間；組成細節寫進 `notes`，標註「對外不寫，顧問電洽說明」。
   FAQ 問到實際拿多少，就回答「薪資怎麼組成，顧問在電話初談時會一次說清楚」。（2026-09-24 Jacky 指示）
+- **薪資不是台幣時**（日圓、美元…），`salary_note` 一定要寫「以○○計價：月薪 X～Y 萬○○（不是台幣）」。
+  資料庫的 salary_min/max 只有數字沒有幣別，阿財跟社群發文讀的是資料庫，沒寫就會被當成台幣講出去。
 - client_code 不得出現在任何對外欄位。
 - 全部繁體中文。
 
