@@ -104,8 +104,12 @@ def main():
         # ⚠️ 欄位名要對。第一版寫了不存在的 job_title，wrangler 直接報錯，
         # 而 d1() 的 except 把錯誤吃掉回空陣列——結果是「排程有在跑但什麼都不做」，
         # log 全空、也沒有任何錯誤訊息。這種靜默失敗最難查，所以下面加了 debug log。
+        # 2026-09-24：擬稿搬到 WSL2，上架留在 Mac（上架要動 step1ne-stopgap-site，那個 repo 只在 Mac）。
+        # 用環境變數 JOBINTAKE_STAGES 決定這台做哪幾段：
+        #   WSL2：new,rewrite（擬稿）　Mac：approved（上架）　沒設＝三段都做（舊行為）
+        stages = [x.strip() for x in os.environ.get('JOBINTAKE_STAGES', 'new,rewrite,approved').split(',') if x.strip()]
         rows = d1("SELECT id, status, client_name FROM job_intakes "
-                  "WHERE status IN ('new','rewrite','approved') "
+                  f"WHERE status IN ({','.join(repr(x) for x in stages)}) "
                   "ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END, created_at ASC LIMIT 1")
         if not rows:
             return
@@ -114,9 +118,24 @@ def main():
         title = it.get('client_name') or iid[:8]
 
         if st in ('new', 'rewrite'):
+            # 先搶再做：兩台機器同一分鐘看到同一張單時，只有搶到的那台擬。
+            # 搬遷期間 Mac 跟 WSL2 可能同時開著，不搶會各擬一份、群組收到兩則。
+            try:
+                sys.path.insert(0, RECRUIT)
+                import d1_http
+                res = d1_http.query(f"UPDATE job_intakes SET status='drafting' WHERE id='{iid}' AND status='{st}'")
+                if not ((res.get('meta') or {}).get('changes')):
+                    log(f'{title}：被另一台搶走了，跳過')
+                    return
+            except Exception as e:
+                log(f'搶單失敗（這輪先不做）：{str(e)[:120]}')
+                return
             log(f'擬 JD：{title}（{st}）')
             ok, out = run('draft_job.py', '--intake', iid)
             log(('  完成' if ok else '  ❌ 失敗：') + ('' if ok else out[-400:]))
+            if not ok:
+                # draft_job 失敗時會退回它看到的狀態（已經是 drafting），這裡改回原本的，下一輪才撿得到
+                d1(f"UPDATE job_intakes SET status='{st}' WHERE id='{iid}' AND status='drafting'")
         elif st == 'approved':
             log(f'核准發布：{title}')
             ok, out = run('publish_approved.py', '--intake', iid)

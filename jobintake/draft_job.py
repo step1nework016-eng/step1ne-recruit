@@ -36,9 +36,15 @@ CLAUDE_BIN = shutil.which('claude') or 'claude'
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SKILL = os.path.expanduser(
+# 2026-09-24：擬稿搬到 WSL2。WSL2 沒有 Mac 的技能包資料夾，所以 repo 裡放一份快照
+# （jobintake/job-posting-skill/）。Mac 有原版就用原版（改技能包立刻生效），
+# 沒有才用快照。⚠️ 改了原版技能包要記得同步快照：
+#   cp ~/claude-projects/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md jobintake/job-posting-skill/
+_SKILL_MAC = os.path.expanduser(
     '~/claude-projects/工作流程技能包/recruiting-workflow/step1ne-job-posting/SKILL.md')
-WORK = os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/jobintake/work')
+SKILL = _SKILL_MAC if os.path.exists(_SKILL_MAC) else os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'job-posting-skill', 'SKILL.md')
+WORK = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'work')   # 跟著 repo 走，兩台都對
 
 sys.path.insert(0, HERE)
 # ⚠️ 2026-09-24 加：interview_daemon.py 開頭 import autoupdate（在上一層），
