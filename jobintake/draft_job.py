@@ -26,7 +26,7 @@
     # 一次處理所有還沒擬的收件單
     python3 draft_job.py --all
 """
-import os, sys, json, uuid, argparse, subprocess, datetime, importlib.util, base64, textwrap
+import os, sys, re, json, uuid, argparse, subprocess, datetime, importlib.util, base64, textwrap
 import shutil
 import urllib.request, urllib.parse   # ⚠️ 要在模組層級，函式內 import 的話別的函式抓不到
 
@@ -382,6 +382,21 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
    - 「待顧問確認」：來源沒給、但求職者一定會問的欄位
    - 「服務線與同名職缺」：判定理由；站上若已有同職稱，你用什麼維度區隔
 
+3. `{{WORK}}/review.json`　—　給老闆在手機上**一眼看完**的摘要（他有 ADHD，這份要短）：
+
+{{
+  "decisions": [
+    {{"q": "一個問句，老闆回答是／否或二選一就能決定", "why": "一句話：不決定的話頁面會錯在哪"}}
+  ],
+  "changes": [
+    {{"what": "幾個字的標題，例：國籍門檻", "from": "原文（最多 40 字）", "to": "改成什麼（最多 40 字）"}}
+  ]
+}}
+
+   - decisions **最多 3 件**，只挑「不處理就不能上線、或上線會錯」的事（例：幣別、客戶要不要具名、薪資沒給）。
+     次要的待確認事項留在 report.md，不要塞進來。沒有就給空陣列。
+   - changes 列你把原文改掉的地方，一條一行，不要解釋法條。沒有就給空陣列。
+
 ## 硬規則
 
 - 不要 git push、不要跑 publish_job.py、不要動 {os.path.expanduser('~/claude-projects/step1ne-stopgap-site')} 底下任何檔案。
@@ -660,6 +675,108 @@ def _clip(s, n):
     return s if len(s) <= n else s[:n] + '…（完整版在後台）'
 
 
+PREVIEW_BASE = 'https://step1ne-backoffice-worker.aiagentg888.workers.dev/preview/job/'
+
+
+def load_review_json(workdir, missing):
+    """AI 寫的一眼摘要。沒寫或壞掉就退回用待確認清單，不要讓整張單卡住。"""
+    try:
+        r = json.load(open(os.path.join(workdir, 'review.json'), encoding='utf-8'))
+        dec = [d for d in (r.get('decisions') or []) if isinstance(d, dict) and d.get('q')][:3]
+        chg = [c for c in (r.get('changes') or []) if isinstance(c, dict) and c.get('what')]
+        return {'decisions': dec, 'changes': chg}
+    except Exception:
+        return {'decisions': [{'q': f'「{m}」沒有資料，要補嗎？', 'why': ''} for m in (missing or [])[:3]],
+                'changes': []}
+
+
+def build_preview_html(intake, spec, rv, report_md, output_hits):
+    """上線同一套 render_page 產出的整頁，加上頂端「要你決定的」與底部「AI 改了什麼」。
+
+    2026-09-24 Jacky：「太多文字不知道要看什麼、要決定什麼、放到網站上會是什麼」。
+    所以預覽頁 = 網站實際長相，決定事項釘在最上面，解釋全部收在最下面。
+    """
+    import html as _h
+    import importlib.util as _iu
+    e = lambda x: _h.escape(str('' if x is None else x))
+    try:
+        sp = _iu.spec_from_file_location('pj', os.path.join(ROOT, 'publish_job.py'))
+        PJ = _iu.module_from_spec(sp); sp.loader.exec_module(PJ)
+        page = PJ.render_page(spec)
+    except Exception as ex:
+        page = (f'<!doctype html><html><head><meta charset="utf-8"></head><body>'
+                f'<p style="padding:20px">頁面產生失敗：{e(ex)}（通常是 AI 少給了必填欄位，請按「要改」）</p></body></html>')
+    sl = RR.apply_service_line(intake['service_line'])['label']
+    dec = rv['decisions']
+    top = ('<div style="position:sticky;top:0;z-index:9999;background:#fff7d6;border-bottom:2px solid #e0b400;'
+           'padding:14px 16px;font:15px/1.6 -apple-system,\'PingFang TC\',sans-serif;color:#222">'
+           '<div style="font-weight:700;margin-bottom:6px">🟡 預覽・尚未上線　｜　'
+           f'{e(intake.get("client_name") or "")}　{e(sl)}</div>')
+    if output_hits:
+        top += f'<div style="color:#b00020;font-weight:700">⛔ 成品還有 {len(output_hits)} 處禁刊字，這版不能發，請在 TG 按「要改」</div>'
+    if dec:
+        top += '<div style="font-weight:700;margin-top:4px">你要決定的：</div><ol style="margin:4px 0 0 20px;padding:0">'
+        top += ''.join(f'<li>{e(d["q"])}' + (f'<div style="color:#666;font-size:13px">{e(d.get("why"))}</div>' if d.get('why') else '') + '</li>' for d in dec)
+        top += '</ol>'
+    else:
+        top += '<div>沒有需要你決定的事，內容沒問題就在 TG 按「核准發布」。</div>'
+    top += '<div style="color:#666;font-size:13px;margin-top:6px">往下捲就是上線後的樣子；最下面可以看 AI 改了什麼。</div></div>'
+    chg = rv['changes']
+    bottom = ('<div style="max-width:880px;margin:40px auto;padding:16px;border-top:3px dashed #ccc;'
+              'font:14px/1.7 -apple-system,\'PingFang TC\',sans-serif;color:#222">')
+    bottom += f'<details open><summary style="font-weight:700;cursor:pointer">✂️ AI 改掉的地方（{len(chg)} 處）</summary>'
+    bottom += ''.join(f'<div style="margin:10px 0"><b>{e(c["what"])}</b><br><span style="color:#b00020">原文：{e(c.get("from"))}</span><br>'
+                      f'<span style="color:#0a7a32">改成：{e(c.get("to"))}</span></div>' for c in chg) or '<p>沒有改動原文。</p>'
+    bottom += '</details>'
+    bottom += ('<details style="margin-top:14px"><summary style="font-weight:700;cursor:pointer">📄 AI 的完整說明（要細看再打開）</summary>'
+               f'<pre style="white-space:pre-wrap;font:13px/1.6 inherit">{e(report_md)}</pre></details>')
+    bottom += ('<details style="margin-top:14px"><summary style="font-weight:700;cursor:pointer">⚙️ 內部欄位</summary>'
+               f'<div>網址：/jobs/{e(spec.get("slug"))}/　薪資欄位：{e(_salary(spec))}　客戶內部名稱：{e(spec.get("client_name"))}</div></details></div>')
+    page = page.replace('<head>', '<head><base href="https://step1ne.com/"><meta name="robots" content="noindex,nofollow">', 1)
+    page = re.sub(r'(<body[^>]*>)', lambda m: m.group(1) + top, page, count=1)
+    page = page.replace('</body>', bottom + '</body>', 1) if '</body>' in page else page + bottom
+    return page
+
+
+def short_review_v2(intake, spec, rv, output_hits, preview_url):
+    """TG 那則：這是什麼缺 → 預覽連結 → 要決定的 → 改了什麼（一行一條）→ 按鈕。"""
+    e = _esc
+    sl = RR.apply_service_line(intake['service_line'])['label']
+    L = [f'📋 <b>新職缺：{e(spec.get("title") or "（無標題）")}</b>',
+         f'{e(intake.get("client_name") or "")}｜{e(sl)}', '']
+    if preview_url:
+        L += [f'👉 <a href="{e(preview_url)}">看網站上會長怎樣</a>', '']
+    if output_hits:
+        L += [f'⛔ <b>成品還有 {len(output_hits)} 處禁刊字，這版不能發</b>，請按「✏️ 要改」', '']
+    dec = rv['decisions']
+    if dec:
+        L += [f'🟡 <b>你要決定的（{len(dec)} 件）</b>'] + [f'{i}. {e(d["q"])}' for i, d in enumerate(dec, 1)] + ['']
+    else:
+        L += ['🟢 沒有需要你決定的事', '']
+    chg = rv['changes']
+    if chg:
+        L += [f'✂️ AI 幫你改掉的（{len(chg)} 處，預覽頁有原文對照）'] + [f'・{e(c["what"])}' for c in chg[:5]]
+        if len(chg) > 5:
+            L.append(f'・…還有 {len(chg) - 5} 處')
+        L.append('')
+    L.append('沒按「核准發布」不會動到網站。')
+    return '\n'.join(L)
+
+
+def save_preview(iid, token, html_text, rv):
+    """整頁 HTML 很長，走 CF API 帶參數寫（不塞進 SQL 字串，避開 D1 單句長度上限）。"""
+    import d1_http
+    tok, acc = d1_http._cfg()
+    body = json.dumps({'sql': 'UPDATE job_intakes SET preview_token=?, preview_html=?, review_json=? WHERE id=?',
+                       'params': [token, html_text, json.dumps(rv, ensure_ascii=False), iid]}).encode('utf-8')
+    req = urllib.request.Request(
+        f'https://api.cloudflare.com/client/v4/accounts/{acc}/d1/database/{d1_http.DB_ID}/query',
+        data=body, headers={'authorization': f'Bearer {tok}', 'content-type': 'application/json'}, method='POST')
+    r = json.load(urllib.request.urlopen(req, timeout=60))
+    if not r.get('success'):
+        raise RuntimeError(str(r.get('errors'))[:200])
+
+
 def _salary(spec):
     lo, hi = spec.get('salary_min'), spec.get('salary_max')
     if lo and hi:
@@ -766,8 +883,18 @@ def process(intake, dry=False, rewrite_note=None, keep=False):
         print('=' * 62 + f'\n產出目錄：{workdir}')
         return spec
 
-    fname = f"{(spec.get('slug') or 'job')}_擬稿說明.html"
-    mid = tg_send_doc(review_html, fname, short, buttons_for(iid), iid)
+    # 2026-09-24 新格式：短訊息＋網站預覽連結。預覽做不出來才退回舊的 HTML 附件。
+    mid = None
+    try:
+        rv = load_review_json(workdir, missing)
+        token = uuid.uuid4().hex
+        save_preview(iid, token, build_preview_html(intake, spec, rv, report_md, output_hits), rv)
+        mid = tg_send(short_review_v2(intake, spec, rv, output_hits, PREVIEW_BASE + token), buttons_for(iid), iid)
+    except Exception as ex:
+        log(f'⚠️ 預覽頁做不出來，改用舊格式：{ex}')
+    if not mid:
+        fname = f"{(spec.get('slug') or 'job')}_擬稿說明.html"
+        mid = tg_send_doc(review_html, fname, short, buttons_for(iid), iid)
     if not mid:      # 附件推不出去就退回純文字，不要讓顧問什麼都收不到
         mid = tg_send(review, buttons_for(iid), iid)
     D.d1(f"""UPDATE job_intakes SET status='pending', draft_json={D.q(json.dumps(spec, ensure_ascii=False))},
