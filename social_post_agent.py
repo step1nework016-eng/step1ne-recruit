@@ -144,6 +144,76 @@ def skill(account_id=None):
     return open(SKILL_PATH, encoding='utf-8').read()
 
 
+# ── 語氣卡（2026-09-24 加）──────────────────────────────────────
+#
+# Jacky 問：「有辦法讓所有顧問的風格提示詞不會被公式蓋掉原本的語氣嗎？」
+#
+# 查下去的根因：顧問的 skill_prompt 大多是「整份貼文模板」（結構＋語氣混在一起），
+# 放在最前面；公式放在後面、而且帶一大段範例句。模型會跟著「最後讀到、有範例的那份」
+# 寫，所以語氣被公式範例拉走。話題文更嚴重——選了公式就完全沒帶顧問的東西。
+#
+# 解法：從 skill_prompt 裡**只抽出語氣**（口吻、自稱與稱呼、口頭禪、emoji／符號習慣、
+# 句長與斷行、不用的字）做成一張短卡，產稿時**放在最後面**，明講「公式範例句只示範結構，
+# 用字語氣照這張卡」。結構仍聽公式，語氣改聽卡——兩件事分開，就不會互蓋。
+#
+# 卡片存在 social_accounts.voice_card；voice_card_src 存抽卡時 skill_prompt 的指紋，
+# 顧問改了風格提示詞，下次產稿會自動重抽，不用人記得。
+VOICE_CARD_PROMPT = """下面是一位獵頭顧問的社群貼文「風格提示詞」，裡面混著兩種東西：
+貼文結構（段落順序、欄位、模板）和這個人的語氣。
+
+請**只抽出語氣**，做成一張語氣卡，給另一個 AI 參考「這個人講話的樣子」。
+結構、欄位、段落順序、CTA 規則、連結規則一律不要寫進來——那些由別的地方決定。
+
+只寫原文裡看得出來的，看不出來的那一項就寫「原文沒寫」，不准自己補。
+
+輸出純文字，照下面六項，每項一到兩行，總共不超過 250 字：
+口吻：
+自稱／怎麼稱呼讀者：
+常用詞、口頭禪：
+emoji 與符號習慣：
+句子長短與斷行：
+不會這樣寫：
+
+---
+{persona}
+"""
+
+
+def voice_card(account_id):
+    """回這個帳號的語氣卡；沒有 skill_prompt 的帳號回空字串（照舊行為）。"""
+    if not account_id:
+        return ''
+    rows = d1(f"SELECT skill_prompt, voice_card, voice_card_src FROM social_accounts WHERE id={q(account_id)}")
+    if not rows or not (rows[0].get('skill_prompt') or '').strip():
+        return ''
+    r = rows[0]
+    import hashlib
+    src = hashlib.sha1(r['skill_prompt'].encode('utf-8')).hexdigest()[:16]
+    if r.get('voice_card') and r.get('voice_card_src') == src:
+        return r['voice_card']
+    try:
+        card = run_claude(VOICE_CARD_PROMPT.format(persona=r['skill_prompt'])).strip()
+    except Exception as e:
+        log(f'語氣卡抽取失敗（這篇照舊產，不帶語氣卡）：{e}')
+        return r.get('voice_card') or ''
+    if card:
+        d1(f"UPDATE social_accounts SET voice_card={q(card[:1200])}, voice_card_src={q(src)} WHERE id={q(account_id)}")
+    return card
+
+
+def voice_tail(account_id):
+    """放在 prompt 最後面的語氣段。沒有語氣卡就回空字串。"""
+    card = voice_card(account_id)
+    if not card:
+        return ''
+    return ('\n\n---\n\n【最後一關：語氣——這篇是這位顧問本人在講話】\n'
+            + card
+            + '\n\n⚠️ 上面公式裡的範例句**只是在示範結構與節奏**，不要照抄它們的口吻、用字、emoji。\n'
+              '結構照公式；**每一句話的講法、用詞、符號習慣照這張語氣卡**。\n'
+              '寫完自己讀一遍：認識這位顧問的人，看得出來是他本人寫的嗎？看不出來就改用字，不要改結構。\n'
+              '如果語氣卡跟上面的「禁止事項」衝突，禁止事項優先。\n')
+
+
 SITE = 'https://step1ne.com'
 
 
@@ -965,6 +1035,7 @@ def generate_draft_job_styled(job, style_row, account_id=None):
         head + style_body
         + '\n\n【這個職缺的原始資料——自由運用，挑對這篇公式有幫助的部分即可，'
           '不用照抄成清單格式，也不用全部用到】\n' + facts
+        + voice_tail(account_id)
         + WRAP_INSTRUCTION
     )
     raw = run_claude(prompt)
@@ -1109,8 +1180,10 @@ def format_topic_requirement(topic, style_row):
     return '\n\n'.join(parts)
 
 
-def generate_draft_topic(topic, style_row):
-    prompt = TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row) + WRAP_INSTRUCTION
+def generate_draft_topic(topic, style_row, account_id=None):
+    # 2026-09-24：話題文以前完全沒帶顧問的語氣（選了公式就只剩公式），補上語氣卡
+    prompt = (TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row)
+              + voice_tail(account_id) + WRAP_INSTRUCTION)
     raw = run_claude(prompt)
     post = extract_post(raw) if raw else None
     return raw, strip_address_numbers(post) if post else None
@@ -1129,7 +1202,7 @@ def process_topic(queue_row, topic):
     style_row = _style_by_id(queue_row.get('style_id')) or _consultant_style_for_topic(account_id)
     try:
         log(f'{title}（話題）：產生貼文草稿中…')
-        raw, post = generate_draft_topic(topic, style_row)
+        raw, post = generate_draft_topic(topic, style_row, account_id)
         if not raw or not post:
             # 2026-09-11 加：同 process_job() 的修法——不再靜默，也不再讓
             # AI 的「缺素材」說明被誤標成「以下會被公開發布」的草稿。
@@ -1150,7 +1223,7 @@ def process_topic(queue_row, topic):
         while hits and retry < MAX_REGEN_RETRIES:
             retry += 1
             log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，自動重產第 {retry} 次')
-            raw2, post2 = generate_draft_topic(topic, style_row)
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
             hits2 = audit_client_names(post2 or '')
             if post2:
                 raw, post, hits = raw2, post2, hits2
@@ -1172,7 +1245,7 @@ def process_topic(queue_row, topic):
         while law5 and retry < MAX_REGEN_RETRIES:
             retry += 1
             log(f'⚠️ {title}（話題）：草稿出現禁刊字眼 {law5}，自動重產第 {retry} 次')
-            raw2, post2 = generate_draft_topic(topic, style_row)
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
             law5_2 = audit_law5(post2 or '')
             if post2:
                 raw, post, law5 = raw2, post2, law5_2
