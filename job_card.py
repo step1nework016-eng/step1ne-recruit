@@ -226,6 +226,17 @@ def _is_advanced(r):
     return stage not in ('', 'SUBMITTED', 'AWAITING_CLIENT_FEEDBACK')
 
 
+def _is_onboarded(r):
+    """漏斗第 5 關「報到」（總指揮交辦，2026-09-24）——錄取之後的下一關，
+    不是另一種錄取。onboard_date 是 placements 表自己記的入職日；
+    manual_stage='onboard' 是顧問在後台手動標記（STAGE_ORDER 裡「報到」那一格，
+    見 step1ne-backoffice-worker/src/index.js 的 STAGE_ORDER），兩條路任一
+    成立都算，跟 _is_placed() 認多條寫入路徑是同一個原則。"""
+    if r.get('onboard_date'):
+        return True
+    return (r.get('manual_stage') or '') == 'onboard'
+
+
 # ── 對帳：從 placements 補經驗值事件 ──
 
 def insert_event(job_slug, event_type, xp, app_id, placement_id, grade, note, dedupe):
@@ -278,8 +289,10 @@ def recompute_profile(job_slug):
     feedback_count = sum(1 for e in ev if e['event_type'] == 'feedback_import')
     level, _name, _remain = level_for_xp(xp_total)
 
-    placements = d1(f"SELECT stage, placement_status, onboard_date, interview_at, application_id "
-                    f"FROM placements WHERE job_slug={q(job_slug)}")
+    placements = d1(f"SELECT p.stage, p.placement_status, p.onboard_date, p.interview_at, "
+                    f"p.application_id, a.manual_stage FROM placements p "
+                    f"LEFT JOIN applications a ON a.id = p.application_id "
+                    f"WHERE p.job_slug={q(job_slug)}")
     submitted_n = len(placements)
     # 面談過幾人：有 reports 的 applications，不是 placements——顧問可能面談過
     # 一個人但還沒送給任何客戶，這個數字要能反映「阿財實際談過多少人」。
@@ -288,7 +301,7 @@ def recompute_profile(job_slug):
                         f"WHERE a.job_slug = {q(job_slug)}") or [{'n': 0}])[0]['n']
 
     a_settled = a_advance = a_hire = 0
-    hires = declines = settled = excluded = client_interviewed = 0
+    hires = declines = settled = excluded = client_interviewed = onboarded = 0
     graded_settled = correct_calls = 0
     # 匯入回饋前 vs 後的 A 級命中率對照（2026-09-24，總指揮交辦）——這是
     # 唯一能證明「匯入回饋有沒有用」的證據：同一個職缺，職缺卡累積越多筆
@@ -310,6 +323,8 @@ def recompute_profile(job_slug):
         declined = _is_declined(r)
         if placed:
             hires += 1; settled += 1
+            if _is_onboarded(r):
+                onboarded += 1
         elif declined:
             declines += 1; settled += 1
         else:
@@ -367,12 +382,12 @@ def recompute_profile(job_slug):
         f"INSERT INTO job_card_profile (job_slug, feedback_count, xp_total, level, "
         f" level_capped_by_gate, advance_rate, hire_rate, accuracy_rate, decline_rate, "
         f" a_grade_settled_n, interviewed_n, submitted_n, settled_n, excluded_n, "
-        f" client_interviewed_n, hired_n, a_before_n, a_before_hire_rate, "
+        f" client_interviewed_n, hired_n, onboarded_n, a_before_n, a_before_hire_rate, "
         f" a_after_n, a_after_hire_rate, updated_at) VALUES "
         f"({q(job_slug)}, {feedback_count}, {xp_total}, {level}, {capped}, "
         f" {qn(advance_rate)}, {qn(hire_rate)}, {qn(accuracy_rate)}, {qn(decline_rate)}, "
         f" {a_settled}, {interviewed_n}, {submitted_n}, {settled}, {excluded}, "
-        f" {client_interviewed}, {hires}, {a_before_n}, {qn(a_before_hire_rate)}, "
+        f" {client_interviewed}, {hires}, {onboarded}, {a_before_n}, {qn(a_before_hire_rate)}, "
         f" {a_after_n}, {qn(a_after_hire_rate)}, "
         f" datetime('now','+8 hours')) "
         f"ON CONFLICT(job_slug) DO UPDATE SET feedback_count=excluded.feedback_count, "
@@ -384,6 +399,7 @@ def recompute_profile(job_slug):
         f" interviewed_n=excluded.interviewed_n, submitted_n=excluded.submitted_n, "
         f" settled_n=excluded.settled_n, excluded_n=excluded.excluded_n, "
         f" client_interviewed_n=excluded.client_interviewed_n, hired_n=excluded.hired_n, "
+        f" onboarded_n=excluded.onboarded_n, "
         f" a_before_n=excluded.a_before_n, a_before_hire_rate=excluded.a_before_hire_rate, "
         f" a_after_n=excluded.a_after_n, a_after_hire_rate=excluded.a_after_hire_rate, "
         f" updated_at=excluded.updated_at")
@@ -580,6 +596,7 @@ def _print_profile(job_slug):
         f'婉拒率 {p.get("decline_rate")}　A級樣本數 {p.get("a_grade_settled_n")}')
     log(f'  面談 {p.get("interviewed_n", 0)} 人・送客戶 {p.get("submitted_n", 0)} 人・'
         f'客戶面試 {p.get("client_interviewed_n", 0)} 人・錄取 {p.get("hired_n", 0)} 人・'
+        f'報到 {p.get("onboarded_n", 0)} 人・'
         f'有結果 {p.get("settled_n", 0)} 筆・我方結案/失聯不計 {p.get("excluded_n", 0)} 筆')
 
 
@@ -595,7 +612,10 @@ def recompute_all_acai_views():
     recompute_acai_view()，兩件事一次做完，不用各自維護一份迴圈）。
     --sync 每輪都會把所有招募中的職缺重算一次，職缺/題庫/客戶回覆的編輯
     最長等下一輪（現在排程是每 2 小時）就會反映。"""
-    rows = d1("SELECT slug FROM jobs WHERE status='open'")
+    # unspecified 不是真的職缺（是「還沒配對到職缺的人選」暫存桶），排除在
+    # 職缺卡體系外——總指揮交辦，2026-09-24：不刪 jobs 表裡這筆 row（其他
+    # 代碼可能還在參照它），只在職缺卡的畫面/統計/計算範圍排除。
+    rows = d1("SELECT slug FROM jobs WHERE status='open' AND slug != 'unspecified'")
     for r in rows:
         recompute_profile(r['slug'])
     return len(rows)
