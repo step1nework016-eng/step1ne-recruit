@@ -5453,8 +5453,19 @@ export default {
               return new Response('ok');
             }
             if (way === 'pure') {
-              const pure = await env.DB.prepare(
-                `SELECT id FROM style_prompts WHERE subtype='pure' LIMIT 1`).first();
+              // 2026-09-24：純CTA型底下可以有多個公式了。超過一則就讓顧問挑，
+              // 只有一則就直接套用（跟以前一樣）。一定要 ORDER BY id——
+              // 原本的 LIMIT 1 沒排序，第二則加進來後會隨機抓。
+              const { results: pures } = await env.DB.prepare(
+                `SELECT id, name FROM style_prompts WHERE subtype='pure' ORDER BY id`).all();
+              if (pures && pures.length > 1) {
+                await ncSetSession(env, spChatId, spCq.from.id, 'sp_pick_style', sess.data);
+                await ncSend(env, spChatId, spThreadId2, '是哪一個純CTA公式？', {
+                  inline_keyboard: pures.map((x) => ([{ text: x.name, callback_data: `sp_psty:${x.id}` }])),
+                });
+                return new Response('ok');
+              }
+              const pure = pures && pures[0];
               const t1 = spTarget();
               await spFinish({ jobSlug: t1.jobSlug, mission: t1.mission,
                 styleId: pure && pure.id, formula: 'pure',
@@ -5464,6 +5475,18 @@ export default {
             const t2 = spTarget();
             await spFinish({ jobSlug: t2.jobSlug, mission: t2.mission, formula: 'default',
               summary: `${t2.head}\n寫法：原始格式` });
+            return new Response('ok');
+          }
+
+          // 純CTA型挑公式（2026-09-24）。跟 sp_sty 分開，因為寫法類型要記成 pure 不是 dialog，
+          // 不然成效報表會把純CTA的文算進對話討論型。
+          if (spCq.data.startsWith('sp_psty:')) {
+            const styleId = spCq.data.slice('sp_psty:'.length);
+            const st = await env.DB.prepare(`SELECT name FROM style_prompts WHERE id=? AND subtype='pure'`).bind(styleId).first();
+            await spAns();
+            const tp = spTarget();
+            await spFinish({ jobSlug: tp.jobSlug, mission: tp.mission, styleId, formula: 'pure',
+              summary: `${tp.head}\n寫法：純CTA型・${(st && st.name) || ''}` });
             return new Response('ok');
           }
 
