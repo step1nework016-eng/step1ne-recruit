@@ -943,6 +943,7 @@ async function spImportFinish(env, chatId, threadId, userId, data, row) {
 }
 
 const SP_MISSION = {
+  topic: { mission: 'topic', label: '話題文' },
   general: { mission: 'engagement', label: '時事話題文' },
   ai: { mission: 'trust_building', label: 'AI阿財話題' },
 };
@@ -5166,11 +5167,12 @@ export default {
               await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_choose_type',
                 { url: resolvedUrl, accountId: account.id, accountLabel: account.label });
               await ncSend(env, spRow.chat.id, spThreadId, `${replacedNote}這篇是哪一種？（帳號：${account.label}）`, {
+                // 2026-09-24 Jacky：匯入的是顧問自己寫的文，不是系統產的，
+                // 硬要選時事話題文／AI阿財（那是系統產稿的分類）會對不上。
+                // 所以話題這邊只剩一顆「話題文」，打一句在談什麼就存。
                 inline_keyboard: [[
                   { text: '📋 職缺文', callback_data: 'sp_type_job' },
-                ], [
-                  { text: '💼 時事話題文', callback_data: 'sp_mis:general' },
-                  { text: '🤖 AI阿財話題', callback_data: 'sp_mis:ai' },
+                  { text: '💬 話題文', callback_data: 'sp_mis:topic' },
                 ]],
               });
               return new Response('ok');
@@ -5419,7 +5421,7 @@ export default {
                 { text: '純CTA型', callback_data: 'sp_way:pure' },
                 { text: '對話討論型', callback_data: 'sp_way:dialog' },
               ], [
-                { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+                { text: '✍️ 顧問自己寫的（沒套公式）', callback_data: 'sp_way:default' },
               ]],
             });
             return new Response('ok');
@@ -5467,7 +5469,7 @@ export default {
                   { text: '純CTA型', callback_data: 'sp_way:pure' },
                   { text: '對話討論型', callback_data: 'sp_way:dialog' },
                 ], [
-                  { text: '原始格式（沒特別套公式）', callback_data: 'sp_way:default' },
+                  { text: '✍️ 顧問自己寫的（沒套公式）', callback_data: 'sp_way:default' },
                 ]],
               });
             return new Response('ok');
@@ -5579,7 +5581,14 @@ export default {
           if (spCq.data.startsWith('sp_mis:')) {
             const kind = spCq.data.slice('sp_mis:'.length);
             await spAns();
+            if (!sess.data.label && kind === 'topic') {
+              await ncSetSession(env, spChatId, spCq.from.id, 'sp_await_label',
+                { ...sess.data, mission: 'topic', missionLabel: '話題文' });
+              await ncSend(env, spChatId, spThreadId2, '這篇在談什麼？打一句就好（例：面試後一直沒收到通知）');
+              return new Response('ok');
+            }
             if (!sess.data.label) {
+              // 改版前的舊按鈕（時事話題文／AI阿財）按到的：照舊列話題清單
               await spAskTopic(env, spChatId, spThreadId2, spCq.from.id, sess.data, kind);
               return new Response('ok');
             }
