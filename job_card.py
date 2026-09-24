@@ -217,8 +217,14 @@ def sync_events(job_slug=None):
         insert_event(slug, 'recommend', RECOMMEND_XP.get(grade, 5), app_id, pid, grade,
                      f'阿財評{grade}，顧問推薦給客戶', f'recommend:{pid}')
         if _is_placed(r):
+            # ⚠️ 2026-09-24 修（總指揮抓到）：原本不分等第一律寫「判斷準加碼」——
+            # 陳其寬那筆阿財評 D 卻被錄取，note 卻寫著「判斷準」，跟 Jacky 定的
+            # 精神（評分高又錄取＝準；評分低卻錄取＝不準）完全講反。經驗值數字
+            # 本來就是對的（低分錄取只加一點點），純粹是文字說反話。
+            note = (f'阿財評{grade}的人選錄取，判斷準' if grade in ('A', 'B')
+                   else f'阿財評{grade}卻錄取，判斷有落差，請補一筆回饋看看阿財看漏了什麼')
             insert_event(slug, 'placed', PLACED_XP.get(grade, 10), app_id, pid, grade,
-                         f'阿財評{grade}的人選錄取，判斷準加碼', f'placed:{pid}')
+                         note, f'placed:{pid}')
         elif _is_declined(r):
             insert_event(slug, 'client_declined', 0, app_id, pid, grade,
                          f'阿財評{grade}的人選被客戶婉拒', f'declined:{pid}')
@@ -238,6 +244,7 @@ def recompute_profile(job_slug):
 
     a_settled = a_advance = a_hire = 0
     hires = declines = settled = 0
+    graded_settled = correct_calls = 0
     for r in placements:
         placed = _is_placed(r)
         declined = _is_declined(r)
@@ -249,6 +256,21 @@ def recompute_profile(job_slug):
             continue
         app_id = r.get('application_id')
         grade = latest_route_for_application(app_id) if app_id else None
+
+        # ⚠️ 2026-09-24 修（總指揮抓到）：命中率原本是「錄取數／已有結果數」，
+        # 不管等第——一個職缺只要有一筆阿財評D卻被錄取，命中率照樣衝到100%，
+        # 因為公式壓根沒看等第對不對。這完全不是 Jacky 定的「命中率」：
+        # 命中率要問的是「阿財的等第跟結果對不對得上」，不是「有沒有錄取」。
+        # 改法：只算阿財真的評過的（沒等第就是阿財沒判斷過，不能拿來說他準不準，
+        # 不進這個分母——跟上面 sync_events()「沒等第就跳過」是同一個原則）。
+        # 「猜對」＝評A/B而且真的錄取，或評C/D/E而且真的被婉拒；兩種都算猜對，
+        # 評A/B卻婉拒、評C/D/E卻錄取，都算猜錯。
+        if grade:
+            graded_settled += 1
+            is_top = grade in ('A', 'B')
+            if (placed and is_top) or (declined and not is_top):
+                correct_calls += 1
+
         if grade != 'A':
             continue
         a_settled += 1
@@ -259,7 +281,7 @@ def recompute_profile(job_slug):
 
     advance_rate = (a_advance / a_settled) if a_settled else None
     hire_rate = (a_hire / a_settled) if a_settled else None
-    accuracy_rate = (hires / settled) if settled else None
+    accuracy_rate = (correct_calls / graded_settled) if graded_settled else None
     decline_rate = (declines / settled) if settled else None
 
     capped = 0
