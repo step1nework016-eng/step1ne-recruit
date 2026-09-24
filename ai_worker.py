@@ -19,6 +19,7 @@
     python3 ai_worker.py --once     # 跑一輪就結束（測試用）
 """
 import argparse
+import base64
 import datetime
 import hashlib
 import json
@@ -27,6 +28,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -1291,6 +1293,8 @@ def process(job):
     # 自己把「拆解→寫回 style_extractions→通知顧問」整條跑完，不走 promote_writebacks。
     if kind == 'style_extract':
         return _run_style_extract(payload)
+    if kind == 'job_card_feedback':
+        return _run_job_card_feedback(payload, job.get('id'))
     return run_claude(builder(payload), want_json=want_json)
 
 
@@ -1371,6 +1375,46 @@ def _run_style_extract(payload):
         f"error=NULL, updated_at=datetime('now','+8 hours') WHERE id={q(str(ext_id))}")
     _tg_style_extract_ready(payload, data)
     return json.dumps({'extraction_id': ext_id, 'name': data['name']}, ensure_ascii=False)
+
+
+def _run_job_card_feedback(payload, ai_job_id):
+    """顧問在後台「職缺卡」貼文字或傳截圖 → Worker 只把工作丟進 ai_jobs
+    （Worker 跑不了 claude CLI）→ 這裡接手，實際的「讀圖/讀文字→AI整理→
+    寫job_card_events/profile」全部邏輯都在 job_card.py（跟 expertise_build
+    沿用 build_expertise.py 同一種做法：這支只負責銜接佇列，不重寫邏輯）。
+
+    截圖走 base64（跟履歷附件同一種做法，見 interview_daemon.py 的
+    tg_doc(base64.b64decode(...))）：Worker 端把圖轉成 base64 存進
+    payload_json，這裡解回暫存檔案，處理完就刪掉，不留在機器上。
+    """
+    slug = (payload or {}).get('job_slug')
+    if not slug:
+        return json.dumps({'error': 'missing job_slug'}, ensure_ascii=False)
+    import job_card as JC
+    img_path = None
+    try:
+        if payload.get('image_b64'):
+            fd, img_path = tempfile.mkstemp(suffix='.' + (payload.get('image_ext') or 'png'))
+            with os.fdopen(fd, 'wb') as f:
+                f.write(base64.b64decode(payload['image_b64']))
+        res = JC.import_feedback(
+            slug, raw_text=payload.get('text'), image_path=img_path,
+            actor=payload.get('actor'), event_key=str(ai_job_id))
+    finally:
+        if img_path and os.path.exists(img_path):
+            os.unlink(img_path)
+    _tg_job_card_feedback_done(slug, payload.get('actor'))
+    return json.dumps(res, ensure_ascii=False)
+
+
+def _tg_job_card_feedback_done(slug, actor):
+    try:
+        rows = d1_http.query(f"SELECT title FROM jobs WHERE slug={q(slug)}")['results']
+        title = rows[0]['title'] if rows else slug
+        rs._tg(f'✅ 「{title}」的職缺卡更新了（{actor or "顧問"}匯入的回饋）。'
+              f'到後台「職缺卡」分頁可以看新的判斷標準跟經驗值。')
+    except Exception:
+        pass   # 通知失敗不該讓工作變成失敗
 
 
 def _style_extract_tg_thread(payload):
@@ -1673,6 +1717,10 @@ RECOVERABLE_KINDS = (
     'call_prep',               # (a) UPDATE applications.call_prep_md
     'style_extract',           # (a) 只 UPDATE style_extractions 同一列，重跑覆蓋掉舊結果
     'expertise_build',         # (b) job_expertise 有 ON CONFLICT DO UPDATE，重跑只是覆蓋同一列
+    # (b) job_card.import_feedback 帶 ai_jobs.id 當 dedupe_key，job_card_events
+    # 的 UNIQUE 約束擋重複——重跑不會重複加經驗值，job_card_profile 也是
+    # ON CONFLICT DO UPDATE 整列覆蓋。
+    'job_card_feedback',
 )
 # 不回收（需要人工判斷）：
 #   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄

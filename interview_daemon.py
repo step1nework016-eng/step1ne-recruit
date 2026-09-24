@@ -1196,6 +1196,20 @@ def _fetch_static(app_id):
     except Exception as e:
         log(f'⚠️ 專業題庫載入失敗（面談照常，只是少了專業段）：{e}')
 
+    # 2026-09-24 加（Jacky 交辦：讓阿財越評越準）：這個職缺的「職缺卡」——顧問
+    # 每次聽完客戶回饋整理出的判斷標準（job_card.py 事先整理好存在 D1）。
+    # ⚠️ 這裡只讀 masked_summary_text（已經濾掉客戶名／薪資／內部評語的
+    # 濃縮版），**絕對不能讀 full_profile_json**——那份可能含機密內容，
+    # 阿財是直接跟候選人對話的，讀到什麼就可能講出什麼。
+    # 職缺卡還沒有資料（還沒有人匯入過回饋）就是沒有，面談照常進行。
+    try:
+        jc = d1(f"SELECT masked_summary_text FROM job_card_profile WHERE job_slug = "
+                f"{q(static.get('job', {}).get('slug') or static.get('job_slug'))}")
+        if jc and jc[0].get('masked_summary_text'):
+            static['job_card_summary'] = jc[0]['masked_summary_text']
+    except Exception as e:
+        log(f'⚠️ 職缺卡載入失敗（面談照常，只是少了這段判斷標準）：{e}')
+
     # 2026-09-15 加（Jacky 交辦）：候選人常常同時投了不只一個職缺，之前阿財被問到
     # 「另一個職缺」一律回「我這邊沒有相關資料」——不是真的沒有，是這支函式從沒
     # 把「這個職缺以外的其他在辦職缺」讀進來過，阿財等於被關在單一職缺的資料裡。
@@ -1434,6 +1448,20 @@ def build_prompt(ctx, skill_md):
                 lines.append(f'      含糊的訊號：{"；".join(x["red_flags"][:3])}')
             if x.get('followup'):
                 lines.append(f'      含糊就追問：{x["followup"]}')
+
+    # 2026-09-24 加（Jacky 交辦：讓阿財越評越準）：職缺卡——顧問聽過客戶對
+    # 之前人選的真實回饋後整理出來的判斷標準。跟上面的專業題庫不同：題庫是
+    # 「該問什麼」，職缺卡是「客戶實際上在意什麼、什麼樣的人會被刷掉」，
+    # 用來校準你打分數／追問方向，不是拿來當題目照念。
+    # ⚠️ 這段已經是濾過的乾淨版（不含客戶名／薪資／內部評語），可以放心用；
+    # 但規則不變：不要對候選人說「客戶要求怎樣怎樣」這種轉述，你的角色
+    # 還是「問問題、記錄原話」，職缺卡是幫你判斷「這個回答夠不夠深」用的。
+    jcs = ctx.get('job_card_summary')
+    if jcs:
+        lines.append('\n【這個職缺的判斷標準（來自顧問整理的真實客戶回饋）】')
+        lines.append(jcs)
+        lines.append('  ⚠️ 上面這些是拿來校準你怎麼追問、怎麼打分數的背景知識，'
+                     '不是要你直接告訴候選人「客戶說要怎樣」。')
 
     # 初篩已經算過分、也生好該問哪幾題了。放在最前面，讓阿財開口前就知道要往哪挖。
     # 2026-08-05 加：在此之前初篩與面談互不相干，初篩生的追問沒人用，等於白做。
