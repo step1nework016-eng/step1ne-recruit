@@ -3897,7 +3897,8 @@ async function handleSocAction(env, cq) {
               // 發同一個缺發過多次時，/go/resolve 只能猜「最新那一篇」，舊貼文
               // 帶來的點擊會全部被算到新貼文頭上。總點擊數是準的，但各篇排名不準。
               const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
-              const body = `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
+              // 2026-09-24（Jacky）：話題文不要帶連結，只有職缺文接應徵窗口
+              const body = row.topic_id ? row.draft : `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
               const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
                 method: 'POST',
                 headers: {
@@ -4054,7 +4055,9 @@ async function handleSocAction(env, cq) {
             // 2026-09-04 加：DR 是唯一例外——這隻帳號的職缺文仍要放連結，
             // 用 social_accounts.force_link_on_posts 這個帳號層級開關控制，
             // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
-            if (row.topic_id || row.force_link_on_posts) {
+            // 2026-09-24 改（Jacky）：話題文不要帶連結——不再自動加「應徵了解窗口」那則回覆。
+            // 現在只剩 DR 這類開了 force_link_on_posts 的帳號，職缺文才會加。
+            if (!row.topic_id && row.force_link_on_posts) {
               // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
               // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
               // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
@@ -4088,7 +4091,7 @@ async function handleSocAction(env, cq) {
                 chat_id: cq.message.chat.id,
                 ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
                 reply_to_message_id: cq.message.message_id,
-                text: `✅ ${who} 已核准，已發到 Threads（串文兩則）` + (permalink ? `\n${permalink}` : '\n（連結查詢失敗，請自行到 Threads 上確認）'),
+                text: `✅ ${who} 已核准，已發到 Threads` + (chunks.length > 1 ? `（串文 ${chunks.length} 則）` : '') + (permalink ? `\n${permalink}` : '\n（連結查詢失敗，請自行到 Threads 上確認）'),
               }),
             }).catch(() => {});
             await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
