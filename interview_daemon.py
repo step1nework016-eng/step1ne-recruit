@@ -1630,7 +1630,7 @@ def build_prompt(ctx, skill_md):
         #    一個派遣的廠長缺就會被當成基層跑 30 分鐘的標準流程，重蹈呂書帆那一場。
         #    所以另外用 seniority 欄位，由顧問在 /consultant/jobs 自己設。
         sen = job.get('seniority') or ('senior' if job.get('service_line') == 'executive' else 'mid')
-        SEN = {'senior': '中高階', 'mid': '一般', 'junior': '基層／無經驗可'}
+        SEN = {'senior': '中高階', 'mid': '一般', 'junior': '基層／無經驗可', 'entry': '基層／無經驗可'}
         lines.append(f'  🎯 seniority：{sen}（{SEN.get(sen, sen)}）')
         # 🚨 外語驗證要不要做，不再讓阿財自己從 must_skills 長文字判斷——
         #    2026-08-13 加，跟 seniority 同一個做法：顧問在後台明講，這裡直接下指令。
@@ -2374,7 +2374,14 @@ def _extract_json(text):
     return obj if isinstance(obj, dict) else None
 
 
-def _normalize_report_json(obj, name=''):
+def _is_entry_level(job):
+    """職級是不是「基層／無經驗可」。後台存 'junior'；有幾筆舊資料存成 'entry'
+    （bim-engineer-tongluo 就是），兩個都要認——之前只認 'junior'，
+    導致這格對 BIM 職缺從來沒有作用過。"""
+    return (job or {}).get('seniority') in ('junior', 'entry')
+
+
+def _normalize_report_json(obj, name='', job=None):
     """把模型的輸出補成規格形狀。
 
     模型少給一兩個欄位是常態，為此整份丟掉不划算——補好比丟掉有用。
@@ -2531,6 +2538,17 @@ def _normalize_report_json(obj, name=''):
     dims_spec = [('硬條件符合度', 25), ('專業技能深度', 20), ('相關經驗深度', 20),
                  ('案例具體度', 12), ('動機明確度', 12), ('溝通清晰度', 7),
                  ('工作穩定度', 4)]
+    # ⚠️ 2026-09-24 加（Jacky 核准）：「無經驗可、公司培訓」的職缺換一套比重。
+    #    上面那套讓「專業技能＋相關經驗」佔 40%，對這類職缺等於拿「會不會開車」
+    #    去考駕訓班學員。實際案例：bim-engineer-tongluo 客戶錄取的兩位——
+    #    陳其寬（零 BIM 經驗）47 分、張博州（不會 Revit）61 分依據不足——
+    #    都被經驗那兩維拉低，命中率因此是 0%。這類職缺真正決定成敗的是
+    #    動機／學習意願、能否配合（到職、派駐、加班）、講不講得出具體事情。
+    #    只看 seniority（顧問在後台設的職級），不從 JD 文字自己猜。
+    if _is_entry_level(job):
+        dims_spec = [('硬條件符合度', 25), ('專業技能深度', 5), ('相關經驗深度', 5),
+                     ('案例具體度', 15), ('動機明確度', 30), ('溝通清晰度', 10),
+                     ('工作穩定度', 10)]
     fs = obj.get('fit_scores') if isinstance(obj.get('fit_scores'), dict) else {}
     by_name = {s(d.get('name')): d for d in arr(fs.get('dimensions')) if isinstance(d, dict)}
 
@@ -2719,7 +2737,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
                    f'content_json 是空的。純文字報告正常，但 AI 配對與後台結構化欄位會看不到內容，'
                    f'請額度恢復後手動補產。', THREAD_DECIDE)
             return None
-        data = _normalize_report_json(obj, name)
+        data = _normalize_report_json(obj, name, ctx.get('job'))
         blob = json.dumps(data, ensure_ascii=False)
         # 存進去之前先驗一次：解回來一定要是物件。多包一層的字串在後台看起來
         # 一切正常（欄位都在），只有產 PDF 那一刻才會炸掉。
