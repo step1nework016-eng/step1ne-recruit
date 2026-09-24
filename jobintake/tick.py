@@ -58,6 +58,15 @@ def env():
 
 
 def d1(sql):
+    # 2026-09-24：先走 HTTP（d1_http），不行才退回 npx wrangler。
+    # 每次開 npx wrangler 要一分鐘上下、8GB 機器還會變卡——排程每分鐘跑一次時
+    # 光「問一下有沒有新收件單」就吃掉大半時間。跟 interview_daemon 同一個做法。
+    try:
+        sys.path.insert(0, RECRUIT)
+        import d1_http
+        return d1_http.query(sql).get('results') or []
+    except Exception as e:
+        log(f'HTTP 查 D1 失敗，改用 wrangler：{str(e)[:120]}')
     r = subprocess.run(
         ['npx', '--yes', 'wrangler', 'd1', 'execute', 'step1ne-recruit',
          '--remote', '--json', '--command', sql],

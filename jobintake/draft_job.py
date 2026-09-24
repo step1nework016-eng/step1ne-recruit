@@ -307,8 +307,21 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 
     hits_txt = PF.format_report(source_hits, title='原始資料的禁刊掃描') if source_hits else '（原始資料沒有命中禁刊規則）'
 
-    files_txt = ('顧問上傳的原始檔（請用 Read 工具逐一讀完，PDF 用 pages 參數，圖片直接讀；Word／Excel 請讀旁邊同名的 .txt）：\n'
-                 + '\n'.join(f'  - {p}' for p in files)) if files else '（顧問沒有上傳檔案）'
+    # 2026-09-24 提速：Word／Excel 只給轉好的 .txt，不給原檔——
+    # 給了原檔，總指揮會自己解壓縮比對一遍，白花一兩分鐘（築樂那張就是這樣）。
+    show = [p for p in files if not (p.lower().endswith(('.docx', '.xlsx', '.doc', '.xls')) and (p + '.txt') in files)]
+    files_txt = ('顧問上傳的原始檔（請用 Read 工具逐一讀完，PDF 用 pages 參數，圖片直接讀；'
+                 'Word／Excel 已經轉成 .txt，內容完整，不用再解壓縮原檔）：\n'
+                 + '\n'.join(f'  - {p}' for p in show)) if files else '（顧問沒有上傳檔案）'
+
+    # 2026-09-24 提速：同名職缺比對要的站上職缺清單，直接查好給它。
+    # 原本是總指揮自己跑 wrangler 查 D1，每次多花一兩分鐘。
+    try:
+        existing = D.d1("SELECT slug, title, locations, status FROM jobs ORDER BY title")
+        jobs_txt = '\n'.join(f"  - {j.get('title')}｜{j.get('locations') or ''}｜{j.get('slug')}｜{j.get('status')}"
+                              for j in existing) or '（站上目前沒有職缺）'
+    except Exception:
+        jobs_txt = '（查不到，請你自己用 wrangler 查 D1 的 jobs 表）'
 
     rewrite_txt = (f'\n\n## ⚠️ 這是重寫\n顧問看過上一版之後的意見，**這一版一定要照著改**：\n{rewrite_note}\n'
                    if rewrite_note else '')
@@ -334,6 +347,10 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 ```
 {src or '（沒有文字，資料全在上面的檔案裡）'}
 ```
+
+## 站上現有的職缺（已經幫你從資料庫查好，Phase 4.5 同名比對直接用這份，不要再自己查資料庫）
+
+{jobs_txt}
 
 ## 規則式禁刊掃描已經先跑過一遍，結果如下
 
