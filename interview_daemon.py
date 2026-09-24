@@ -2374,6 +2374,24 @@ def _extract_json(text):
     return obj if isinstance(obj, dict) else None
 
 
+def _job_card_scoring_block(ctx, for_json=False):
+    """職缺卡（顧問匯入的真實客戶回饋整理）給「寫報告」與「打分數」用。
+
+    ⚠️ 2026-09-24 加（Jacky 核准）：在這之前職缺卡只進面談 prompt（build_prompt），
+    寫報告跟產 fit_scores 的兩個 prompt 都沒有——顧問匯入的回饋只影響「問什麼」，
+    完全影響不到「幾分」。bim-engineer-tongluo 已經寫明「不可因缺乏相關經驗扣分」，
+    報告照樣把相關經驗打 1 分。總分的加權仍由程式固定計算（見 dims_spec），
+    這裡只校準各維度的分數怎麼給。"""
+    jcs = (ctx or {}).get('job_card_summary')
+    if not jcs:
+        return ''
+    what = ('fit_scores 各維度的分數' if for_json else '報告裡的判斷、風險與建議')
+    return ('\n\n【這個職缺的判斷標準（顧問整理的真實客戶回饋）】\n' + jcs
+            + f'\n⚠️ {what}要照上面這份標準校準：它說某件事不是扣分理由，就不要因此扣分；'
+              '它說某種背景要加分，有證據就給分。上面沒提到的，照原本規範判斷。'
+              '這份標準只用來判斷，不要把它當成候選人講過的話寫進報告。')
+
+
 def _is_entry_level(job):
     """職級是不是「基層／無經驗可」。後台存 'junior'；有幾筆舊資料存成 'entry'
     （bim-engineer-tongluo 就是），兩個都要認——之前只認 'junior'，
@@ -2689,6 +2707,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         '【JSON 結構，欄位名稱與層級照這個，不要自己發明】\n' + REPORT_JSON_SPEC + '\n'
         + REPORT_JSON_RULES
         + '\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
+        + _job_card_scoring_block(ctx, for_json=True)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         # ⚠️ 履歷一定要送。basics（居住地、年齡、學歷、語言、證照）的來源就是這裡，
         #    而規則寫「報告裡沒有的不要自己補」——不送履歷就永遠是 null。
@@ -2819,6 +2838,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n\n'
         + skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
+        + _job_card_scoring_block(ctx)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block
         + other_jobs_block
