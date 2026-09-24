@@ -58,6 +58,35 @@ def variants(name, aliases=None):
     return sorted({v for v in out if len(v) >= 2}, key=len, reverse=True)
 
 
+
+# ── 讀音比對（2026-09-24 加）──
+# 電洽錄音轉文字時，公司名常被轉成同音別字：
+#   弘昌 → 紅昌（hong chang）、帆宣 → 凡宣／樊宣／泛宣（fan xuan）
+# 兩天內發生兩次，每次都讓已簽約／洽談中的客戶被當成新的開發目標。
+# 一個一個補別名永遠補不完，所以在字面比對失敗後，再用讀音比一次。
+#
+# ⚠️ pypinyin 不一定每台機器都有（WSL2 可能沒裝）。沒有的話就跳過這一層，
+#    字面比對照常運作——不可以因為少一個套件就讓整個防護掛掉。
+try:
+    from pypinyin import lazy_pinyin as _lazy_pinyin
+except Exception:          # noqa: BLE001
+    _lazy_pinyin = None
+
+
+def _py(text):
+    """「帆宣系統」→「fan xuan xi tong」。只轉中文字，英數原樣保留。"""
+    if not _lazy_pinyin:
+        return ''
+    return ' '.join(_lazy_pinyin(text or '')).strip()
+
+
+def _py_contains(a, b):
+    """讀音層的雙向包含，用完整音節當邊界，避免 'an' 撞到 'fan' 這種假命中。"""
+    if not a or not b:
+        return False
+    A, B = f' {a} ', f' {b} '
+    return A in B or B in A
+
 def load_clients(d1_query):
     """d1_query 是一個 callable，吃 SQL 回傳 list[dict]。抽成參數是為了能離線測試。
 
@@ -80,7 +109,8 @@ def load_clients(d1_query):
         al = [x.strip() for x in (aliases or '').split('\n') if x.strip()]
         out.append({'name': key, 'aliases': aliases, 'relation': relation,
                     'blocked_reason': reason, 'via_client': via, 'owner': owner,
-                    '_variants': variants(key, al)})
+                    '_variants': variants(key, al),
+                    '_py': [_py(v) for v in variants(key, al)]})
 
     for r in (d1_query(
             "SELECT name, aliases, relation, blocked_reason, via_client, owner "
@@ -122,6 +152,25 @@ def check(company, clients):
                 if rel in WARN:
                     return {'company': c, 'matched': row['name'], 'relation': rel,
                             'verdict': 'warn', 'why': row.get('blocked_reason') or WARN[rel]}
+
+    # 字面比不到，再用讀音比一次（同音別字）。
+    # 寧可多擋：讀音撞到的最壞結果是「少敲一家」，
+    # 沒擋到的最壞結果是「寄開發信去敲自己的客戶」。
+    if _lazy_pinyin:
+        cpy = [_py(v) for v in cv if len(v) >= 2]
+        for row in clients:
+            rpy = row.get('_py') or [_py(v) for v in row['_variants']]
+            if any(_py_contains(x, y) for x in cpy for y in rpy if len(y.split()) >= 2):
+                rel = row['relation']
+                note = f"讀音與「{row['name']}」相同，可能是逐字稿把公司名轉成同音字"
+                if rel in BLOCK:
+                    return {'company': c, 'matched': row['name'], 'relation': rel,
+                            'verdict': 'block', 'phonetic': True,
+                            'why': f"{row.get('blocked_reason') or BLOCK[rel]}（{note}）"}
+                if rel in WARN:
+                    return {'company': c, 'matched': row['name'], 'relation': rel,
+                            'verdict': 'warn', 'phonetic': True,
+                            'why': f"{row.get('blocked_reason') or WARN[rel]}（{note}）"}
     return None
 
 

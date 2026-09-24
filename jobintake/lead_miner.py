@@ -91,6 +91,15 @@ PROMPT = """你要從候選人的面談與電洽紀錄裡，挖出「**哪些公
    結果就是**去開發自己的客戶**——2026-09-23 真的發生過。
    逐字稿有別的寫法要講，寫進 signal 或 quote，不要寫進 company。
 
+## 我們現有的客戶與洽談中的公司
+
+{client_names}
+
+⚠️ **逐字稿是電洽錄音轉出來的，公司名常被轉成同音別字**
+（真實案例：弘昌→紅昌、帆宣→凡宣／樊宣）。
+逐字稿裡的公司名只要跟上面任何一家**讀音相近**，一律當成那一家，
+company 寫上面那個正確的名字。這些公司不是新線索，系統之後會自動濾掉。
+
 ## 只輸出這個 JSON
 
 {{"leads":[{{
@@ -156,7 +165,11 @@ def main():
         blocks.append(f'--- [內部代號 {aid[:8]}]\n{txt}\n')
 
     wd = os.path.join(HERE, 'bd_work', 'leads')
-    spec = run_claude(PROMPT.format(records='\n'.join(blocks)), wd)
+    # 第一層：把客戶名單交給 AI，讓它在源頭就把同音別字對回正確名字。
+    # 第二層在 client_guard.check() 的讀音比對——AI 漏掉的，程式再擋一次。
+    names = sorted({c['name'] for c in G.load_clients(D.d1)})
+    spec = run_claude(PROMPT.format(records='\n'.join(blocks),
+                                    client_names='\n'.join(f'- {n}' for n in names)), wd)
     leads = spec.get('leads') or []
     log(f"AI 挖出 {len(leads)} 條｜{spec.get('run_summary','')[:120]}")
 
