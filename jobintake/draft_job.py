@@ -137,17 +137,110 @@ def fetch_files(intake, workdir):
         if f.get('local_path'):                 # 離線測試用：收件單直接給本機路徑
             out.append(f['local_path'])
             continue
-        rows = D.d1(f"SELECT b64 FROM file_chunks WHERE file_id = {D.q(f['file_id'])} ORDER BY idx ASC")
-        b64 = ''.join(r['b64'] for r in rows)
-        if not b64:
+        # ⚠️ 2026-09-24 修：2026-09-03 起新上傳的檔案存 R2（files.storage='r2'），
+        #    file_chunks 是空的——原本這裡直接查 file_chunks，9/3 之後顧問上傳的
+        #    JD 檔全部會被「取不到內容，跳過」，總指揮等於沒看到檔案。
+        #    改打 Worker 的 /admin/file/:id（裡面走 fileB64()，R2／D1 兩種都認得），
+        #    跟 interview_daemon._resume_attachment 同一個解法。
+        content = None
+        tok = D._admin_token() if hasattr(D, '_admin_token') else None
+        if tok:
+            try:
+                req = urllib.request.Request(
+                    'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/'
+                    + urllib.parse.quote(f['file_id']),
+                    headers={'authorization': f'Bearer {tok}', 'user-agent': 'step1ne-jobintake/1.0'})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    content = r.read()
+            except Exception as e:
+                log(f'⚠️ {f.get("filename")} 從 Worker 下載失敗：{e}，改查舊的切塊')
+        if not content:
+            rows = D.d1(f"SELECT b64 FROM file_chunks WHERE file_id = {D.q(f['file_id'])} ORDER BY idx ASC")
+            b64 = ''.join(r['b64'] for r in rows)
+            content = base64.b64decode(b64) if b64 else None
+        if not content:
             log(f'⚠️ {f.get("filename")} 取不到內容，跳過')
             continue
-        name = f.get('filename') or f['file_id']
+        name = os.path.basename(f.get('filename') or f['file_id'])
         p = os.path.join(workdir, name)
-        open(p, 'wb').write(base64.b64decode(b64))
+        open(p, 'wb').write(content)
         out.append(p)
         log(f'   取回原始檔：{name}（{f.get("size")} bytes）')
     return out
+
+
+def office_to_text(path):
+    """Word／Excel 轉純文字，讓總指揮擬 JD 讀得到。
+
+    2026-09-24 加：顧問要能直接丟客戶給的 Word／Excel JD。總指揮的 Read 工具
+    讀得懂 PDF、圖片、md、txt、csv，但 docx／xlsx 是壓縮檔，讀進去是亂碼。
+    ⚠️ 只用 Python 內建模組拆（docx／xlsx 本質是 zip＋xml），
+       因為這支同時在 Mac 跟 WSL2 跑，不能假設哪台有裝 python-docx／openpyxl。
+    舊版 .doc／.xls 是二進位格式，只有 Mac 內建的 textutil 轉得了 .doc；
+    轉不了就回 None，呼叫端照實記 log，不要假裝讀到了。
+    """
+    import zipfile, re as _re, html as _h
+    low = path.lower()
+    try:
+        if low.endswith('.docx'):
+            with zipfile.ZipFile(path) as z:
+                x = z.read('word/document.xml').decode('utf-8', 'replace')
+            x = _re.sub(r'</w:p>', '\n', x)
+            x = _re.sub(r'<w:tab/>', '\t', x)
+            return _h.unescape(_re.sub(r'<[^>]+>', '', x)).strip()
+        if low.endswith('.xlsx'):
+            with zipfile.ZipFile(path) as z:
+                names = z.namelist()
+                shared = []
+                if 'xl/sharedStrings.xml' in names:
+                    sx = z.read('xl/sharedStrings.xml').decode('utf-8', 'replace')
+                    for si in _re.findall(r'<si>(.*?)</si>', sx, _re.S):
+                        shared.append(_h.unescape(''.join(_re.findall(r'<t[^>]*>(.*?)</t>', si, _re.S))))
+                out = []
+                for n in sorted(x for x in names if _re.match(r'xl/worksheets/sheet\d+\.xml$', x)):
+                    sx = z.read(n).decode('utf-8', 'replace')
+                    out.append(f'【{n.split("/")[-1][:-4]}】')
+                    for row in _re.findall(r'<row[^>]*>(.*?)</row>', sx, _re.S):
+                        cells = []
+                        for attrs, body in _re.findall(r'<c([^>]*)>(.*?)</c>', row, _re.S):
+                            v = _re.search(r'<v>(.*?)</v>', body, _re.S)
+                            t = _re.search(r'<t[^>]*>(.*?)</t>', body, _re.S)
+                            if 't="s"' in attrs and v:
+                                i = int(v.group(1))
+                                cells.append(shared[i] if i < len(shared) else '')
+                            elif t:
+                                cells.append(_h.unescape(t.group(1)))
+                            elif v:
+                                cells.append(v.group(1))
+                        if any(c.strip() for c in cells):
+                            out.append('\t'.join(cells))
+            return '\n'.join(out).strip()
+        if low.endswith('.doc') and shutil.which('textutil'):
+            r = subprocess.run(['textutil', '-convert', 'txt', '-stdout', path],
+                               capture_output=True, text=True, timeout=60)
+            return (r.stdout or '').strip() or None
+    except Exception as e:
+        log(f'⚠️ {os.path.basename(path)} 轉文字失敗：{e}')
+    return None
+
+
+def expand_office_files(files):
+    """把 Word／Excel 旁邊各放一份 .txt 給總指揮讀，原檔保留。回 (新清單, 抽出的文字)。"""
+    out, texts = [], []
+    for p in files:
+        out.append(p)
+        if not p.lower().endswith(('.docx', '.xlsx', '.doc', '.xls')):
+            continue
+        t = office_to_text(p)
+        if t:
+            tp = p + '.txt'
+            open(tp, 'w', encoding='utf-8').write(t)
+            out.append(tp)
+            texts.append(f'【{os.path.basename(p)} 的內容】\n{t}')
+            log(f'   {os.path.basename(p)} 已轉成文字（{len(t):,} 字）')
+        else:
+            log(f'⚠️ {os.path.basename(p)} 讀不出文字（舊版 .xls／.doc 請另存成 .xlsx／.docx 或 PDF）')
+    return out, '\n\n'.join(texts)
 
 
 def source_text(intake):
@@ -210,7 +303,7 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 
     hits_txt = PF.format_report(source_hits, title='原始資料的禁刊掃描') if source_hits else '（原始資料沒有命中禁刊規則）'
 
-    files_txt = ('顧問上傳的原始檔（請用 Read 工具逐一讀完，PDF 用 pages 參數，圖片直接讀）：\n'
+    files_txt = ('顧問上傳的原始檔（請用 Read 工具逐一讀完，PDF 用 pages 參數，圖片直接讀；Word／Excel 請讀旁邊同名的 .txt）：\n'
                  + '\n'.join(f'  - {p}' for p in files)) if files else '（顧問沒有上傳檔案）'
 
     rewrite_txt = (f'\n\n## ⚠️ 這是重寫\n顧問看過上一版之後的意見，**這一版一定要照著改**：\n{rewrite_note}\n'
@@ -558,7 +651,11 @@ def process(intake, dry=False, rewrite_note=None, keep=False):
         f'｜{RR.apply_service_line(intake["service_line"])["label"]}')
 
     files = fetch_files(intake, workdir)
+    files, office_txt = expand_office_files(files)
     src = source_text(intake)
+    if office_txt:
+        # 禁刊過濾器也要掃得到 Word／Excel 裡的字，不然客戶名藏在檔案裡就漏掉
+        src = (src + '\n\n' + office_txt).strip()
 
     # ① 掃原始資料
     source_hits = PF.scan(src, client_name=intake.get('client_name'),
