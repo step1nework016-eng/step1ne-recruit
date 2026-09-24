@@ -184,9 +184,14 @@ def voice_card(account_id):
     if not account_id:
         return ''
     rows = d1(f"SELECT skill_prompt, voice_card, voice_card_src FROM social_accounts WHERE id={q(account_id)}")
-    if not rows or not (rows[0].get('skill_prompt') or '').strip():
+    if not rows:
         return ''
     r = rows[0]
+    # 手寫的語氣卡不需要風格提示詞也能用（例：南南 2026-09-24 只有話題公式、還沒有職缺風格）
+    if r.get('voice_card_src') == 'manual' and (r.get('voice_card') or '').strip():
+        return r['voice_card']
+    if not (r.get('skill_prompt') or '').strip():
+        return ''
     import hashlib
     src = hashlib.sha1(r['skill_prompt'].encode('utf-8')).hexdigest()[:16]
     if r.get('voice_card') and r.get('voice_card_src') in (src, 'manual'):
