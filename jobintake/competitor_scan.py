@@ -115,15 +115,21 @@ def robertwalters_titles():
 # 大量出現「代徵」，就當同業處理，不進開發名單。
 AGENCY_NAME_HINTS = ('獵人', '獵頭', '人力銀行', '人力資源顧問', '人才顧問',
                      '獵才', '人力仲介', 'RECRUIT', 'HR CONSULT')
-AGENCY_TITLE_HINT = '代徵'
+AGENCY_TITLE_HINTS = ('代徵', '獵才專員', '招募專員', '招募顧問', 'RECRUITER',
+                      'TALENT ACQUISITION')
 
 
 def looks_like_agency(company, jobs):
+    """2026-09-24 排前 20 家時多抓到一個漏洞：「威舜企業管理股份有限公司」
+    公司名稱沒有踩到 AGENCY_NAME_HINTS，但它掛的職缺是「獵才專員」「招募專員」——
+    這是在幫自己公司招募「做招募工作的人」，代表這家公司本身就是人力／獵頭
+    服務業者，不是真正要用人的企業。光看公司名稱不夠，職稱裡出現這幾個字
+    一樣要當同業處理。"""
     up = (company or '').upper()
     if any(h in up for h in AGENCY_NAME_HINTS):
         return True
-    titled = [j for j in jobs if AGENCY_TITLE_HINT in (j.get('role') or '')]
-    return len(jobs) >= 3 and len(titled) / len(jobs) >= 0.5
+    titled = [j for j in jobs if any(h in (j.get('role') or '').upper() for h in AGENCY_TITLE_HINTS)]
+    return len(jobs) >= 2 and len(titled) / len(jobs) >= 0.5
 
 
 def d1_query_list(sql):
