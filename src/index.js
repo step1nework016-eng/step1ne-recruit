@@ -4028,9 +4028,11 @@ async function handleSocAction(env, cq) {
               if (n < 2 || marks.some((m, idx) => m.k !== idx + 1 || m.n !== n)) return null;
               const parts = [];
               const head = lines.slice(0, marks[0].i).join('\n').trim();
+              // 標記那一行本身不發出去（2026-09-24 Jacky：Threads 右下角自己會顯示 1/3、2/3，
+              // 貼文裡再寫 1/2、2/2 是重複的）。草稿與 TG 審核仍保留標記，看得出在哪裡斷開。
               marks.forEach((m, idx) => {
                 const end = idx + 1 < n ? marks[idx + 1].i : lines.length;
-                let part = lines.slice(m.i, end).join('\n').trim();
+                let part = lines.slice(m.i + 1, end).join('\n').trim();
                 if (idx === 0 && head) part = head + '\n\n' + part;
                 parts.push(part);
               });
