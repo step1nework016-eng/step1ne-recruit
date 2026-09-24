@@ -917,7 +917,7 @@ async function ncClearSession(env, chatId, userId) {
 }
 // ── TG 匯入貼文（2026-09-24 改成跟後台「一鍵發文」同一個問法順序）──
 //   職缺文：哪一種 → 寫法 → （純CTA／對話討論）公式 → 客戶 → 職缺 → 存
-//   通用文／AI阿財：哪一種 → 選話題（清單＋自己打字）→ 存
+//   時事話題文／AI阿財：哪一種 → 選話題（清單＋自己打字）→ 存
 // Jacky：「希望能依照一鍵發文的邏輯去問」。兩邊順序一樣，顧問不用記兩套。
 // 寫入集中在這一支，按鈕流程跟打字流程都呼叫它，不要各寫一份 INSERT。
 async function spImportFinish(env, chatId, threadId, userId, data, row) {
@@ -943,7 +943,7 @@ async function spImportFinish(env, chatId, threadId, userId, data, row) {
 }
 
 const SP_MISSION = {
-  general: { mission: 'engagement', label: '通用文' },
+  general: { mission: 'engagement', label: '時事話題文' },
   ai: { mission: 'trust_building', label: 'AI阿財話題' },
 };
 
@@ -5169,7 +5169,7 @@ export default {
                 inline_keyboard: [[
                   { text: '📋 職缺文', callback_data: 'sp_type_job' },
                 ], [
-                  { text: '💼 通用文', callback_data: 'sp_mis:general' },
+                  { text: '💼 時事話題文', callback_data: 'sp_mis:general' },
                   { text: '🤖 AI阿財話題', callback_data: 'sp_mis:ai' },
                 ]],
               });
@@ -5197,7 +5197,7 @@ export default {
               { ...spSess.data, label });
             await ncSend(env, spRow.chat.id, spThreadId, `這篇話題是哪一種？（${label}）`, {
               inline_keyboard: [[
-                { text: '💼 通用文', callback_data: 'sp_mis:general' },
+                { text: '💼 時事話題文', callback_data: 'sp_mis:general' },
                 { text: '🤖 AI阿財話題', callback_data: 'sp_mis:ai' },
               ]],
             });
@@ -5559,7 +5559,7 @@ export default {
             return new Response('ok');
           }
 
-          // 話題文｜通用文 vs AI阿財話題。存 content_mission，
+          // 話題文｜時事話題文 vs AI阿財話題。存 content_mission，
           // 對應顧問後台成效頁面 classify() 的判斷（engagement／trust_building）。
           if (spCq.data.startsWith('sp_tp:')) {
             const tid = spCq.data.slice('sp_tp:'.length);
