@@ -132,12 +132,13 @@ def upsert_d1(j):
              salary_unit,locations,status,years_min,must_skills,notes,cv_mode,salary_note,updated_at)
         VALUES ({q(j['slug'])},{q(j['title'])},{q(j.get('client_name'))},{q(emp)},
              {q(j.get('salary_min')) if j.get('salary_min') else 'NULL'},
-             {q(j.get('salary_max')) if j.get('salary_max') else 'NULL'},'MONTH',
+             {q(j.get('salary_max')) if j.get('salary_max') else 'NULL'},
+             {q(j.get('salary_unit') if j.get('salary_unit') in ('MONTH','YEAR','HOUR','DAY') else 'MONTH')},
              {q(j.get('locations'))},'open',{j.get('years_min') if j.get('years_min') is not None else 'NULL'},
              {q(j.get('must_skills'))},{q(j.get('notes'))},{q(j.get('cv_mode'))},{q(j.get('salary_note'))},datetime('now'))
         ON CONFLICT(slug) DO UPDATE SET title=excluded.title, client_name=excluded.client_name,
              employment=excluded.employment, salary_min=excluded.salary_min,
-             salary_max=excluded.salary_max, locations=excluded.locations,
+             salary_max=excluded.salary_max, salary_unit=excluded.salary_unit, locations=excluded.locations,
              years_min=excluded.years_min, must_skills=excluded.must_skills,
              notes=COALESCE(jobs.notes,'')||char(10)||excluded.notes,
              cv_mode=COALESCE(excluded.cv_mode, jobs.cv_mode),
