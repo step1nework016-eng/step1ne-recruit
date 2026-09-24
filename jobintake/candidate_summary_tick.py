@@ -44,6 +44,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
+# ⚠️ 2026-09-24 加：social_post_agent.py 開頭 import autoupdate（在上一層），
+#    不把上一層加進搜尋路徑就 ModuleNotFoundError，候選人摘要整支停擺。
+sys.path.insert(0, RECRUIT)
 SKILL_PATH = os.path.expanduser(
     '~/claude-projects/工作流程技能包/recruiting-workflow/candidate-inquiry-summary/SKILL.md')
 DB = 'step1ne-recruit'

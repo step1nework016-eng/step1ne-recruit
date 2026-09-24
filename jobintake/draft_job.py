@@ -41,6 +41,10 @@ SKILL = os.path.expanduser(
 WORK = os.path.expanduser('~/claude-projects/工作流程技能包/step1ne-recruit/jobintake/work')
 
 sys.path.insert(0, HERE)
+# ⚠️ 2026-09-24 加：interview_daemon.py 開頭 import autoupdate（在上一層），
+#    用 `python3 這支.py` 跑時上一層不在搜尋路徑，一載入就 ModuleNotFoundError——
+#    顧問新增職缺的收件單因此全部卡在「排隊中」沒人擬。
+sys.path.insert(0, ROOT)
 import publishing_filters as PF          # noqa: E402
 import relation_rules as RR              # noqa: E402
 

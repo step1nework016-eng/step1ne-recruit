@@ -22,6 +22,10 @@ import os, sys, json, argparse, importlib.util, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+# ⚠️ 2026-09-24 加：interview_daemon.py 開頭 import autoupdate（在上一層），
+#    用 `python3 這支.py` 跑時上一層不在搜尋路徑，一載入就 ModuleNotFoundError——
+#    顧問新增職缺的收件單因此全部卡在「排隊中」沒人擬。
+sys.path.insert(0, ROOT)
 
 spec = importlib.util.spec_from_file_location('d', os.path.join(ROOT, 'interview_daemon.py'))
 D = importlib.util.module_from_spec(spec)
