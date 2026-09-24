@@ -167,19 +167,28 @@ def route_from_content(obj):
     return 'D'
 
 
-def latest_route_for_application(app_id):
+def latest_report_info(app_id):
+    """回傳 {grade, job_card_version}——同一次查詢順便帶出這份報告是用哪一版
+    職缺卡評的（reports.job_card_version，2026-09-24 加），給「匯入回饋前
+    vs 後」的對照用，不用為了多一個欄位再查一次資料庫。"""
     if app_id in _ROUTE_CACHE:
         return _ROUTE_CACHE[app_id]
-    rows = d1(f"SELECT content_json FROM reports WHERE application_id={q(app_id)} "
+    rows = d1(f"SELECT content_json, job_card_version FROM reports WHERE application_id={q(app_id)} "
               f"AND content_json IS NOT NULL ORDER BY created_at DESC LIMIT 1")
-    grade = None
-    if rows and rows[0].get('content_json'):
-        try:
-            grade = route_from_content(json.loads(rows[0]['content_json']))
-        except Exception as e:
-            log(f'  ⚠️ application {app_id} 的報告解析失敗，跳過不猜：{str(e)[:100]}')
-    _ROUTE_CACHE[app_id] = grade
-    return grade
+    info = {'grade': None, 'job_card_version': None}
+    if rows:
+        info['job_card_version'] = rows[0].get('job_card_version')
+        if rows[0].get('content_json'):
+            try:
+                info['grade'] = route_from_content(json.loads(rows[0]['content_json']))
+            except Exception as e:
+                log(f'  ⚠️ application {app_id} 的報告解析失敗，跳過不猜：{str(e)[:100]}')
+    _ROUTE_CACHE[app_id] = info
+    return info
+
+
+def latest_route_for_application(app_id):
+    return latest_report_info(app_id)['grade']
 
 
 # ⚠️ 2026-09-24 總指揮抓到：原本只認 placement_status='PLACED' 或有
@@ -281,6 +290,13 @@ def recompute_profile(job_slug):
     a_settled = a_advance = a_hire = 0
     hires = declines = settled = excluded = client_interviewed = 0
     graded_settled = correct_calls = 0
+    # 匯入回饋前 vs 後的 A 級命中率對照（2026-09-24，總指揮交辦）——這是
+    # 唯一能證明「匯入回饋有沒有用」的證據：同一個職缺，職缺卡累積越多筆
+    # 回饋之後，阿財評 A 的人選是不是真的更容易被錄取。用該人選那份報告
+    # 存的 job_card_version（見 reports 表新欄位）判斷「評分當下」職缺卡
+    # 累積到第幾筆回饋，不是用現在的 feedback_count——現在的版本跟評分
+    # 當下的版本是兩回事，混用會把「還沒發生的進步」算進「之前」那組。
+    a_before_n = a_before_hire = a_after_n = a_after_hire = 0
     for r in placements:
         if _is_excluded(r):
             excluded += 1
@@ -322,11 +338,22 @@ def recompute_profile(job_slug):
             a_advance += 1
         if placed:
             a_hire += 1
+        jcv = latest_report_info(app_id).get('job_card_version') if app_id else None
+        if jcv and jcv > 0:
+            a_after_n += 1
+            if placed:
+                a_after_hire += 1
+        else:
+            a_before_n += 1
+            if placed:
+                a_before_hire += 1
 
     advance_rate = (a_advance / a_settled) if a_settled else None
     hire_rate = (a_hire / a_settled) if a_settled else None
     accuracy_rate = (correct_calls / graded_settled) if graded_settled else None
     decline_rate = (declines / settled) if settled else None
+    a_before_hire_rate = (a_before_hire / a_before_n) if a_before_n else None
+    a_after_hire_rate = (a_after_hire / a_after_n) if a_after_n else None
 
     capped = 0
     if level >= 10:
@@ -340,11 +367,13 @@ def recompute_profile(job_slug):
         f"INSERT INTO job_card_profile (job_slug, feedback_count, xp_total, level, "
         f" level_capped_by_gate, advance_rate, hire_rate, accuracy_rate, decline_rate, "
         f" a_grade_settled_n, interviewed_n, submitted_n, settled_n, excluded_n, "
-        f" client_interviewed_n, hired_n, updated_at) VALUES "
+        f" client_interviewed_n, hired_n, a_before_n, a_before_hire_rate, "
+        f" a_after_n, a_after_hire_rate, updated_at) VALUES "
         f"({q(job_slug)}, {feedback_count}, {xp_total}, {level}, {capped}, "
         f" {qn(advance_rate)}, {qn(hire_rate)}, {qn(accuracy_rate)}, {qn(decline_rate)}, "
         f" {a_settled}, {interviewed_n}, {submitted_n}, {settled}, {excluded}, "
-        f" {client_interviewed}, {hires}, "
+        f" {client_interviewed}, {hires}, {a_before_n}, {qn(a_before_hire_rate)}, "
+        f" {a_after_n}, {qn(a_after_hire_rate)}, "
         f" datetime('now','+8 hours')) "
         f"ON CONFLICT(job_slug) DO UPDATE SET feedback_count=excluded.feedback_count, "
         f" xp_total=excluded.xp_total, level=excluded.level, "
@@ -355,6 +384,8 @@ def recompute_profile(job_slug):
         f" interviewed_n=excluded.interviewed_n, submitted_n=excluded.submitted_n, "
         f" settled_n=excluded.settled_n, excluded_n=excluded.excluded_n, "
         f" client_interviewed_n=excluded.client_interviewed_n, hired_n=excluded.hired_n, "
+        f" a_before_n=excluded.a_before_n, a_before_hire_rate=excluded.a_before_hire_rate, "
+        f" a_after_n=excluded.a_after_n, a_after_hire_rate=excluded.a_after_hire_rate, "
         f" updated_at=excluded.updated_at")
 
     recompute_acai_view(job_slug)
