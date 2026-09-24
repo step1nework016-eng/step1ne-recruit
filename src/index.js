@@ -4013,7 +4013,33 @@ async function handleSocAction(env, cq) {
               return chunks;
             };
 
-            const chunks = splitForThreads(row.draft);
+            // 2026-09-24 加：草稿自己用「1/2」「2/2」這種單獨一行的標記分串時（南南話題文的
+            // 手機可讀性規則：超過 15～20 行就拆串），照標記切，每串一則、串在第一則底下。
+            // 標記必須完整（1/N、2/N…N/N 依序、N≥2），不完整就當普通草稿、照舊只按字數切。
+            // 每一段仍然再過一次 splitForThreads，單段超過 480 字一樣會被安全切開。
+            const splitByThreadMarkers = (text) => {
+              const lines = String(text).split('\n');
+              const marks = [];
+              lines.forEach((l, i) => {
+                const m = l.trim().match(/^(\d{1,2})\s*\/\s*(\d{1,2})$/);
+                if (m) marks.push({ i, k: Number(m[1]), n: Number(m[2]) });
+              });
+              const n = marks.length;
+              if (n < 2 || marks.some((m, idx) => m.k !== idx + 1 || m.n !== n)) return null;
+              const parts = [];
+              const head = lines.slice(0, marks[0].i).join('\n').trim();
+              marks.forEach((m, idx) => {
+                const end = idx + 1 < n ? marks[idx + 1].i : lines.length;
+                let part = lines.slice(m.i, end).join('\n').trim();
+                if (idx === 0 && head) part = head + '\n\n' + part;
+                parts.push(part);
+              });
+              return parts;
+            };
+            const markedParts = splitByThreadMarkers(row.draft);
+            const chunks = markedParts
+              ? markedParts.flatMap((p) => splitForThreads(p))
+              : splitForThreads(row.draft);
             let firstId = null, lastId = null;
             for (const chunk of chunks) {
               lastId = await postOne(chunk, lastId);
