@@ -87,8 +87,17 @@ def best_signal(client_id, display_name):
     if t and (reliable_at is None or t > reliable_at):
         reliable_at, source = t, 'job_intakes'
 
-    r = D.query(f"SELECT COUNT(*) c FROM jobs WHERE client_name IN ({in_clause})")
+    # ⚠️ 2026-09-24 總指揮抓到的 bug：一開始只用 client_name 對 jobs 表，
+    # 結果弘昌、宇泰華這兩家明明有 open 的職缺（bim-engineer-tongluo、
+    # ai-agent-designer-nangang 等），卻被判成「系統裡完全沒有職缺」——
+    # 查了才發現這些職缺的 client_name 是 NULL，只有 jobs.company_id 填了。
+    # 全表統計：43/46 筆有 company_id、只有 34/46 筆有 client_name，
+    # company_id 才是比較完整的關聯欄位。改成兩邊都查，任一邊有算有。
+    r = D.query(f"SELECT COUNT(*) c FROM jobs WHERE company_id={q(client_id)}")
     has_any_job = (r['results'] or [{}])[0].get('c', 0) > 0
+    if not has_any_job:
+        r = D.query(f"SELECT COUNT(*) c FROM jobs WHERE client_name IN ({in_clause})")
+        has_any_job = (r['results'] or [{}])[0].get('c', 0) > 0
 
     if reliable_at:
         return reliable_at, source, 'reliable', has_any_job
