@@ -136,6 +136,19 @@ def route_from_content(obj):
     if isinstance(route, dict) and route.get('code'):
         return route['code']
     fs = obj.get('fit_scores') or {}
+    grade = fs.get('grade')
+    # ⚠️ 2026-09-24 總指揮抓到：2026-09-21 前的舊報告，grade 是英文字母
+    # （A-D，純看總分），跟現在的分流字母（A-E，人才分流）是完全不同的
+    # 兩套東西共用同一批字母，不能拿新的 hard_fail/verdict/total 演算法去
+    # 重新詮釋舊資料——陳其寬那筆舊報告 verdict 寫「值得轉給顧問」但總分只有
+    # 47，這種新舊欄位互相矛盾的舊資料本來就不夠乾淨，硬套新演算法只會產生
+    # 另一種看似合理、其實對不上當時真人／模型定案分類的答案。
+    # 判斷「是不是舊報告」用 grade 的形狀（英文字母 vs 現在的中文「優/良/中/
+    # 待加強」），比看日期可靠——報告本身沒有存「用哪一版邏輯」這種欄位。
+    # 舊等第粗分兩級退回：A/B 當年就是「看好」，直接對應新制的 A/B；
+    # C/D 當年是「不看好」，統一退到 D（新制的人才池），不細分 C/D/E。
+    if grade in ('A', 'B', 'C', 'D'):
+        return grade if grade in ('A', 'B') else 'D'
     total = fs.get('total')
     verdict = obj.get('verdict')
     hard_conditions = obj.get('hard_conditions') or []
@@ -169,12 +182,29 @@ def latest_route_for_application(app_id):
     return grade
 
 
+# ⚠️ 2026-09-24 總指揮抓到：原本只認 placement_status='PLACED' 或有
+# onboard_date，bim-engineer-tongluo 有人選 stage 已經到 OFFER（客戶已經
+# 發 offer，是錄取方向的結果），完全沒被算進命中率——OFFER 之後到真的
+# 報到中間可能還要走幾週，但「客戶要不要」這件事在發 offer 那刻就已經
+# 有答案了，不用等到職才算數。
+_HIRE_DIRECTION_STAGES = ('OFFER', 'OFFER_ACCEPTED', 'CANDIDATE_ACCEPTED', 'ONBOARDING', 'PLACED', 'HIRED')
+# 我方結案／失聯——不是客戶做的判斷（不是客戶要或不要），不能拿來算阿財
+# 準不準，但要在卡片上讓顧問看得到「還有這些筆不計在內」，不是憑空消失。
+_EXCLUDED_STAGES = ('CLOSED_INTERNAL', 'CLOSED_LOST')
+
+
 def _is_placed(r):
-    return (r.get('placement_status') == 'PLACED') or bool(r.get('onboard_date'))
+    if (r.get('placement_status') == 'PLACED') or bool(r.get('onboard_date')):
+        return True
+    return (r.get('stage') or '').upper() in _HIRE_DIRECTION_STAGES
 
 
 def _is_declined(r):
     return (r.get('stage') or '').upper() == 'REJECTED_BY_CLIENT'
+
+
+def _is_excluded(r):
+    return (r.get('stage') or '').upper() in _EXCLUDED_STAGES
 
 
 def _is_advanced(r):
@@ -241,11 +271,20 @@ def recompute_profile(job_slug):
 
     placements = d1(f"SELECT stage, placement_status, onboard_date, interview_at, application_id "
                     f"FROM placements WHERE job_slug={q(job_slug)}")
+    submitted_n = len(placements)
+    # 面談過幾人：有 reports 的 applications，不是 placements——顧問可能面談過
+    # 一個人但還沒送給任何客戶，這個數字要能反映「阿財實際談過多少人」。
+    interviewed_n = (d1(f"SELECT COUNT(DISTINCT a.id) n FROM applications a "
+                        f"JOIN reports r ON r.application_id = a.id "
+                        f"WHERE a.job_slug = {q(job_slug)}") or [{'n': 0}])[0]['n']
 
     a_settled = a_advance = a_hire = 0
-    hires = declines = settled = 0
+    hires = declines = settled = excluded = 0
     graded_settled = correct_calls = 0
     for r in placements:
+        if _is_excluded(r):
+            excluded += 1
+            continue
         placed = _is_placed(r)
         declined = _is_declined(r)
         if placed:
@@ -295,16 +334,21 @@ def recompute_profile(job_slug):
     d1_http.query(
         f"INSERT INTO job_card_profile (job_slug, feedback_count, xp_total, level, "
         f" level_capped_by_gate, advance_rate, hire_rate, accuracy_rate, decline_rate, "
-        f" a_grade_settled_n, updated_at) VALUES "
+        f" a_grade_settled_n, interviewed_n, submitted_n, settled_n, excluded_n, "
+        f" updated_at) VALUES "
         f"({q(job_slug)}, {feedback_count}, {xp_total}, {level}, {capped}, "
         f" {qn(advance_rate)}, {qn(hire_rate)}, {qn(accuracy_rate)}, {qn(decline_rate)}, "
-        f" {a_settled}, datetime('now','+8 hours')) "
+        f" {a_settled}, {interviewed_n}, {submitted_n}, {settled}, {excluded}, "
+        f" datetime('now','+8 hours')) "
         f"ON CONFLICT(job_slug) DO UPDATE SET feedback_count=excluded.feedback_count, "
         f" xp_total=excluded.xp_total, level=excluded.level, "
         f" level_capped_by_gate=excluded.level_capped_by_gate, "
         f" advance_rate=excluded.advance_rate, hire_rate=excluded.hire_rate, "
         f" accuracy_rate=excluded.accuracy_rate, decline_rate=excluded.decline_rate, "
-        f" a_grade_settled_n=excluded.a_grade_settled_n, updated_at=excluded.updated_at")
+        f" a_grade_settled_n=excluded.a_grade_settled_n, "
+        f" interviewed_n=excluded.interviewed_n, submitted_n=excluded.submitted_n, "
+        f" settled_n=excluded.settled_n, excluded_n=excluded.excluded_n, "
+        f" updated_at=excluded.updated_at")
 
     recompute_acai_view(job_slug)
 
@@ -490,17 +534,25 @@ def _print_profile(job_slug):
     log(f'{job_slug}：Lv.{p["level"]} {name}{cap}　經驗值 {p["xp_total"]}　'
         f'回饋 {p["feedback_count"]} 筆　命中率 {p.get("accuracy_rate")}　'
         f'婉拒率 {p.get("decline_rate")}　A級樣本數 {p.get("a_grade_settled_n")}')
+    log(f'  面談 {p.get("interviewed_n", 0)} 人・送客戶 {p.get("submitted_n", 0)} 人・'
+        f'有結果 {p.get("settled_n", 0)} 筆・我方結案/失聯不計 {p.get("excluded_n", 0)} 筆')
 
 
 def recompute_all_acai_views():
-    """「阿財的理解」卡跟職缺卡的經驗值/等級是兩條獨立的線——沒有回饋/推薦
-    紀錄的職缺（job_card_events 從來沒有事件）不會被 sync_events() 摸到，
-    但職缺欄位、題庫還是可能被顧問改過，這張卡也該跟著更新。--sync 每輪
-    順便把所有招募中的職缺都重算一次，職缺/題庫的編輯最長等下一輪（現在
-    排程是每 2 小時）就會反映，不用另外接一堆觸發點。"""
+    """「阿財的理解」卡、跟「面談N人／送客戶N人」這類量級數字，都可能在
+    完全沒有新的回饋／推薦／錄取事件時就過期——顧問編輯職缺欄位、題庫、
+    或單純是 placements 的 stage 被客戶 portal／feedback_intake 改了但
+    還沒觸發過 job_card_events（例如這個職缺從來沒有阿財評過分的人選），
+    這些都不會被 sync_events() 摸到。
+    ⚠️ 2026-09-24 修：原本這裡只呼叫 recompute_acai_view()，職缺卡本身的
+    面談人數／送客戶人數／命中率這些數字，對「從來沒有任何 job_card_events」
+    的職缺永遠停在 0——改呼叫 recompute_profile()（本來就會在最後順便呼叫
+    recompute_acai_view()，兩件事一次做完，不用各自維護一份迴圈）。
+    --sync 每輪都會把所有招募中的職缺重算一次，職缺/題庫/客戶回覆的編輯
+    最長等下一輪（現在排程是每 2 小時）就會反映。"""
     rows = d1("SELECT slug FROM jobs WHERE status='open'")
     for r in rows:
-        recompute_acai_view(r['slug'])
+        recompute_profile(r['slug'])
     return len(rows)
 
 
