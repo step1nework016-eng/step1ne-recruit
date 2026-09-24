@@ -1406,7 +1406,8 @@ def _run_job_card_feedback(payload, ai_job_id):
                 f.write(base64.b64decode(payload['image_b64']))
         res = JC.import_feedback(
             slug, raw_text=payload.get('text'), image_path=img_path,
-            actor=payload.get('actor'), event_key=str(ai_job_id))
+            actor=payload.get('actor'), event_key=str(ai_job_id),
+            application_id=payload.get('application_id'))
     finally:
         if img_path and os.path.exists(img_path):
             os.unlink(img_path)

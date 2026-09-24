@@ -279,12 +279,17 @@ def recompute_profile(job_slug):
                         f"WHERE a.job_slug = {q(job_slug)}") or [{'n': 0}])[0]['n']
 
     a_settled = a_advance = a_hire = 0
-    hires = declines = settled = excluded = 0
+    hires = declines = settled = excluded = client_interviewed = 0
     graded_settled = correct_calls = 0
     for r in placements:
         if _is_excluded(r):
             excluded += 1
             continue
+        # 「客戶面試」：送出去以後真的進到客戶端面試的人數——不分等第、
+        # 不分最後有沒有錄取，只問「有沒有真的走到面試這一關」。卡片牆
+        # 直接顯示這個數字，不用點進去才看得到（總指揮交辦）。
+        if _is_advanced(r):
+            client_interviewed += 1
         placed = _is_placed(r)
         declined = _is_declined(r)
         if placed:
@@ -335,10 +340,11 @@ def recompute_profile(job_slug):
         f"INSERT INTO job_card_profile (job_slug, feedback_count, xp_total, level, "
         f" level_capped_by_gate, advance_rate, hire_rate, accuracy_rate, decline_rate, "
         f" a_grade_settled_n, interviewed_n, submitted_n, settled_n, excluded_n, "
-        f" updated_at) VALUES "
+        f" client_interviewed_n, hired_n, updated_at) VALUES "
         f"({q(job_slug)}, {feedback_count}, {xp_total}, {level}, {capped}, "
         f" {qn(advance_rate)}, {qn(hire_rate)}, {qn(accuracy_rate)}, {qn(decline_rate)}, "
         f" {a_settled}, {interviewed_n}, {submitted_n}, {settled}, {excluded}, "
+        f" {client_interviewed}, {hires}, "
         f" datetime('now','+8 hours')) "
         f"ON CONFLICT(job_slug) DO UPDATE SET feedback_count=excluded.feedback_count, "
         f" xp_total=excluded.xp_total, level=excluded.level, "
@@ -348,6 +354,7 @@ def recompute_profile(job_slug):
         f" a_grade_settled_n=excluded.a_grade_settled_n, "
         f" interviewed_n=excluded.interviewed_n, submitted_n=excluded.submitted_n, "
         f" settled_n=excluded.settled_n, excluded_n=excluded.excluded_n, "
+        f" client_interviewed_n=excluded.client_interviewed_n, hired_n=excluded.hired_n, "
         f" updated_at=excluded.updated_at")
 
     recompute_acai_view(job_slug)
@@ -467,11 +474,17 @@ def _masked_summary_text(masked, job_title, feedback_count, updated_at):
     return '\n'.join(lines)
 
 
-def import_feedback(job_slug, raw_text=None, image_path=None, actor=None, event_key=None):
+def import_feedback(job_slug, raw_text=None, image_path=None, actor=None, event_key=None,
+                    application_id=None):
     """event_key：這筆匯入的去重鍵。ai_worker.py 呼叫時會帶 ai_jobs.id 進來——
     同一個 ai_jobs 工作萬一被重跑（例如逾時後救回），同一個 id 只會記一次
     +30 經驗值，不會因為重試就重複加分。CLI 手動測試沒有 ai_jobs.id 可帶，
-    留空時退回目前時間戳記當 key（人工操作不會無限重試，風險可接受）。"""
+    留空時退回目前時間戳記當 key（人工操作不會無限重試，風險可接受）。
+
+    application_id：2026-09-24 加（總指揮交辦）。顧問可以指定「這筆回饋是
+    在補哪位候選人」——「阿財評低分卻錄取」的紅色提醒卡片要在補完之後消失，
+    前提是系統知道這筆回饋跟哪個 application 對上，不然補了也不知道要消哪張。
+    留空代表這筆是泛用的職缺判斷標準，不特別對應到某一位候選人。"""
     if not raw_text and not image_path:
         raise ValueError('要有文字或截圖其中一個')
     existing = d1(f"SELECT full_profile_json FROM job_card_profile WHERE job_slug={q(job_slug)}")
@@ -515,7 +528,7 @@ def import_feedback(job_slug, raw_text=None, image_path=None, actor=None, event_
         f" masked_summary_text=excluded.masked_summary_text, updated_at=excluded.updated_at")
 
     dedupe = f'feedback:{job_slug}:{event_key or now}'
-    insert_event(job_slug, 'feedback_import', FEEDBACK_XP, None, None, None,
+    insert_event(job_slug, 'feedback_import', FEEDBACK_XP, application_id, None, None,
                 f'顧問{actor or ""}匯入客戶回饋', dedupe)
     recompute_profile(job_slug)
     return {'full': full, 'masked': masked, 'masked_summary_text': masked_text}
@@ -535,6 +548,7 @@ def _print_profile(job_slug):
         f'回饋 {p["feedback_count"]} 筆　命中率 {p.get("accuracy_rate")}　'
         f'婉拒率 {p.get("decline_rate")}　A級樣本數 {p.get("a_grade_settled_n")}')
     log(f'  面談 {p.get("interviewed_n", 0)} 人・送客戶 {p.get("submitted_n", 0)} 人・'
+        f'客戶面試 {p.get("client_interviewed_n", 0)} 人・錄取 {p.get("hired_n", 0)} 人・'
         f'有結果 {p.get("settled_n", 0)} 筆・我方結案/失聯不計 {p.get("excluded_n", 0)} 筆')
 
 
