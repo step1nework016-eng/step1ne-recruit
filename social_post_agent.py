@@ -1269,6 +1269,13 @@ def format_topic_requirement(topic, style_row):
     不用像 format_job_requirement() 那樣白名單過濾——但風格提示詞跟話題內容
     一樣要接在 TOPIC_BASE_PROMPT 後面，當成這次產稿的明確指示。"""
     parts = [f"【這次話題的切入方向】\n{topic['body']}"]
+    # 2026-09-24 加：以前只給 body，標題沒進 prompt——今日話題的標題就是新聞／報告原標題，
+    # 具體數字常常只寫在標題裡（例：「類比IC設計工程師年薪中位數172萬奪冠」），
+    # 模型看不到，開頭只能寫得很泛。
+    if (topic.get('name') or '').strip():
+        parts.insert(0, f"【話題標題】{topic['name'].strip()}\n"
+                        "（這是新聞或報告的原標題，裡面的數字和報告名稱可以直接引用；"
+                        "公司名稱一樣照上面的規則，不要因為標題裡有就自己帶入。）")
     if style_row:
         # ⚠️ 2026-09-22 Jacky 反映：給了公式，AI 還是照自己習慣寫。原因是這段
         # 本來只叫「語氣風格」，模型當成可有可無的調味，結構照自己的來。改成
