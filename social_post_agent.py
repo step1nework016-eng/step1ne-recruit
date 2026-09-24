@@ -189,8 +189,8 @@ def voice_card(account_id):
     r = rows[0]
     import hashlib
     src = hashlib.sha1(r['skill_prompt'].encode('utf-8')).hexdigest()[:16]
-    if r.get('voice_card') and r.get('voice_card_src') == src:
-        return r['voice_card']
+    if r.get('voice_card') and r.get('voice_card_src') in (src, 'manual'):
+        return r['voice_card']   # manual＝顧問在後台手改過，改了風格提示詞也不自動蓋掉
     try:
         card = run_claude(VOICE_CARD_PROMPT.format(persona=r['skill_prompt'])).strip()
     except Exception as e:
@@ -199,6 +199,14 @@ def voice_card(account_id):
     if card:
         d1(f"UPDATE social_accounts SET voice_card={q(card[:1200])}, voice_card_src={q(src)} WHERE id={q(account_id)}")
     return card
+
+
+def backfill_voice_cards(limit=1):
+    """顧問在後台按了「重新產生」（卡片被清空）→ 排程空檔補抽，不用等下一次產稿才看得到。"""
+    rows = d1("SELECT id FROM social_accounts WHERE is_active=1 AND skill_prompt IS NOT NULL "
+              "AND skill_prompt<>'' AND (voice_card IS NULL OR voice_card='') LIMIT " + str(int(limit)))
+    for r in rows or []:
+        voice_card(r['id'])
 
 
 def voice_tail(account_id):
@@ -1620,6 +1628,12 @@ def tick():
     if not queue_rows:
         log('沒有需要產貼文的新職缺／話題'
             + ('（備援模式：主力還在處理中的不算）' if ROLE == 'standby' else ''))
+        # 空檔補抽語氣卡（顧問在後台按了「重新產生」的）。備援機不做，免得兩台重複抽。
+        if ROLE != 'standby':
+            try:
+                backfill_voice_cards()
+            except Exception as e:
+                log(f'補抽語氣卡失敗（不影響發文）：{str(e)[:120]}')
         return
     # 2026-09-17 加：Mac 跟 WSL2 兩台機器同時跑這支時發現的真實 race——
     # 原本抓到 status IS NULL 的就直接處理，狀態要等處理完才寫回，中間完全
