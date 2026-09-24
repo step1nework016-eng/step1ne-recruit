@@ -330,6 +330,11 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
     except Exception:
         jobs_txt = '（查不到，請你自己用 wrangler 查 D1 的 jobs 表）'
 
+    # 顧問填的職缺名稱（2026-09-24 加）。先組好字串，不要把含引號的運算式塞進 f-string——
+    # WSL2 的 Python 可能比 3.12 舊，舊版不允許。
+    title_line = ('- 顧問填的職缺名稱：' + str(intake['title_hint'])
+                  + '（對外標題以它為準；可以加地點、班別等區隔字，但不要換成別的職務）\n') if intake.get('title_hint') else ''
+
     rewrite_txt = (f'\n\n## ⚠️ 這是重寫\n顧問看過上一版之後的意見，**這一版一定要照著改**：\n{rewrite_note}\n'
                    if rewrite_note else '')
 
@@ -339,7 +344,7 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
 特別是 Phase 2 禁刊過濾器、Phase 3 判服務線、Phase 4 改寫 JD、Phase 4.5 同名職缺區隔。
 
 ## 顧問已經選好的（不要自己改，也不要問）
-
+{title_line}
 - 服務線：{sl['label']}（{sl['note']}）
 - 客戶對象：{RR.RELATION[intake['client_relation']]['label']}
 - client_named = {rel['client_named']}　→　{named_rule}
