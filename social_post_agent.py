@@ -227,6 +227,51 @@ def voice_tail(account_id):
               '如果語氣卡跟上面的「禁止事項」衝突，禁止事項優先。\n')
 
 
+# ── 話題語氣卡（2026-09-24 加）──────────────────────────────────
+#
+# 顧問講職缺跟聊話題，口吻常常不一樣（招募文要清楚、話題文要像隨手碎念），
+# 同一張 voice_card 兩邊共用，話題文會被拉成招募文的口氣。
+#
+# 所以另外一張 social_accounts.topic_voice_card，**只給話題文用**
+# （process_topic → generate_draft_topic，時事話題與 AI阿財話題都走這條）。
+# 招募文完全不碰：voice_card()／voice_tail() 一個字都沒改。
+#
+# 第一版只能手寫（topic_voice_card_src='manual'），不自動抽。
+# 沒寫話題卡、或讀取出錯 → 退回 voice_tail()，跟加這張卡之前一模一樣。
+def topic_voice_card(account_id):
+    """回這個帳號手寫的話題語氣卡；沒有就回空字串。"""
+    if not account_id:
+        return ''
+    rows = d1(f"SELECT topic_voice_card, topic_voice_card_src FROM social_accounts WHERE id={q(account_id)}")
+    if not rows:
+        return ''
+    r = rows[0]
+    if r.get('topic_voice_card_src') == 'manual' and (r.get('topic_voice_card') or '').strip():
+        return r['topic_voice_card'].strip()
+    return ''
+
+
+def topic_voice_tail(account_id):
+    """話題文 prompt 最後面的語氣段。有話題卡用話題卡，否則照舊用 voice_tail()。
+    兩張卡不會同時出現。"""
+    try:
+        card = topic_voice_card(account_id)
+    except Exception as e:
+        log(f'話題語氣卡讀取失敗，這篇沿用招募語氣卡：{str(e)[:120]}')
+        card = ''
+    if not card:
+        return voice_tail(account_id)
+    return ('\n\n---\n\n【最後一關：語氣——這篇話題文是這位顧問本人在講話】\n'
+            + card
+            + '\n\n⚠️ 優先順序：\n'
+              '1. 安全底線永遠最大：上面的硬性規則、全篇繁體中文（台灣用語）、不得出現任何客戶公司名稱、'
+              '不得編造數字或事實、篇幅比照 Threads 貼文。語氣卡跟這些衝突時，聽安全底線。\n'
+              '2. 結構：有公式就照公式，沒有就照上面的規則。上面公式裡的範例句**只是在示範結構與節奏**，'
+              '不要照抄它們的口吻、用字、emoji。\n'
+              '3. **每一句話的講法、用詞、符號習慣照這張話題語氣卡**。\n'
+              '寫完自己讀一遍：認識這位顧問的人，看得出來是他本人在聊天嗎？看不出來就改用字，不要改結構。\n')
+
+
 SITE = 'https://step1ne.com'
 
 
@@ -1194,9 +1239,10 @@ def format_topic_requirement(topic, style_row):
 
 
 def generate_draft_topic(topic, style_row, account_id=None):
-    # 2026-09-24：話題文以前完全沒帶顧問的語氣（選了公式就只剩公式），補上語氣卡
+    # 2026-09-24：話題文以前完全沒帶顧問的語氣（選了公式就只剩公式），補上語氣卡。
+    # 同日改：有手寫的話題語氣卡就用話題卡，沒有才沿用招募語氣卡（見 topic_voice_tail）
     prompt = (TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row)
-              + voice_tail(account_id) + WRAP_INSTRUCTION)
+              + topic_voice_tail(account_id) + WRAP_INSTRUCTION)
     raw = run_claude(prompt)
     post = extract_post(raw) if raw else None
     return raw, strip_address_numbers(post) if post else None
