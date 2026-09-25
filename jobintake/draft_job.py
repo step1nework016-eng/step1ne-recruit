@@ -306,12 +306,16 @@ def build_prompt(intake, files, src, source_hits, rewrite_note, workdir):
     sl = RR.apply_service_line(intake['service_line'])
     skill = open(SKILL, encoding='utf-8').read()
 
+    # ⚠️ 2026-09-25 修（Jacky 抓到外洩）：這裡原本寫「client_named==1 就可以在頁面具名」。
+    #    但 client_named 管的是「送給客戶的履歷要不要寫人選姓名」，不是「職缺頁能不能寫客戶名」。
+    #    已簽約的築樂（relation=signed → client_named=1）因此被寫進 executive-driver-assistant-tokyo-hakuba
+    #    的職缺頁（日文漢字「築楽国際開発株式会社」，守門員當時也沒認出來）。
+    #    對外站不寫客戶名是 Jacky 的固定規則，跟簽約與否無關——一律匿名。
     named_rule = (
-        '客戶已簽約，**可以**在頁面上具名寫出公司名稱。'
-        if rel['client_named'] == 1 else
-        '⚠️ 客戶尚未簽約，**絕對不可以**在任何對外欄位出現公司名稱、'
-        '公司簡稱、集團名或任何足以指認的線索（統編、地址門牌、官網、產品名）。'
-        '一律改用產業描述。client_name 欄位仍要填真實公司名——那一欄只進內部資料庫，不進頁面。')
+        '⚠️ **絕對不可以**在任何對外欄位（標題、meta、內文、JSON-LD、FAQ）出現公司名稱、'
+        '公司簡稱、日文／英文／簡體寫法、集團名或任何足以指認的線索（統編、地址門牌、官網、產品名）。'
+        '不管客戶有沒有簽約都一樣。一律改用產業描述（例：「日商不動產開發集團」）。'
+        'client_name 欄位仍要填真實公司名——那一欄只進內部資料庫，不進頁面。')
 
     hits_txt = PF.format_report(source_hits, title='原始資料的禁刊掃描') if source_hits else '（原始資料沒有命中禁刊規則）'
 
@@ -859,8 +863,8 @@ def process(intake, dry=False, rewrite_note=None, keep=False):
                              ensure_ascii=False, indent=1)
     output_hits = PF.scan_output(
         public_blob,
-        # 未簽約才把客戶名列為禁字——已簽約本來就可以具名
-        client_name=intake.get('client_name') if rel['client_named'] == 0 else None,
+        # 2026-09-25 改：客戶名一律列為禁字，簽約與否都一樣（見 build_prompt 的 named_rule 說明）
+        client_name=intake.get('client_name'),
         client_code=intake.get('client_code'))
     log(f'禁刊過濾器（成品對外欄位）：命中 {len(output_hits)} 處'
         + ('　⛔ 不可發布' if output_hits else ''))
