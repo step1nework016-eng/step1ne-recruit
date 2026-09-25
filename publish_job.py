@@ -367,6 +367,12 @@ def main():
         pass  # 查不到就用預設值，不擋主流程
 
     if a.deploy:
+        # 2026-09-25 加：推之前先跑客戶名守門員，沒過就不部署（見 publish_approved.git_push）
+        guard = subprocess.run(['python3', 'scripts/check_no_client_names.py', '-v'], cwd=SITE,
+                               capture_output=True, text=True, timeout=120)
+        if guard.returncode != 0:
+            print('⛔ 客戶名守門員沒過，沒有部署：\n' + (guard.stdout or guard.stderr)[-800:])
+            return
         subprocess.run(['gh', 'auth', 'switch', '-u', gh_user], capture_output=True)
         subprocess.run(['git', 'add', '-A'], cwd=SITE, check=True)
         subprocess.run(['git', 'commit', '-q', '-m',

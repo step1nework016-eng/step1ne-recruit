@@ -142,6 +142,13 @@ def git_push(spec):
     """
     slug = spec.get('slug')
     paths = ['apply/jobs.json', 'jobs/index.html', 'sitemap.xml', f'jobs/{slug}/']
+    # ⚠️ 2026-09-25 加：推之前一定先跑客戶名守門員。之前這裡直接 push，守門員只有
+    #    人記得手動跑 predeploy.sh 才會擋——築樂的日文名就這樣上了正式站。
+    #    守門員沒過（或跑不起來）就不推，檔案留在本機等人處理。
+    guard = subprocess.run(['python3', 'scripts/check_no_client_names.py', '-v'], cwd=SITE_ROOT,
+                           capture_output=True, text=True, timeout=120)
+    if guard.returncode != 0:
+        return False, ('⛔ 客戶名守門員沒過，沒有部署：\n' + (guard.stdout or guard.stderr)[-800:])
     try:
         subprocess.run(['git', 'add', *paths], cwd=SITE_ROOT, check=True,
                         capture_output=True, text=True, timeout=30)
