@@ -1679,7 +1679,19 @@ def build_prompt(ctx, skill_md):
         # 🚨 外語驗證要不要做，不再讓阿財自己從 must_skills 長文字判斷——
         #    2026-08-13 加，跟 seniority 同一個做法：顧問在後台明講，這裡直接下指令。
         lang = (job.get('interview_language') or '').strip()
-        if lang:
+        if lang and '閱讀' in lang:
+            # 2026-09-29 Jacky：有些職缺只要求「看得懂」（例：日本項目財務會計要英文閱讀），
+            # 用對談去考會考得比條件更嚴。interview_language 寫成「英文閱讀」這類就走閱讀題。
+            base = lang.replace('閱讀', '').strip() or '外語'
+            lines.append(f'  🚨 **這個職缺要驗證{base}閱讀能力（看得懂就好，不用會講）——**'
+                         f'照 SKILL.md「職缺要求外語」的⓪先問程度（說不會就不考）；說會的話，'
+                         f'**不要用{base}對談**，改成貼一小段跟這份工作有關的{base}原文（3～5 句，'
+                         f'例如財務報表附註、合約條款、往來信件，要自己寫、不要貼真實客戶文件），'
+                         f'請他**用中文**講這段在說什麼、重點數字或條件是什麼。'
+                         f'判斷看他抓到的意思對不對，不看中文講得漂不漂亮；'
+                         f'他明顯查翻譯（回得很慢又一字不差）要在報告註明。'
+                         f'報告 language_verification.how 填「閱讀」。收尾前務必檢查有沒有真的做過。**')
+        elif lang:
             lines.append(f'  🚨 **這個職缺要驗證{lang}——開場說明時就要預告，'
                          f'照 SKILL.md「職缺要求外語」那一整章的步驟①–④執行，'
                          f'收尾前務必檢查有沒有真的做過。**')
@@ -2254,7 +2266,7 @@ REPORT_JSON_SPEC = r'''
     "required_language": "職缺要求驗證的語言，例如「日文」；職缺沒有要求就填 null",
     "tested": true,
     "verdict": "通過|不通過|未測試|自述不會",
-    "how": "口說|文字|null",
+    "how": "口說|文字|閱讀|null",
     "evidence": "他當場用該語言回答的原話一句，沒測就空字串"
   },
   "fit_scores": {
@@ -2646,7 +2658,7 @@ def _normalize_report_json(obj, name='', job=None):
         'required_language': s(lv.get('required_language')) or None,
         'tested': bool(lv.get('tested')),
         'verdict': s(lv.get('verdict')) if s(lv.get('verdict')) in ('通過', '不通過', '未測試', '自述不會') else '未測試',
-        'how': s(lv.get('how')) if s(lv.get('how')) in ('口說', '文字') else None,
+        'how': s(lv.get('how')) if s(lv.get('how')) in ('口說', '文字', '閱讀') else None,
         'evidence': s(lv.get('evidence')),
     }
 
