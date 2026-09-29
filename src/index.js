@@ -4384,6 +4384,7 @@ export default {
       const clean = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
       const company = clean(b.company, 80), job = clean(b.job, 200), contact = clean(b.contact, 120);
       const page = clean(b.page, 200), name = clean(b.name, 40);
+      const plan = clean(b.plan, 20);
       if (!company || !contact) return json(request, { ok: false, error: '請填公司名稱，以及 Email 或電話' }, 400);
       const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact);
       const isPhone = /^[0-9+\-()#\s轉]{7,}$/.test(contact);
@@ -4396,7 +4397,7 @@ export default {
         `INSERT INTO company_leads (company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?)`
       ).bind(company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
-             JSON.stringify({ contact, page }), now, now).run().catch(async (e) => {
+             JSON.stringify({ contact, page, plan }), now, now).run().catch(async (e) => {
         saved = false;
         await notify(env, `⚠️ 官網企業詢問寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
           { message_thread_id: THREAD.system }).catch(() => {});
@@ -4404,6 +4405,7 @@ export default {
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
+        + (plan ? `想用：${plan}\n` : '')
         + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
         + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
         + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
