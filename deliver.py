@@ -1303,6 +1303,20 @@ def build_client_html_v2(data, meta, show=None):
     if data.get('axis_notes') and not (data.get('observations') or {}).get('axis_notes'):
         data = dict(data, observations=dict(data.get('observations') or {}, axis_notes=data['axis_notes']))
     spec_rows = spectrum(data, meta) or []
+    # 點的位置以「對話佐證的結論」為準（佐證句最後會寫偏哪邊），測驗分數只在佐證沒講時當備用——
+    # 9/29 測試：測驗推的點在「內斂」，佐證卻寫「偏外向健談」，同一條軸自相矛盾。
+    def _pos_from_note(l, r, note, p0):
+        n = str(note or '')
+        if not n:
+            return p0
+        if f'略偏{l}' in n: return 38
+        if f'略偏{r}' in n: return 62
+        if f'偏{l}' in n: return 18
+        if f'偏{r}' in n: return 82
+        if '兼顧' in n or '中間' in n: return 50
+        return p0
+    spec_rows = [(l, r, _pos_from_note(l, r, c, p), re.sub(r'^[^：:]{2,20}↔[^：:]{2,20}[：:]\s*', '', str(c or '')) or None)
+                 for l, r, p, c in spec_rows]
     spec_html = ''.join(
         f'<div class="axis"><span class="l">{e(l)}</span><span class="bar"><span class="dot" style="left:{p}%"></span></span><span class="r">{e(r)}</span></div>'
         + (f'<p class="axis-note">{e(txt(c))}</p>' if c else '')

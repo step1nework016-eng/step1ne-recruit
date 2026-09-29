@@ -160,8 +160,18 @@ def process_one(req_row):
     if data.get('must_check_items'):
         meta['must_check_items'] = data['must_check_items']
 
+    # 2026-09-29：AI 內容有新版欄位（Jacky 新版版型）就用新版；舊資料退回舊版版型。
+    if company_id and not meta.get('client_display_for_job'):
+        try:
+            cc = D.d1(f"SELECT display_name FROM client_companies WHERE id={D.q(company_id)}")
+            if cc and cc[0].get('display_name'):
+                meta['client_display_for_job'] = cc[0]['display_name']
+        except Exception:
+            pass
+    use_v2 = bool(data.get('qa') or data.get('intro') or data.get('summary_row'))
     try:
-        html = deliver.build_client_html(data, meta, show=show)
+        html = (deliver.build_client_html_v2(data, meta, show=show) if use_v2
+                else deliver.build_client_html(data, meta, show=show))
     except Exception as e:
         D.d1(f"UPDATE client_report_requests SET status='error', error={D.q(f'組HTML失敗：{e}')}, "
              f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
