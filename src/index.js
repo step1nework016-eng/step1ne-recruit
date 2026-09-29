@@ -4231,6 +4231,20 @@ export default {
           + `這個信箱寄不到，要重新找窗口。`,
           row.tg_message_id ? { reply_to_message_id: row.tg_message_id } : undefined).catch(() => {});
       } else if (type === 'email.opened') {
+        // 2026-09-29 Jacky 要的：開信要主動通知，不用自己去看板查。
+        // 只在「第一次開」通知——同一封信被預覽、重開很常見，每次都推會洗版。
+        // 開信數只當參考（Apple 郵件會自動預載），通知裡講明，免得過度解讀。
+        if (!row.opened_at && row.status === 'sent') {
+          const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
+          if (topic) {
+            await notify(env,
+              `📬 開發信被打開了\n\n公司：${row.company}\n窗口：${row.contact_name || '—'}\n`
+              + `寄出：${String(row.sent_at || '').slice(0, 16)}\n`
+              + `主旨：${row.subject || '—'}\n\n`
+              + `※ 開信只當參考（手機郵件可能自動預載），有回信才算數。`,
+              { message_thread_id: topic }).catch(() => {});
+          }
+        }
         await setEvent(
           `UPDATE bd_outreach SET delivery_status=CASE WHEN delivery_status IN ('bounced','complained')
              THEN delivery_status ELSE 'opened' END,
