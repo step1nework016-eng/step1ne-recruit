@@ -699,7 +699,9 @@ async function domainAcceptsMail(domain) {
 // 14 天內要確認過對方「現在」還開著信裡提到的職缺，並留下依據。
 function bdJobChecked(row) {
   if (!row || !row.job_checked_at) return false;
-  const t = Date.parse(String(row.job_checked_at).replace(' ', 'T') + '+08:00');
+  // 只寫日期（2026-09-29）的也要認得，不然會被當成沒查過（9/29 大同那封就是這樣卡住）
+  const raw = String(row.job_checked_at).trim();
+  const t = Date.parse((raw.length === 10 ? raw + 'T00:00:00' : raw.replace(' ', 'T')) + '+08:00');
   return Number.isFinite(t) && (Date.now() - t) < 14 * 86400000;
 }
 
