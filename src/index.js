@@ -721,7 +721,8 @@ async function sendBdMail(env, to, subject, body, cvFileId) {
         //    改用子網域：BD_REPLY_TO 設成 reply@bd.step1ne.com，
         //    由 bd.step1ne.com 這個子網域的 Email Routing 轉寄進來，主信箱完全不動。
         //    沒設定就退回 official@，行為跟以前一樣。
-        reply_to: env.BD_REPLY_TO || 'official@step1ne.com',
+        // 2026-09-29：BD_REPLY_TO 可用逗號放多個（official@ ＋ reply@reply.step1ne.com），客戶回信兩邊都收得到
+        reply_to: String(env.BD_REPLY_TO || 'official@step1ne.com').split(',').map(s => s.trim()).filter(Boolean),
         ...(attachments.length ? { attachments } : {}),
       }),
       signal: AbortSignal.timeout(20000),
@@ -784,7 +785,8 @@ async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
       body: JSON.stringify({
         from: 'Jacky Chen <official@step1ne.com>',
         to: [to], subject, text: bodyText, html,
-        reply_to: env.BD_REPLY_TO || 'official@step1ne.com',
+        // 2026-09-29：BD_REPLY_TO 可用逗號放多個（official@ ＋ reply@reply.step1ne.com），客戶回信兩邊都收得到
+        reply_to: String(env.BD_REPLY_TO || 'official@step1ne.com').split(',').map(s => s.trim()).filter(Boolean),
       }),
       signal: AbortSignal.timeout(20000),
     });
