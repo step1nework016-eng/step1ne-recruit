@@ -1251,6 +1251,13 @@ def html_to_pdf(html_text, out_path):
             f.write(html_text)
         profile_dir = os.path.join(tempfile.gettempdir(), 'step1ne-chrome-pdf')
         os.makedirs(profile_dir, exist_ok=True)
+        # 2026-09-29：上一次 Chrome 被強制結束會留下 Singleton 鎖檔（9/20 那次一直留著），
+        # 之後每次都卡住、逾時、客戶版履歷 PDF 全部產不出來。啟動前先清掉。
+        for _n in ('SingletonLock', 'SingletonCookie', 'SingletonSocket'):
+            try:
+                os.remove(os.path.join(profile_dir, _n))
+            except OSError:
+                pass
         if os.path.exists(out_path):
             os.remove(out_path)
         proc = subprocess.Popen(
