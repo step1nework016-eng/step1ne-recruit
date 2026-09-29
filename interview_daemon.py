@@ -2253,7 +2253,7 @@ REPORT_JSON_SPEC = r'''
   "language_verification": {
     "required_language": "職缺要求驗證的語言，例如「日文」；職缺沒有要求就填 null",
     "tested": true,
-    "verdict": "通過|不通過|未測試",
+    "verdict": "通過|不通過|未測試|自述不會",
     "how": "口說|文字|null",
     "evidence": "他當場用該語言回答的原話一句，沒測就空字串"
   },
@@ -2381,6 +2381,8 @@ REPORT_JSON_RULES = (
     '    還是錄音回的。符合就 `verdict` 填「通過」、`how` 據實填「口說」或「文字」；\n'
     '    他答不出來或明顯迴避才填「不通過」；那一題因為故障、跳過、忘記問而根本\n'
     '    沒發生，才填「未測試」——這三種是完全不同的情況，不要混著判斷。\n'
+    '    2026-09-29 加第四種：候選人一被問程度就明講不會／程度是 0，照規定沒考，填「自述不會」\n'
+    '    （evidence 放他那句原話）。他說會、哪怕只說一點點卻沒考到，是「未測試」，不是「自述不會」。\n'
     '    職缺沒有外語要求，整欄照 SPEC 的 null／預設值處理，不要自己編一個語言出來測。\n'
 )
 
@@ -2643,7 +2645,7 @@ def _normalize_report_json(obj, name='', job=None):
     out['language_verification'] = {
         'required_language': s(lv.get('required_language')) or None,
         'tested': bool(lv.get('tested')),
-        'verdict': s(lv.get('verdict')) if s(lv.get('verdict')) in ('通過', '不通過', '未測試') else '未測試',
+        'verdict': s(lv.get('verdict')) if s(lv.get('verdict')) in ('通過', '不通過', '未測試', '自述不會') else '未測試',
         'how': s(lv.get('how')) if s(lv.get('how')) in ('口說', '文字') else None,
         'evidence': s(lv.get('evidence')),
     }
@@ -3125,6 +3127,11 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
             # 完全不同的狀況，訊息要講清楚是哪一種，不要都講成「沒收到驗證紀錄」。
             lv = report_json_obj.get('language_verification') or {}
             verdict = lv.get('verdict')
+            if verdict == '自述不會':
+                tg(f'⚠️ {name}（{job_slug}）自己說**不會{lang}**'
+                   f'{"（原話：" + lv.get("evidence") + "）" if lv.get("evidence") else ""}，照規則沒有實測。\n'
+                   f'這個職缺{lang}是必要條件，要不要往下推請顧問判斷。', THREAD_POOL)
+                raise StopIteration  # 已經通知過，不再送下面「沒通過驗證」那則
             if verdict == '不通過':
                 detail = (f'這場**有測**，但候選人{lang}回答不出來或明顯迴避'
                           f'{"（" + lv.get("evidence") + "）" if lv.get("evidence") else ""}。')
@@ -3137,6 +3144,8 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
                f'補驗連結（候選人單獨錄一段，不用重開整場面談；打字回答也算數）：\n'
                f'https://step1ne.com/interview/?t={jl[0].get("chat_token") or ""}',
                THREAD_POOL)
+    except StopIteration:
+        pass
     except Exception as ex:
         log(f'（外語驗證檢查失敗，不影響交付：{ex}）')
 
