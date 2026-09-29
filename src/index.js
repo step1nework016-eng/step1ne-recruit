@@ -4373,6 +4373,36 @@ export default {
     // 舊的 /assessment/ 開頭保留成相容別名，但只認得下面那幾個固定子路徑
     // （health／lead-email／submit／submissions／cases／fetch-url），
     // 候選人的隨機碼 token 一定落不進來，不會再撞第二次。
+    // ── 官網企業詢問（2026-09-29 Jacky：這週以開發客戶為主）──────────────
+    // 企業端文章 30 天 257 人進站、0 人留下聯絡方式：唯一的出口是「加 LINE」，
+    // 企業決策者通常不會為了問一句話去加陌生 LINE。改在文章 CTA 裡直接放三欄小表單
+    // （公司／職缺／Email 或電話），送到這裡：寫進 company_leads，推 TG「🏢 官網企業詢問」。
+    if (p === '/bd/inbound-lead' && request.method === 'POST') {
+      let b;
+      try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+      if (b.website) return json(request, { ok: true });   // 隱藏欄位被填＝機器人，假裝成功
+      const clean = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+      const company = clean(b.company, 80), job = clean(b.job, 200), contact = clean(b.contact, 120);
+      const page = clean(b.page, 200), name = clean(b.name, 40);
+      if (!company || !contact) return json(request, { ok: false, error: '請填公司名稱，以及 Email 或電話' }, 400);
+      const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact);
+      const isPhone = /^[0-9+\-()#\s轉]{7,}$/.test(contact);
+      if (!isEmail && !isPhone) return json(request, { ok: false, error: 'Email 或電話格式看起來不正確' }, 400);
+      const now = nowTaipei();
+      await env.DB.prepare(
+        `INSERT INTO company_leads (id, company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(crypto.randomUUID(), company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
+             JSON.stringify({ contact, page }), now, now).run().catch(() => {});
+      const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
+      await notify(env,
+        `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
+        + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
+        + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`,
+        topic ? { message_thread_id: topic } : undefined).catch(() => {});
+      return json(request, { ok: true });
+    }
+
     const HM_SUBS = ['/health', '/lead-email', '/submit', '/submissions', '/cases', '/fetch-url'];
     const isHmPath = p === '/hiring-mode' || p.startsWith('/hiring-mode/')
       || ((p === '/assessment' || p.startsWith('/assessment/'))
