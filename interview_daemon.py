@@ -520,12 +520,24 @@ def _admin_token():
     return None
 
 
+def _trad(text):
+    """阿財說出去、寫下來的字一律繁體（2026-09-29：對候選人講了「换个方向想请教」）。
+    只轉一對一的簡繁字，日文內容不動；失敗就原文照送，不能因為轉字讓面談卡住。"""
+    try:
+        import zh_trad
+        return zh_trad.to_traditional(text, logger=log)
+    except Exception:
+        return text
+
+
 def save_report(app_id, content_md, content_json):
     """把初篩報告寫進 D1——2026-08-13 改走 Worker 的 /admin/report-ingest，
     不再用 wrangler d1 execute（連 --file= 都躲不過 D1 本身的單值大小上限，
     徐振倫那場報告就是這樣整個沒存進去）。原生 D1 binding 走的是不同路徑，
     跟 PDF 存檔（saveUpload）同一個道理。回傳報告 id，失敗回傳 None。
     """
+    content_md = _trad(content_md)
+    content_json = _trad(content_json) if isinstance(content_json, str) else content_json
     try:
         tok = _admin_token()
         if not tok:
@@ -1419,6 +1431,10 @@ def build_prompt(ctx, skill_md):
 
     lines = []
     lines.append('你是「阿財」，正在跟一位候選人進行即時文字面談。以下是你的作業規範：\n')
+    # 2026-09-29：規範裡從來沒寫「用繁體」，阿財偶爾冒出簡體（换个方向想请教）。程式層另有 _trad() 轉字，
+    # 但一字多義的字（系/係、后/後、发/髮）轉不了，所以源頭也要講清楚。
+    lines.append('🚨 一律使用台灣繁體中文與台灣用語，一個簡體字都不可以出現（例：请→請、没→沒、关系→關係、项目→專案）。'
+                 '候選人用簡體字打字，你照樣用繁體回。\n')
     lines.append(skill_md)
     lines.append('\n\n─────────  本場資料  ─────────\n')
     # 2026-09-17 加：⚠️ 2026-09-17 真實事故——周亦宣那場，履歷寫「2025/7到職」，
@@ -2835,7 +2851,8 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
             '不是候選人本次應徵的職缺）】\n'
             + json.dumps(ctx['other_jobs'][:40], ensure_ascii=False, indent=1))
     prompt = (
-        '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n\n'
+        '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n'
+        '🚨 報告一律使用台灣繁體中文，不可以有任何簡體字。\n\n'
         + skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
@@ -3013,7 +3030,7 @@ def wrap_up(app):
             f'隨時回來都可以接著談，不用重頭開始。',
             '想直接跟真人顧問聊也沒問題，透過下方的 LINE 告訴我們就可以。謝謝您今天撥出時間 🙏',
         ]
-        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in bye)
+        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in bye)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
         finish(app_id, name, app['job_slug'], context_for(app_id),
                abandoned=True, close=False)   # 只產報告，房間留著
@@ -3040,7 +3057,7 @@ def timeout_close(app):
             '不好意思，我們今天的面談時間到了，先在這裡跟您告一段落。',
             '目前談到的內容我都會整理給顧問，不管有沒有下一步都會通知您，謝謝您今天撥空 🙏',
         ]
-        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in bye)
+        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in bye)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
         finish(app_id, name, app['job_slug'], context_for(app_id),
                abandoned=True, close=False)   # 只產報告，房間留著
@@ -3172,7 +3189,7 @@ def handle(app):
                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        vals = ','.join(f"({q(app_id)},'assistant',{q(m)},'{now}')" for m in msgs)
+        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in msgs)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
         snap_signals(app_id, now)
         log(f'{name}：回了 {len(msgs)} 則')
