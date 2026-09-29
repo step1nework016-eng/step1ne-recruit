@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>{{DOC_TITLE}}</title>
+<!-- 2026-09-29 Jacky 新版客戶履歷版型（照「江逸泓_人選推薦_役員專屬司機兼助理.pdf」） -->
+<style>
+@page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+* { box-sizing: border-box; }
+body { font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif; color: #1f2733; font-size: 10.5pt; line-height: 1.65; margin: 0; }
+.brand { font-size: 9.5pt; font-weight: 700; color: #5a6472; letter-spacing: .5px; margin: 0 0 6px; }
+h1 { font-size: 20pt; margin: 0 0 4px; }
+.job { color: #1f4e79; font-weight: 700; font-size: 11pt; margin: 0 0 8px; }
+.intro { margin: 0 0 12px; }
+table { width: 100%; border-collapse: collapse; margin: 0 0 14px; }
+th, td { border: 1px solid #3b4450; padding: 6px 8px; vertical-align: top; text-align: left; }
+.sum th { background: #e7edf5; font-weight: 700; }
+.basics th { background: #e7edf5; width: 20%; font-weight: 700; }
+h2 { color: #1f4e79; font-size: 12.5pt; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 1.5px solid #1f4e79; page-break-after: avoid; }
+.wh { margin: 0 0 10px; page-break-inside: avoid; }
+.wh .dur { color: #1f4e79; font-weight: 700; }
+.wh .role { font-weight: 700; }
+.wh .sal { color: #6b7380; font-size: 9.5pt; }
+ul { margin: 4px 0 0; padding-left: 16px; }
+li { margin: 2px 0; }
+.gap { color: #6b7380; font-size: 9pt; margin: 4px 0 0; }
+.qa { margin: 0 0 8px; page-break-inside: avoid; }
+.qa .q { color: #1f2733; }
+.qa .q b { color: #6b7380; margin-right: 4px; }
+.ok { color: #2e7d32; font-weight: 700; }
+.axis { display: flex; align-items: center; gap: 10px; margin: 8px 0 0; }
+.axis .l, .axis .r { width: 110px; font-size: 10pt; }
+.axis .l { text-align: right; }
+.axis .bar { position: relative; flex: 1; height: 2px; background: #9aa6b5; }
+.axis .dot { position: absolute; top: -5px; width: 12px; height: 12px; border-radius: 50%; background: #1f4e79; margin-left: -6px; }
+.axis-note { color: #5a6472; font-size: 9pt; margin: 2px 0 6px; }
+.quote { margin: 0; }
+.flags p { margin: 0 0 6px; }
+.stamp { color: #6b7380; font-size: 8.5pt; margin: 14px 0 6px; padding-bottom: 8px; border-bottom: 1px solid #c8ced6; }
+.foot { color: #6b7380; font-size: 9pt; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<p class="brand">{{BRAND_LABEL}}</p>
+<h1>{{NAME}}</h1>
+<p class="job">推薦職缺：{{JOB}}</p>
+<p class="intro">{{INTRO}}</p>
+
+<table class="sum">
+  <tr><th style="width:30%">期望待遇</th><th style="width:14%">可到職</th><th>工作地點</th><th style="width:16%">目前狀態</th></tr>
+  <tr><td>{{EXPECTED}}</td><td>{{AVAILABLE}}</td><td>{{LOCATION}}</td><td>{{STATUS}}</td></tr>
+</table>
+
+<h2>基本資料</h2>
+<table class="basics">{{BASICS_ROWS}}</table>
+
+<!--@IF:history@--><h2>工作經歷</h2>{{HISTORY}}{{GAP}}<!--@ENDIF:history@-->
+
+<!--@IF:qa@--><h2>{{QA_TITLE}}</h2>{{QA}}<!--@ENDIF:qa@-->
+
+<!--@IF:cond@--><h2>與職缺條件對照</h2><ul>{{COND}}</ul><!--@ENDIF:cond@-->
+
+<!--@IF:pros@--><h2>推薦項</h2><ul>{{PROS}}</ul><!--@ENDIF:pros@-->
+
+<!--@IF:gaps@--><h2>缺項</h2><ul>{{GAPS}}</ul><!--@ENDIF:gaps@-->
+
+<!--@IF:spectrum@--><h2>特質與風格</h2>{{SPECTRUM}}<!--@ENDIF:spectrum@-->
+
+<!--@IF:summary@--><h2>一句話總結</h2><p class="quote">「{{SUMMARY}}」</p><!--@ENDIF:summary@-->
+
+<!--@IF:flags@--><h2>有{{FLAGS_COUNT}}件事想先跟您說明</h2><div class="flags">{{FLAGS}}</div><!--@ENDIF:flags@-->
+
+<p class="stamp">{{STAMP_TEXT}}</p>
+{{FOOTER}}
+</body>
+</html>

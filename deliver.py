@@ -1229,6 +1229,112 @@ def build_consultant_html(data, meta):
 
 
 # ─────────────────────────────────────────────────────────────
+
+def build_client_html_v2(data, meta, show=None):
+    """2026-09-29 Jacky 新版客戶履歷（照他給的「江逸泓_人選推薦」PDF）。
+
+    跟舊版差在：開頭敘事段＋四格摘要、基本資料含年齡、工作經歷由舊到新且含每段月薪、
+    面談／電洽內容合成一塊一問一答、條件對照打勾、推薦項／缺項、光譜每軸附根據、
+    「有 N 件事想先跟您說明」寫事實＋人選因應。年齡與過去薪資 Jacky 明確要放。
+    資料來自 ai_worker.prompt_client_report_synthesize 的新欄位；舊資料沒有這些欄位時
+    由 client_report_tick 退回舊版 build_client_html。
+    """
+    anonymous = is_anonymous(meta)
+    name = client_display_name(meta)
+
+    def txt(v):
+        v = scrub_for_client(v)
+        return _strip_name(v, meta.get('name'), name) if anonymous else v
+
+    sr = data.get('summary_row') or {}
+    b = data.get('basics') or {}
+    rows = []
+    def row(label, val):
+        if val:
+            rows.append(f'<tr><th>{e(label)}</th><td>{val}</td></tr>')
+    row('年齡', e(txt(b.get('age'))))
+    row('居住地', e(txt(b.get('residence'))))
+    edu = [txt(x) for x in (data.get('education_lines') or []) if txt(x)]
+    row('學歷', '<br>'.join(e(x) for x in edu) if edu else e(txt(b.get('education'))))
+    row('語言', e(txt(b.get('languages'))))
+    row('持有證照', e(txt(b.get('certificates'))))
+    row('駕駛執照', e(txt(b.get('license'))))
+    srcs = ['履歷']
+    if meta.get('has_real_interview'):
+        srcs.append('AI 面談逐字稿')
+    if meta.get('call_summary_client') or data.get('qa'):
+        srcs.append('顧問電洽摘要')
+    if meta.get('disc'):
+        srcs.append('工作風格測驗')
+    row('來源', e(srcs[0] + '／' + '＋'.join(srcs[1:]) if len(srcs) > 1 else srcs[0]))
+
+    # 工作經歷：由舊到新（模型給的順序不一定，靠起始年份排）
+    def _start(w):
+        m = re.search(r'(19|20)\d{2}', str(w.get('duration') or ''))
+        return m.group(0) if m else '9999'
+    wh = [w for w in (data.get('work_history') or []) if w.get('nature') != '工讀']
+    wh = sorted(wh, key=_start)
+    hist = []
+    for w in wh:
+        dur = txt(w.get('duration'))
+        m = re.search(r'[（(]([^）)]*年[^）)]*)[）)]', dur or '')
+        head = f'{m.group(1)}（{re.sub(r"[（(].*?[）)]", "", dur).strip()}）' if m else dur
+        bl = ''.join(f'<li>{e(txt(x))}</li>' for x in (w.get('detail_bullets') or []) if txt(x))
+        if txt(w.get('leave_reason')):
+            bl += f'<li>{e(txt(w.get("leave_reason")))}</li>'
+        sal = txt(w.get('salary'))
+        hist.append(f'<div class="wh"><div class="dur">{e(head)}</div>'
+                    f'<div class="role">{e(txt(w.get("role")))}｜{e(txt(w.get("employer")))}</div>'
+                    + (f'<div class="sal">{e(sal)}</div>' if sal else '')
+                    + (f'<ul>{bl}</ul>' if bl else '') + '</div>')
+    gap = txt(data.get('gap_note'))
+    gap_html = f'<p class="gap">（{e(gap)}）</p>' if gap else ''
+
+    qa = [(txt(x.get('q')), txt(x.get('a'))) for x in (data.get('qa') or []) if isinstance(x, dict)]
+    qa = [(q, a) for q, a in qa if q and a]
+    qa_html = ''.join(f'<div class="qa"><div class="q"><b>Q｜</b>{e(q)}</div><div>A：{e(a)}</div></div>' for q, a in qa)
+    qa_title = '電洽逐項查證（顧問詢問內容與人選回覆）' if (meta.get('call_summary_client') or not meta.get('has_real_interview')) else '面談逐項查證（詢問內容與人選回覆）'
+
+    cond = ''.join(f'<li>{e(txt(x.get("requirement")))}　<span class="ok">✓</span> {e(txt(x.get("evidence")))}</li>'
+                   for x in (data.get('condition_check') or []) if isinstance(x, dict) and txt(x.get('requirement')))
+    pros = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('recommend_points') or []) if txt(x))
+    gaps = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('gaps') or []) if txt(x))
+
+    if data.get('axis_notes') and not (data.get('observations') or {}).get('axis_notes'):
+        data = dict(data, observations=dict(data.get('observations') or {}, axis_notes=data['axis_notes']))
+    spec_rows = spectrum(data, meta) or []
+    spec_html = ''.join(
+        f'<div class="axis"><span class="l">{e(l)}</span><span class="bar"><span class="dot" style="left:{p}%"></span></span><span class="r">{e(r)}</span></div>'
+        + (f'<p class="axis-note">{e(txt(c))}</p>' if c else '')
+        for l, r, p, c in spec_rows)
+
+    flags = [txt(x) for x in (data.get('notes_to_client') or []) if txt(x)]
+    alt = txt(data.get('alt_suggestion'))
+    flags_html = ''.join(f'<p>{i + 1}. {e(x)}</p>' for i, x in enumerate(flags)) + (f'<p>{e(alt)}</p>' if alt else '')
+    zh_n = '一二三四五六七八九十'
+
+    job = e(meta.get('job_title') or meta.get('job_slug') or '')
+    if meta.get('client_named') and meta.get('client_display_for_job') and not anonymous:
+        job += f'（{e(meta["client_display_for_job"])}）'
+    phrase = 'AI 結構化初步面談' if meta.get('has_real_interview') else '顧問電話初篩'
+    brand = _branding(meta, phrase)
+    brand['STAMP_TEXT'] = ('本推薦報告內容整理自候選人' + '、'.join(['履歷'] + srcs[1:]).replace('顧問電洽摘要', '顧問電洽紀錄')
+                           + '，正式聘用前建議另行安排面試與資歷查證。')
+    tpl = open(os.path.join(TPL_DIR, 'client_v2.html'), encoding='utf-8').read()
+    return _render(tpl, {
+        'NAME': e(name), 'JOB': job, 'INTRO': e(txt(data.get('intro') or data.get('overview'))),
+        'EXPECTED': e(txt(sr.get('expected_salary')) or '未提及'),
+        'AVAILABLE': e(txt(sr.get('available')) or '未提及'),
+        'LOCATION': e(txt(sr.get('location')) or '未提及'),
+        'STATUS': e(txt(sr.get('status')) or '未提及'),
+        'BASICS_ROWS': ''.join(rows), 'HISTORY': ''.join(hist), 'GAP': gap_html,
+        'QA_TITLE': qa_title, 'QA': qa_html, 'COND': cond, 'PROS': pros, 'GAPS': gaps,
+        'SPECTRUM': spec_html, 'SUMMARY': e(txt(data.get('one_line_summary'))),
+        'FLAGS_COUNT': zh_n[len(flags) - 1] if 0 < len(flags) <= 10 else str(len(flags)),
+        'FLAGS': flags_html, **brand,
+    }, {'history': bool(hist), 'qa': bool(qa_html), 'cond': bool(cond), 'pros': bool(pros), 'gaps': bool(gaps),
+        'spectrum': bool(spec_html), 'summary': bool(txt(data.get('one_line_summary'))), 'flags': bool(flags or alt)})
+
 def html_to_pdf(html_text, out_path):
     """headless Chrome 轉 PDF。成功回 True，失敗回 False（**不丟例外**）。
 
