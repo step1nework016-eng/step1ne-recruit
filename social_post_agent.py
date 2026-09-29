@@ -319,6 +319,38 @@ def public_page_text(slug):
 _CLIENT_NAMES_CACHE = None
 
 
+# ⚠️ 2026-09-25 加（Jacky 核准社群也接同一套守門規則）：官網守門員
+#    （step1ne-stopgap-site/scripts/check_no_client_names.py）漏過「築楽国際開発株式会社」
+#    ——名單是繁體「築樂」、頁面是日文漢字。社群這邊一樣只比繁體，而且 jobs.client_name
+#    含括號就整筆跳過，築楽那筆正好帶括號，等於從來沒列進名單。兩邊改成同一套：
+#    比對前日文新字體／簡體一律轉繁體，括號內容去掉後照樣收。對照表跟官網那支保持一致。
+_VARIANTS = str.maketrans({
+    '楽': '樂', '国': '國', '発': '發', '会': '會', '営': '營', '売': '賣', '総': '總',
+    '産': '產', '学': '學', '広': '廣', '栄': '榮', '関': '關', '区': '區', '実': '實',
+    '鉄': '鐵', '気': '氣', '経': '經', '済': '濟', '証': '證', '薬': '藥', '医': '醫',
+    '団': '團', '図': '圖', '豊': '豐', '沢': '澤', '浜': '濱', '辺': '邊', '県': '縣',
+    '乐': '樂', '发': '發', '际': '際', '开': '開', '业': '業', '产': '產', '团': '團',
+    '华': '華', '电': '電', '东': '東', '贸': '貿', '汇': '匯', '银': '銀', '药': '藥',
+    '阳': '陽', '达': '達', '时': '時', '创': '創', '兴': '興', '机': '機', '车': '車',
+    '龙': '龍', '丰': '豐', '宝': '寶', '联': '聯', '万': '萬', '门': '門', '网': '網',
+    '传': '傳', '讯': '訊', '软': '軟', '设': '設', '计': '計', '筑': '築', '远': '遠',
+})
+_NAME_SUFFIX = r'(股份有限公司|有限公司|株式會社|有限會社|集團|公司|科技|國際開發)$'
+
+
+def _norm(t):
+    return (t or '').translate(_VARIANTS)
+
+
+def _core_name(v):
+    """一直剝後綴到剝不動：築樂國際開發株式會社 → 築樂國際開發 → 築樂。
+    只剝一層的話，貼文單寫「築樂」就擋不到。"""
+    prev = None
+    while prev != v:
+        prev, v = v, re.sub(_NAME_SUFFIX, '', v).strip()
+    return v
+
+
 def client_name_terms():
     """所有不該出現在社群貼文裡的客戶識別字：正式名、別名、以及職缺自己
     記的 client_name。
@@ -337,19 +369,27 @@ def client_name_terms():
     try:
         for r in d1("SELECT display_name, aliases FROM client_companies") or []:
             for v in [r.get('display_name')] + str(r.get('aliases') or '').split('\n'):
-                v = (v or '').strip()
+                v = _norm((v or '').strip())
                 if len(v) >= 2:
                     terms.add(v)
                     # 「律准科技股份有限公司」要連「律准」都擋，不然去掉後綴就漏了
-                    base = re.sub(r'(股份有限公司|有限公司|集團|公司|科技|國際開發)$', '', v).strip()
+                    base = _core_name(v)
                     if len(base) >= 2:
                         terms.add(base)
         for r in d1("SELECT DISTINCT client_name FROM jobs WHERE client_name IS NOT NULL") or []:
-            v = (r.get('client_name') or '').strip()
+            # 括號裡是說明（例：「築楽国際開発株式会社（日本法人；…）」），去掉後照樣收——
+            # 之前是整筆跳過，築楽就這樣從來沒進名單。
+            v = _norm(re.sub(r'[（(].*?[)）]', '', r.get('client_name') or '').strip())
             # 只取真正像公司名的短字串；「苗栗銅鑼建廠專案廠區用人單位」那種
             # 本來就是遮蔽後的說法，拿去比對只會誤殺
-            if 2 <= len(v) <= 20 and '（' not in v:
+            if 2 <= len(v) <= 20:
                 terms.add(v)
+                # 只有帶法定後綴的正式名才剝成簡稱（築樂國際開發株式會社 → 築樂）；
+                # 「日商渡假集團」這種已經遮蔽過的描述不剝，不然「日商渡假村」正常文案會被誤擋。
+                if re.search(r'(股份有限公司|有限公司|株式會社|有限會社)$', v):
+                    base = _core_name(v)
+                    if len(base) >= 2:
+                        terms.add(base)
     except Exception as e:
         log(f'⚠️ 讀不到客戶名單，這次無法做客戶名稱稽核：{e}')
         return []
@@ -361,6 +401,8 @@ def client_name_terms():
     if dropped:
         log(f'（別名太短、容易誤判，不列入客戶名稱稽核：{"、".join(dropped)}）')
     terms -= set(dropped)
+    # 自家招募的職缺把「德仁管理顧問（Step1ne）」登記成業主——自己的名字不能擋
+    terms = {t for t in terms if not any(k in t for k in ('德仁', 'Step1ne', 'step1ne'))}
     _CLIENT_NAMES_CACHE = sorted(terms, key=len, reverse=True)
     return _CLIENT_NAMES_CACHE
 
@@ -380,6 +422,7 @@ def mask_client_names(text):
     模型看不到名字，就寫不出名字——這比事後叫它「不要寫」可靠。"""
     if not text:
         return text
+    text = _norm(text)
     for t in client_name_terms():
         text = _term_pattern(t).sub('〔客戶名稱・社群不揭露〕', text)
     return text
@@ -388,7 +431,7 @@ def mask_client_names(text):
 def audit_client_names(text):
     """產出來的稿子再掃一次。輸入遮蔽是主要防線，這是第二道——
     模型可能從別的欄位拼出名字，或我們的名單漏了某個寫法。"""
-    t = text or ''
+    t = _norm(text or '')
     return [x for x in client_name_terms() if _term_pattern(x).search(t)]
 
 
