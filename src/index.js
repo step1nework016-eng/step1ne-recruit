@@ -4389,16 +4389,24 @@ export default {
       const isPhone = /^[0-9+\-()#\s轉]{7,}$/.test(contact);
       if (!isEmail && !isPhone) return json(request, { ok: false, error: 'Email 或電話格式看起來不正確' }, 400);
       const now = nowTaipei();
+      // company_leads.id 是 INTEGER AUTOINCREMENT，不要自己塞 id（第一版塞了 UUID，寫入全失敗）。
+      // 寫入失敗不能再默默吞掉——人家留了需求，系統卻沒存，最糟的情況是連通知都沒人看到。
+      let saved = true;
       await env.DB.prepare(
-        `INSERT INTO company_leads (id, company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(crypto.randomUUID(), company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
-             JSON.stringify({ contact, page }), now, now).run().catch(() => {});
+        `INSERT INTO company_leads (company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      ).bind(company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
+             JSON.stringify({ contact, page }), now, now).run().catch(async (e) => {
+        saved = false;
+        await notify(env, `⚠️ 官網企業詢問寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
+          { message_thread_id: THREAD.system }).catch(() => {});
+      });
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
         + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
-        + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`,
+        + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
+        + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
         topic ? { message_thread_id: topic } : undefined).catch(() => {});
       return json(request, { ok: true });
     }
