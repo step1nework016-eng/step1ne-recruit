@@ -4198,6 +4198,48 @@ export default {
       ).bind(emailId, type, to || null,
              JSON.stringify(d).slice(0, 2000), when, now).run().catch(() => {});
 
+      // ── 客戶回信（2026-09-29 Jacky 要的）─────────────────────────────
+      // 開發信的 Reply-To 同時帶 official@ 和 reply@reply.step1ne.com；寄到後者的
+      // 會由 Resend 收下、打 email.received 過來。寫進 bd_replies 之後：
+      //   ・followup_tick 的 _ALIVE 條件自動停掉這家的追信
+      //   ・開發進度看板把這家算成「回信」
+      // 然後推到 TG「📬 開發信 開信・回信」主題，讓 Jacky 不用自己去翻信箱。
+      if (type === 'email.received') {
+        const fromRaw = String(Array.isArray(d.from) ? d.from[0] : (d.from || ''));
+        const fromEmail = ((fromRaw.match(/<([^>]+)>/) || [])[1] || fromRaw).trim().toLowerCase();
+        const fromName = fromRaw.replace(/<[^>]+>/, '').replace(/"/g, '').trim() || null;
+        const subject = String(d.subject || '');
+        const body = String(d.text || (d.html ? String(d.html).replace(/<[^>]+>/g, ' ') : '') || '')
+          .replace(/\s+\n/g, '\n').trim();
+        const domain = fromEmail.split('@')[1] || '';
+        // 先對完整信箱，對不到就對同網域最近寄出的那封（常見：窗口轉給同事回）
+        let orow = fromEmail ? await env.DB.prepare(
+          `SELECT * FROM bd_outreach WHERE lower(contact_email)=? AND status='sent' ORDER BY sent_at DESC LIMIT 1`
+        ).bind(fromEmail).first() : null;
+        if (!orow && domain) {
+          orow = await env.DB.prepare(
+            `SELECT * FROM bd_outreach WHERE lower(contact_email) LIKE ? AND status='sent' ORDER BY sent_at DESC LIMIT 1`
+          ).bind('%@' + domain).first();
+        }
+        if (orow) {
+          await env.DB.prepare(
+            `INSERT INTO bd_replies (id, created_at, outreach_id, from_email, from_name, subject, body, handled, updated_at)
+             VALUES (?,?,?,?,?,?,?,0,?)`
+          ).bind(crypto.randomUUID(), now, orow.id, fromEmail, fromName, subject.slice(0, 300),
+                 body.slice(0, 8000), now).run().catch(() => {});
+          await env.DB.prepare(`UPDATE bd_outreach SET last_event_at=? WHERE id=?`).bind(now, orow.id).run().catch(() => {});
+        }
+        const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
+        await notify(env,
+          (orow ? `✉️ 客戶回信了！\n\n公司：${orow.company}\n` : `✉️ 收到一封回信（對不上是哪一封開發信）\n\n`)
+          + `寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n`
+          + (body ? body.slice(0, 1200) + (body.length > 1200 ? '\n…（內容較長，完整版在開發進度看板）' : '')
+                  : '（這封沒有帶文字內容，請到 official@step1ne.com 或 Resend 收件紀錄查看）')
+          + (orow ? '\n\n→ 這家的自動追信已停止。請從 official@step1ne.com 回覆。' : ''),
+          topic ? { message_thread_id: topic } : undefined).catch(() => {});
+        return json(request, { ok: true, received: true, matched: !!orow });
+      }
+
       // 對回是哪一封開發信：優先用 Resend 的信件編號；
       // 舊資料沒有編號（那批是在存 resend_id 之前寄的），退而用收件人比對最後一封。
       let row = emailId ? await env.DB.prepare(
@@ -4230,6 +4272,11 @@ export default {
           + `信箱：${row.contact_email}\n\n原因：${String(reason).slice(0, 200)}\n\n`
           + `這個信箱寄不到，要重新找窗口。`,
           row.tg_message_id ? { reply_to_message_id: row.tg_message_id } : undefined).catch(() => {});
+        const bTopic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
+        if (bTopic) {
+          await notify(env, `📭 退信：${row.company}（${row.contact_email}）\n信箱寄不到，要重新找窗口。`,
+            { message_thread_id: bTopic }).catch(() => {});
+        }
       } else if (type === 'email.opened') {
         // 2026-09-29 Jacky 要的：開信要主動通知，不用自己去看板查。
         // 只在「第一次開」通知——同一封信被預覽、重開很常見，每次都推會洗版。
