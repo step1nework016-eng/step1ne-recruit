@@ -695,6 +695,14 @@ async function domainAcceptsMail(domain) {
 // Resend 送出時會回一個信件編號，那是唯一能把之後的「送達／退信／開信」
 // 對回這封信的鑰匙。原本 `return r.ok` 直接把它丟掉，等於寄出去就斷線——
 // 9/3 那批 7 封信 0 回覆，到今天都還不知道有幾封根本沒送到。
+// 開發信寄出前的功課檢查（2026-09-29 Jacky 拍板，兩個寄信入口共用同一個判斷）：
+// 14 天內要確認過對方「現在」還開著信裡提到的職缺，並留下依據。
+function bdJobChecked(row) {
+  if (!row || !row.job_checked_at) return false;
+  const t = Date.parse(String(row.job_checked_at).replace(' ', 'T') + '+08:00');
+  return Number.isFinite(t) && (Date.now() - t) < 14 * 86400000;
+}
+
 async function sendBdMail(env, to, subject, body, cvFileId) {
   if (!env.RESEND_API_KEY || !to) return { ok: false, error: '沒有 API key 或收件人' };
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -6207,6 +6215,11 @@ export default {
           ).bind(who, now, now, bid).run();
           label = `✏️ ${who} 退回重寫`;
           await ans('✏️ 退回了。直接「回覆」這則訊息告訴總指揮要改什麼');
+        } else if (action === 'bd_ok' && !bdJobChecked(row)) {
+          // 2026-09-29 Jacky：「要開發前要先做功課才能寄信」。沒有在 14 天內確認過
+          // 「對方現在還開著這個缺」（104／官網，記在 job_checked_at），一律不寄。
+          await ans('⛔ 還沒查過對方現在有沒有開缺，不能寄。先查 104／官網確認職缺還開著，再按一次');
+          return new Response('ok');
         } else if (action === 'bd_ok') {
           // 寄之前再比對一次客戶名單——名單是活的，擬稿當天可以敲的，
           // 顧問三天後才按核准，中間可能已經簽約了

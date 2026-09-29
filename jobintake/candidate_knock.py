@@ -46,6 +46,30 @@ CANDIDATES = {
             '住雲林，雲嘉南一帶案場通勤沒問題，10 月可到職',
         ],
     },
+    'senior_accountant': {
+        'what': '資深會計／成本會計',
+        'bullets': [
+            '20 年以上財會資歷，做過成本會計、會計主任、主辦會計',
+            '在日系與外資集團任職多年，做過海外集團報表對帳、幣別調節，會用 SAP、Oracle 等系統',
+            '有乙級會計、記帳士、ESG 永續管理師證照，每份工作多待 4～6 年',
+        ],
+    },
+    'fine_dining': {
+        'what': '高端餐飲／貴賓接待',
+        'bullets': [
+            '精緻餐廳外場領班、飯店大廳酒吧、餐館領班，現任儲備副理',
+            '持有 WSET Level 2 葡萄酒與烈酒證照',
+            '包廂接待經驗豐富，面談中能具體說出突發狀況怎麼處理',
+        ],
+    },
+    'junior_ar_ap': {
+        'what': '初階會計（應收／應付）',
+        'bullets': [
+            '在外商做過 2 年應付帳款，目前在外商做應收帳款，也做過成本分析',
+            '財稅系畢業，有會計師事務所審計實習經驗',
+            '英文多益 750，正在準備更高分，習慣英文對帳環境',
+        ],
+    },
 }
 
 SUBJECTS = [
@@ -108,6 +132,10 @@ def main():
     targets = json.load(open(sys.argv[1], encoding='utf-8'))
     dry = '--dry-run' in sys.argv
     for t in targets:
+        # 2026-09-29 Jacky：開發前一定要先做功課——沒寫「在哪裡、哪天確認過對方現在還開著這個缺」就不寄
+        if not (t.get('job_checked_note') and t.get('job_url')):
+            print(f"⛔ {t['company']}：沒有職缺查證（job_checked_note／job_url），不寄")
+            continue
         if not t.get('contact_email'):
             print(f"⏭ {t['company']}：沒有信箱，跳過（改電話）")
             continue
@@ -125,6 +153,7 @@ def main():
            {q(subj)}, {q(chr(10).join(s.format(job=t['job_title']) for s in SUBJECTS))}, {q(body)},
            {q(t['job_title'])}, {q(t.get('job_source') or '公開職缺')}, {q(t.get('job_url'))}, 'email', 'candidate_knock',
            {q(t.get('industry'))}, {q(t.get('job_url'))})""")
+        D.query(f"UPDATE bd_outreach SET job_checked_at=datetime('now','+8 hours'), job_check_note={q(t['job_checked_note'])} WHERE id={q(rid)}")
         r = decide_send(rid)
         print(('📤 已寄 ' if r.get('ok') else '⛔ 沒寄 ') + f"{t['company']} <{t['contact_email']}>" + ('' if r.get('ok') else f"：{r.get('error')}"))
 
