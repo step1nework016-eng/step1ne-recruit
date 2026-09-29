@@ -2216,6 +2216,11 @@ REPORT_JSON_SPEC = r'''
     "military": "兵役，履歷有寫才填，沒有填 null",
     "source": "basics 這一區的來源，固定寫「履歷／應徵表單，非面談詢問」"
   },
+  "job_match": {
+    "items": [{"requirement": "職缺的一項核心必要條件（精簡）", "verdict": "符合|部分符合|缺|未確認",
+               "basis": "履歷|面談|電洽|履歷＋面談", "evidence": "一句根據（年資、做過什麼、證照、原話）"}],
+    "conclusion": "一句話：符合幾項核心條件、缺什麼、建議怎麼處理"
+  },
   "one_liner": "一句話定位，30字內",
   "top_selling_point": "一句",
   "top_risk": "一句",
@@ -2396,6 +2401,9 @@ REPORT_JSON_RULES = (
     '    2026-09-29 加第四種：候選人一被問程度就明講不會／程度是 0，照規定沒考，填「自述不會」\n'
     '    （evidence 放他那句原話）。他說會、哪怕只說一點點卻沒考到，是「未測試」，不是「自述不會」。\n'
     '    職缺沒有外語要求，整欄照 SPEC 的 null／預設值處理，不要自己編一個語言出來測。\n'
+    '17. `job_match`（2026-09-29 加）：拿【職缺】的核心必要條件（3～7 項）逐條跟**履歷＋面談（＋電洽，有的話）**比對，\n'
+    '    不是只看面談表現。verdict 只能是 符合／部分符合／缺／未確認；沒有資料就是「未確認」，不准猜。\n'
+    '    evidence 寫具體根據（幾年、做過什麼、哪張證照、他的原話），conclusion 一句話給結論＋建議。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -2541,6 +2549,15 @@ def _normalize_report_json(obj, name='', job=None):
         'top_selling_point': s(obj.get('top_selling_point')),
         'top_risk': s(obj.get('top_risk')),
         'summary': s(obj.get('summary')),
+    }
+    # 2026-09-29：職缺匹配總結（背景經歷 × 職缺核心條件），顧問報告放最上面
+    _jm = obj.get('job_match') if isinstance(obj.get('job_match'), dict) else {}
+    out['job_match'] = {
+        'items': [{'requirement': s(x.get('requirement')),
+                   'verdict': s(x.get('verdict')) if s(x.get('verdict')) in ('符合', '部分符合', '缺', '未確認') else '未確認',
+                   'basis': s(x.get('basis')), 'evidence': s(x.get('evidence'))}
+                  for x in arr(_jm.get('items')) if isinstance(x, dict) and s(x.get('requirement'))][:8],
+        'conclusion': s(_jm.get('conclusion')),
     }
 
     # 基本資料（居住地、年齡、學歷、語言、證照…）。
@@ -2953,6 +2970,16 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         return None
 
 
+# 2026-09-29 Jacky：初篩報告不能只有面談裡的評斷，要先把「背景經歷 × 這個職缺」對過一次，
+# 放在報告最上面。電洽紀錄合併重寫時（consultant_call_report.py）也用同一段。
+JOB_MATCH_MD_RULE = (
+    '\n\n🚨 報告最上面（標題之後、其他段落之前）一定要先有一段「## 職缺匹配總結」：'
+    '把這個職缺的核心必要條件（職缺資料的 must_skills／硬條件／工作內容，挑 3～7 項最關鍵的）逐條列出，'
+    '每條標 ✅符合／⚠️部分符合／❌缺／❓未確認，後面寫一句根據並註明來源（履歷／面談／電洽）。'
+    '最後一句話結論：符合幾項核心條件、缺的是什麼、建議怎麼處理（推／補問什麼／改推別的職缺）。'
+    '不准只根據面談表現下結論；履歷上的年資、做過的事、證照要一起比對。沒有資料的條件標 ❓，不要猜。')
+
+
 def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     """面談結束：產報告、寫回 D1、通知顧問。
 
@@ -3009,6 +3036,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         '以下是一場已經結束的初步面談。請依規範的 Phase 7 產出初篩報告。\n'
         '🚨 報告一律使用台灣繁體中文，不可以有任何簡體字。\n\n'
         + skill('report')
+        + JOB_MATCH_MD_RULE
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
         + _ladder_report_block(ctx)
