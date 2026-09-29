@@ -3106,11 +3106,28 @@ def _notify_cross_job_interest(app, ctx):
         if not cand_msgs:
             return
         last = cand_msgs[-1]
+        # ⚠️ 2026-09-29 修（Jacky：江逸泓面司機職缺，TG 連跳 4 則「問到另一個職缺」全是誤報）：
+        # ① 有些人會先把阿財的問題整段貼回來再寫「答案：…」，那段是阿財自己的話，
+        #    裡面的「長野白馬」「台灣」被拿去比對。只看他自己寫的部分。
+        if '答案：' in last or '答案:' in last:
+            last = re.split(r'答案[：:]', last, maxsplit=1)[1]
+        for m in conv:
+            if m.get('role') == 'assistant' and len(m.get('content') or '') >= 15 and m['content'] in last:
+                last = last.replace(m['content'], ' ')
+        # ② 他得真的在問工作機會，才算「問到另一個職缺」——單純描述過去經歷
+        #    （「行車安全」「董事長台灣的資產」）不算。
+        if not re.search(r'職缺|缺人|工作機會|其他.{0,4}(工作|職位|機會)|還有.{0,6}(工作|職位|缺)|應徵|那個.{0,6}(工作|職位)|可以.{0,4}(投|推薦)', last):
+            return
         last_lower = last.lower()
+        # ③ 跟目前這個職缺共用的詞（同一個客戶的白馬、日本）不能當證據
+        cur = ctx.get('job') or {}
+        cur_text = (cur.get('title') or '') + (cur.get('locations') or '')
         for oj in (ctx.get('other_jobs') or []):
             ascii_toks, cjk_toks = _job_match_tokens(oj)
-            hit = any(t in last_lower for t in ascii_toks) or any(t in last for t in cjk_toks)
-            if hit:
+            cjk_toks = {t for t in cjk_toks if t not in cur_text}
+            hits = {t for t in ascii_toks if t in last_lower} | {t for t in cjk_toks if t in last}
+            # ④ 至少兩個不同的詞對上（例：「白馬」＋「物業」），一個兩字詞撞到不算
+            if len(hits) >= 2:
                 key = (app['id'], oj.get('slug'))
                 if key in _notified_cross_job:
                     return
