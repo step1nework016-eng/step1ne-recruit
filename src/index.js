@@ -3710,7 +3710,21 @@ async function handleArticleAction(env, cq) {
 async function handleSocAction(env, cq) {
         const [action, qidRaw] = String(cq.data).split(':');
         const qid = Number(qidRaw);
+        // 排程觸發（scheduled() 用假的 cq，id 以 sched_ 開頭）時沒有人在按按鈕，
+        // answerCallbackQuery 一定失敗、訊息等於沒人看到。2026-09-29 查到 5 篇核准好的
+        // 排程貼文被默默作廢，顧問完全不知道——所以排程路徑遇到擋下／失敗，改成直接回覆在
+        // 原本那則審核訊息底下，顧問在自己的主題裡就看得到。
+        const isScheduledRun = String(cq.id || '').startsWith('sched_');
         const answer = async (text, alert) => {
+          if (isScheduledRun) {
+            if (/^[❌🚫⚠️]/u.test(String(text))) {
+              await notify(env, `⏰ 排程時間到，但這則沒有發出去：\n${text}`, {
+                ...(cq.message.message_thread_id ? { message_thread_id: Number(cq.message.message_thread_id) } : {}),
+                ...(cq.message.message_id ? { reply_to_message_id: Number(cq.message.message_id) } : {}),
+              }).catch(() => {});
+            }
+            return;
+          }
           await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
@@ -3779,10 +3793,23 @@ async function handleSocAction(env, cq) {
           const ageDays = row.requested_at
             ? Math.floor((Date.now() - Date.parse(String(row.requested_at).replace(' ', 'T') + '+08:00')) / 86400000)
             : 0;
-          if (ageDays >= 3) {
+          // 2026-09-29 Jacky 核准改規則：已經核准、排好時間的貼文不適用「3 天作廢」——
+          // 顧問核准時已經看過內容，排在 4 天後很正常（9/24 核准、排 9/28 的 5 篇因此全被作廢）。
+          // 內容變動的風險改由下面發文當下的檢查負責：客戶名稱稽核、未填欄位、職缺是否已關閉。
+          if (ageDays >= 3 && row.status !== 'approved_scheduled') {
             await env.DB.prepare(`UPDATE social_post_queue SET status='expired' WHERE id=?`).bind(row.id).run();
             await answer(`❌ 這則草稿是 ${ageDays} 天前產的，職缺內容可能已經改過（薪資、客戶名稱等），不能直接發。請按「🔄 重新產一次」。`, true);
             return;
+          }
+
+          // 2026-09-29 加：發文當下職缺已經關閉就不發（排程貼文可能排在好幾天後）。
+          if (row.job_slug) {
+            const jobNow = await env.DB.prepare(`SELECT status FROM jobs WHERE slug=?`).bind(row.job_slug).first();
+            if (jobNow && !['open', 'active', 'published'].includes(String(jobNow.status || 'open'))) {
+              await env.DB.prepare(`UPDATE social_post_queue SET status='skipped' WHERE id=?`).bind(row.id).run();
+              await answer(`🚫 這個職缺已經關閉（${jobNow.status}），不發這則。`, true);
+              return;
+            }
           }
 
           // 🚨 客戶名稱稽核。產稿時已經擋過一次，但草稿是存下來的，
