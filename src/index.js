@@ -3752,6 +3752,23 @@ async function handleSocAction(env, cq) {
 
         if (action === 'soc_approve') {
           if (!row.draft) { await answer('❌ 這則沒有草稿內容，沒辦法發文'); return; }
+          // 2026-09-29 加：已經標成「不發」的（例如測試稿、在後台或資料庫標掉的）不准再發。
+          // 以前只有 TG 按 ❌ 會順便把按鈕換掉；從別處標成 skipped 的，TG 上的 ✅ 還按得下去，
+          // 9/24 兩篇測試稿就是這樣被發出去的。
+          if (row.status === 'skipped') {
+            await answer('❌ 這則已經標成「不發」（可能是測試稿），不會發出。真的要發，請先按「🔄 重新產一次」。', true);
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+                reply_markup: { inline_keyboard: [[
+                  { text: '❌ 已標成不發', callback_data: 'noop' },
+                  { text: '🔄 重新產一次', callback_data: `soc_regen:${qid}` },
+                ]] },
+              }),
+            }).catch(() => {});
+            return;
+          }
 
           // 2026-09-11 加：排程貼文「先核准、時間到才真的發」——顧問按確認
           // 這一刻，如果排定時間還沒到，不要往下跑發文邏輯，先記住「已核准」
