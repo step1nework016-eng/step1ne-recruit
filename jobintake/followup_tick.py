@@ -47,6 +47,12 @@ _ALIVE = """
   AND COALESCE(o.followup_stopped,'')=''
   AND COALESCE(o.delivery_status,'') NOT IN ('bounced','complained')
   AND NOT EXISTS (SELECT 1 FROM bd_replies r WHERE r.outreach_id = o.id)
+  -- 2026-09-29：信裡附了某位人選的匿名履歷（cv_file_id = bdcv-<應徵編號前 8 碼>-…），
+  -- 那位人選已經走到 offer／報到，就不能再追著推給別家（漢唐、聖暉兩封就是推了已拿到入職通知書的人）。
+  AND NOT EXISTS (SELECT 1 FROM applications a
+                   WHERE o.cv_file_id LIKE 'bdcv-%'
+                     AND a.id LIKE substr(o.cv_file_id, 6, 8) || '%'
+                     AND (a.manual_stage IN ('offer','onboard','placed') OR a.status IN ('placed','onboard')))
 """
 
 
