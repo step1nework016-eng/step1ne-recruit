@@ -4468,7 +4468,8 @@ export default {
           `📧 新的招募形式評估留信箱\nEmail：${email}\n` +
           `${companyName ? `公司：${companyName}\n` : ''}來源：${source}\n` +
           `已自動寄出評估工具連結，等對方填完會出現在「招募形式評估」後台。`,
-          { message_thread_id: THREAD.intake }
+          // 2026-09-29 改：企業詢問從「#3履歷進件」（候選人）搬到「🏢 官網企業詢問」，不要跟應徵混在一起
+          { message_thread_id: (await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問')) || THREAD.intake }
         ).catch(() => {});
 
         return json(request, { ok: true });
