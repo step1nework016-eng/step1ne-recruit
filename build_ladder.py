@@ -118,10 +118,22 @@ def _valid(obj):
 def build(job, dry=False):
     slug = job['slug']
     start, expected = levels_for(job)
+    # ⚠️ 9/29 實測：description/requirements 這兩欄在多數職缺是空的，真正的工作內容在
+    # main_duties 與 jd_spec_json（職缺頁公開的那幾段）。只讀舊欄位＝只憑職稱出題。
+    # 只取公開欄位；窗口電話、保護名單、合約條款這類只給顧問的欄位不進 AI。
+    try:
+        spec = json.loads(job.get('jd_spec_json') or '{}') or {}
+    except Exception:
+        spec = {}
+    def _t(v):
+        return '\n'.join(f'・{x}' for x in v) if isinstance(v, list) else (v or '')
     jd_parts = []
-    for k, label in (('description', '工作內容'), ('requirements', '資格條件'),
-                     ('must_skills', '必備技能'), ('nice_skills', '加分技能')):
-        v = job.get(k)
+    for label, v in (('工作內容', job.get('main_duties') or _t(spec.get('duties')) or job.get('description') or spec.get('description')),
+                     ('職缺說明', spec.get('description') if job.get('main_duties') else ''),
+                     ('資格條件', _t(spec.get('must')) or job.get('requirements')),
+                     ('必備技能', job.get('must_skills')),
+                     ('加分條件', _t(spec.get('plus')) or job.get('nice_skills'))):
+        v = _t(v).strip()
         if v:
             jd_parts.append(f'■ {label}\n{v}')
     prompt = LADDER_PROMPT.format(
