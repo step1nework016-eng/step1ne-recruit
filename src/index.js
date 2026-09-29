@@ -4841,6 +4841,17 @@ export default {
       try { body = JSON.parse(rawBody); } catch { return new Response('ok'); }
       const events = Array.isArray(body.events) ? body.events : [];
       for (const ev of events) {
+        // 2026-09-29 Jacky：社群轉化要看「加入 LINE 之後有沒有詢問」。原本只有綁定過的人
+        // 訊息才會進 line_messages，其他人傳給官方帳號的話系統完全沒留，算不出來。
+        // 這裡每一則使用者傳來的訊息都記一筆（只記，不影響後面的處理）。
+        if (ev && ev.type === 'message' && ev.source && ev.source.userId) {
+          try {
+            await env.DB.prepare(
+              `INSERT INTO line_inbound_log (line_user_id, msg_type, text, created_at) VALUES (?,?,?,?)`
+            ).bind(ev.source.userId, (ev.message && ev.message.type) || null,
+                   String((ev.message && ev.message.text) || '').slice(0, 500), nowTaipei()).run();
+          } catch { /* 記不到就算了，不能擋到回覆 */ }
+        }
         try {
           await handleLineEvent(env, ev);
         } catch (e) {
