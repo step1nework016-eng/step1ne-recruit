@@ -29,6 +29,10 @@ DB = 'step1ne-recruit'
 # 而那時候他正盯著螢幕。查詢很輕（一次 D1 撈在談的房間），成本遠小於那 8 秒。
 POLL_SEC = 3
 MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–400MB。
+# 2026-09-29：阿財要 Mac＋WSL2 兩台一起接單。每台自己的上限用環境變數設（WSL2 設 INTERVIEW_MAX_PARALLEL=2），
+# 兩台搶同一場靠下面 acquire_lock() 的原子 UPDATE，不會重複處理。INTERVIEW_HOST 只用來在紀錄上分辨是哪台。
+MAX_PARALLEL = int(os.environ.get('INTERVIEW_MAX_PARALLEL') or MAX_PARALLEL)
+INTERVIEW_HOST = os.environ.get('INTERVIEW_HOST') or 'mac'
                         # 設 5 會在剩 2.3GB 可用記憶體時開始 swap，
                         # 那會讓「所有」進行中的面談一起變慢，不只排隊的。
                         # 寧可讓第 4 個人排隊，也不要三個人一起卡住。
@@ -1149,14 +1153,23 @@ def fetch_job_understanding_sources(job_slug):
     if not job_slug:
         return out
     try:
-        ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json FROM job_expertise "
-                f"WHERE job_slug = {q(job_slug)}")
+        ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json, ladder_json, "
+                f"start_level, expected_level FROM job_expertise WHERE job_slug = {q(job_slug)}")
         if ex:
             out['expertise'] = {
                 'domain': ex[0].get('domain'),
                 'topics': json.loads(ex[0].get('topics_json') or '[]'),
                 'questions': json.loads(ex[0].get('questions_json') or '[]'),
             }
+            # 2026-09-29 加：分級階梯題（見 _ladder_prompt_lines）。有階梯就用階梯，沒有照舊用題庫。
+            try:
+                lad = json.loads(ex[0].get('ladder_json') or 'null')
+                if lad and lad.get('topics'):
+                    lad['start_level'] = int(ex[0].get('start_level') or lad.get('start_level') or 2)
+                    lad['expected_level'] = int(ex[0].get('expected_level') or lad.get('expected_level') or 3)
+                    out['expertise']['ladder'] = lad
+            except Exception:
+                pass
             out['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
     except Exception as e:
         log(f'⚠️ 專業題庫載入失敗（{job_slug}，不影響面談，只是少了專業段）：{e}')
@@ -1508,7 +1521,9 @@ def build_prompt(ctx, skill_md):
     # 存在 D1，這裡直接載入。⚠️ 不在面談當下查資料——候選人在等，
     # 查一次幾十秒，那個延遲會毀掉對話。
     ex = ctx.get('expertise')
-    if ex and ex.get('questions'):
+    if ex and ex.get('ladder'):
+        lines.extend(_ladder_prompt_lines(ex))
+    elif ex and ex.get('questions'):
         lines.append(f'\n【這個職缺的專業題庫（領域：{ex.get("domain") or "—"}）】')
         lines.append('  🎯 這一段是這場面談的重點。用人主管最想知道的是「他到底會不會做這份工作」，'
                      '而那只有在面談當下問得出來，事後補問等於這場白跑。')
@@ -2215,6 +2230,13 @@ REPORT_JSON_SPEC = r'''
      "level_reason": "為什麼是這一級，引他講到／講不到的那件事",
      "note": "只寫可查證的事實，例如「說得出專案規模與工具」「講不出遇過的問題」"}
   ],
+  "ladder_findings": [
+    {"topic": "分級階梯的主題名稱（照【本職缺專業分級階梯】原文）",
+     "asked_levels": [3, 4],
+     "reached_level": 3,
+     "evidence": "他的原話一句（最能代表他到這一級的那句）",
+     "note": "為什麼是這一級：哪一級答得具體、哪一級含糊"}
+  ],
   "language_verification": {
     "required_language": "職缺要求驗證的語言，例如「日文」；職缺沒有要求就填 null",
     "tested": true,
@@ -2301,6 +2323,9 @@ REPORT_JSON_RULES = (
     '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
     '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
     '9. 不要自己算總分或等第——那是系統用固定權重算的，你只要給六個維度的分數。\n'
+    '10-0. `ladder_findings`：只有提示裡有【本職缺專業分級階梯】才填，每個主題一筆；\n'
+    '    `reached_level` 是他答得具體的最高級（0～5 整數；沒問到填 null）。沒有階梯就給空陣列。\n'
+    '    有階梯時，`專業技能深度` 的 score 由系統依階梯算，你照填也會被覆蓋。\n'
     '10. `expertise_findings`：這場如果有問到職缺專業題庫的題目，**每一題都要留一筆**，\n'
     '    包含他答不出來的（`depth` 填「未談到」）——顧問要知道哪些問了沒結果，\n'
     '    那跟「沒問」是兩件完全不同的事。\n'
@@ -2388,6 +2413,62 @@ def _extract_json(text):
     except Exception:
         return None
     return obj if isinstance(obj, dict) else None
+
+
+
+# ── 專業分級階梯題（2026-09-29 Jacky 拍板）───────────────────────────────
+# 阿財像考官：每個主題從「開始級」問起，答得好就往上一級，含糊追問一次，
+# 再答不出來就停；在開始級就答不出來要往下降一級，才量得到他真正的程度。
+# 報告記每個主題「到第幾級」，分數改成跟這個職缺的「期待級」比，
+# 培訓職缺的人答到第 1 級就是合格、不扣分。資深只到 1～2 級只給建議改推，不刷人（方案 A）。
+LADDER_LEVEL_NAMES = {1: '基礎', 2: '入門', 3: '獨立作業', 4: '資深', 5: '帶人'}
+
+
+def _ladder_prompt_lines(ex):
+    lad = ex['ladder']
+    st, exp = lad['start_level'], lad['expected_level']
+    L = [f'\n【這個職缺的專業分級階梯（領域：{lad.get("domain") or ex.get("domain") or "—"}）】',
+         '  🎯 這一段是專業評估的重點。你要像考官一樣，量出他在每個主題「到第幾級」。',
+         f'  這個職缺：從第 {st} 級開始問，用人單位期待大約第 {exp} 級。',
+         '  ⚠️ 怎麼問：',
+         f'   ① 每個主題先問第 {st} 級那題。答得具體（對到「答得好會講到」）→ 往上問下一級；',
+         '      答得含糊 → 用附的追問再問一次；還是含糊 → 這個主題就停，換下一個主題。',
+         f'   ② 在第 {st} 級就答不出來 → **一定要**往下問第 {max(1, st - 1)} 級（還是不行再往下），量出他真正的程度；'
+         '只問了一題高級的就換主題是錯的——報告會變成「沒問到」，顧問拿不到答案。',
+         '   ③ 每個主題最多問 3 題，不要一直逼問；答不出來很正常，不要讓他覺得被考倒。',
+         '   ④ **不要照稿念、不要說「第幾級」**，用自己的話自然接進對話。他自己先講到的，就順勢從那一級接著問。',
+         '   ⑤ 你不是這行的專家，不判斷答案對錯；你判斷的是「真的做過的人講得出的具體細節」有沒有出現。',
+         '   ⑥ 這些題目不取代原本必問的動機、薪資、到職日、硬條件——那些照樣要問完。',
+         '  【級數】1 基礎＝知道、看得懂　2 入門＝學過／在指導下做過　3 獨立作業＝能自己完成一件標準工作'
+         '　4 資深＝能處理例外與取捨　5 帶人＝能教人、訂規範、檢查別人的成果']
+    for t in lad.get('topics') or []:
+        L.append(f'  ■ 主題：{t.get("name")}（{t.get("why") or ""}）')
+        for lv in sorted(t.get('levels') or [], key=lambda x: int(x.get('level') or 0)):
+            n = int(lv.get('level') or 0)
+            L.append(f'    第{n}級｜{lv.get("q")}')
+            if lv.get('good_signs'):
+                L.append(f'       答得好會講到：{"；".join(lv["good_signs"][:3])}')
+            if lv.get('red_flags'):
+                L.append(f'       含糊的樣子：{"；".join(lv["red_flags"][:2])}')
+            if lv.get('followup'):
+                L.append(f'       含糊就追問：{lv["followup"]}')
+    return L
+
+
+def _ladder_report_block(ctx):
+    """寫報告與產結構化 JSON 時要看到階梯定義，才判得出每個主題到第幾級。"""
+    lad = ((ctx or {}).get('expertise') or {}).get('ladder')
+    if not lad:
+        return ''
+    L = [f'\n\n【本職缺專業分級階梯（從第 {lad["start_level"]} 級問起，用人單位期待第 {lad["expected_level"]} 級）】']
+    for t in lad.get('topics') or []:
+        L.append(f'■ {t.get("name")}')
+        for lv in sorted(t.get('levels') or [], key=lambda x: int(x.get('level') or 0)):
+            L.append(f'  第{lv.get("level")}級（{lv.get("can_do") or ""}）：{lv.get("q")}')
+    L.append('⚠️ 判定每個主題「到第幾級」：他答得具體的最高那一級。那一級問了但含糊、追問後仍含糊，就不算到那一級。'
+             '這個主題完全沒問到 → reached_level 填 null（不是 0）。連第 1 級都答不出來 → 填 0。'
+             '報告裡要有一段「專業程度」：每個主題第幾級＋他的原話，最後一句「整體約第 X 級（本職缺期待第 Y 級）」。')
+    return '\n'.join(L)
 
 
 def _job_card_scoring_block(ctx, for_json=False):
@@ -2604,6 +2685,51 @@ def _normalize_report_json(obj, name='', job=None):
                         for f in out['expertise_findings'] if f.get('skill_level')) + '）',
         }
 
+    # ── 分級階梯（2026-09-29）：有階梯時，專業技能深度改成「跟本職缺期待級比」 ──
+    # 期待第 E 級，他整體到第 A 級：A==E → 7 分；每高一級 +1.5、每低一級 −1.5（0～10）。
+    # 培訓職缺期待第 1～2 級，答到那裡就是合格分數，不會因為沒有資深經驗被扣光。
+    # 資深職缺差兩級以上只給「建議改推較初階版本」，不當硬條件刷人（Jacky 選方案 A）。
+    lad = (job or {}).get('_ladder') if isinstance(job, dict) else None
+    lf = []
+    for f in arr(obj.get('ladder_findings')):
+        if not isinstance(f, dict):
+            continue
+        try:
+            rl = f.get('reached_level')
+            rl = None if rl in (None, '', 'null') else max(0, min(5, int(rl)))
+        except (TypeError, ValueError):
+            rl = None
+        asked = [int(x) for x in arr(f.get('asked_levels')) if str(x).isdigit()]
+        # 只問了高級題、低級沒問就判很低（9/29 模擬：只問第 3 級就給 0 級）——
+        # 分數照模型判斷，但畫面要講白「更低的沒問到」，不能讓顧問以為真的量過。
+        unverified = rl is not None and bool(asked) and rl < min(asked) - 1
+        lf.append({'topic': s(f.get('topic')), 'reached_level': rl, 'asked_levels': asked,
+                   'unverified_below': unverified,
+                   'evidence': s(f.get('evidence')), 'note': s(f.get('note'))})
+    out['ladder_findings'] = lf
+    out['skill_ladder'] = None
+    got_lv = [f['reached_level'] for f in lf if f['reached_level'] is not None]
+    if lad and got_lv:
+        exp = int(lad.get('expected_level') or 3)
+        avg = sum(got_lv) / len(got_lv)
+        score = max(0, min(10, round(7 + 1.5 * (avg - exp))))
+        if exp >= 3 and avg <= exp - 1.5:
+            suggest = f'專業程度約第 {avg:.1f} 級，低於本職缺期待的第 {exp} 級，建議改推同類型較初階（培訓／一般）的職缺'
+        elif exp <= 2 and avg >= exp + 1.5:
+            suggest = f'專業程度約第 {avg:.1f} 級，高於本職缺期待的第 {exp} 級，可考慮推同類型的資深職缺'
+        else:
+            suggest = ''
+        ev = next((f['evidence'] for f in sorted(lf, key=lambda x: -(x['reached_level'] or 0)) if f['evidence']), '')
+        by_name['專業技能深度'] = {
+            'name': '專業技能深度', 'score': score, 'evidence': ev,
+            'note': f'分級階梯：整體約第 {avg:.1f} 級（本職缺期待第 {exp} 級）；'
+                    + '、'.join(f"{f['topic']} {f['reached_level']}級" for f in lf if f['reached_level'] is not None)}
+        out['skill_ladder'] = {'overall': round(avg, 1), 'expected': exp, 'score': score, 'suggest': suggest,
+                               'topics': [{'topic': f['topic'], 'level': f['reached_level'],
+                                           'level_name': (f"未達第 {min(f['asked_levels'])} 級（更低的沒問到）" if f['unverified_below']
+                                                          else LADDER_LEVEL_NAMES.get(f['reached_level'], '未達第 1 級' if f['reached_level'] == 0 else ''))}
+                                          for f in lf]}
+
     dims, got, used_w = [], 0.0, 0
     for dim_name, w in dims_spec:
         d = by_name.get(dim_name) or {}
@@ -2724,6 +2850,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         + REPORT_JSON_RULES
         + '\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx, for_json=True)
+        + _ladder_report_block(ctx)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         # ⚠️ 履歷一定要送。basics（居住地、年齡、學歷、語言、證照）的來源就是這裡，
         #    而規則寫「報告裡沒有的不要自己補」——不送履歷就永遠是 null。
@@ -2772,7 +2899,8 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
                    f'content_json 是空的。純文字報告正常，但 AI 配對與後台結構化欄位會看不到內容，'
                    f'請額度恢復後手動補產。', THREAD_DECIDE)
             return None
-        data = _normalize_report_json(obj, name, ctx.get('job'))
+        _lad = ((ctx.get('expertise') or {}).get('ladder'))
+        data = _normalize_report_json(obj, name, dict(ctx.get('job') or {}, _ladder=_lad))
         blob = json.dumps(data, ensure_ascii=False)
         # 存進去之前先驗一次：解回來一定要是物件。多包一層的字串在後台看起來
         # 一切正常（欄位都在），只有產 PDF 那一刻才會炸掉。
@@ -2856,6 +2984,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         + skill('report')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
+        + _ladder_report_block(ctx)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block
         + other_jobs_block
@@ -3661,9 +3790,14 @@ def _safe_to_restart():
 
 def main():
     once = '--once' in sys.argv
-    log(f'面談引擎啟動（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
+    # 鎖的到期時間是用本機時間字串比較的，兩台時區不同會讓鎖提早或延後失效——
+    # 不是台灣時間（UTC+8）就不准啟動，寧可不接單也不要兩台搶同一場。
+    if datetime.datetime.now().astimezone().utcoffset() != datetime.timedelta(hours=8):
+        log('❌ 本機時區不是台灣時間（UTC+8），面談引擎不啟動。WSL2 請設 TZ=Asia/Taipei 或 timedatectl set-timezone Asia/Taipei')
+        return
+    log(f'面談引擎啟動｜{INTERVIEW_HOST}（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
     last_update_check = time.time()
-    taskboard('面談引擎啟動', f'輪詢 {POLL_SEC} 秒，同時最多 {MAX_PARALLEL} 場')
+    taskboard('面談引擎啟動', f'{INTERVIEW_HOST}｜輪詢 {POLL_SEC} 秒，同時最多 {MAX_PARALLEL} 場')
     while True:
         tick()
         # 心跳：專案管理那張卡片靠這個判斷阿財還活著。最多每分鐘一次。
