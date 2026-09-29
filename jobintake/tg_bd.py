@@ -98,7 +98,13 @@ def send_letter(bid, t, has_cv=True, prefix='bd'):
                   f"（{_esc(t.get('job_source') or '來源未填')}）")
     else:
         anchor = '⚠️ 沒有職缺錨點'
-    att = '📎 匿名履歷 ＋ 公司簡介' if has_cv else '⚠️ 只有公司簡介，匿名履歷產製失敗'
+    # 2026-09-29：沒配人選的信（例如大同）本來就不附履歷，不要顯示成「產製失敗」嚇人
+    if has_cv:
+        att = '📎 匿名履歷 ＋ 公司簡介'
+    elif not (t.get('candidate_ref') or t.get('candidate_card')):
+        att = '📎 只附公司簡介（這封沒有配人選，信裡也沒提附履歷）'
+    else:
+        att = '⚠️ 只有公司簡介，匿名履歷產製失敗'
     text = (f"✉️ <b>{_esc(t.get('company'))}</b>\n"
             f"{anchor}\n"
             f"收件：{_esc(to)}"
