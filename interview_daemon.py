@@ -1215,11 +1215,24 @@ def job_understanding(job, blockers, expertise, job_card_summary):
             questions.append({'group': '硬條件確認', 'q': b['ask'],
                               'why': b.get('item') or b.get('why') or '',
                               'critical': bool(b.get('critical'))})
-    for x in (expertise or {}).get('questions') or []:
-        if x.get('q'):
-            questions.append({'group': '專業深度', 'q': x['q'],
-                              'why': x.get('why') or x.get('topic') or '',
-                              'kind': x.get('kind')})
+    # 2026-09-29：有分級階梯就列階梯（阿財實際在問的），沒有才列舊題庫——不然顧問看到的
+    # 「阿財會問什麼」跟實際面談對不起來。每個主題列「開始問的那一級」＋期待級那題。
+    lad = (expertise or {}).get('ladder')
+    if lad and lad.get('topics'):
+        st, exp = int(lad.get('start_level') or 2), int(lad.get('expected_level') or 3)
+        for t in lad['topics']:
+            for lv in sorted(t.get('levels') or [], key=lambda x: int(x.get('level') or 0)):
+                n = int(lv.get('level') or 0)
+                if n in (st, exp) and lv.get('q'):
+                    questions.append({'group': f'專業分級（從第 {st} 級問起，期待第 {exp} 級）',
+                                      'q': f'【{t.get("name")}・第 {n} 級】{lv["q"]}',
+                                      'why': lv.get('can_do') or t.get('why') or ''})
+    else:
+        for x in (expertise or {}).get('questions') or []:
+            if x.get('q'):
+                questions.append({'group': '專業深度', 'q': x['q'],
+                                  'why': x.get('why') or x.get('topic') or '',
+                                  'kind': x.get('kind')})
     return {
         'job_slug': job.get('slug'),
         'title': job.get('title'),
