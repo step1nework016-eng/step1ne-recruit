@@ -91,7 +91,7 @@ def call_transcripts(day, name):
 
 def collect(day, monday, name):
     d = {'name': name}
-    logs = q(f"SELECT company, result, note, created_at FROM bd_call_logs WHERE {who_in('caller', name)} "
+    logs = q(f"SELECT company, result, note, created_at FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
              f"AND substr(created_at,1,10)={s(day)} ORDER BY created_at")
     ticked = q(f"SELECT DISTINCT company FROM bd_outreach WHERE {who_in('contacted_by', name)} "
                f"AND substr(contacted_at,1,10)={s(day)}")
@@ -113,13 +113,13 @@ def collect(day, monday, name):
     d['sc_people'] = len({r['sourced_id'] for r in sc})
     d['app_people'] = len(apps)
 
-    d['notes'] = q(f"SELECT company, learned, next_time, problem FROM bd_call_notes WHERE {who_in('author', name)} "
+    d['notes'] = q(f"SELECT company, learned, next_time, problem FROM bd_call_notes WHERE deleted_at IS NULL AND {who_in('author', name)} "
                    f"AND substr(created_at,1,10)={s(day)} ORDER BY created_at")
     d['transcripts'] = call_transcripts(day, name)
 
-    d['wk_calls'] = q(f"SELECT COUNT(*) n FROM bd_call_logs WHERE {who_in('caller', name)} "
+    d['wk_calls'] = q(f"SELECT COUNT(*) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
                       f"AND substr(created_at,1,10) BETWEEN {s(monday)} AND {s(day)}")[0]['n']
-    d['wk_interested'] = q(f"SELECT COUNT(DISTINCT company) n FROM bd_call_logs WHERE {who_in('caller', name)} "
+    d['wk_interested'] = q(f"SELECT COUNT(DISTINCT company) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
                            f"AND result='interested' AND substr(created_at,1,10) BETWEEN {s(monday)} AND {s(day)}")[0]['n']
     closer = (f"CASE WHEN COALESCE(TRIM(manual_stage_by),'') IN ('','顧問') THEN assigned_to ELSE manual_stage_by END")
     d['wk_signed'] = q(f"SELECT COUNT(DISTINCT company) n FROM bd_outreach WHERE manual_stage='closed' "
