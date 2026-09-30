@@ -99,8 +99,38 @@ def parse_draft_body(draft_md):
         for line in src_block.splitlines():
             line = line.strip().lstrip('- ').strip()
             if line:
-                sources.append(line)
+                sources.append(_scrub_source(line))
     return body, faq, sources
+
+
+def _client_terms():
+    # 2026-09-30：查證來源曾寫出客戶全名＋內部職缺代碼，被上線前的客戶名守門員擋下（草稿 #4）。
+    # 上線前先把客戶名稱換成「Step1ne 合作企業」、拿掉 slug，守門員照樣會再檢查一次。
+    try:
+        rows = D.d1("SELECT display_name, aliases FROM client_companies") or []
+    except Exception:
+        return []
+    terms = set()
+    for r in rows:
+        for t in [r.get('display_name') or ''] + re.split(r'[,，、/／\n]', r.get('aliases') or ''):
+            t = t.strip()
+            if len(t) >= 2:
+                terms.add(t)
+                terms.add(re.sub(r'(股份)?有限公司$', '', t))
+    return sorted((t for t in terms if len(t) >= 2), key=len, reverse=True)
+
+
+_TERMS_CACHE = None
+
+
+def _scrub_source(line):
+    global _TERMS_CACHE
+    if _TERMS_CACHE is None:
+        _TERMS_CACHE = _client_terms()
+    line = re.sub(r'（slug:[^）]*）|\(slug:[^)]*\)', '', line)
+    for t in _TERMS_CACHE:
+        line = line.replace(t, 'Step1ne 合作企業')
+    return line
 
 
 def extract_h2_sections(body_html):
