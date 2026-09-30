@@ -122,11 +122,22 @@ def collect(day, monday, name):
     # 明天以前（含已經過期）要跟進的客戶：這位負責的公司，暫停的不列
     tomorrow = (datetime.date.fromisoformat(day) + datetime.timedelta(days=1)).isoformat()
     d['tomorrow'] = tomorrow
-    d['follow'] = q(f"SELECT company, next_action, next_due, next_step FROM bd_company_status "
-                    f"WHERE next_due IS NOT NULL AND next_due <> '' AND next_due <= {s(tomorrow)} "
-                    f"AND COALESCE(next_action,'') <> 'pause' "
-                    f"AND company IN (SELECT company FROM bd_outreach WHERE {who_in('assigned_to', name)}) "
-                    f"ORDER BY next_due, company")
+    # 顧問自己排的優先；沒排但有 AI 整理（還沒確認）的，用 AI 建議，標「AI」；備選池、暫停的不列
+    rows = q(f"SELECT company, next_action, next_due, next_step, ai_action, ai_due, ai_memo, ai_state, parked_at "
+             f"FROM bd_company_status WHERE parked_at IS NULL "
+             f"AND company IN (SELECT company FROM bd_outreach WHERE {who_in('assigned_to', name)})")
+    follow = []
+    for r in rows:
+        if r.get('next_action') or r.get('next_due'):
+            act, due, memo, ai = r.get('next_action'), r.get('next_due'), r.get('next_step'), False
+        elif r.get('ai_state') == 'new' and r.get('ai_action'):
+            act, due, memo, ai = r.get('ai_action'), r.get('ai_due'), r.get('ai_memo'), True
+        else:
+            continue
+        if act == 'pause' or not due or due > tomorrow:
+            continue
+        follow.append({'company': r['company'], 'next_action': act, 'next_due': due, 'next_step': memo, 'ai': ai})
+    d['follow'] = sorted(follow, key=lambda x: (x['next_due'], x['company']))
     d['wk_calls'] = q(f"SELECT COUNT(*) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
                       f"AND substr(created_at,1,10) BETWEEN {s(monday)} AND {s(day)}")[0]['n']
     d['wk_interested'] = q(f"SELECT COUNT(DISTINCT company) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
@@ -213,7 +224,7 @@ def build_text(d, day, ai):
     for r in d['follow'][:10]:
         late = '⚠️ 過期 ' if r['next_due'] < day else ('今天 ' if r['next_due'] == day else '')
         memo = scrub((r.get('next_step') or '').replace('\n', ' '))[:30]
-        lines.append(f"・{late}{r['company']}｜{ACT_ZH.get(r.get('next_action'), '（沒選動作）')}｜{r['next_due'][5:].replace('-', '/')}"
+        lines.append(f"・{late}{r['company']}｜{ACT_ZH.get(r.get('next_action'), '（沒選動作）')}{'（AI 建議，待確認）' if r.get('ai') else ''}｜{r['next_due'][5:].replace('-', '/')}"
                      + (f"｜{memo}" if memo else ''))
     if len(d['follow']) > 10:
         lines.append(f"・…還有 {len(d['follow']) - 10} 家，看後台「客戶跟進」")
@@ -283,7 +294,7 @@ def build_html(d, day, ai):
         for r in d['follow']:
             late = '過期 ' if r['next_due'] < day else ('今天 ' if r['next_due'] == day else '')
             h.append(f'<tr><td>{e(r["company"])}<span class="how">{e(scrub(r.get("next_step") or ""))}</span></td>'
-                     f'<td>{e(ACT_ZH.get(r.get("next_action"), "沒選動作"))}・{late}{e(r["next_due"][5:])}</td></tr>')
+                     f'<td>{e(ACT_ZH.get(r.get("next_action"), "沒選動作"))}{"（AI 建議）" if r.get("ai") else ""}・{late}{e(r["next_due"][5:])}</td></tr>')
         h.append('</table>')
     else:
         h.append('<p class="empty">沒有排定。到後台「客戶跟進」幫每家選下一步和日期，這裡就會列出來。</p>')
