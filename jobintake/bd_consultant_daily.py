@@ -48,6 +48,9 @@ BD_ZH = {'no_answer': '沒接', 'gatekeeper': '被總機擋', 'got_contact': '�
 ACT_ZH = {'call': '📞 打電話', 'mail': '✉️ 寄信', 'wait': '⏳ 等對方回覆', 'meet': '🤝 約見面', 'pause': '⏸ 先暫停'}
 SC_ZH = {'no_answer': '沒接', 'interested': '有興趣', 'not_interested': '沒興趣', 'invited': '已邀約',
          'wrong_person': '找錯人'}
+# 2026-09-30 Jacky 拍板：每人每週簽 10 家，團隊合計 20 家（兩人各自一條龍開發，名單各自分開）
+WEEKLY_TARGET_EACH = 10
+WEEKLY_TARGET_TEAM = 20
 MODEL = 'claude-sonnet-5'
 CLAUDE_BIN = shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
 # 不給工具、不載 MCP、不讀全域設定（否則 CLAUDE.md 的 agentacct 指令會蓋掉任務）
@@ -218,7 +221,8 @@ def build_text(d, day, ai):
     line += f"；應徵者電洽 {d['app_people']} 位）"
     lines.append(line)
     lines.append(f"📝 通話心得：{len(d['notes'])} 則")
-    lines.append(f"📅 本週累計：開發 {d['wk_calls']} 通｜有興趣 {d['wk_interested']} 家｜簽約 {d['wk_signed']} 家")
+    lines.append(f"🎯 本週簽約：{d['wk_signed']}／{WEEKLY_TARGET_EACH} 家（團隊合計 {d.get('team_signed', d['wk_signed'])}／{WEEKLY_TARGET_TEAM}）")
+    lines.append(f"📅 本週累計：開發 {d['wk_calls']} 通｜有興趣 {d['wk_interested']} 家")
     lines.append('')
     lines.append(f"📌 明天（{d['tomorrow'][5:].replace('-', '/')}）要跟進：{len(d['follow'])} 家" + ('' if d['follow'] else '，沒有排定'))
     for r in d['follow'][:10]:
@@ -271,7 +275,7 @@ def build_html(d, day, ai):
     for v, lab in ((len(d['bd_companies']), f"今天開發家數（電話 {len(d['bd_logs'])} 通）"),
                    (d['sc_people'] + d['app_people'], '今天聯繫人選'),
                    (len(d['notes']), '今天寫的通話心得'),
-                   (d['wk_signed'], f"本週簽約（本週 {d['wk_calls']} 通、有興趣 {d['wk_interested']} 家）")):
+                   (f"{d['wk_signed']}／{WEEKLY_TARGET_EACH}", f"本週簽約（團隊 {d.get('team_signed', d['wk_signed'])}／{WEEKLY_TARGET_TEAM}；本週 {d['wk_calls']} 通、有興趣 {d['wk_interested']} 家）")):
         h.append(f'<div class="n"><b>{v}</b><span>{e(lab)}</span></div>')
     h.append('</div>')
 
@@ -370,8 +374,11 @@ def main():
         env = tg_env()
         topic = (q("SELECT topic_id FROM bot_topics WHERE key='bd_signals'") or [{}])[0].get('topic_id')
 
+    all_d = {name: collect(day, monday, name) for name in CONSULTANTS}
+    team_signed = sum(x['wk_signed'] for x in all_d.values())
     for name in CONSULTANTS:
-        d = collect(day, monday, name)
+        d = all_d[name]
+        d['team_signed'] = team_signed
         mat = material(d)
         if not mat.strip():
             ai = {'_none': True}
