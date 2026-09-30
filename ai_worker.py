@@ -1168,6 +1168,120 @@ def _validate_style_extract(d):
     return d
 
 
+# ── 電洽逐字稿 AI 評分（2026-09-30 Jacky）──
+# 顧問在後台「客戶開發卡片」或職缺「AI 找的人 → 記錄聯絡」貼／上傳逐字稿，
+# Worker 存 call_transcripts＋排 call_transcript_review。這裡評分、給改進講法，
+# 寫回 call_transcripts；客戶開發的另外寫一則 bd_call_notes（author='AI 逐字稿建議'），
+# id 固定用 'aitr-<transcript_id>' ＋ INSERT OR IGNORE，重跑不會多一則。
+TRANSCRIPT_AXES = ['開場', '問需求', '處理拒絕', '收尾', '拿到下一步']
+
+
+def prompt_call_transcript_review(p):
+    is_bd = p.get('kind') == 'bd'
+    who = '用人企業（開發客戶）' if is_bd else '人選（求職者）'
+    ctx = []
+    if is_bd:
+        ctx.append(f"客戶公司：{p.get('company') or '（未填）'}")
+    else:
+        c = p.get('candidate') or {}
+        ctx.append(f"職缺：{p.get('job_title') or p.get('job_slug') or '（未填）'}")
+        ctx.append(f"人選背景：{'｜'.join(str(x) for x in [c.get('headline'), c.get('company'), c.get('location')] if x) or '（未填）'}")
+        if c.get('note'):
+            ctx.append(f"AI 找人時認為符合的理由：{str(c.get('note'))[:600]}")
+    ctx.append(f"打電話的顧問：{p.get('caller') or '顧問'}")
+    if p.get('call_result'):
+        ctx.append(f"顧問點的結果：{p.get('call_result')}")
+    judge = (
+        '"prospect":{"interest":"高／中／低／無","interest_reason":"一句話，引用對方說的話",'
+        '"next_step":"寄資料／約時間／再打／先不追 其中一個","next_step_detail":"具體怎麼做、什麼時候"}'
+        if is_bd else
+        '"candidate":{"willingness":"高／中／低／無","willingness_reason":"一句話，引用人選說的話",'
+        '"fit":"符合／部分符合／不符合／資訊不足","fit_reason":"一句話，依逐字稿講到的經歷與條件",'
+        '"next_step":"約阿財面談／再聯絡／先不追 其中一個","next_step_detail":"具體怎麼做"}'
+    )
+    return f"""你是獵頭公司的電話教練。下面是顧問打給{who}的電話逐字稿，以及顧問當下寫的筆記。
+請幫顧問評分，並告訴他下一通電話可以怎麼講得更好。
+
+{TERM_FIX}
+
+規則：
+- 一律繁體中文白話，不要英文術語（不要寫 BANT、CTA、pain point 這類詞）。
+- 只根據逐字稿與筆記裡真的有的內容判斷，沒講到就說沒講到，不要推測、不要補完。
+- 分數 0～100，是整體表現；分項也是 0～100，五個分項固定是：開場、問需求、處理拒絕、收尾、拿到下一步。
+  逐字稿裡沒有發生的段落（例如對方沒拒絕），那一項給 null，comment 寫「這通沒遇到」。
+- 「下一通更好的講法」列 3～5 條，每一條都要**逐字引用逐字稿裡顧問原本說的那句話**，
+  再寫建議改成怎麼說（建議的講法要是可以直接照唸的一句話）。
+- 顧問筆記只當參考，不用評分筆記本身。
+- 語氣像資深前輩帶新人：直接、具體、不說教。
+- 標點一律用全形（，。、：「」），不要用半形逗號。
+
+只輸出一個 JSON，不要其他文字，格式：
+{{"score":整數,"summary":"兩句話講這通電話整體怎麼樣",
+"axes":[{{"name":"開場","score":整數或null,"comment":"一句話"}},{{"name":"問需求",...}},{{"name":"處理拒絕",...}},{{"name":"收尾",...}},{{"name":"拿到下一步",...}}],
+"got_next_step":true或false,
+"improvements":[{{"original":"逐字稿原句","better":"建議改成這樣說","why":"一句話為什麼"}}],
+{judge}}}
+
+背景：
+{chr(10).join(ctx)}
+
+顧問當下筆記：
+{p.get('note') or '（沒寫）'}
+
+電話逐字稿：
+{p.get('transcript') or ''}
+"""
+
+
+def _validate_call_transcript_review(d, payload=None):
+    if not isinstance(d, dict):
+        raise RuntimeError('回覆不是物件')
+    sc = d.get('score')
+    if not isinstance(sc, (int, float)) or not 0 <= sc <= 100:
+        raise RuntimeError(f'score 不合法：{sc}')
+    d['score'] = int(round(sc))
+    axes = d.get('axes') or []
+    by = {a.get('name'): a for a in axes if isinstance(a, dict)}
+    d['axes'] = [by.get(n) or {'name': n, 'score': None, 'comment': '沒有評到'} for n in TRANSCRIPT_AXES]
+    imps = [x for x in (d.get('improvements') or []) if isinstance(x, dict) and x.get('better')]
+    if len(imps) < 1:
+        raise RuntimeError('沒有改進講法')
+    d['improvements'] = imps[:5]
+    key = 'prospect' if (payload or {}).get('kind') == 'bd' else 'candidate'
+    if not isinstance(d.get(key), dict):
+        raise RuntimeError(f'少了 {key} 判斷')
+    return d
+
+
+def _transcript_note_text(d, is_bd):
+    lines = [f"AI 評分 {d['score']} 分。{d.get('summary') or ''}".strip()]
+    lines.append('分項：' + '、'.join(f"{a['name']} {a['score'] if a.get('score') is not None else '—'}" for a in d['axes']))
+    if is_bd:
+        pr = d.get('prospect') or {}
+        lines.append(f"對方興趣：{pr.get('interest') or '—'}（{pr.get('interest_reason') or ''}）")
+        lines.append(f"建議下一步：{pr.get('next_step') or '—'}，{pr.get('next_step_detail') or ''}")
+    return '\n'.join(lines)
+
+
+def _run_call_transcript_review(payload):
+    tid = (payload or {}).get('transcript_id')
+    out = run_claude(prompt_call_transcript_review(payload), want_json=True)
+    d = _validate_call_transcript_review(json.loads(out), payload)
+    if payload.get('dry_run') or not tid:
+        return json.dumps(d, ensure_ascii=False)
+    d1_http.query(
+        f"UPDATE call_transcripts SET ai_status='done', ai_score={int(d['score'])}, ai_json={q(json.dumps(d, ensure_ascii=False))}, "
+        f"ai_error=NULL, reviewed_at=datetime('now','+8 hours') WHERE id={q(tid)}")
+    if payload.get('kind') == 'bd' and payload.get('company'):
+        next_time = '\n'.join(f"{i + 1}. 原本：「{x.get('original') or ''}」→ 建議：「{x.get('better')}」"
+                              for i, x in enumerate(d['improvements']))
+        d1_http.query(
+            "INSERT OR IGNORE INTO bd_call_notes (id, company, author, learned, next_time, problem, created_at) VALUES "
+            f"({q('aitr-' + tid)}, {q(payload['company'])}, 'AI 逐字稿建議', {q(_transcript_note_text(d, True))}, "
+            f"{q(next_time)}, NULL, datetime('now','+8 hours'))")
+    return json.dumps({'transcript_id': tid, 'score': d['score']}, ensure_ascii=False)
+
+
 HANDLERS = {
     'call_summary_client': (prompt_call_summary_client, False),
     'call_notes_summary': (prompt_call_notes_summary, False),
@@ -1178,6 +1292,7 @@ HANDLERS = {
     'client_report_synthesize': (prompt_client_report_synthesize, True),
     'sourced_client_report_synthesize': (prompt_sourced_client_report_synthesize, True),
     'style_extract': (prompt_style_extract, True),
+    'call_transcript_review': (prompt_call_transcript_review, True),
 }
 
 
@@ -1308,6 +1423,8 @@ def process(job):
         return _run_style_extract(payload)
     if kind == 'job_card_feedback':
         return _run_job_card_feedback(payload, job.get('id'))
+    if kind == 'call_transcript_review':
+        return _run_call_transcript_review(payload)
     return run_claude(builder(payload), want_json=want_json)
 
 
@@ -1742,6 +1859,8 @@ RECOVERABLE_KINDS = (
     # 的 UNIQUE 約束擋重複——重跑不會重複加經驗值，job_card_profile 也是
     # ON CONFLICT DO UPDATE 整列覆蓋。
     'job_card_feedback',
+    # (a)+(b) UPDATE call_transcripts 同一列；bd_call_notes 用固定 id＋INSERT OR IGNORE
+    'call_transcript_review',
 )
 # 不回收（需要人工判斷）：
 #   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄
@@ -1839,6 +1958,14 @@ def tick():
                 f"UPDATE ai_jobs SET status={q('failed' if final else 'pending')}, "
                 f"error={q(msg)} WHERE id={q(jid)}")
             log(f'  ❌ 失敗（第 {attempts} 次）：{msg[:120]}')
+            # 2026-09-30：逐字稿評分放棄時，卡片要顯示「AI 分析失敗」而不是一直「分析中」
+            if final and job['kind'] == 'call_transcript_review':
+                try:
+                    tid = json.loads(job.get('payload_json') or '{}').get('transcript_id')
+                    if tid:
+                        d1_http.query(f"UPDATE call_transcripts SET ai_status='error', ai_error={q(msg[:300])} WHERE id={q(tid)}")
+                except Exception:
+                    pass
     return len(rows)
 
 
