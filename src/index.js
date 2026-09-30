@@ -754,6 +754,50 @@ async function sendBdMail(env, to, subject, body, cvFileId, opts) {
   }
 }
 
+// 2026-09-30：寄一封「公司介紹（＋合約）」——單封核准和收尾信「全部核准」共用。
+// 回傳 { ok, error }；成功會把這封改成 sent。沒有附件的信（顧問取消勾選公司介紹、也沒附合約）guard_json 會標 attach:'none'。
+async function sendContractPackRow(env, row, who) {
+  if (row.status !== 'pending') return { ok: false, error: `這封目前狀態是 ${row.status}，不能寄` };
+  if (!row.contact_email) return { ok: false, error: '這封還沒有收件人 email，先去後台補上' };
+  const dom = String(row.contact_email).split('@')[1] || '';
+  if (dom && !(await domainAcceptsMail(dom))) return { ok: false, error: `⛔ 沒有寄出：${dom} 這個網域查不到任何收信設定，信箱可能是錯的` };
+  const { results: atts } = await env.DB.prepare(
+    `SELECT file_id FROM bd_mail_attachments WHERE outreach_id = ? ORDER BY sort`).bind(row.id).all();
+  const fileIds = (atts || []).map((a) => a.file_id);
+  let noAttach = false;
+  try { noAttach = (JSON.parse(row.guard_json || '{}') || {}).attach === 'none'; } catch { noAttach = false; }
+  if (!fileIds.length && !noAttach) return { ok: false, error: '⛔ 這封沒有附件紀錄，沒有寄出' };
+  const res2 = await sendBdMail(env, row.contact_email, row.subject, row.body, null,
+    { fileIds, requireAll: true, from: 'Step1ne <official@step1ne.com>' });
+  if (!res2.ok) return { ok: false, error: `⚠️ 寄送失敗：${res2.error || '不明原因'}` };
+  const now = nowTaipei();
+  await env.DB.prepare(
+    `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=?,
+       resend_id=?, delivery_status='sent' WHERE id=?`
+  ).bind(who, now, now, now, res2.id || null, row.id).run();
+  return { ok: true };
+}
+
+// 收尾信那則 TG 訊息的按鈕：照資料庫目前狀態重畫（還在等的留退回鍵，其他換成結果）
+async function bdWrapKeyboard(env, cq, batchId) {
+  const { results: rows } = await env.DB.prepare(
+    `SELECT id, company, status, decided_by FROM bd_outreach WHERE batch_id = ? ORDER BY created_at`).bind(batchId).all();
+  const short = (c) => String(c || '').replace(/股份有限公司|有限公司/g, '').slice(0, 14);
+  const ST = { sent: '📤 已寄', rejected: '❌ 不寄', draft: '↩️ 已退回', sending: '⏳ 寄送中', pending: '' };
+  const pend = (rows || []).filter((r) => r.status === 'pending');
+  const kb = [];
+  if (pend.length) kb.push([{ text: `📤 全部核准寄出（${pend.length} 封）`, callback_data: `bd_okall:${batchId}` }, { text: '❌ 全部不寄', callback_data: `bd_noall:${batchId}` }]);
+  (rows || []).forEach((r, i) => {
+    kb.push(r.status === 'pending'
+      ? [{ text: `↩️ 退回【${i + 1}】${short(r.company)}`, callback_data: `bd_rw:${r.id}` }]
+      : [{ text: `${ST[r.status] || r.status}【${i + 1}】${short(r.company)}`, callback_data: 'noop' }]);
+  });
+  await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: kb } }),
+  }).catch(() => {});
+}
+
 // 用人需求表補件邀請信——寄給企業客戶窗口，跟 sendBdMail 一樣是能直接回信的
 // 商務信，不是 sendMail() 那套候選人專用、掛系統頁尾／LINE的格式。
 async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
@@ -6204,6 +6248,43 @@ export default {
             body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: true }),
           }).catch(() => {});
         };
+        // 2026-09-30 收尾信：一則訊息多封信，「全部核准寄出」／「全部不寄」
+        if (action === 'bd_okall' || action === 'bd_noall') {
+          const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+          const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
+          if (!allow.includes(uname)) { await ans('⛔ 收尾信只有 Jacky 可以核准'); return new Response('ok'); }
+          const now = nowTaipei();
+          if (action === 'bd_noall') {
+            const r0 = await env.DB.prepare(`UPDATE bd_outreach SET status='rejected', decided_by=?, decided_at=?, updated_at=? WHERE batch_id=? AND scenario='contract_pack' AND status='pending'`)
+              .bind(who, now, now, bid || '').run();
+            await ans(r0.meta && r0.meta.changes ? `❌ ${r0.meta.changes} 封都不寄了` : '這一批已經沒有等核准的信了');
+          } else {
+            // 先把整批搶成 sending：TG 如果重送同一個按鈕事件，第二次搶不到就不會重複寄
+            const claim = await env.DB.prepare(`UPDATE bd_outreach SET status='sending', updated_at=? WHERE batch_id=? AND scenario='contract_pack' AND status='pending'`)
+              .bind(now, bid || '').run();
+            if (!claim.meta || !claim.meta.changes) { await ans('這一批已經沒有等核准的信了（可能正在寄）'); await bdWrapKeyboard(env, cq, bid); return new Response('ok'); }
+            await ans(`📤 開始寄 ${claim.meta.changes} 封，寄完按鈕會更新`);
+            const { results: rows } = await env.DB.prepare(
+              `SELECT * FROM bd_outreach WHERE batch_id = ? AND status = 'sending' ORDER BY created_at`).bind(bid).all();
+            let okN = 0; const fails = [];
+            for (const r of rows || []) {
+              const res = await sendContractPackRow(env, { ...r, status: 'pending' }, who);
+              if (res.ok) okN++;
+              else {
+                fails.push(`・${r.company}：${res.error}`);
+                await env.DB.prepare(`UPDATE bd_outreach SET status='pending', updated_at=? WHERE id=? AND status='sending'`).bind(nowTaipei(), r.id).run();
+              }
+            }
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: cq.message.chat.id, message_thread_id: cq.message.message_thread_id,
+                reply_to_message_id: cq.message.message_id,
+                text: `📤 ${who} 核准收尾信：寄出 ${okN} 封${fails.length ? `\n沒寄出 ${fails.length} 封（還在等核准，修好可以再按一次）：\n${fails.join('\n')}` : ''}` }),
+            }).catch(() => {});
+          }
+          await bdWrapKeyboard(env, cq, bid);
+          return new Response('ok');
+        }
         const row = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE id = ?`).bind(bid || '').first();
         if (!row) { await ans('❌ 找不到這封'); return new Response('ok'); }
         if (row.status === 'sent') { await ans('這封已經寄出去了，不重複寄'); return new Response('ok'); }
@@ -6221,9 +6302,11 @@ export default {
             `UPDATE bd_outreach SET status='draft', decided_by=?, decided_at=?, updated_at=? WHERE id=?`
           ).bind(who, now, now, bid).run();
           label = `✏️ ${who} 退回重寫`;
-          await ans('✏️ 退回了。直接「回覆」這則訊息告訴總指揮要改什麼');
+          await ans(String(row.batch_id || '').startsWith('wrap-')
+            ? '↩️ 這封先不寄。到後台「收尾」分頁改好可以重新擬'
+            : '✏️ 退回了。直接「回覆」這則訊息告訴總指揮要改什麼');
         } else if (action === 'bd_ok' && row.scenario === 'contract_pack') {
-          // 2026-09-30：寄公司介紹＋合約。電話談過、對方有興趣才會有這封，所以不查 14 天職缺、
+          // 2026-09-30：寄公司介紹（＋合約）。電話談過才會有這封，所以不查 14 天職缺、
           // 也不比對客戶名單（對方正要變成客戶）。但一定要 Jacky 本人按核准才寄。
           const uname = String((cq.from && cq.from.username) || '').toLowerCase();
           const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
@@ -6231,25 +6314,9 @@ export default {
             await ans('⛔ 公司介紹＋合約只有 Jacky 可以核准寄出');
             return new Response('ok');
           }
-          if (row.status !== 'pending') { await ans(`這封目前狀態是 ${row.status}，不能寄`); return new Response('ok'); }
-          if (!row.contact_email) { await ans('這封還沒有收件人 email，先去後台補上'); return new Response('ok'); }
-          const dom = String(row.contact_email).split('@')[1] || '';
-          if (dom && !(await domainAcceptsMail(dom))) {
-            await ans(`⛔ 沒有寄出：${dom} 這個網域查不到任何收信設定，信箱可能是錯的`);
-            return new Response('ok');
-          }
-          const { results: atts } = await env.DB.prepare(
-            `SELECT file_id FROM bd_mail_attachments WHERE outreach_id = ? ORDER BY sort`).bind(bid).all();
-          const fileIds = (atts || []).map((a) => a.file_id);
-          if (!fileIds.length) { await ans('⛔ 這封沒有附件紀錄，沒有寄出'); return new Response('ok'); }
-          const res2 = await sendBdMail(env, row.contact_email, row.subject, row.body, null,
-            { fileIds, requireAll: true, from: 'Step1ne <official@step1ne.com>' });
-          if (!res2.ok) { await ans(`⚠️ 寄送失敗：${res2.error || '不明原因'}`); return new Response('ok'); }
-          await env.DB.prepare(
-            `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=?,
-               resend_id=?, delivery_status='sent' WHERE id=?`
-          ).bind(who, now, now, now, res2.id || null, bid).run();
-          label = `📤 ${who} 已核准，公司介紹＋合約已寄至 ${row.contact_email}`;
+          const res = await sendContractPackRow(env, row, who);
+          if (!res.ok) { await ans(res.error); return new Response('ok'); }
+          label = `📤 ${who} 已核准，信已寄至 ${row.contact_email}`;
           await ans('📤 寄出去了');
         } else if (action === 'bd_ok' && !bdJobChecked(row)) {
           // 2026-09-29 Jacky：「要開發前要先做功課才能寄信」。沒有在 14 天內確認過
@@ -6297,6 +6364,11 @@ export default {
           return new Response('ok');
         }
 
+        // 收尾信（一則訊息多封）：只更新那一封的按鈕，其他封的按鈕要留著
+        if (String(row.batch_id || '').startsWith('wrap-')) {
+          await bdWrapKeyboard(env, cq, row.batch_id);
+          return new Response('ok');
+        }
         // 把按鈕換成結果，免得有人再按一次
         await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
