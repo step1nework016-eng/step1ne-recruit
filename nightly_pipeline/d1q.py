@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import d1_http as D  # noqa: E402
 
-ALLOWED_TABLES = {'bd_outreach', 'bd_company_profiles', 'bd_hr_contacts', 'sourced_candidates'}
+ALLOWED_TABLES = {'bd_outreach', 'bd_company_profiles', 'bd_hr_contacts', 'sourced_candidates', 'bd_foreign_watch'}
 TIME_COLS = ('created_at', 'updated_at', 'found_at')
 READ_OK = re.compile(r'^\s*(SELECT|WITH|PRAGMA\s+table_info)\b', re.I)
 WRITE_WORDS = re.compile(r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|ATTACH|DETACH|VACUUM)\b', re.I)

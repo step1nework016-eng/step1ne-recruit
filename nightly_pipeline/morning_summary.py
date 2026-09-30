@@ -94,6 +94,23 @@ def build_text():
         lines.append(f'　認識客戶介紹 {prof} 筆、LinkedIn 人資窗口 {hr} 位')
     lines.append('')
 
+    # ── 外商 ──
+    fx = q("SELECT company, assigned_to FROM bd_outreach WHERE batch_id LIKE 'nightly-bd-%' "
+           f"AND industry LIKE '外商｜%' AND created_at >= '{esc(since)}'")
+    lines.append(f'🌏 外商：昨晚新增 {len(fx)} 家（合格 {sum(1 for r in fx if r.get("assigned_to"))} 家）')
+    watch = q("SELECT company, country, location, note FROM bd_foreign_watch "
+              f"WHERE created_at >= '{esc(since)}' ORDER BY news_date DESC")
+    if watch:
+        lines.append(f'　外商來台動態（還不能打電話，先追蹤）{len(watch)} 則：')
+        for r in watch[:8]:
+            where = '／'.join(x for x in (r.get('country'), r.get('location')) if x)
+            lines.append(f"　・{r['company']}（{where}）：{r.get('note') or ''}")
+        if len(watch) > 8:
+            lines.append(f'　…還有 {len(watch) - 8} 則')
+    else:
+        lines.append('　外商來台動態：昨晚沒有新消息')
+    lines.append('')
+
     # ── 找人選 ──
     src = q("SELECT s.job_slug, COALESCE(j.title, s.job_slug) title, "
             "SUM(CASE WHEN s.grade='A' THEN 1 ELSE 0 END) a, COUNT(*) n "
