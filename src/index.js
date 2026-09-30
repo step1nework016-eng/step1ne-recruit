@@ -705,7 +705,10 @@ function bdJobChecked(row) {
   return Number.isFinite(t) && (Date.now() - t) < 14 * 86400000;
 }
 
-async function sendBdMail(env, to, subject, body, cvFileId) {
+// 2026-09-30 加 opts：{ fileIds: [...], from }。給了 fileIds 就照這個清單帶附件（可以很多個），
+// 不再固定帶「匿名履歷＋舊公司簡介」——寄公司介紹＋合約那種信要的是另一組附件。
+// 沒給 opts 的呼叫端行為完全不變。
+async function sendBdMail(env, to, subject, body, cvFileId, opts) {
   if (!env.RESEND_API_KEY || !to) return { ok: false, error: '沒有 API key 或收件人' };
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const html =
@@ -713,16 +716,18 @@ async function sendBdMail(env, to, subject, body, cvFileId) {
     `line-height:1.9;color:#23262d;max-width:620px;white-space:pre-wrap;">` +
     esc(body) + `</div>`;
   const attachments = [];
-  for (const id of [cvFileId, PROFILE_FILE_ID]) {
+  const wantIds = (opts && Array.isArray(opts.fileIds)) ? opts.fileIds : [cvFileId, PROFILE_FILE_ID];
+  for (const id of wantIds) {
     const a = await fileB64(env, id);
-    if (a) attachments.push(a);
+    if (a) attachments.push({ filename: a.filename, content: a.content });
+    else if (opts && opts.requireAll) return { ok: false, error: `附件讀不到（${id}），沒有寄出` };
   }
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        from: 'Jacky Chen <official@step1ne.com>',
+        from: (opts && opts.from) || 'Jacky Chen <official@step1ne.com>',
         to: [to], subject, text: body, html,
         // 回信要能被系統讀到才追蹤得了。
         // ⚠️ 不能用 Cloudflare Email Routing 接管 official@step1ne.com——
@@ -6217,6 +6222,35 @@ export default {
           ).bind(who, now, now, bid).run();
           label = `✏️ ${who} 退回重寫`;
           await ans('✏️ 退回了。直接「回覆」這則訊息告訴總指揮要改什麼');
+        } else if (action === 'bd_ok' && row.scenario === 'contract_pack') {
+          // 2026-09-30：寄公司介紹＋合約。電話談過、對方有興趣才會有這封，所以不查 14 天職缺、
+          // 也不比對客戶名單（對方正要變成客戶）。但一定要 Jacky 本人按核准才寄。
+          const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+          const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
+          if (!allow.includes(uname)) {
+            await ans('⛔ 公司介紹＋合約只有 Jacky 可以核准寄出');
+            return new Response('ok');
+          }
+          if (row.status !== 'pending') { await ans(`這封目前狀態是 ${row.status}，不能寄`); return new Response('ok'); }
+          if (!row.contact_email) { await ans('這封還沒有收件人 email，先去後台補上'); return new Response('ok'); }
+          const dom = String(row.contact_email).split('@')[1] || '';
+          if (dom && !(await domainAcceptsMail(dom))) {
+            await ans(`⛔ 沒有寄出：${dom} 這個網域查不到任何收信設定，信箱可能是錯的`);
+            return new Response('ok');
+          }
+          const { results: atts } = await env.DB.prepare(
+            `SELECT file_id FROM bd_mail_attachments WHERE outreach_id = ? ORDER BY sort`).bind(bid).all();
+          const fileIds = (atts || []).map((a) => a.file_id);
+          if (!fileIds.length) { await ans('⛔ 這封沒有附件紀錄，沒有寄出'); return new Response('ok'); }
+          const res2 = await sendBdMail(env, row.contact_email, row.subject, row.body, null,
+            { fileIds, requireAll: true, from: 'Step1ne <official@step1ne.com>' });
+          if (!res2.ok) { await ans(`⚠️ 寄送失敗：${res2.error || '不明原因'}`); return new Response('ok'); }
+          await env.DB.prepare(
+            `UPDATE bd_outreach SET status='sent', decided_by=?, decided_at=?, sent_at=?, updated_at=?,
+               resend_id=?, delivery_status='sent' WHERE id=?`
+          ).bind(who, now, now, now, res2.id || null, bid).run();
+          label = `📤 ${who} 已核准，公司介紹＋合約已寄至 ${row.contact_email}`;
+          await ans('📤 寄出去了');
         } else if (action === 'bd_ok' && !bdJobChecked(row)) {
           // 2026-09-29 Jacky：「要開發前要先做功課才能寄信」。沒有在 14 天內確認過
           // 「對方現在還開著這個缺」（104／官網，記在 job_checked_at），一律不寄。
