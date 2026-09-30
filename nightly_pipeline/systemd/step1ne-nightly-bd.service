@@ -1,0 +1,15 @@
+[Unit]
+Description=Step1ne 夜間開發客戶名單（最多 30 家）
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit/nightly_pipeline
+Environment=TZ=Asia/Taipei
+# PATH 裡的 node 路徑請換成這台實際 `dirname $(which claude)` 所在的資料夾
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/current/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/claude-projects/工作流程技能包/step1ne-recruit/nightly_pipeline/run_nightly.sh bd --limit 30
+TimeoutStartSec=3h
+Nice=10
+# 服務結束時，systemd 會把這個服務底下還活著的程序（包含沒關掉的 chromium）全部收掉
+KillMode=control-group

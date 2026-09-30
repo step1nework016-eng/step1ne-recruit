@@ -1,0 +1,11 @@
+[Unit]
+Description=每天 08:30 推夜間工作摘要
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Taipei
+# 錯過就不補跑：機器白天開機時不要突然跑起夜間工作搶記憶體
+Persistent=false
+Unit=step1ne-morning-summary.service
+
+[Install]
+WantedBy=timers.target
