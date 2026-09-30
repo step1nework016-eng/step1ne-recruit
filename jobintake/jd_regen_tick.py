@@ -54,6 +54,9 @@ def env():
                 e[k.strip()] = v.strip().strip('\'"')
     e.pop('CLAUDECODE', None)
     e.pop('CLAUDE_CODE_ENTRYPOINT', None)
+    # 2026-09-30：WSL2 手動重啟時 PATH 會先找到 /mnt/c/... 的 Windows 版 npx，吐 Big5 亂碼整輪炸掉。
+    # 一律拿掉 Windows 那邊的路徑，只用 Linux／Mac 本機的 node。
+    e['PATH'] = os.pathsep.join(x for x in e.get('PATH', '').split(os.pathsep) if not x.startswith('/mnt/'))
     return e
 
 
@@ -61,7 +64,7 @@ def d1(sql):
     r = subprocess.run(
         ['npx', '--yes', 'wrangler', 'd1', 'execute', 'step1ne-recruit',
          '--remote', '--json', '--command', sql],
-        cwd=RECRUIT, env=env(), capture_output=True, text=True, timeout=180)
+        cwd=RECRUIT, env=env(), capture_output=True, text=True, errors='replace', timeout=180)
     try:
         return json.loads(r.stdout)[0]['results']
     except Exception:
@@ -161,7 +164,7 @@ def process_one(job):
     log(f'重新產生：{spec["title"]}（{slug}）')
     r = subprocess.run(
         [sys.executable, os.path.join(RECRUIT, 'publish_job.py'), path, '--deploy'],
-        cwd=RECRUIT, env=env(), capture_output=True, text=True, timeout=300)
+        cwd=RECRUIT, env=env(), capture_output=True, text=True, errors='replace', timeout=300)
     out = ((r.stdout or '') + (r.stderr or '')).strip()
     try:
         os.remove(path)

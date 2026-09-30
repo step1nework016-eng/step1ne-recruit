@@ -136,15 +136,20 @@ def main():
 
     if '--deploy' in sys.argv:
         subprocess.run(['git', 'add', '-A'], cwd=SITE, check=True)
+        # 2026-09-30：先確認真的有變更，再 commit。以前把「commit 失敗」（例如 WSL2 的官網 repo 沒設 git 身份）
+        # 跟「沒有變更」印成同一句，部署悄悄沒做也沒人發現。現在 commit 失敗會報錯、結束代碼 1。
+        if subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=SITE).returncode == 0:
+            log('沒有要 commit 的變更')
+            return
         r = subprocess.run(
             ['git', 'commit', '-m',
              '職缺關閉同步：加上「已完成招募」橫幅、validThrough 改成關閉日、移出 sitemap'],
-            cwd=SITE, capture_output=True, text=True)
-        if r.returncode == 0:
-            subprocess.run(['git', 'push', 'deploy', 'HEAD:main'], cwd=SITE, check=True)
-            log('已部署')
-        else:
-            log('沒有要 commit 的變更')
+            cwd=SITE, capture_output=True, text=True, errors='replace')
+        if r.returncode != 0:
+            log(f'❌ commit 失敗，沒有部署：{(r.stderr or r.stdout)[-300:].strip()}')
+            sys.exit(1)
+        subprocess.run(['git', 'push', 'deploy', 'HEAD:main'], cwd=SITE, check=True)
+        log('已部署')
 
 
 if __name__ == '__main__':
