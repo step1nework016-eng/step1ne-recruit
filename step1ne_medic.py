@@ -32,6 +32,7 @@ import argparse
 import importlib.util
 import os
 import subprocess
+import shutil
 import sys
 import time
 from datetime import datetime, timedelta
@@ -144,6 +145,10 @@ def check_stuck_locks(dry):
 def check_schedules(dry):
     """排程有沒有被 launchd 載入。掉出清單＝這支從此不會再跑，
     而且不會有任何錯誤訊息——最安靜的故障。重新載入是可逆的，可以自己修。"""
+    # 2026-09-30：排程已搬到 WSL2（systemd），那台沒有 launchctl；Mac 上的排程是刻意停掉的，
+    # 不能讓這項檢查把它們「重新載入」回來（會跟 WSL2 重複跑）。非 Mac 一律跳過。
+    if sys.platform != 'darwin' or not shutil.which('launchctl'):
+        return
     r = subprocess.run(['launchctl', 'list'], capture_output=True, text=True)
     loaded = r.stdout
     for name, label in SCHEDULED_LABELS:

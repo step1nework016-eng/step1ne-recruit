@@ -44,6 +44,8 @@ CONSULTANTS = {
 }
 BD_ZH = {'no_answer': '沒接', 'gatekeeper': '被總機擋', 'got_contact': '問到窗口', 'got_email': '拿到信箱',
          'interested': '有興趣', 'not_hiring': '沒在徵人', 'not_interested': '拒絕'}
+# 2026-09-30 Jacky：每家客戶的「下一步」（後台「客戶跟進」分頁，bd_company_status），日報列出明天以前要做的
+ACT_ZH = {'call': '📞 打電話', 'mail': '✉️ 寄信', 'wait': '⏳ 等對方回覆', 'meet': '🤝 約見面', 'pause': '⏸ 先暫停'}
 SC_ZH = {'no_answer': '沒接', 'interested': '有興趣', 'not_interested': '沒興趣', 'invited': '已邀約',
          'wrong_person': '找錯人'}
 MODEL = 'claude-sonnet-5'
@@ -117,6 +119,14 @@ def collect(day, monday, name):
                    f"AND substr(created_at,1,10)={s(day)} ORDER BY created_at")
     d['transcripts'] = call_transcripts(day, name)
 
+    # 明天以前（含已經過期）要跟進的客戶：這位負責的公司，暫停的不列
+    tomorrow = (datetime.date.fromisoformat(day) + datetime.timedelta(days=1)).isoformat()
+    d['tomorrow'] = tomorrow
+    d['follow'] = q(f"SELECT company, next_action, next_due, next_step FROM bd_company_status "
+                    f"WHERE next_due IS NOT NULL AND next_due <> '' AND next_due <= {s(tomorrow)} "
+                    f"AND COALESCE(next_action,'') <> 'pause' "
+                    f"AND company IN (SELECT company FROM bd_outreach WHERE {who_in('assigned_to', name)}) "
+                    f"ORDER BY next_due, company")
     d['wk_calls'] = q(f"SELECT COUNT(*) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
                       f"AND substr(created_at,1,10) BETWEEN {s(monday)} AND {s(day)}")[0]['n']
     d['wk_interested'] = q(f"SELECT COUNT(DISTINCT company) n FROM bd_call_logs WHERE deleted_at IS NULL AND {who_in('caller', name)} "
@@ -199,6 +209,15 @@ def build_text(d, day, ai):
     lines.append(f"📝 通話心得：{len(d['notes'])} 則")
     lines.append(f"📅 本週累計：開發 {d['wk_calls']} 通｜有興趣 {d['wk_interested']} 家｜簽約 {d['wk_signed']} 家")
     lines.append('')
+    lines.append(f"📌 明天（{d['tomorrow'][5:].replace('-', '/')}）要跟進：{len(d['follow'])} 家" + ('' if d['follow'] else '，沒有排定'))
+    for r in d['follow'][:10]:
+        late = '⚠️ 過期 ' if r['next_due'] < day else ('今天 ' if r['next_due'] == day else '')
+        memo = scrub((r.get('next_step') or '').replace('\n', ' '))[:30]
+        lines.append(f"・{late}{r['company']}｜{ACT_ZH.get(r.get('next_action'), '（沒選動作）')}｜{r['next_due'][5:].replace('-', '/')}"
+                     + (f"｜{memo}" if memo else ''))
+    if len(d['follow']) > 10:
+        lines.append(f"・…還有 {len(d['follow']) - 10} 家，看後台「客戶跟進」")
+    lines.append('')
     lines.append('🤖 AI 總結：')
     if ai.get('_none'):
         lines.append('・今天沒有記錄')
@@ -258,6 +277,17 @@ def build_html(d, day, ai):
             h.append(f'<li>{e(scrub(p.get("建議", "")))}<span class="how">{e(scrub(p.get("具體做法", "")))}</span></li>')
         h.append('</ul></section>')
 
+    h.append(f'<section><h2>明天要跟進的客戶（{len(d["follow"])} 家）</h2>')
+    if d['follow']:
+        h.append('<table>')
+        for r in d['follow']:
+            late = '過期 ' if r['next_due'] < day else ('今天 ' if r['next_due'] == day else '')
+            h.append(f'<tr><td>{e(r["company"])}<span class="how">{e(scrub(r.get("next_step") or ""))}</span></td>'
+                     f'<td>{e(ACT_ZH.get(r.get("next_action"), "沒選動作"))}・{late}{e(r["next_due"][5:])}</td></tr>')
+        h.append('</table>')
+    else:
+        h.append('<p class="empty">沒有排定。到後台「客戶跟進」幫每家選下一步和日期，這裡就會列出來。</p>')
+    h.append('</section>')
     h.append('<section><h2>今天開發的公司</h2>')
     if d['bd_logs'] or d['bd_ticked']:
         h.append('<table>')
