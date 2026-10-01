@@ -3726,6 +3726,33 @@ async function decideCheckupRouteFresh(env, c) {
 // 上線靠本機 article_publish_tick.py 輪詢 status='approved' 的列去做，
 // 那支才有 repo 可以動、才能跑 git push。兩段分開是因為發布這個動作本質上
 // 只能在本機做，Worker 這層只是核准的窗口。
+// 人選服務心得「放官網／不要放」（2026-10-01 Jacky 選 B：應徵表單的彈窗放心得＋常見疑問）。
+// 只有 Jacky 能按；只有人選自己勾「可以放」的心得才會有這兩顆按鈕。
+async function handleReviewAction(env, cq) {
+  const [action, idRaw] = String(cq.data).split(':');
+  const id = Number(idRaw);
+  const answer = async (text, alert) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
+    }).catch(() => {});
+  };
+  const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+  const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
+  if (!allow.includes(uname)) { await answer('⛔ 放不放官網只有 Jacky 可以決定', true); return; }
+  const row = await env.DB.prepare(`SELECT id, publish_consent FROM service_reviews WHERE id = ?`).bind(id).first();
+  if (!row) { await answer('❌ 找不到這則心得'); return; }
+  if (row.publish_consent === 'private') { await answer('人選選了不要公開，不能放', true); return; }
+  const ok = action === 'rv_ok';
+  await env.DB.prepare(`UPDATE service_reviews SET status = ? WHERE id = ?`).bind(ok ? 'approved' : 'rejected', id).run();
+  await answer(ok ? '✅ 已核准，應徵表單的彈窗會顯示（滿 3 則才會出現）' : '已標記不放');
+  await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+      reply_markup: { inline_keyboard: [[{ text: ok ? '✅ 已放官網（按這裡可改成不放）' : '❌ 不放官網（按這裡可改成放）', callback_data: `${ok ? 'rv_no' : 'rv_ok'}:${id}` }]] } }),
+  }).catch(() => {});
+}
+
 async function handleArticleAction(env, cq) {
   const [action, idRaw] = String(cq.data).split(':');
   const id = Number(idRaw);
@@ -4537,12 +4564,12 @@ export default {
       const row = { job: clean(b.job, 120), offered: clean(b.offered, 120), consultant: clean(b.consultant, 40), improve: clean(b.improve, 2000),
         contact: clean(b.contact, 120), ref: clean(b.ref, 80), page: clean(b.page, 200) };
       const now = nowTaipei();
-      let saved = true;
+      let saved = true, reviewId = null;
       await env.DB.prepare(
         `INSERT INTO service_reviews (created_at, name, job_title, job_offered, consultant, rating, helpful, review, improve, publish_consent, contact, ref, page, status)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'new')`
       ).bind(now, name, row.job || null, row.offered || null, row.consultant || null, rating, helpful.join('、') || null, review,
-             row.improve || null, consent, row.contact || null, row.ref || null, row.page || null).run().catch(async (e) => {
+             row.improve || null, consent, row.contact || null, row.ref || null, row.page || null).run().then((r) => { reviewId = r && r.meta ? r.meta.last_row_id : null; }).catch(async (e) => {
         saved = false;
         await notify(env, `⚠️ 服務心得寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
           { message_thread_id: THREAD.system }).catch(() => {});
@@ -4554,9 +4581,27 @@ export default {
         + (helpful.length ? `最有幫助：${helpful.join('、')}\n` : '')
         + `\n心得：\n${review}\n` + (row.improve ? `\n可以更好：\n${row.improve}\n` : '')
         + `\n公開：${CONSENT[consent]}` + (row.contact ? `\n聯絡：${row.contact}` : '')
-        + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
-        topic ? { message_thread_id: topic } : undefined).catch(() => {});
+        + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。')
+        + (reviewId && consent !== 'private' ? '\n\n要放到應徵表單的「其他人選怎麼說」嗎？（核准滿 3 則才會出現）' : ''),
+        { ...(topic ? { message_thread_id: topic } : {}),
+          ...(reviewId && consent !== 'private' ? { reply_markup: { inline_keyboard: [[
+            { text: '✅ 放官網', callback_data: `rv_ok:${reviewId}` }, { text: '❌ 不要放', callback_data: `rv_no:${reviewId}` }]] } } : {}) }).catch(() => {});
       return json(request, { ok: true });
+    }
+
+    // 應徵表單彈窗用：只給 Jacky 核准過、而且人選同意公開的心得。不滿 3 則回空的，前端就不顯示。
+    // 名字照人選選的：匿名＝不寫；只寫姓氏＝「王○○」（不知道性別，不猜先生小姐）。
+    if (p === '/review/public' && request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        `SELECT rating, review, job_title, job_offered, name, publish_consent, created_at FROM service_reviews
+          WHERE status = 'approved' AND publish_consent IN ('anon','surname') ORDER BY created_at DESC LIMIT 30`).all();
+      const rows = results || [];
+      if (rows.length < 3) return json(request, { ok: true, reviews: [] });
+      return json(request, { ok: true, reviews: rows.map((r) => ({
+        rating: r.rating, text: r.review,
+        job: (r.job_offered && !/沒有錄取/.test(r.job_offered)) ? r.job_offered : r.job_title,
+        who: r.publish_consent === 'surname' && r.name ? `${String(r.name).trim().slice(0, 1)}○○` : '',
+        month: String(r.created_at || '').slice(0, 7) })) });
     }
 
     const HM_SUBS = ['/health', '/lead-email', '/submit', '/submissions', '/cases', '/fetch-url'];
@@ -6541,6 +6586,11 @@ export default {
 
       if (cq && cq.data && String(cq.data).startsWith('art_')) {
         await handleArticleAction(env, cq);
+        return new Response('ok');
+      }
+
+      if (cq && cq.data && String(cq.data).startsWith('rv_')) {
+        await handleReviewAction(env, cq);
         return new Response('ok');
       }
 
