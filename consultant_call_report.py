@@ -87,6 +87,7 @@ def build(app_id, notes, by):
         '以下是一場**由獵頭顧問親自電話訪談**的紀錄。請依規範的 Phase 7 產出初篩報告。\n\n'
         + D.skill('report')
         + D.JOB_MATCH_MD_RULE
+        + D.CAREER_DIRECTIONS_MD_RULE
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block

@@ -83,6 +83,10 @@ TEMPORARY_EMPLOYMENT_HINTS = ('派遣', '約聘', '定期', '短期', '專案型
 # `NOT IN ('closed','pending_review','client_draft')`）。以後只認這一份。
 MATCHABLE_STATUSES = ('open', 'active')
 EXCLUDED_STATUSES = ('closed', 'draft', 'client_draft', 'pending_review')
+# 系統佔位職缺：'unspecified' 是「不確定，請顧問幫我評估」與電洽新增時掛的空殼，
+# status 是 open 但不是真的在招募。2026-10-01 做反向配對時查到它一直混在
+# 可推薦清單裡——面談後找替代職缺有機會把人「推薦」到這個空殼。一律排除。
+PLACEHOLDER_JOB_SLUGS = ('unspecified',)
 
 
 # 安全閥比對用的關鍵字。只列「候選人真的會明確拒絕」的條件，
@@ -142,7 +146,8 @@ def list_matchable_jobs(exclude_slug=None, limit=40):
     推薦給他，這是規格明訂的）。
     """
     placeholders = ', '.join(_q(s) for s in MATCHABLE_STATUSES)
-    where = [f"COALESCE(status,'open') IN ({placeholders})"]
+    where = [f"COALESCE(status,'open') IN ({placeholders})",
+             f"slug NOT IN ({', '.join(_q(x) for x in PLACEHOLDER_JOB_SLUGS)})"]
     if exclude_slug:
         where.append(f'slug != {_q(exclude_slug)}')
     rows = d1_http.query(
@@ -560,14 +565,15 @@ def existing_job_slugs_for_candidate(application_id, name=None, email=None):
 
 
 def save_recommendations(application_id, source_job_slug, source_report_id, kept,
-                         snapshot, jobs_by_slug, model, uid_fn):
+                         snapshot, jobs_by_slug, model, uid_fn,
+                         match_source='post_interview', reverse_run_id=None, limit=3):
     """寫入 candidate_job_recommendations。
 
     idempotency 靠 (source_report_id, recommended_job_slug) 的唯一索引——
     同一份報告重跑不會產生重複列（INSERT OR IGNORE 直接被索引擋掉）。
     """
     saved = 0
-    for rank, rec in enumerate(kept[:3], start=1):
+    for rank, rec in enumerate(kept[:limit], start=1):
         slug = rec.get('job_slug')
         job = jobs_by_slug.get(slug) or {}
         row_id = uid_fn()
@@ -576,7 +582,7 @@ def save_recommendations(application_id, source_job_slug, source_report_id, kept
             '(id, application_id, source_job_slug, recommended_job_slug, match_status, confidence, '
             ' rank, reasons_json, blockers_json, missing_information_json, evidence_json, '
             ' candidate_snapshot_json, job_snapshot_json, status, source_report_id, model, '
-            ' prompt_version, created_at) VALUES ('
+            ' prompt_version, created_at, match_source, reverse_run_id, candidate_why) VALUES ('
             f'{_q(row_id)}, {_q(application_id)}, {_q(source_job_slug)}, {_q(slug)}, '
             f"{_q(rec.get('match_status'))}, {_q(rec.get('confidence'))}, {rank}, "
             f"{_q(json.dumps(rec.get('reasons') or [], ensure_ascii=False))}, "
@@ -585,8 +591,9 @@ def save_recommendations(application_id, source_job_slug, source_report_id, kept
             f"{_q(json.dumps(rec.get('evidence') or [], ensure_ascii=False))}, "
             f'{_q(json.dumps(snapshot, ensure_ascii=False))}, '
             f'{_q(json.dumps(job, ensure_ascii=False))}, '
-            f"'pending_review', {_q(source_report_id)}, {_q(model)}, {_q(PROMPT_VERSION)}, "
-            f'{_q(_now())})'
+            f"'pending_review', {_q(source_report_id)}, {_q(model)}, "
+            f"{_q(rec.get('prompt_version') or PROMPT_VERSION)}, "
+            f"{_q(_now())}, {_q(match_source)}, {_q(reverse_run_id)}, {_q(rec.get('candidate_why') or None)})"
         )
         r = d1_http.query(sql)
         if (r.get('meta') or {}).get('changes'):
@@ -681,10 +688,10 @@ def notify_consultant(snapshot, kept, dropped_count=0):
     # ⚠️ 2026-09-18：這個功能的畫面只存在新版顧問後台，而新版目前只在測試網址
     # （正式站 step1ne.com/consultant/ 是另一個帳號的舊版 Worker，這台機器沒有那把
     # token，也還沒切換）。這裡直接附上可以點的網址，不然顧問收到通知會找不到在哪看。
-    # V3 切換到正式站之後，記得回來把這個網址換掉。
+    # 2026-10-01：V3 已在 9/29 切到正式站，網址換成 step1ne.com/consultant/。
     lines.append('')
     lines.append('👉 打開人選卡片 →「電洽準備」→「AI 職缺推薦」分頁：')
-    lines.append('https://step1ne-consultant-staging.pages.dev/consultant/candidates/')
+    lines.append('https://step1ne.com/consultant/candidates/')
     return _tg('\n'.join(lines), THREAD_DECIDE)
 
 
@@ -708,3 +715,123 @@ def save_followup(application_id, due_at, reason, evidence, source, uid_fn):
         f'{_q(source)}, {_q(evidence)}, \'pending\', \'ai\', {_q(_now())})'
     )
     return True
+
+
+# ── 2026-10-01 反向配對：職缺開出來 → 回頭找人才庫 ─────────────────────
+#
+# 原本的 P3 只有一個方向：人選面談完 → 找「當下」開著的其他職缺。
+# 漏掉的是另一半：職缺是後來才開的，之前談過的人就永遠不會被拿來比。
+# 這裡補反方向，**沿用同一套**快照、安全閥、推薦表，不另起一套（見檔頭）。
+
+REVERSE_PROMPT_VERSION = 'reverse-2026-10-01'
+
+# 人才庫的時間窗：只找最近 180 天內有面談報告的人。
+# 理由：報告裡的期望薪資、可到職日、在職狀態大約半年就會變（換了工作、
+# 薪資水準不同了），太舊的報告拿來配對，顧問打過去多半是「我已經有工作了」。
+# 目前最早的報告是 2026-07-30，所以這個窗現在等於「全部」，之後才會開始篩掉人。
+REVERSE_POOL_DAYS = 180
+# 每個職缺最多留幾位。一個新職缺最多就這幾筆進待處理清單，不會一次洗版。
+REVERSE_TOP_N = 5
+# 最近 30 天內對 AI 邀請按過「這次不用」的人，先不再找他（任何職缺都一樣）。
+REVERSE_DECLINE_COOLDOWN_DAYS = 30
+
+
+def get_job(slug):
+    """取一個職缺的配對用欄位（跟 list_matchable_jobs 同一組欄位）。不在可推薦狀態回 None。"""
+    rows = d1_http.query(
+        'SELECT slug, title, locations, salary_min, salary_max, salary_unit, salary_note, '
+        'employment, seniority, years_min, education_level, language_requirement, '
+        'must_skills, nice_to_have_skills, required_conditions, main_duties, '
+        'hard_filters, must_check_items, status, client_name '
+        f'FROM jobs WHERE slug={_q(slug)}')['results']
+    if not rows:
+        return None
+    job = rows[0]
+    if slug in PLACEHOLDER_JOB_SLUGS or str(job.get('status') or 'open') not in MATCHABLE_STATUSES:
+        return None
+    return job
+
+
+def list_talent_pool(job_slug, days=REVERSE_POOL_DAYS):
+    """這個職缺可以回頭找的人才庫。回傳 [{application_id, name, email, owner, report_id, report_at}]。
+
+    進得來的條件（每一條都寫在 SQL 裡，不靠 AI 判斷）：
+      - 阿財面談完、有報告，報告在 days 天內
+      - 沒被合併掉（superseded_by）、沒被標成重複／淘汰／婉拒／結案
+      - 不在錄取／到職階段（已經在走 offer 的人不去打擾）
+      - 他本人（同 email）沒有應徵過這個職缺
+      - 這個職缺還沒推薦過他（不管當時顧問怎麼決定）
+      - 最近 30 天沒有對 AI 邀請按過「這次不用」
+    同一個 email 多筆應徵只留最新那筆。
+    """
+    rows = d1_http.query(
+        'SELECT a.id AS application_id, a.name, a.email, a.owner, a.job_slug, '
+        '       r.id AS report_id, r.created_at AS report_at '
+        '  FROM applications a '
+        '  JOIN reports r ON r.id = (SELECT r2.id FROM reports r2 WHERE r2.application_id = a.id '
+        '                             ORDER BY r2.created_at DESC LIMIT 1) '
+        " WHERE a.interview_state = 'done' "
+        '   AND a.superseded_by IS NULL '
+        "   AND COALESCE(a.status,'') NOT IN ('duplicate','rejected','declined','closed') "
+        "   AND COALESCE(a.screen_decision,'') != 'declined' "
+        "   AND COALESCE(a.manual_stage,'') NOT IN ('offer','onboard') "
+        f"   AND r.created_at >= datetime('now','+8 hours','-{int(days)} days') "
+        f'   AND a.job_slug != {_q(job_slug)} '
+        '   AND NOT EXISTS (SELECT 1 FROM applications a2 '
+        f'                   WHERE lower(a2.email) = lower(a.email) AND a2.job_slug = {_q(job_slug)}) '
+        '   AND NOT EXISTS (SELECT 1 FROM candidate_job_recommendations c '
+        f'                   WHERE c.application_id = a.id AND c.recommended_job_slug = {_q(job_slug)}) '
+        '   AND NOT EXISTS (SELECT 1 FROM candidate_job_recommendations c2 '
+        "                   WHERE c2.application_id = a.id AND c2.outreach_status = 'candidate_declined' "
+        f"                     AND c2.candidate_responded_at >= datetime('now','+8 hours','-{REVERSE_DECLINE_COOLDOWN_DAYS} days')) "
+        ' ORDER BY r.created_at DESC'
+    )['results'] or []
+    seen, out = set(), []
+    for r in rows:
+        key = (r.get('email') or r['application_id']).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def client_name_tokens(client_name):
+    """把 jobs.client_name 拆成「不准出現在候選人看得到的文字裡」的字詞。
+
+    client_name 的真實寫法很亂，例如「今日新聞 NOWnews（橘子集團／Gamania 旗下新聞媒體；
+    正式法人全名待顧問補）」。拆開後拿掉太泛的詞（集團、公司…），剩下的都當禁字。
+    """
+    import re
+    if not client_name:
+        return []
+    generic = {'集團', '公司', '股份有限公司', '有限公司', '旗下', '總部', '台灣', '日本', '法人',
+               '正式法人全名待顧問補', '待顧問補', '新聞媒體', '餐飲品牌', '支付服務組', '日本法人'}
+    toks = set()
+    for t in re.split(r'[\s（）()／/、;；,，:：「」]+', str(client_name)):
+        t = t.strip()
+        for suf in ('股份有限公司', '有限公司', '集團', '旗下'):
+            if t.endswith(suf) and len(t) > len(suf) + 1:
+                toks.add(t[:-len(suf)])
+        if len(t) >= 2:
+            toks.add(t)
+    return sorted((t for t in toks if t not in generic and len(t) >= 2), key=len, reverse=True)
+
+
+def notify_reverse_match(job, saved_items, pool_size, run_id=None):
+    """一個職缺只發一則 TG 摘要，不是一位人選一則。只給顧問看，候選人端零接觸。"""
+    if not saved_items:
+        return False
+    label = {'MATCH_CANDIDATE': '很可能適合', 'POSSIBLE_MATCH': '可能適合'}
+    lines = [f"🔁 新職缺從人才庫找到 {len(saved_items)} 位可能適合的人",
+             f"職缺：{job.get('title') or job.get('slug')}",
+             f'（人才庫比對了 {pool_size} 位最近 {REVERSE_POOL_DAYS} 天內面談過的人）', '']
+    for it in saved_items:
+        lines.append(f"▸ {it.get('name') or '（未命名）'}（{label.get(it.get('match_status'), '')}）")
+        r = (it.get('reasons') or [''])[0]
+        if r:
+            lines.append(f'　• {r}')
+    lines += ['', '這只是 AI 的建議，還沒有聯絡任何人。',
+              '👉 到顧問後台「人選 → AI 配對」決定要不要邀請：',
+              'https://step1ne.com/consultant/candidates/?tab=aimatch']
+    return _tg('\n'.join(lines), THREAD_DECIDE)

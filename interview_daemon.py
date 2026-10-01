@@ -2310,7 +2310,14 @@ REPORT_JSON_SPEC = r'''
     "job_fit_cons": ["針對『這個職缺』需要留意的地方，2~3點，每點一句話，同樣要跟職缺內容掛勾"],
     "trait_one_liner": "把特質與風格四軸的整體結論濃縮成一句話，講清楚這個人適合怎樣的工作方式、跟這個職缺搭不搭"
   },
-  "consultant_followups": ["顧問還要自己追問的事，有幾件寫幾件"]
+  "consultant_followups": ["顧問還要自己追問的事，有幾件寫幾件"],
+  "career_directions": [
+    {"direction": "適合的職務方向（職務類型，不是公司名）",
+     "why": "為什麼適合，一兩句，要講到他做過的事或講過的話",
+     "evidence": "最能支持這個方向的一句原話或履歷原文，沒有就空字串",
+     "watch_out": "要注意的地方，沒有就空字串",
+     "open_job_title": "系統裡對應的在辦職缺名稱，沒有就 null"}
+  ]
 }
 '''
 
@@ -2409,6 +2416,8 @@ REPORT_JSON_RULES = (
     '17. `job_match`（2026-09-29 加）：拿【職缺】的核心必要條件（3～7 項）逐條跟**履歷＋面談（＋電洽，有的話）**比對，\n'
     '    不是只看面談表現。verdict 只能是 符合／部分符合／缺／未確認；沒有資料就是「未確認」，不准猜。\n'
     '    evidence 寫具體根據（幾年、做過什麼、哪張證照、他的原話），conclusion 一句話給結論＋建議。\n'
+    '18. `career_directions`（2026-10-01 加）：照報告「適合的職務方向」那一段搬，2～4 筆。\n'
+    '    報告沒有那一段就給空陣列，不要自己編。不准出現年齡、性別、婚育、國籍相關的理由。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -2881,6 +2890,11 @@ def _normalize_report_json(obj, name='', job=None):
     out['route'] = {'code': route[0], 'label': route[1], 'reason': route[2]}
 
     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
+    # 2026-10-01：適合的職務方向（白名單函式，沒接這裡就會被整個丟掉）
+    out['career_directions'] = [
+        {'direction': s(x.get('direction')), 'why': s(x.get('why')), 'evidence': s(x.get('evidence')),
+         'watch_out': s(x.get('watch_out')), 'open_job_title': s(x.get('open_job_title')) or None}
+        for x in arr(obj.get('career_directions')) if isinstance(x, dict) and s(x.get('direction'))][:4]
     return out
 
 
@@ -2984,6 +2998,23 @@ JOB_MATCH_MD_RULE = (
     '最後一句話結論：符合幾項核心條件、缺的是什麼、建議怎麼處理（推／補問什麼／改推別的職缺）。'
     '不准只根據面談表現下結論；履歷上的年資、做過的事、證照要一起比對。沒有資料的條件標 ❓，不要猜。')
 
+# 2026-10-01 Jacky：報告要多一段「適合的職務方向」。不是只看系統裡現有的職缺——
+# 根據面談挖到的經驗、能力、他自己想去的方向，列出 2～4 個他適合的職務類型，
+# 系統裡還沒有這類職缺也要寫。「不確定，請顧問幫我評估」（unspecified）的人
+# 沒有應徵特定職缺，這一段就是整份報告最重要的產出。
+# 後台人選卡片讀的是 content_json.career_directions（REPORT_JSON_SPEC 有同名欄位）。
+CAREER_DIRECTIONS_MD_RULE = (
+    '\n\n🧭 報告最後（建議欄之前）一定要有一段「## 適合的職務方向」：列 2～4 個這位人選適合的職務方向'
+    '（職務類型，例如「BIM 建模工程師」「日文業務助理」「中小企業財會」，不是公司名）。每個方向寫：'
+    '①為什麼適合（引用履歷或面談裡他做過的事、講過的原話）②要注意什麼（例如薪資落差、地點、他沒碰過的部分）'
+    '③系統裡有沒有對應的在辦職缺（有就寫職缺名稱，沒有就寫「目前沒有在辦職缺」）。'
+    '可以寫系統裡還沒有的職務類型。只能依據他的經驗、能力、意願判斷，'
+    '**不准用年齡、性別、婚育、國籍、外貌做任何推論**。他明確說過不想再做的工作類型不要列。')
+CAREER_DIRECTIONS_UNSPECIFIED = (
+    '\n\n⚠️ 這位人選應徵時選的是「不確定，請顧問幫我評估」，沒有特定職缺——'
+    '【職缺硬條件】那段是系統佔位，不要拿它做「職缺匹配總結」的比對，改寫一句「本次為開放式背景面談，無特定職缺」。'
+    '「## 適合的職務方向」是這份報告最重要的一段，請寫完整。')
+
 
 def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     """面談結束：產報告、寫回 D1、通知顧問。
@@ -3042,6 +3073,8 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         '🚨 報告一律使用台灣繁體中文，不可以有任何簡體字。\n\n'
         + skill('report')
         + JOB_MATCH_MD_RULE
+        + CAREER_DIRECTIONS_MD_RULE
+        + (CAREER_DIRECTIONS_UNSPECIFIED if job_slug == 'unspecified' else '')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
         + _ladder_report_block(ctx)
