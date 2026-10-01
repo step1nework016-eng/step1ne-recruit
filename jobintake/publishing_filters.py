@@ -152,13 +152,42 @@ def scan(text, client_name=None, client_code=None, extra_secrets=None):
     return _dedupe(hits)
 
 
+# ── 只掃成品的規則 ──
+# 2026-10-01 加（Jacky 規則）：對候選人的文字不准用「客戶」指用人公司——
+#   當天線上 42 頁職缺有 16 頁寫著「客戶明確說這個職務不可遠距」「客戶端實體面試」
+#   「客戶列的優先條件」。候選人讀到「客戶」會覺得自己是被轉賣的貨，一律改「用人單位」。
+#
+# ⚠️ 只抓「客戶＝用人公司」的寫法，不抓職務本身的客戶：
+#    「客戶成功經理」「屋主及高端客戶應對」「開發國際客戶」是工作內容，合法。
+#    客服類職缺的服務對象請寫「用戶／玩家／會員」，不然「向客戶確認狀況」會被擋。
+#    原始資料（顧問給的 JD）滿滿都是「客戶」，所以這條只在 scan_output() 掃，不在 scan() 掃。
+_HIRER_AS_CLIENT = re.compile(
+    r'客戶端'
+    r'|客戶(?=(明確|未|沒|不限|這次|目前|已|另有|說|要求|列|提供|給|直接|把|看|更看重|主要|'
+    r'偏好|內控|急需|為|的?(回覆|面試|流程|需求表|辦公室|現場|總部)))'
+    r'|(向|跟|替|送給|提供給|推薦給)客戶(?=(確認|問|給|回覆|面試|[。，）]|$))')
+OUTPUT_RULES = [
+    ('把用人單位寫成「客戶」', _HIRER_AS_CLIENT,
+     '對候選人的文字不准用「客戶」指用人公司（Jacky 規則），讀起來像人選是被轉賣的貨',
+     '改成「用人單位」（例：客戶端辦公室→用人單位辦公室、客戶明確說→用人單位明確說）；'
+     '客服職缺的服務對象改寫「用戶／玩家／會員」'),
+]
+
+
 def scan_output(html_or_text, client_name=None, client_code=None, extra_secrets=None):
     """發布前掃「產出的頁面」——跟 scan() 同一套規則，但語氣是「這是最後一道」。
 
     為什麼要掃兩次：scan() 掃的是顧問給的原文（預期會有一堆命中，那很正常）；
     這支掃的是擬完 JD 之後要上線的成品，**任何一條命中都代表不可以發布**。
+    另外多掃 OUTPUT_RULES（只對成品有意義的規則）。
     """
-    return scan(html_or_text, client_name, client_code, extra_secrets)
+    hits = scan(html_or_text, client_name, client_code, extra_secrets)
+    text = html_or_text or ''
+    for kind, rx, why, fix in OUTPUT_RULES:
+        for m in rx.finditer(text):
+            hits.append({'kind': kind, 'matched': m.group(0), 'why': why, 'fix': fix,
+                         'context': _context(text, m.start(), m.end())})
+    return _dedupe(hits)
 
 
 def _name_variants(client_name):
@@ -187,7 +216,7 @@ def _name_variants(client_name):
 # 判準：命中的位置附近有沒有「誰會去確認、什麼時候告訴你」。
 # 有 → 這是坦白揭露，放行；沒有 → 那就是留白的佔位符（例：「薪資：未確認」），照擋。
 _DISCLOSURE = re.compile(
-    r'(顧問|我們|業主|客戶).{0,12}(會|將).{0,8}(告知|說明|問|確認|回覆)'
+    r'(顧問|我們|業主|用人單位|客戶).{0,12}(會|將).{0,8}(告知|說明|問|確認|回覆)'
     r'|確認後.{0,10}(告知|說明|通知|回覆)'
     r'|(取得|問到).{0,6}答案'
     r'|會(主動)?(告知|通知)您')
@@ -295,6 +324,21 @@ if __name__ == '__main__':
     for clean in ['需具備三年以上專案經驗', '每月薪資 40,000 至 55,000 元', '工作地點：台北市內湖區']:
         k = scan(clean)
         print(('✅' if not k else '❌'), f'（不該命中）{clean!r} → {[h["kind"] for h in k]}')
+        if k:
+            bad += 1
+    # 2026-10-01：成品裡把用人單位寫成「客戶」要擋，職務本身的客戶不能誤擋
+    for text in ['客戶明確說這個職務不可遠距', '之後為客戶端實體面試', '是客戶列的優先條件',
+                 '顧問會替你向客戶確認。', '不會把資料送給客戶。', '錄用後由客戶直接聘僱']:
+        k = {h['kind'] for h in scan_output(text)}
+        ok = '把用人單位寫成「客戶」' in k
+        print(('✅' if ok else '❌'), f'（成品）{text!r} → {sorted(k)}')
+        if not ok:
+            bad += 1
+    for clean in ['AI 客戶成功經理', '屋主及高端客戶應對', '開發國際客戶並維護關係',
+                  '需要外出拜訪客戶。', '與客戶、外部往來單位的聯絡', '接客戶的用人需求',
+                  '安排面談、整理推薦資料、與客戶來回確認', '用人單位明確說這個職務不可遠距']:
+        k = [h['kind'] for h in scan_output(clean)]
+        print(('✅' if not k else '❌'), f'（成品不該命中）{clean!r} → {k}')
         if k:
             bad += 1
     print('\n全部通過' if not bad else f'\n{bad} 條沒過')

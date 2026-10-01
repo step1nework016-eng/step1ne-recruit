@@ -25,6 +25,8 @@ spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview
 D = importlib.util.module_from_spec(spec); spec.loader.exec_module(D)
 spec2 = importlib.util.spec_from_file_location('bg', os.path.join(HERE, 'jobtpl', 'body_gen.py'))
 BG = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(BG)
+spec3 = importlib.util.spec_from_file_location('pf', os.path.join(HERE, 'jobintake', 'publishing_filters.py'))
+PF = importlib.util.module_from_spec(spec3); spec3.loader.exec_module(PF)
 
 
 def ld_description(j):
@@ -340,6 +342,16 @@ def main():
                      f"請顧問先確認要留哪一筆（另一筆關掉），或加 --force 強制繼續。")
 
     html = render_page(j)
+    # 2026-10-01 加（Jacky 規則）：對候選人的頁面不准用「客戶」指用人公司，要寫「用人單位」。
+    #   顧問在後台改 JD → jd_regen_tick → 這支重產頁面，這條路原本沒有任何文字檢查。
+    #   只看看得到的文字（拿掉 <script>/<style>/標籤），職務本身的客戶（客戶成功經理）不會被擋。
+    visible = re.sub(r'<(script|style)\b.*?</\1>', ' ', html, flags=re.S)
+    visible = re.sub(r'<[^>]+>', ' ', visible)
+    kehu = [h for h in PF.scan_output(visible) if h['kind'] == '把用人單位寫成「客戶」']
+    if kehu:
+        sys.exit('⛔ 頁面把用人單位寫成「客戶」，沒有產檔：\n'
+                 + '\n'.join(f"  ・{h['context']}" for h in kehu[:10])
+                 + '\n   → 改成「用人單位」；客服職缺的服務對象寫「用戶／玩家／會員」。')
     if a.dry:
         out = f"/tmp/job_{j['slug']}.html"
         open(out, 'w', encoding='utf-8').write(html)
