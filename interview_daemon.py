@@ -3338,9 +3338,31 @@ def _notify_cross_job_interest(app, ctx):
         log(f'⚠️ 跨職缺興趣偵測失敗（不影響面談）：{e}')
 
 
+HOST_LABEL = {'mac': 'Mac', 'wsl2': 'WSL2'}
+
+
+def _mark_host(app_id, name):
+    """記下「這場面談現在是哪一台在回」，後台面談實況與 TG 看得到。
+    2026-10-01 Jacky 要的：李佳龍那場 Mac 網路斷掉、WSL2 接手，事後只能翻兩台 log 才知道是誰在面談。
+    只在換手時寫入＋推 TG（不是每則訊息都寫），省 D1 額度；寫不進去不影響面談本身。"""
+    try:
+        row = d1(f"SELECT interview_host FROM applications WHERE id={q(app_id)}")
+        prev = (row[0].get('interview_host') if row else None)
+        if prev == INTERVIEW_HOST:
+            return
+        d1(f"UPDATE applications SET interview_host={q(INTERVIEW_HOST)}, "
+           f"interview_host_at={q(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))} WHERE id={q(app_id)}")
+        if prev:
+            tg(f"🔁 {name} 的面談改由 {HOST_LABEL.get(INTERVIEW_HOST, INTERVIEW_HOST)} 接手"
+               f"（原本是 {HOST_LABEL.get(prev, prev)}，可能那台卡住或斷線）", THREAD_SYSTEM)
+    except Exception as e:
+        log(f'（記錄面談機器失敗，不影響面談：{e}）')
+
+
 def handle(app):
     app_id, name = app['id'], app['name']
     rate_limited = False
+    _mark_host(app_id, name)
     try:
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
