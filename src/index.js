@@ -4614,13 +4614,17 @@ export default {
     if (p === '/review/public' && request.method === 'GET') {
       const { results } = await env.DB.prepare(
         `SELECT rating, review, job_title, job_offered, name, publish_consent, created_at, consultant FROM service_reviews
-          WHERE status = 'approved' AND publish_consent IN ('anon','surname') ORDER BY created_at DESC LIMIT 30`).all();
+          WHERE status = 'approved' AND publish_consent IN ('anon','surname') ORDER BY created_at DESC LIMIT 100`).all();
       const rows = results || [];
-      if (rows.length < 3) return json(request, { ok: true, reviews: [] });
+      if (rows.length < 3) return json(request, { ok: true, reviews: [], stats: null });
+      // Google 評論式的總覽：平均、總數、各星數（只算 Jacky 核准＋人選同意公開的）
+      const dist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+      rows.forEach((r) => { const k = Math.max(1, Math.min(5, Math.round(r.rating) || 0)); dist[k] += 1; });
+      const stats = { total: rows.length, avg: Math.round((rows.reduce((a, r) => a + (Number(r.rating) || 0), 0) / rows.length) * 10) / 10, dist };
       const { results: cons } = await env.DB.prepare(`SELECT id, display_name FROM consultants`).all().catch(() => ({ results: [] }));
       const conMap = {};
       (cons || []).forEach((c) => { conMap[String(c.id).toLowerCase()] = c.display_name || c.id; conMap[String(c.display_name || '').toLowerCase()] = c.display_name || c.id; });
-      return json(request, { ok: true, reviews: rows.map((r) => ({
+      return json(request, { ok: true, stats, reviews: rows.map((r) => ({
         rating: r.rating, text: r.review,
         job: (r.job_offered && !/沒有錄取/.test(r.job_offered)) ? r.job_offered : r.job_title,
         who: r.publish_consent === 'surname' && r.name ? `${String(r.name).trim().slice(0, 1)}○○` : '',
