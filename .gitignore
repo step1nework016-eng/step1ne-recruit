@@ -8,3 +8,8 @@ checkup_reports/
 jobintake/bd_work/
 __pycache__/
 *.pyc
+
+# ── 2026-10-01 加：執行紀錄不進版控 ──
+# 排程每天會寫這些 log，被追蹤的話 WSL2 的自動更新（git pull）會被「本機有修改」擋下。
+logs/
+jobintake/work/**/*.log
