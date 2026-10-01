@@ -1,0 +1,132 @@
+diff --git a/deliver.py b/deliver.py
+index 50ef4e0..9185fd0 100644
+--- a/deliver.py
++++ b/deliver.py
+@@ -22,6 +22,7 @@ import json
+ import os
+ import pathlib
+ import re
++import shutil
+ import subprocess
+ import tempfile
+ import time
+@@ -31,13 +32,23 @@ TPL_DIR = os.path.join(HERE, 'reporttpl')
+ 
+ 
+ def _find_chrome():
+-    """找本機的 Chrome/Chromium 執行檔。原本寫死 mac 路徑，這台是 Windows 裝置。"""
++    """找本機的 Chrome/Chromium 執行檔。原本寫死 mac 路徑，這台是 Windows 裝置。
++
++    2026-09-17 加：這支現在也可能跑在 WSL2 裡（Linux），這台本身沒裝
++    Linux 版 Chrome/Chromium，改借用 Windows 端本來就有裝的 Chrome——
++    從 WSL2 看，Windows 的 C 槽是掛在 /mnt/c/ 底下，不是 C:\\...，
++    所以下面用 /mnt/c/ 開頭的路徑，不是原本 Windows 原生格式那幾條
++    （那幾條在 WSL2 上 os.path.exists 永遠是 False，留著是給真的
++    在 Windows 原生 Python 上跑的情境，不衝突）。
++    """
+     import shutil
+     candidates = [
+         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+         r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+         r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+         os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
++        '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
++        '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+     ]
+     for c in candidates:
+         if c and os.path.exists(c):
+@@ -1365,11 +1376,30 @@ def html_to_pdf(html_text, out_path):
+     """
+     tmp_html = None
+     proc = None
++    # 2026-09-17 加：這台（WSL2）本機沒有 Linux 版 Chrome/Chromium，暫時借用
++    # Windows 端已經裝好的 Chrome（/mnt/c/... 這個路徑結尾是 .exe）。它是
++    # Windows 行程，完全看不到 WSL2 這邊的 /tmp 或專案路徑，所有丟給它的路徑
++    # 都要先轉成 Windows 原生路徑（C:\...），印完的 PDF 也要從 Windows 那邊
++    # 複製回這裡呼叫端要的 out_path，不能直接叫它印到 out_path。
++    # 之後這台如果裝了 Linux 版 Chromium，CHROME 就不會是 .exe 結尾，
++    # 下面這段會自動跳過，走回原本的邏輯，不用手動切換。
++    is_win_chrome = str(CHROME).lower().endswith('.exe')
++    win_work_dir = None
++    win_out_path = out_path
+     try:
+-        fd, tmp_html = tempfile.mkstemp(suffix='.html')
++        if is_win_chrome:
++            win_work_dir = '/mnt/c/Windows/Temp/step1ne-chrome-pdf'
++            os.makedirs(win_work_dir, exist_ok=True)
++            win_out_path = os.path.join(win_work_dir, os.path.basename(out_path))
++            fd, tmp_html = tempfile.mkstemp(suffix='.html', dir=win_work_dir)
++        else:
++            fd, tmp_html = tempfile.mkstemp(suffix='.html')
+         with os.fdopen(fd, 'w', encoding='utf-8') as f:
+             f.write(html_text)
+-        profile_dir = os.path.join(tempfile.gettempdir(), 'step1ne-chrome-pdf')
++        if is_win_chrome:
++            profile_dir = win_work_dir + '-profile'
++        else:
++            profile_dir = os.path.join(tempfile.gettempdir(), 'step1ne-chrome-pdf')
+         os.makedirs(profile_dir, exist_ok=True)
+         # 2026-09-29：上一次 Chrome 被強制結束會留下 Singleton 鎖檔（9/20 那次一直留著），
+         # 之後每次都卡住、逾時、客戶版履歷 PDF 全部產不出來。啟動前先清掉。
+@@ -1378,27 +1408,45 @@ def html_to_pdf(html_text, out_path):
+                 os.remove(os.path.join(profile_dir, _n))
+             except OSError:
+                 pass
++        if os.path.exists(win_out_path):
++            os.remove(win_out_path)
+         if os.path.exists(out_path):
+             os.remove(out_path)
++
++        if is_win_chrome:
++            def _to_win_path(p):
++                return subprocess.run(['wslpath', '-w', p], capture_output=True,
++                                       text=True, check=True).stdout.strip()
++            print_to_pdf_arg = _to_win_path(win_out_path)
++            user_data_dir_arg = _to_win_path(profile_dir)
++            html_uri = 'file:///' + _to_win_path(tmp_html).replace('\\', '/')
++        else:
++            print_to_pdf_arg = out_path
++            user_data_dir_arg = profile_dir
++            html_uri = pathlib.Path(tmp_html).as_uri()
++
+         proc = subprocess.Popen(
+             [CHROME, '--headless', '--disable-gpu', '--no-pdf-header-footer',
+-             f'--user-data-dir={profile_dir}',
++             f'--user-data-dir={user_data_dir_arg}',
+              '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+              '--disable-background-networking', '--disable-sync',
+              '--disable-component-update', '--disable-default-apps',
+              '--metrics-recording-only', '--mute-audio',
+-             f'--print-to-pdf={out_path}', pathlib.Path(tmp_html).as_uri()],
++             f'--print-to-pdf={print_to_pdf_arg}', html_uri],
+             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+         last = -1
+         for _ in range(120):          # 最多等 120 秒
+             if proc.poll() is not None:
+                 break                 # 自己結束了（沒帶 profile 的舊行為）
+-            size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
++            size = os.path.getsize(win_out_path) if os.path.exists(win_out_path) else 0
+             if size > 1000 and size == last:
+                 break                 # 檔案穩定＝印完了，下面主動收掉
+             last = size
+             time.sleep(1)
+-        ok = os.path.exists(out_path) and os.path.getsize(out_path) > 1000
++        ok = os.path.exists(win_out_path) and os.path.getsize(win_out_path) > 1000
++        if ok and is_win_chrome:
++            shutil.copyfile(win_out_path, out_path)
++            ok = os.path.exists(out_path) and os.path.getsize(out_path) > 1000
+         if not ok:
+             print('[deliver] PDF 產生失敗：headless Chrome 逾時或沒輸出檔案')
+         return ok
+@@ -1414,6 +1462,11 @@ def html_to_pdf(html_text, out_path):
+                 pass
+         if tmp_html and os.path.exists(tmp_html):
+             os.remove(tmp_html)
++        if is_win_chrome and win_out_path and os.path.exists(win_out_path):
++            try:
++                os.remove(win_out_path)
++            except Exception:
++                pass
+ 
+ 
+ def pdf_filename(name, kind):
