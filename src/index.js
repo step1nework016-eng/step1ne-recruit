@@ -4543,10 +4543,26 @@ export default {
            AND COALESCE(status,'') NOT IN ('client_draft','pending_review') ORDER BY title`).all();
       const jobs = (results || []).map((r) => ({ title: r.title, cat: (CATS.find(([, re]) => re.test(r.title)) || ['其他'])[0] }));
       // 2026-10-01 Jacky：負責顧問改用選的（不用自己打），選單來自在職顧問
+      // consultants 表目前只有 Jacky、Phoebe；其他顧問（Bob、Anna…）只在社群帳號表裡。
+      // 兩邊合起來：社群帳號名稱去掉「- Threads／– LinkedIn」，排除品牌帳號 DR、LINE 社群、已停用的帳號。
       const { results: cons } = await env.DB.prepare(
-        `SELECT id, display_name FROM consultants WHERE is_active = 1 ORDER BY display_name`).all().catch(() => ({ results: [] }));
-      return json(request, { ok: true, cats: [...CATS.map(([c]) => c), '其他'].filter((c) => jobs.some((j) => j.cat === c)), jobs,
-        consultants: (cons || []).map((c) => c.display_name || c.id) });
+        `SELECT display_name AS n FROM consultants WHERE is_active = 1`).all().catch(() => ({ results: [] }));
+      const { results: accs } = await env.DB.prepare(
+        `SELECT label AS n FROM social_accounts WHERE is_active = 1 AND platform IN ('threads','linkedin')`).all().catch(() => ({ results: [] }));
+      const names = new Map();
+      [...(cons || []), ...(accs || [])].forEach((r) => {
+        const n = String(r.n || '').replace(/\s*[-–—]\s*(Threads|LinkedIn)\s*$/i, '').replace(/[▪️]+.*$/u, '').trim();
+        if (!n || /^DR$/i.test(n) || /LINE/.test(n)) return;
+        const k = n.toLowerCase();
+        if (!names.has(k)) names.set(k, n);
+      });
+      // 「H Dan」跟「Dan H」是同一人（LinkedIn 姓名順序不同）
+      if (names.has('h dan') && names.has('dan h')) names.delete('h dan');
+      // 「Anna」跟「Anna Wu」也是同一人：有較短的名字是另一個的開頭（＋空白）就只留短的
+      const all = [...names.values()];
+      const consultants = all.filter((n) => !all.some((m) => m !== n && n.toLowerCase().startsWith(m.toLowerCase() + ' ')))
+        .sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+      return json(request, { ok: true, cats: [...CATS.map(([c]) => c), '其他'].filter((c) => jobs.some((j) => j.cat === c)), jobs, consultants });
     }
     if (p === '/review/submit' && request.method === 'POST') {
       let b;
