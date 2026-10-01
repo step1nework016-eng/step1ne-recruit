@@ -4497,6 +4497,26 @@ export default {
     // 人選服務心得（2026-10-01 Jacky：「要給人選填服務心得，做一個連結讓他填」）。
     // 頁面在 step1ne.com/review/，可帶 ?c=顧問&j=職位&ref=識別碼 預先填好。
     // 公開與否由人選自己選；沒選「可以公開」的一律只當內部參考。
+    // 服務心得的「面試的職缺」下拉：先選類別、再選職缺（2026-10-01 Jacky）。
+    // 已關閉的職缺也要列——會來填心得的人，他錄取的那個缺多半已經關了。
+    // jobs 沒有類別欄位，用職稱關鍵字分；新職缺會自動歸類，對不到的進「其他」。
+    if (p === '/review/jobs' && request.method === 'GET') {
+      const CATS = [
+        ['客服／接待', /客服|接待|總機/],
+        ['建築營建／不動產', /建築|物業|營建|不動產/],
+        ['財務／會計', /財務|會計|Treasury|Finance/i],
+        ['IT／軟體／遊戲', /開發|Developer|維運|DevOps|大數據|BigData|資訊|IT Head|雲端|AI Agent|測試/i],
+        ['工程／半導體', /半導體|工程設計|職業安全|BIM|工程師/],
+        ['業務／營運／行銷', /業務|客戶成功|營運|獵頭|社群|編輯|直播|行銷|產品/],
+        ['行政／助理／司機', /助理|特助|行政|司機|秘書/],
+        ['醫療／護理', /護理|醫療|診所/],
+      ];
+      const { results } = await env.DB.prepare(
+        `SELECT DISTINCT title FROM jobs WHERE slug != 'unspecified' AND COALESCE(title,'') != ''
+           AND COALESCE(status,'') NOT IN ('client_draft','pending_review') ORDER BY title`).all();
+      const jobs = (results || []).map((r) => ({ title: r.title, cat: (CATS.find(([, re]) => re.test(r.title)) || ['其他'])[0] }));
+      return json(request, { ok: true, cats: [...CATS.map(([c]) => c), '其他'].filter((c) => jobs.some((j) => j.cat === c)), jobs });
+    }
     if (p === '/review/submit' && request.method === 'POST') {
       let b;
       try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
