@@ -4511,15 +4511,17 @@ export default {
       if (!(rating >= 1 && rating <= 5)) return json(request, { ok: false, error: '請選整體滿意度（1～5 顆星）' }, 400);
       if (review.length < 10) return json(request, { ok: false, error: '心得請至少寫 10 個字' }, 400);
       if (!consent) return json(request, { ok: false, error: '請選這則心得可不可以放上官網' }, 400);
+      if (!clean(b.job, 120)) return json(request, { ok: false, error: '請填面試的職缺' }, 400);
+      if (!clean(b.offered, 120)) return json(request, { ok: false, error: '請選錄取的職缺' }, 400);
       const helpful = (Array.isArray(b.helpful) ? b.helpful : []).map((x) => clean(x, 30)).filter(Boolean).slice(0, 8);
-      const row = { job: clean(b.job, 120), consultant: clean(b.consultant, 40), improve: clean(b.improve, 2000),
+      const row = { job: clean(b.job, 120), offered: clean(b.offered, 120), consultant: clean(b.consultant, 40), improve: clean(b.improve, 2000),
         contact: clean(b.contact, 120), ref: clean(b.ref, 80), page: clean(b.page, 200) };
       const now = nowTaipei();
       let saved = true;
       await env.DB.prepare(
-        `INSERT INTO service_reviews (created_at, name, job_title, consultant, rating, helpful, review, improve, publish_consent, contact, ref, page, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'new')`
-      ).bind(now, name, row.job || null, row.consultant || null, rating, helpful.join('、') || null, review,
+        `INSERT INTO service_reviews (created_at, name, job_title, job_offered, consultant, rating, helpful, review, improve, publish_consent, contact, ref, page, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'new')`
+      ).bind(now, name, row.job || null, row.offered || null, row.consultant || null, rating, helpful.join('、') || null, review,
              row.improve || null, consent, row.contact || null, row.ref || null, row.page || null).run().catch(async (e) => {
         saved = false;
         await notify(env, `⚠️ 服務心得寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
@@ -4528,7 +4530,7 @@ export default {
       const topic = await getOrCreateTopic(env, 'service_reviews', '⭐ 人選服務心得');
       await notify(env,
         `⭐ 收到一則服務心得\n\n${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}（${rating} 分）\n`
-        + `稱呼：${name}\n` + (row.job ? `職位：${row.job}\n` : '') + (row.consultant ? `顧問：${row.consultant}\n` : '')
+        + `稱呼：${name}\n` + (row.job ? `面試：${row.job}\n` : '') + (row.offered ? `錄取：${row.offered}\n` : '') + (row.consultant ? `顧問：${row.consultant}\n` : '')
         + (helpful.length ? `最有幫助：${helpful.join('、')}\n` : '')
         + `\n心得：\n${review}\n` + (row.improve ? `\n可以更好：\n${row.improve}\n` : '')
         + `\n公開：${CONSENT[consent]}` + (row.contact ? `\n聯絡：${row.contact}` : '')
