@@ -36,3 +36,8 @@ bucket_name = "step1ne-files"
 [vars]
 P3_IDLE_NUDGE_ENABLED = "1"
 P3_FOLLOWUP_REMINDER_ENABLED = "1"
+
+# 2026-10-01 加：TG「外部人選待判斷」卡片按鈕轉給後台 Worker 處理（寄信規則只放在後台那一份）。
+[[services]]
+binding = "BACKOFFICE"
+service = "step1ne-backoffice-worker"

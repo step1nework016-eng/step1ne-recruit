@@ -405,6 +405,37 @@ def save_contacts(rows, dry):
     return n_email, n_any
 
 
+def push_tg_review_cards(dry):
+    """2026-10-01 加：找人跑完，有新的「值得寄信」的人就推卡到 TG「🔍 外部人選待判斷」。
+    只推卡給 Jacky／Phoebe 判斷，不會自己寄信。門檻、一次 10 張、一天 20 張都在後台
+    （step1ne-backoffice-worker 的 sourcedTgPush）控管，這裡只負責敲門；失敗不影響找人結果。"""
+    if dry:
+        return
+    import urllib.request
+    tok = os.environ.get('RECRUIT_ADMIN_TOKEN', '')
+    if not tok:
+        try:
+            for line in open(os.path.expanduser('~/.config/workflow-os/recruit.env'), encoding='utf-8'):
+                if line.startswith('RECRUIT_ADMIN_TOKEN='):
+                    tok = line.strip().split('=', 1)[1]
+        except OSError:
+            pass
+    if not tok:
+        log('（沒有 RECRUIT_ADMIN_TOKEN，略過 TG 待判斷卡推送）')
+        return
+    try:
+        req = urllib.request.Request(
+            'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/sourced/tg-push',
+            data=json.dumps({'trigger': 'sourcing_run'}).encode(),
+            headers={'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json',
+                     # Cloudflare 會擋 urllib 預設的 User-Agent（403 code 1010）
+                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0 Safari/537.36'})
+        r = json.load(urllib.request.urlopen(req, timeout=60))
+        log(f"TG 待判斷卡：推了 {r.get('pushed', 0)} 張" + (f"（{r.get('note')}）" if r.get('note') else ''))
+    except Exception as e:  # noqa: BLE001
+        log(f'（TG 待判斷卡推送失敗，不影響找人結果：{e}）')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--job', required=True, help='職缺 slug')
@@ -441,6 +472,8 @@ def main():
         ne, na = save_contacts(parsed.get('contacts') or [], a.dry)
         log(f'完成：{len(targets)} 位中，取得 Email {ne} 位、至少一個管道 {na} 位'
             + ('（--dry 沒有真的寫入）' if a.dry else ''))
+        if ne:
+            push_tg_review_cards(a.dry)
         return
 
     log(f'開始 sourcing：{job["title"]}（{a.job}）' + ('（僅五人校準）' if a.sample_only else ''))
@@ -501,6 +534,8 @@ def main():
 
     saved = save_candidates(a.job, candidates, a.dry)
     log(f'完成，共 {len(candidates)} 位候選人，新增 {saved} 位進池子' + ('（--dry 沒有真的寫入）' if a.dry else ''))
+    if saved:
+        push_tg_review_cards(a.dry)
 
 
 if __name__ == '__main__':

@@ -3728,6 +3728,33 @@ async function decideCheckupRouteFresh(env, c) {
 // 只能在本機做，Worker 這層只是核准的窗口。
 // 人選服務心得「放官網／不要放」（2026-10-01 Jacky 選 B：應徵表單的彈窗放心得＋常見疑問）。
 // 只有 Jacky 能按；只有人選自己勾「可以放」的心得才會有這兩顆按鈕。
+// 2026-10-01 加：TG「🔍 外部人選待判斷」卡片的按鈕（sei_send／sei_no／sei_nr／sei_back／sei_skip／sei_full）。
+// 寄信、標不適合的規則全部在 step1ne-backoffice-worker 的 sourcedTgAction()，這裡只負責轉過去——
+// 後台按鈕跟 TG 按鈕共用同一份規則（30 天不重複、每日上限、誰能按），不在這裡複製一份。
+// 走 service binding（wrangler.toml 的 BACKOFFICE），不走公開網址：同帳號 Worker 互打公開網址會被擋。
+async function handleSourcedAction(env, cq) {
+  const answer = async (text, alert) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cq.id, text: text || '', show_alert: !!alert }),
+    }).catch(() => {});
+  };
+  if (!env.BACKOFFICE || !env.ADMIN_TOKEN) { await answer('系統設定缺少後台連線，請通知工程', true); return; }
+  try {
+    const r = await env.BACKOFFICE.fetch('https://backoffice/admin/sourced/tg-action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      body: JSON.stringify({ data: cq.data, username: (cq.from && cq.from.username) || '',
+        first_name: (cq.from && cq.from.first_name) || '',
+        chat_id: cq.message && cq.message.chat && cq.message.chat.id, message_id: cq.message && cq.message.message_id }),
+    });
+    const d = await r.json().catch(() => ({}));
+    await answer(d.answer || (r.ok ? '' : `處理失敗（${r.status}）`), !!d.alert || !r.ok);
+  } catch (e) {
+    await answer('處理失敗，請到後台資料卡再試一次', true);
+  }
+}
+
 async function handleReviewAction(env, cq) {
   const [action, idRaw] = String(cq.data).split(':');
   const id = Number(idRaw);
@@ -6618,6 +6645,11 @@ export default {
 
       if (cq && cq.data && String(cq.data).startsWith('art_')) {
         await handleArticleAction(env, cq);
+        return new Response('ok');
+      }
+
+      if (cq && cq.data && String(cq.data).startsWith('sei_')) {
+        await handleSourcedAction(env, cq);
         return new Response('ok');
       }
 

@@ -47,7 +47,7 @@ BD_ZH = {'no_answer': '沒接', 'gatekeeper': '被總機擋', 'got_contact': '�
 # 2026-09-30 Jacky：每家客戶的「下一步」（後台「客戶跟進」分頁，bd_company_status），日報列出明天以前要做的
 ACT_ZH = {'call': '📞 打電話', 'mail': '✉️ 寄信', 'wait': '⏳ 等對方回覆', 'meet': '🤝 約見面', 'pause': '⏸ 先暫停'}
 SC_ZH = {'no_answer': '沒接', 'interested': '有興趣', 'not_interested': '沒興趣', 'invited': '已邀約',
-         'wrong_person': '找錯人'}
+         'wrong_person': '找錯人', 'email_invited': '寄邀請信', 'opt_out': '本人說不要再寄'}
 # 2026-09-30 Jacky 拍板：每人每週簽 10 家，團隊合計 20 家（兩人各自一條龍開發，名單各自分開）
 WEEKLY_TARGET_EACH = 10
 WEEKLY_TARGET_TEAM = 20
