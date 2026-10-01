@@ -3175,7 +3175,7 @@ async function handleLineEvent(env, ev) {
       // job_slug_aliases 早就有這組對應（/go/resolve 已經在查），這裡漏掉了，
       // 補上同一套退回：先直接查，查不到再走別名表。
       const click = await env.DB.prepare(
-        `SELECT lc.id, lc.account_id, lc.job_slug, lc.ctx,
+        `SELECT lc.id, lc.account_id, lc.job_slug, lc.ctx, lc.queue_id,
                 COALESCE(j.title, ja.title) AS job_title,
                 COALESCE(j.slug,  ja.slug)  AS resolved_slug,
                 COALESCE(j.status, ja.status) AS job_status
@@ -3216,8 +3216,13 @@ async function handleLineEvent(env, ev) {
             await closedJobMessages(env, closed || { slug: click.job_slug, title: click.job_title }));
         }
         if (!binding && click.job_title) {
+          // 2026-10-01 加 utm_content=q<queue_id>：這個人是從哪一則貼文的
+          // [LC代碼] 進來的，這裡已經查得到 queue_id，順手帶給應徵表單，
+          // 表單送出時就能直接記進 applications.source_queue_id——這是目前
+          // 最準的一條歸因路徑（人本來就是點了這則貼文才按出這組代碼）。
           const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
-            + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`;
+            + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`
+            + (click.queue_id ? `&utm_content=${encodeURIComponent('q' + click.queue_id)}` : '');
           const msg = `嗨嗨 👋 這是「${click.job_title}」的應徵入口\n\n`
             + `流程是：\n1️⃣ 填寫應徵表單 📝\n2️⃣ 跟 AI 阿財完成初步面談 🤖\n3️⃣ 顧問審核通過後會進一步聯繫您 📞\n\n`
             + `應徵表單連結 👇\n${applyUrl}`;

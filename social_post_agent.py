@@ -979,7 +979,31 @@ def extract_post(raw):
     return None
 
 
-def line_community_link_suffix(account_id):
+def go_link(account_id, job_slug=None, queue_id=None):
+    """2026-10-01 加：把貼文裡的 LINE 連結統一換成 /go/ 轉址頁，不要再放
+    social_accounts.line_link 的原始 lin.ee 網址。
+
+    為什麼：原始 lin.ee 連結點了之後完全看不出是哪個帳號、哪篇貼文帶來的，
+    跟顧問反映「看不出哪篇貼文帶來今天的應徵者」是同一個洞——/go/resolve
+    這支轉址頁早就在記 account_id／job_slug／queue_id（見
+    step1ne-public-worker/src/index.js），只是「LINE社群」跟「職缺文原始
+    格式」這兩個放連結的地方，一直繞過這支、直接貼死連結，等於白白浪費
+    了已經做好的追蹤。
+
+    queue_id 帶得到就帶（每篇貼文各自區分），job_slug 是話題文時可能沒有
+    （話題沒有真的職缺），兩者都可以是 None，/go/resolve 查不到一樣會退回
+    Jacky 那組保底 LINE 連結，不會讓候選人卡住。"""
+    if not account_id:
+        return None
+    parts = [f'c={account_id}']
+    if job_slug:
+        parts.append(f'j={job_slug}')
+    if queue_id:
+        parts.append(f'q={queue_id}')
+    return f'{SITE}/go/?' + '&'.join(parts)
+
+
+def line_community_link_suffix(account_id, job_slug=None, queue_id=None):
     """2026-09-11 加：Jacky 明確要求「LINE 社群」這個管道，不限文案類型
     （職缺文／通用文／AI阿財話題）、不限公式（純CTA型／對話討論型／原始格式），
     結尾一律要附 LINE 連結——只限這個平台，其他平台不受影響。
@@ -987,14 +1011,17 @@ def line_community_link_suffix(account_id):
     生成路徑（generate_draft／generate_draft_job_styled／generate_draft_topic）
     用的 prompt 完全不同，靠 AI 自己記得會有漏放的風險，補在存檔前這一個
     點才能保證『不限類型不限公式』都一定有，不用三邊分別改 prompt。
-    連結存在帳號自己的 line_link 欄位，換連結改資料庫就好，不用重新部署。"""
+    2026-10-01 改：連結不再是帳號 line_link 原始網址，改走 go_link()（/go/
+    轉址），才看得出是哪篇貼文帶來的加好友——仍然先確認這個帳號真的有
+    設 line_link，沒設就不附連結（跟原本行為一致）。"""
     if not account_id:
         return ''
     acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
     if acc and acc[0].get('platform') == 'line_community' and acc[0].get('line_link'):
         # 2026-09-11 再改：Jacky 看到光禿禿一個網址就退回——LINE 社群裡的人
         # 不知道點進去要幹嘛，要有一句「有興趣就點這裡聯繫顧問」帶著點進去。
-        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+        link = go_link(account_id, job_slug, queue_id) or acc[0]['line_link']
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + link
     return ''
 
 
@@ -1082,7 +1109,7 @@ def _cta_text(acc):
     return '\n\n' + tpl.replace('{link}', link)
 
 
-def job_raw_format_line_suffix(account_id, style_row):
+def job_raw_format_line_suffix(account_id, style_row, job_slug=None, queue_id=None):
     """2026-09-14 加：職缺文「原始格式」（沒選純CTA型／對話討論型公式，
     style_row 是 None）要一律附上顧問自己的 LINE OA 連結。查完現況發現
     這件事之前完全交給各顧問自己的 skill_prompt 記得寫——結果 DR 的
@@ -1092,7 +1119,11 @@ def job_raw_format_line_suffix(account_id, style_row):
     line_community_link_suffix() 同一個理由：補在存檔前這一點，
     不用回頭改七八份 prompt，也不怕以後又有人漏寫。
     只管「原始格式」——純CTA型／對話討論型公式本身的連結／CTA 規則
-    照舊，不在這裡動。"""
+    照舊，不在這裡動。
+    2026-10-01 改：連結改走 go_link()（/go/ 轉址，見 line_community_link_suffix
+    同一天的註記）——這是目前唯一一條「貼文沒選公式」時仍然會放真連結的
+    路，之前整批都是沒有歸因的 lin.ee 原始連結，顧問反映看不出哪篇貼文
+    帶來今天的應徵者，根源就在這裡。"""
     if style_row or not account_id:
         return ''
     # ⚠️ 2026-09-21：這裡刻意維持「固定一句 + 連結」，不要改成各顧問自訂。
@@ -1101,7 +1132,8 @@ def job_raw_format_line_suffix(account_id, style_row):
     # 要換成純 CTA 的是「純CTA型公式」那條路（見 generate_draft_job_styled）。
     acc = d1(f"SELECT platform, line_link FROM social_accounts WHERE id={q(account_id)}")
     if acc and acc[0].get('platform') == 'threads' and acc[0].get('line_link'):
-        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + acc[0]['line_link']
+        link = go_link(account_id, job_slug, queue_id) or acc[0]['line_link']
+        return '\n\n👉 有興趣歡迎點進「全民獵才」LINE官方帳號聯繫顧問：\n' + link
     return ''
 
 
@@ -1402,7 +1434,7 @@ def process_topic(queue_row, topic):
         # 2026-09-04 加：Threads觀察系統要比較「話題成效」，得先知道每篇話題文
         # 屬於哪種角度（category：ai＝AI阿財信任建立／general＝一般互動），
         # 沒有這個標記，儀表板的分類比較就永遠是空的。
-        post = post + line_community_link_suffix(account_id)
+        post = post + line_community_link_suffix(account_id, queue_id=qid)
         mission_tag = {'ai': 'trust_building', 'general': 'engagement'}.get(topic.get('category'), 'general')
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # cta_type 同上（見 _cta_kind 的說明）。話題文走的是
@@ -1553,7 +1585,8 @@ def process_job(queue_row, job, repost=False):
         # 自己在 Telegram 裡搜。
         # 2026-09-04 加：Threads觀察系統要比較「哪個公式表現好」，得先知道每篇
         # 職缺文是用哪套公式寫的（style_row 的 subtype，沒選公式就是預設寫法）。
-        post = post + line_community_link_suffix(account_id) + job_raw_format_line_suffix(account_id, style_row)
+        post = post + line_community_link_suffix(account_id, job_slug=slug, queue_id=qid) \
+                    + job_raw_format_line_suffix(account_id, style_row, job_slug=slug, queue_id=qid)
         formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # 2026-09-21 補記 cta_type：顧問反映「CTA 成效不好、可能太過雷同」，
