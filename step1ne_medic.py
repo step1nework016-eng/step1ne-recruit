@@ -215,6 +215,9 @@ def check_site_drift(dry):
     idx = open(os.path.join(jobs_dir, 'index.html'), encoding='utf-8').read()
 
     for slug, title in live.items():
+        if slug == 'unspecified':
+            # 「尚未指定職缺」是內部暫存區（電洽新增但暫無適合職缺的人選放這裡），本來就不該有官網頁
+            continue
         missing = []
         if slug not in pages:
             # 職缺頁根本不存在——這個修不了，產生一個職缺頁需要完整的 JD 內容
@@ -276,7 +279,8 @@ def check_orphan_jobs(dry):
     ⚠️ 我們自己的職缺（直播主、獵頭顧問）本來就沒有客戶，要排除，
     不然每輪都在報一個永遠修不掉的東西。
     """
-    own = ("'live-streamer-home','headhunter-consultant'")
+    # 2026-10-01：unspecified＝「尚未指定職缺」，顧問電洽新增人選但還沒有適合職缺時的內部暫存區，不是真職缺
+    own = ("'live-streamer-home','headhunter-consultant','unspecified'")
     rows = D.d1(
         "SELECT slug, title, COALESCE(client_name,'') cn FROM jobs "
         "WHERE company_id IS NULL AND COALESCE(status,'open') IN ('open','active') "
