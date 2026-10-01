@@ -4627,7 +4627,10 @@ export default {
       return json(request, { ok: true, stats, reviews: rows.map((r) => ({
         rating: r.rating, text: r.review,
         job: (r.job_offered && !/沒有錄取/.test(r.job_offered)) ? r.job_offered : r.job_title,
-        who: r.publish_consent === 'surname' && r.name ? `${String(r.name).trim().slice(0, 1)}○○` : '',
+        // 只寫姓氏＝「陳○○」；英文名字沒有姓氏可遮（「May」會變成「M○○」很怪），直接顯示名字第一個字詞（2026-10-01 Jacky）
+        who: r.publish_consent === 'surname' && r.name
+          ? (/[\u3400-\u9fff]/.test(String(r.name)) ? `${String(r.name).trim().slice(0, 1)}○○` : String(r.name).trim().split(/\s+/)[0].slice(0, 20))
+          : '',
         month: String(r.created_at || '').slice(0, 7),
         // 顯示負責顧問（2026-10-01 Jacky）；舊資料有小寫的 phoebe，對到在職顧問的正式寫法
         consultant: (r.consultant ? ((conMap[String(r.consultant).trim().toLowerCase()]) || String(r.consultant).trim()) : '') })) });
