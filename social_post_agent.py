@@ -620,7 +620,23 @@ def format_job_requirement(job):
         else:
             add('薪資', f"平均薪資 {lo or hi} 起")
     add('薪資備註', public_part(job.get('salary_note')))
-    add('團隊規模', job.get('team_size'))
+    # ⚠️ 2026-10-01 修：queue 679 遊戲客服 jobs.headcount='晚班 2 名'，貼文卻寫「名額1名」。
+    #    真正來源是 team_size：舊的匯入流程把「這個缺開 1 名。」塞進團隊規模
+    #    （11 筆職缺都是這樣，backend-engineer-game 也是 1 vs headcount 2），
+    #    模型就照這句寫。headcount 本身從來沒進白名單，公開頁唯一的「招募 2 名」
+    #    又在 <meta> 裡被 public_page_text() 剝掉，所以模型只看得到錯的那個。
+    #    規則：名額只認 jobs.headcount；team_size 如果其實是在講名額就不放。
+    team_size = job.get('team_size')
+    if team_size and re.search(r'開\s*\d+\s*名|招募\s*\d+|名額', str(team_size)):
+        team_size = None
+    add('團隊規模', team_size)
+    headcount = job.get('headcount')
+    if headcount and re.fullmatch(r'\s*\d+\s*', str(headcount)):
+        headcount = f'{str(headcount).strip()} 名'
+    add('招募名額（照這個寫，不准改數字）', headcount)
+    add('上班時段', job.get('work_hours'))
+    if not job.get('headcount'):
+        lines.append('  ⚠️ 這個職缺沒有提供招募名額，貼文不准寫出任何人數／名額。')
     # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
     #    路徑——公開頁是 client_named=1、網站上本來就具名的，社群不行。
     page = strip_address_numbers(mask_client_names(public_page_text(job.get('slug') or '')))
@@ -932,6 +948,12 @@ def strip_markdown(text):
     # 2026-09-22 Jacky 硬性禁止破折號：AI 超愛用「——」把兩句黏成一長句，
     # 正好跟「少標點、短句換行」的風格相反。一律換成換行，順便就是他要的
     # 參差排版。這是防呆——就算模型沒聽話，貼出去也不會有破折號。
+    # ⚠️ 2026-10-01 修：數字中間的「–」是範圍符號不是破折號。queue 679
+    #    遊戲客服晚班「15:00–00:00」被拆成兩行「15:00\n00:00」。先把
+    #    數字之間的 – — ― 轉成「～」（時間、薪資 31,000–35,000、1–3 年都適用）；
+    #    單一半形「-」只在兩邊都是時間時才轉（09:00-18:00），日期 2026-10-01 不動。
+    text = re.sub(r'(?<=\d)[ \t]*[—―–]+[ \t]*(?=\d)', '～', text)
+    text = re.sub(r'(\d{1,2}:\d{2})[ \t]*-{1,2}[ \t]*(?=\d{1,2}:\d{2})', r'\1～', text)
     text = re.sub(r'[—―–]+|--+', '\n', text)
     # 破折號換成換行後，可能出現連續空行或行尾殘留標點，收一下。
     text = re.sub(r'[ \t]*\n[ \t]*', '\n', text)
