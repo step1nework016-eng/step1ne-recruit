@@ -4542,7 +4542,11 @@ export default {
         `SELECT DISTINCT title FROM jobs WHERE slug != 'unspecified' AND COALESCE(title,'') != ''
            AND COALESCE(status,'') NOT IN ('client_draft','pending_review') ORDER BY title`).all();
       const jobs = (results || []).map((r) => ({ title: r.title, cat: (CATS.find(([, re]) => re.test(r.title)) || ['其他'])[0] }));
-      return json(request, { ok: true, cats: [...CATS.map(([c]) => c), '其他'].filter((c) => jobs.some((j) => j.cat === c)), jobs });
+      // 2026-10-01 Jacky：負責顧問改用選的（不用自己打），選單來自在職顧問
+      const { results: cons } = await env.DB.prepare(
+        `SELECT id, display_name FROM consultants WHERE is_active = 1 ORDER BY display_name`).all().catch(() => ({ results: [] }));
+      return json(request, { ok: true, cats: [...CATS.map(([c]) => c), '其他'].filter((c) => jobs.some((j) => j.cat === c)), jobs,
+        consultants: (cons || []).map((c) => c.display_name || c.id) });
     }
     if (p === '/review/submit' && request.method === 'POST') {
       let b;
@@ -4593,15 +4597,20 @@ export default {
     // 名字照人選選的：匿名＝不寫；只寫姓氏＝「王○○」（不知道性別，不猜先生小姐）。
     if (p === '/review/public' && request.method === 'GET') {
       const { results } = await env.DB.prepare(
-        `SELECT rating, review, job_title, job_offered, name, publish_consent, created_at FROM service_reviews
+        `SELECT rating, review, job_title, job_offered, name, publish_consent, created_at, consultant FROM service_reviews
           WHERE status = 'approved' AND publish_consent IN ('anon','surname') ORDER BY created_at DESC LIMIT 30`).all();
       const rows = results || [];
       if (rows.length < 3) return json(request, { ok: true, reviews: [] });
+      const { results: cons } = await env.DB.prepare(`SELECT id, display_name FROM consultants`).all().catch(() => ({ results: [] }));
+      const conMap = {};
+      (cons || []).forEach((c) => { conMap[String(c.id).toLowerCase()] = c.display_name || c.id; conMap[String(c.display_name || '').toLowerCase()] = c.display_name || c.id; });
       return json(request, { ok: true, reviews: rows.map((r) => ({
         rating: r.rating, text: r.review,
         job: (r.job_offered && !/沒有錄取/.test(r.job_offered)) ? r.job_offered : r.job_title,
         who: r.publish_consent === 'surname' && r.name ? `${String(r.name).trim().slice(0, 1)}○○` : '',
-        month: String(r.created_at || '').slice(0, 7) })) });
+        month: String(r.created_at || '').slice(0, 7),
+        // 顯示負責顧問（2026-10-01 Jacky）；舊資料有小寫的 phoebe，對到在職顧問的正式寫法
+        consultant: (r.consultant ? ((conMap[String(r.consultant).trim().toLowerCase()]) || String(r.consultant).trim()) : '') })) });
     }
 
     const HM_SUBS = ['/health', '/lead-email', '/submit', '/submissions', '/cases', '/fetch-url'];
