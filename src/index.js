@@ -4504,12 +4504,13 @@ export default {
       const clean = (v, n) => String(v || '').replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, n);
       const name = clean(b.name, 40), review = clean(b.review, 3000);
       const rating = Math.round(Number(b.rating));
-      const CONSENT = { full: '可以公開，寫全名', surname: '可以公開，只寫姓氏', private: '不公開，只給內部參考' };
+      // 2026-10-01 Jacky：官網要匿名放，所以預設選項是「匿名」，不再提供寫全名
+      const CONSENT = { anon: '可以匿名放官網（只寫職位）', surname: '可以放官網，只寫姓氏', private: '不要公開，只給內部參考' };
       const consent = CONSENT[b.consent] ? b.consent : '';
       if (!name) return json(request, { ok: false, error: '請填您的稱呼' }, 400);
       if (!(rating >= 1 && rating <= 5)) return json(request, { ok: false, error: '請選整體滿意度（1～5 顆星）' }, 400);
       if (review.length < 10) return json(request, { ok: false, error: '心得請至少寫 10 個字' }, 400);
-      if (!consent) return json(request, { ok: false, error: '請選這則心得可不可以公開' }, 400);
+      if (!consent) return json(request, { ok: false, error: '請選這則心得可不可以放上官網' }, 400);
       const helpful = (Array.isArray(b.helpful) ? b.helpful : []).map((x) => clean(x, 30)).filter(Boolean).slice(0, 8);
       const row = { job: clean(b.job, 120), consultant: clean(b.consultant, 40), improve: clean(b.improve, 2000),
         contact: clean(b.contact, 120), ref: clean(b.ref, 80), page: clean(b.page, 200) };
