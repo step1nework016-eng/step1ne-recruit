@@ -204,22 +204,43 @@ def check_site_drift(dry):
     rows = D.d1("SELECT slug, title FROM jobs WHERE COALESCE(status,'open') IN ('open','active')")
     live = {r['slug']: (r.get('title') or r['slug']) for r in rows}
 
-    jobs_dir = os.path.join(site, 'jobs')
-    pages = {p for p in os.listdir(jobs_dir)
-             if os.path.isfile(os.path.join(jobs_dir, p, 'index.html'))}
+    # 2026-10-01 改：原本看的是「這台電腦上的網站檔案」。WSL2 那台的網站資料夾不會自動更新，
+    # 檔案是舊的，結果新上架的 4 個職缺被連續誤報「官網上不存在」（線上其實都好好的）。
+    # 求職者看的是線上網站，所以直接問線上：職缺頁、應徵下拉、職缺列表都抓 step1ne.com 的。
+    import json as _json
+    import urllib.request as _ur
+
+    def _get(url):
+        req = _ur.Request(url, headers={'User-Agent': 'Mozilla/5.0 step1ne-medic'})
+        try:
+            with _ur.urlopen(req, timeout=20) as r:
+                return r.status, r.read().decode('utf-8', 'replace')
+        except Exception as e:  # noqa: BLE001
+            return getattr(e, 'code', 0) or 0, ''
+
+    st_idx, idx = _get('https://step1ne.com/jobs/')
+    st_apply, apply_raw = _get('https://step1ne.com/apply/jobs.json')
+    if st_idx != 200 or st_apply != 200:
+        # 線上網站本身連不到就不要逐筆亂報，交給其他檢查（網站掛了會有別的警報）
+        print(f'⚠️ 官網職缺列表或應徵清單抓不到（{st_idx}/{st_apply}），這輪跳過職缺頁比對')
+        return
     try:
-        import json as _json
-        apply_slugs = {j['slug'] for j in _json.load(open(os.path.join(site, 'apply', 'jobs.json')))}
+        apply_slugs = {j['slug'] for j in _json.loads(apply_raw)}
     except Exception:
         apply_slugs = set()
-    idx = open(os.path.join(jobs_dir, 'index.html'), encoding='utf-8').read()
+    page_cache = {}
+
+    def _page_live(slug):
+        if slug not in page_cache:
+            page_cache[slug] = _get(f'https://step1ne.com/jobs/{slug}/')[0] == 200
+        return page_cache[slug]
 
     for slug, title in live.items():
         if slug == 'unspecified':
             # 「尚未指定職缺」是內部暫存區（電洽新增但暫無適合職缺的人選放這裡），本來就不該有官網頁
             continue
         missing = []
-        if slug not in pages:
+        if not _page_live(slug):
             # 職缺頁根本不存在——這個修不了，產生一個職缺頁需要完整的 JD 內容
             # 與禁刊過濾流程，不是搬資料而已，亂生一頁比沒有更糟。
             alert(f'「{title}」在官網上不存在',
@@ -237,6 +258,9 @@ def check_site_drift(dry):
                   '跑一次 publish_job.py 重新產生清單，或手動補進 apply/jobs.json')
 
     # 反過來：官網有頁面，但資料庫不認為它是開的
+    # 線上職缺列表上掛著的職缺（取代原本讀本機資料夾）
+    import re as _re
+    pages = set(_re.findall(r'/jobs/([a-z0-9][a-z0-9-]*)/"', idx))
     for slug in sorted(pages - set(live)):
         row = D.d1(f"SELECT status FROM jobs WHERE slug={D.q(slug)}")
         st = row[0]['status'] if row else '（資料庫沒有這筆）'
