@@ -228,6 +228,13 @@ def main():
         apps = D.d1("SELECT id,name,job_slug,job_title,resume_file_id,resume_url_text,"
                     "expected_salary,available_date,location_ok FROM applications a "
                     "WHERE NOT EXISTS (SELECT 1 FROM screenings s WHERE s.application_id=a.id) "
+                    # 2026-10-01 加：初篩是「面談前」的關卡。這支從 9/2 停到 10/1 才又跑起來，
+                    # 一口氣把一個月的舊應徵全篩了一輪、每個都推「進履歷池」，連早就面談完的人
+                    # （許珅慈）也被推——顧問看了以為系統壞了。只篩還沒面談、近 14 天內的應徵。
+                    "AND COALESCE(a.interview_state,'not_started') IN ('not_started','pending') "
+                    "AND a.status NOT IN ('interviewed','reported','passed','rejected','duplicate','no_show') "
+                    "AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.application_id=a.id) "
+                    "AND a.created_at >= datetime('now','+8 hours','-14 days') "
                     "ORDER BY created_at DESC LIMIT 10")
     if not apps:
         print('沒有需要初篩的候選人')
