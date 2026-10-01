@@ -89,6 +89,24 @@ def cmd_insert(table, payload, ignore=False):
     except json.JSONDecodeError as e:
         raise SystemExit(f'❌ JSON 格式錯：{e}')
     rows = data if isinstance(data, list) else [data]
+    # 2026-10-01：夜間名單把「台灣美光記憶體」放進開發名單——美光是律准科技的終端客戶。
+    # 原本只靠提示詞叫 AI 自己比對客戶名單，AI 漏看就漏了。改成寫入前由程式擋：
+    # 命中已簽約／洽談中／終端客戶／禁止接觸的公司，這一筆直接不寫，其他照寫。
+    if table == 'bd_outreach':
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'jobintake'))
+        import client_guard as G  # noqa: E402
+        clients = G.load_clients(lambda sql: _post(sql).get('results') or [])
+        kept = []
+        for row in rows:
+            hit = G.check((row or {}).get('company') if isinstance(row, dict) else '', clients)
+            if hit and hit.get('verdict') == 'block':
+                print(f"⛔ 不寫入：{hit['company']} 對到客戶名單「{hit['matched']}」——{hit['why']}")
+                continue
+            kept.append(row)
+        rows = kept
+        if not rows:
+            print('（這批全部被客戶名單擋下，沒有寫入任何一筆）')
+            return
     cols = set(_cols(table))
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     done = 0
