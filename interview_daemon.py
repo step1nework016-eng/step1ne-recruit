@@ -33,6 +33,11 @@ MAX_PARALLEL = 3        # 這台是 8GB／4 核，每個 claude 程序約 200–
 # 兩台搶同一場靠下面 acquire_lock() 的原子 UPDATE，不會重複處理。INTERVIEW_HOST 只用來在紀錄上分辨是哪台。
 MAX_PARALLEL = int(os.environ.get('INTERVIEW_MAX_PARALLEL') or MAX_PARALLEL)
 INTERVIEW_HOST = os.environ.get('INTERVIEW_HOST') or 'mac'
+# 2026-10-01 Jacky：Mac 當備援，不跟主力機（WSL2）搶單。備援機設 INTERVIEW_BACKUP_DELAY_SEC（例如 120）：
+#   ・候選人的訊息要等超過這個秒數都沒人回，備援才接（主力機正常時幾秒內就回了，備援不會出手）
+#   ・其他背景工作（預熱、擬題目、收尾）只有在「已經有人等超過這個秒數」＝主力機看起來掛了，備援才做
+# 主力機不設（0），行為跟以前完全一樣。
+BACKUP_DELAY_SEC = int(os.environ.get('INTERVIEW_BACKUP_DELAY_SEC') or 0)
                         # 設 5 會在剩 2.3GB 可用記憶體時開始 swap，
                         # 那會讓「所有」進行中的面談一起變慢，不只排隊的。
                         # 寧可讓第 4 個人排隊，也不要三個人一起卡住。
@@ -3816,6 +3821,8 @@ def tick():
             + [(a, close_paused) for a in held]
             + [(a, do_prewarm) for a in prewarm_rows]
             + [(a, do_plan) for a in plan_rows])
+    if BACKUP_DELAY_SEC > 0:
+        jobs = _backup_filter(jobs, post_wrap + pending(remaining))
     for app, fn in jobs:
         with _lock:
             if app['id'] in _busy or len(_busy) >= MAX_PARALLEL:
@@ -3828,6 +3835,24 @@ def tick():
                 _busy.discard(app['id'])
             continue
         threading.Thread(target=fn, args=(app,), daemon=True).start()
+
+
+def _waited_sec(row):
+    """候選人最後一則訊息到現在幾秒（讀不到時間就當 0，不接）。"""
+    try:
+        last = datetime.datetime.strptime(str(row.get('last_at') or ''), '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return 0
+    return (datetime.datetime.now() - last).total_seconds()
+
+
+def _backup_filter(jobs, reply_rows):
+    """備援機只接「等太久沒人回」的；有人等太久＝主力機看起來掛了，背景工作才一起做。"""
+    overdue = {r['id'] for r in reply_rows if _waited_sec(r) >= BACKUP_DELAY_SEC}
+    if not overdue:
+        return []
+    reply_ids = {r['id'] for r in reply_rows}
+    return [(a, fn) for a, fn in jobs if (a['id'] in overdue) or (a['id'] not in reply_ids)]
 
 
 def _safe_to_restart():
@@ -3857,7 +3882,8 @@ def main():
     if datetime.datetime.now().astimezone().utcoffset() != datetime.timedelta(hours=8):
         log('❌ 本機時區不是台灣時間（UTC+8），面談引擎不啟動。WSL2 請設 TZ=Asia/Taipei 或 timedatectl set-timezone Asia/Taipei')
         return
-    log(f'面談引擎啟動｜{INTERVIEW_HOST}（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場）')
+    log(f'面談引擎啟動｜{INTERVIEW_HOST}（輪詢 {POLL_SEC}s，同時最多 {MAX_PARALLEL} 場'
+        + (f'，備援：沒人回超過 {BACKUP_DELAY_SEC} 秒才接' if BACKUP_DELAY_SEC else '') + '）')
     last_update_check = time.time()
     taskboard('面談引擎啟動', f'{INTERVIEW_HOST}｜輪詢 {POLL_SEC} 秒，同時最多 {MAX_PARALLEL} 場')
     while True:
