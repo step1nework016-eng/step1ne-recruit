@@ -5244,6 +5244,29 @@ export default {
       let update;
       try { update = await request.json(); } catch { return new Response('ok'); }
 
+      // ── 2026-10-02 Jacky 要把 TG 拆成社群／人選／客戶三個群組 ──
+      // 機器人被拉進新群組、或有人在群組打 /chatid，就把群組編號記進 tg_groups 並回覆，
+      // 不用人去查群組 ID。只記錄，不改任何通知去向（改去向由總指揮確認後再切）。
+      {
+        const mcm = update.my_chat_member;
+        const m0 = update.message;
+        const chat = (mcm && mcm.chat) || (m0 && /^\/chatid(@\w+)?$/.test(String(m0.text || '').trim()) && m0.chat) || null;
+        if (chat && chat.type !== 'private') {
+          await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tg_groups (chat_id TEXT PRIMARY KEY, title TEXT, is_forum INTEGER, seen_at TEXT)`).run().catch(() => {});
+          await env.DB.prepare(`INSERT INTO tg_groups (chat_id, title, is_forum, seen_at) VALUES (?,?,?,?)
+              ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title, is_forum=excluded.is_forum, seen_at=excluded.seen_at`)
+            .bind(String(chat.id), String(chat.title || ''), chat.is_forum ? 1 : 0, nowTaipei()).run().catch(() => {});
+          if (m0) {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: chat.id, ...(m0.message_thread_id ? { message_thread_id: m0.message_thread_id } : {}),
+                text: `✅ 已記下這個群組：${chat.title || ''}\n群組編號：${chat.id}\n主題功能：${chat.is_forum ? '已開啟' : '⚠️ 還沒開，請到群組設定打開「主題（Topics）」'}` }),
+            }).catch(() => {});
+          }
+          if (mcm) return new Response('ok');
+        }
+      }
+
       // ── 電洽新增人選：TG bot 多輪對話（2026-09-01 加）──
       // 顧問電話洽談完，不用開網頁後台，直接在這個獨立 topic 走完整套：
       // /new 開始 → 貼逐字稿 → 問履歷（有就傳檔案）→ 選客戶按鈕 → 選職缺按鈕
