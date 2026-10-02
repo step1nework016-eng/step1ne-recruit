@@ -21,6 +21,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -180,6 +181,12 @@ def process_one(req_row):
 
     display_name = deliver.client_display_name(meta)
     fn = deliver.pdf_filename(display_name, 'client')
+    # 2026-10-02 Jacky：檔名改成「職缺_人選姓名_客戶名稱_德仁管理顧問公司.pdf」（私人協助的不掛公司名，維持原檔名）
+    if meta.get('client_relation') != 'private':
+        _clean = lambda x: re.sub(r'[\\/:*?"<>|\s]+', '_', str(x or '')).strip('_')
+        _job = re.sub(r'\s*[A-Za-z][A-Za-z &/().,-]*$', '', str(meta.get('job_title') or '')).strip() or str(meta.get('job_title') or '')
+        _parts = [_clean(_job), _clean(display_name), _clean(meta.get('client_display_for_job') or ''), '德仁管理顧問公司']
+        fn = '_'.join(x for x in _parts if x) + '.pdf'
     with tempfile.TemporaryDirectory(prefix='client_report_') as tmp:
         path = os.path.join(tmp, fn)
         if not deliver.html_to_pdf(html, path):
