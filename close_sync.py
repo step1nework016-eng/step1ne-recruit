@@ -96,6 +96,15 @@ def revert_open(html):
 
 
 def main():
+    # 2026-10-01：改之前先把官網 repo 拉到最新。Mac 和 WSL2 都會跑這支，WSL2 那份官網資料夾
+    # 一直沒更新（落後 27 個版本），改完推不上去、每 10 分鐘失敗一次，還可能拿舊檔案去改。
+    # 拉不下來（例如本機有衝突）就這輪不做，不在舊檔案上動手。
+    if '--deploy' in sys.argv:
+        r = subprocess.run(['git', 'pull', '--rebase', '--quiet', 'deploy', 'main'],
+                           cwd=SITE, capture_output=True, text=True, errors='replace')
+        if r.returncode != 0:
+            log(f'❌ 官網 repo 拉不到最新版，這輪不同步（先處理衝突）：{(r.stderr or r.stdout)[-300:].strip()}')
+            sys.exit(1)
     rows = d1_http.query(
         "SELECT slug, title, COALESCE(status,'open') AS status, closed_at FROM jobs")['results']
     closed = {r['slug']: r for r in rows if r['status'] == 'closed'}
