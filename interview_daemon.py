@@ -468,8 +468,12 @@ def log_token_usage(app_id, call_type, prompt, before_files):
         pass
 
 
-LOCK_TTL_SEC = 90   # 比一次 claude 呼叫（240s 逾時）短沒關係——
-                    # 這只防「同時搶著寫同一場」，不是防慢；過期就當作那次處理已經死掉，可以重搶
+# ⚠️ 2026-10-02 改：原本 90 秒、claude 呼叫上限 240 秒，鎖會在呼叫還在跑時過期，
+# 另一個處理者（另一台/另一個程序）就能搶進來對同一則候選人訊息再回一次。
+# 胡耀中 15:45 那輪：A 卡住 240 秒逾時，鎖 90 秒就過期，B 搶到並正常回了，
+# A 逾時後還寫了「系統出了點狀況，顧問會聯繫」。候選人收到互相矛盾的兩種訊息。
+# 鎖要比最長一次呼叫久；代價是處理者整個死掉時，這場最多多等 CLAUDE_TIMEOUT+30 秒才會被重搶。
+LOCK_TTL_SEC = CLAUDE_TIMEOUT + 30
 
 
 def acquire_lock(app_id):
@@ -3481,6 +3485,21 @@ def handle(app):
                    f'額度重置後會自動接上。', THREAD_DECIDE)
         else:
             # 候選人不該乾等。給一句話讓他知道發生什麼，並通知顧問接手。
+            # ⚠️ 2026-10-02 加：寫道歉訊息前先確認最後一則不是 assistant。
+            # 如果在我們逾時的期間，別的處理者已經回過了，候選人並沒有在乾等，
+            # 這時再塞「系統出了點狀況」只會讓他收到矛盾的訊息。已回過就只記 log，不插訊息、不發 TG。
+            try:
+                _last = d1(f"SELECT role FROM messages WHERE application_id={q(app_id)} "
+                           f"ORDER BY id DESC LIMIT 1")
+                if _last and _last[0].get('role') == 'assistant':
+                    # 總指揮 2026-10-02 調整：不插道歉訊息，但 TG 還是講一聲（改成「不用接手」的告知），
+                    # 不然這輪如果是在回完之後的步驟（收尾、產報告）失敗，會完全沒人知道。
+                    log(f'ℹ️ {name}：我這輪失敗了，但他已經被回過，不插道歉訊息')
+                    tg(f'ℹ️ 面談有一輪處理失敗，但人選已經收到回覆，面談照常進行，不用接手：{name}（{app_id}）\n{str(e)[:200]}',
+                       THREAD_DECIDE)
+                    return
+            except Exception:
+                pass
             try:
                 now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
