@@ -4323,6 +4323,10 @@ async function handleSocAction(env, cq) {
         return;
 }
 
+// 2026-10-02 Jacky：寄給公司的信（公司介紹、收尾信、開發信）Jacky 和 Phoebe 都能按核准。
+// 刻意不沿用 JACKY_TG_USERNAMES：那份還管「放官網」等只有 Jacky 能按的按鈕。
+const BD_APPROVERS = ['jackyyuqi', 'behe10'];
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -6461,8 +6465,7 @@ export default {
         // 2026-09-30 收尾信：一則訊息多封信，「全部核准寄出」／「全部不寄」
         if (action === 'bd_okall' || action === 'bd_noall') {
           const uname = String((cq.from && cq.from.username) || '').toLowerCase();
-          const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
-          if (!allow.includes(uname)) { await ans('⛔ 收尾信只有 Jacky 可以核准'); return new Response('ok'); }
+          if (!BD_APPROVERS.includes(uname)) { await ans('⛔ 收尾信只有 Jacky、Phoebe 可以核准'); return new Response('ok'); }
           const now = nowTaipei();
           if (action === 'bd_noall') {
             const r0 = await env.DB.prepare(`UPDATE bd_outreach SET status='rejected', decided_by=?, decided_at=?, updated_at=? WHERE batch_id=? AND scenario='contract_pack' AND status='pending'`)
@@ -6519,15 +6522,18 @@ export default {
           // 2026-09-30：寄公司介紹（＋合約）。電話談過才會有這封，所以不查 14 天職缺、
           // 也不比對客戶名單（對方正要變成客戶）。但一定要 Jacky 本人按核准才寄。
           const uname = String((cq.from && cq.from.username) || '').toLowerCase();
-          const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
-          if (!allow.includes(uname)) {
-            await ans('⛔ 公司介紹＋合約只有 Jacky 可以核准寄出');
+          if (!BD_APPROVERS.includes(uname)) {
+            await ans('⛔ 公司介紹只有 Jacky、Phoebe 可以核准寄出');
             return new Response('ok');
           }
           const res = await sendContractPackRow(env, row, who);
           if (!res.ok) { await ans(res.error); return new Response('ok'); }
           label = `📤 ${who} 已核准，信已寄至 ${row.contact_email}`;
           await ans('📤 寄出去了');
+        } else if (action === 'bd_ok' && !BD_APPROVERS.includes(String((cq.from && cq.from.username) || '').toLowerCase())) {
+          // 2026-10-02 Jacky：單封開發信也收緊，只有 Jacky、Phoebe 能核准
+          await ans('⛔ 開發信只有 Jacky、Phoebe 可以核准寄出');
+          return new Response('ok');
         } else if (action === 'bd_ok' && !bdJobChecked(row)) {
           // 2026-09-29 Jacky：「要開發前要先做功課才能寄信」。沒有在 14 天內確認過
           // 「對方現在還開著這個缺」（104／官網，記在 job_checked_at），一律不寄。
