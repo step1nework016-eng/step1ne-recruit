@@ -53,6 +53,14 @@ def tg_notify(text, thread_id=THREAD_ID, reply_to=None):
     token, chat_id = env.get('TG_BOT_TOKEN'), env.get('TG_CHAT_ID')
     if not token or not chat_id:
         return
+    # 2026-10-02：文章上線通知搬到「step1ne社群」群組（tg_routes 的 social_article）；沒設就照舊
+    if thread_id == THREAD_ID:
+        try:
+            rr = D.d1("SELECT chat_id, thread_id FROM tg_routes WHERE key='social_article'")
+            if rr and rr[0].get('chat_id') and rr[0].get('thread_id'):
+                chat_id, thread_id = str(rr[0]['chat_id']), int(rr[0]['thread_id'])
+        except Exception:
+            pass
     data = {'chat_id': chat_id, 'message_thread_id': str(thread_id), 'text': text}
     if reply_to:
         data['reply_to_message_id'] = str(reply_to)

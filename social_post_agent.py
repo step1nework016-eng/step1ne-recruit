@@ -859,7 +859,7 @@ def tg_with_buttons(text, buttons, thread=None, retries=3):
         log(f'Telegram 推播失敗（讀設定檔失敗，不會重試）：{ex}')
         return None
     body = {
-        'chat_id': e['TG_CHAT_ID'], 'text': text,
+        'chat_id': SOCIAL_CHAT or e['TG_CHAT_ID'], 'text': text,
         # buttons 給空的就不要帶 reply_markup——Telegram 收到空的按鈕列會報錯，
         # 整則通知就消失了（2026-09-23：接手通知是純文字沒有按鈕，踩到這個）。
         **({'reply_markup': json.dumps({'inline_keyboard': [buttons]})} if buttons else {}),
@@ -1500,7 +1500,7 @@ def process_topic(queue_row, topic):
             thread,
         )
         if msg_id:
-            d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))} WHERE id={qid}")
+            d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))}, tg_chat_id={q(SOCIAL_CHAT) if SOCIAL_CHAT else 'NULL'} WHERE id={qid}")
             log(f'✅ {title}：草稿已送出審核')
         else:
             log(f'❌ {title}：草稿已產生但 Telegram 通知沒送出，'
@@ -1682,7 +1682,7 @@ def process_job(queue_row, job, repost=False):
             thread,
         )
         if msg_id:
-            d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))} WHERE id={qid}")
+            d1(f"UPDATE social_post_queue SET tg_message_id={q(str(msg_id))}, tg_chat_id={q(SOCIAL_CHAT) if SOCIAL_CHAT else 'NULL'} WHERE id={qid}")
             log(f'✅ {title}：草稿已送出審核')
         else:
             # 2026-09-01 改：不能再跟成功印一樣的訊息——草稿本身已經存進 D1
@@ -1700,7 +1700,27 @@ def _job_by_slug(slug):
     return rows[0] if rows else None
 
 
+SOCIAL_CHAT = None   # None＝照舊用設定檔的 TG_CHAT_ID（原本的大群組）
+
+
+def load_social_route():
+    """2026-10-02 Jacky：社群通知搬到獨立的「step1ne社群」群組。
+    要發去哪個群組、共用主題是哪一個，查 D1 的 tg_routes（Mac／WSL2 讀同一份），
+    沒設就照舊：原本的大群組＋共用主題 3306。"""
+    global SOCIAL_CHAT, TG_THREAD_SOCIAL
+    try:
+        rows = d1("SELECT key, chat_id, thread_id FROM tg_routes WHERE key IN ('social','social_shared')") or []
+        r = {x['key']: x for x in rows}
+        if r.get('social') and r['social'].get('chat_id'):
+            SOCIAL_CHAT = str(r['social']['chat_id'])
+            if r.get('social_shared') and r['social_shared'].get('thread_id'):
+                TG_THREAD_SOCIAL = int(r['social_shared']['thread_id'])
+    except Exception as ex:
+        log(f'讀 tg_routes 失敗，照舊發原本的群組：{ex}')
+
+
 def main():
+    load_social_route()
     if '--repost' in sys.argv:
         idx = sys.argv.index('--repost')
         slug = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else None
@@ -1760,6 +1780,7 @@ MAX_CONCURRENT = 3
 
 
 def tick():
+    load_social_route()   # 每輪讀一次，切換群組不用重啟
     # ⚠️ 2026-09-10 改：原本一筆一筆循序處理，一個顧問的職缺卡在客戶名稱
     # 稽核重產（要2-3分鐘），排在後面的其他顧問就得乾等。Jacky 當場抱怨
     # 「不然每次都這樣」——改成最多同時處理 MAX_CONCURRENT 筆，各顧問

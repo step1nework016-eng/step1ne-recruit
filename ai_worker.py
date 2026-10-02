@@ -1618,6 +1618,15 @@ def _style_extract_tg_thread(payload):
     return int(tid) if tid else None
 
 
+def _social_chat():
+    """2026-10-02：社群通知搬到「step1ne社群」群組（D1 tg_routes key='social'）。沒設就回 None＝照舊。"""
+    try:
+        r = d1_http.query("SELECT chat_id FROM tg_routes WHERE key='social'")['results']
+        return str(r[0]['chat_id']) if r and r[0].get('chat_id') else None
+    except Exception:
+        return None
+
+
 def _format_style_extract(data, payload):
     """拆解結果的 TG 版面（2026-09-23 跟 Jacky 定案）。
 
@@ -1666,7 +1675,7 @@ def _tg_style_extract_ready(payload, data):
             [[{'text': '✅ 存進公式庫', 'callback_data': f'sx_save:{ext_id}'},
               {'text': '👀 看完整指令', 'callback_data': f'sx_view:{ext_id}'}],
              [{'text': '🗑 丟掉', 'callback_data': f'sx_drop:{ext_id}'}]],
-            thread=_style_extract_tg_thread(payload))
+            thread=_style_extract_tg_thread(payload), chat=_social_chat())
     except Exception:
         pass   # 通知失敗不該讓拆解結果跟著作廢
 
@@ -1675,7 +1684,7 @@ def _tg_style_extract_failed(payload, err):
     try:
         rs._tg(f"⚠️ 這篇拆解失敗了：{payload.get('source_url') or ''}\n原因：{err[:200]}\n"
                '可以到後台重試，或把內文直接貼進「新增公式」自己寫。',
-               thread=_style_extract_tg_thread(payload))
+               thread=_style_extract_tg_thread(payload), chat=_social_chat())
     except Exception:
         pass
 

@@ -601,7 +601,7 @@ def save_recommendations(application_id, source_job_slug, source_report_id, kept
     return saved
 
 
-def _tg_buttons(text, keyboard, thread=None):
+def _tg_buttons(text, keyboard, thread=None, chat=None):
     """跟 _tg 一樣，但帶 inline 按鈕。
 
     keyboard 是二維陣列（每個子陣列是一排按鈕）。
@@ -619,7 +619,7 @@ def _tg_buttons(text, keyboard, thread=None):
             for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
             if '=' in l and not l.startswith('#')
         )
-        body = {'chat_id': e['TG_CHAT_ID'], 'text': text,
+        body = {'chat_id': chat or e['TG_CHAT_ID'], 'text': text,
                 'reply_markup': _json.dumps({'inline_keyboard': keyboard})}
         tid = thread if thread is not None else e.get('TG_THREAD_ID')
         if tid:
@@ -632,7 +632,7 @@ def _tg_buttons(text, keyboard, thread=None):
         return False
 
 
-def _tg(text, thread=None):
+def _tg(text, thread=None, chat=None):
     """推 Telegram 給顧問。
 
     刻意在這裡寫一份小的，而不是 import interview_daemon 借它的 tg()——
@@ -647,7 +647,7 @@ def _tg(text, thread=None):
             for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
             if '=' in l and not l.startswith('#')
         )
-        body = {'chat_id': e['TG_CHAT_ID'], 'text': text}
+        body = {'chat_id': chat or e['TG_CHAT_ID'], 'text': text}
         tid = thread if thread is not None else e.get('TG_THREAD_ID')
         if tid:
             body['message_thread_id'] = tid
