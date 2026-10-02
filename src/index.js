@@ -855,6 +855,16 @@ async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
   }
 }
 
+// 2026-10-02 Jacky：TG 拆成社群／人選／客戶三個群組。查 D1 tg_routes 拿這類通知的群組＋主題；
+// 沒設（或查不到）回 null，呼叫端照舊發原本的大群組。
+async function tgRoute(env, key) {
+  try {
+    const r = await env.DB.prepare(`SELECT chat_id, thread_id FROM tg_routes WHERE key = ?`).bind(key).first();
+    if (r && r.chat_id && r.thread_id) return { chat_id: String(r.chat_id), message_thread_id: Number(r.thread_id) };
+  } catch { /* 表不存在或讀不到 → 照舊 */ }
+  return null;
+}
+
 async function notify(env, text, extra) {
   if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return;
   try {
@@ -4494,13 +4504,14 @@ export default {
           await env.DB.prepare(`UPDATE bd_outreach SET last_event_at=? WHERE id=?`).bind(now, orow.id).run().catch(() => {});
         }
         const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
+        const cRoute = await tgRoute(env, 'client_signals');
         await notify(env,
           (orow ? `✉️ 客戶回信了！\n\n公司：${orow.company}\n` : `✉️ 收到一封回信（對不上是哪一封開發信）\n\n`)
           + `寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n`
           + (body ? body.slice(0, 1200) + (body.length > 1200 ? '\n…（內容較長，完整版在開發進度看板）' : '')
                   : '（這封沒有帶文字內容，請到 official@step1ne.com 或 Resend 收件紀錄查看）')
           + (orow ? '\n\n→ 這家的自動追信已停止。請從 official@step1ne.com 回覆。' : ''),
-          topic ? { message_thread_id: topic } : undefined).catch(() => {});
+          cRoute || (topic ? { message_thread_id: topic } : undefined)).catch(() => {});
         return json(request, { ok: true, received: true, matched: !!orow });
       }
 
@@ -4537,9 +4548,10 @@ export default {
           + `這個信箱寄不到，要重新找窗口。`,
           row.tg_message_id ? { reply_to_message_id: row.tg_message_id } : undefined).catch(() => {});
         const bTopic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
-        if (bTopic) {
+        const bRoute = await tgRoute(env, 'client_signals');
+        if (bTopic || bRoute) {
           await notify(env, `📭 退信：${row.company}（${row.contact_email}）\n信箱寄不到，要重新找窗口。`,
-            { message_thread_id: bTopic }).catch(() => {});
+            bRoute || { message_thread_id: bTopic }).catch(() => {});
         }
       } else if (type === 'email.opened') {
         // 2026-09-29 Jacky 要的：開信要主動通知，不用自己去看板查。
@@ -4547,13 +4559,14 @@ export default {
         // 開信數只當參考（Apple 郵件會自動預載），通知裡講明，免得過度解讀。
         if (!row.opened_at && row.status === 'sent') {
           const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信');
-          if (topic) {
+          const oRoute = await tgRoute(env, 'client_signals');
+          if (topic || oRoute) {
             await notify(env,
               `📬 開發信被打開了\n\n公司：${row.company}\n窗口：${row.contact_name || '—'}\n`
               + `寄出：${String(row.sent_at || '').slice(0, 16)}\n`
               + `主旨：${row.subject || '—'}\n\n`
               + `※ 開信只當參考（手機郵件可能自動預載），有回信才算數。`,
-              { message_thread_id: topic }).catch(() => {});
+              oRoute || { message_thread_id: topic }).catch(() => {});
           }
         }
         await setEvent(
@@ -4669,6 +4682,7 @@ export default {
       if (bdId) await fetch('https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/bd/cache-bust', {
         method: 'POST', headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` }, signal: AbortSignal.timeout(5000) }).catch(() => {});
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
+      const iRoute = await tgRoute(env, 'client_inbound');
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
         + (plan ? `想用：${plan}\n` : '')
@@ -4676,7 +4690,7 @@ export default {
         + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
         + (bdId ? `\n→ 已建在後台「客戶 → 開發進度」（搜尋公司名就找得到）。先按下面誰接，再到卡片上記電話結果、寄公司介紹信。` : '')
         + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
-        { ...(topic ? { message_thread_id: topic } : {}),
+        { ...(iRoute || (topic ? { message_thread_id: topic } : {})),
           ...(bdId ? { reply_markup: { inline_keyboard: [[
             { text: '🙋 Jacky 接', callback_data: `il_take:${bdId}:Jacky` }, { text: '🙋 Phoebe 接', callback_data: `il_take:${bdId}:Phoebe` }]] } } : {}) }).catch(() => {});
       return json(request, { ok: true });
@@ -4860,7 +4874,7 @@ export default {
           `${companyName ? `公司：${companyName}\n` : ''}來源：${source}\n` +
           `已自動寄出評估工具連結，等對方填完會出現在「招募形式評估」後台。`,
           // 2026-09-29 改：企業詢問從「#3履歷進件」（候選人）搬到「🏢 官網企業詢問」，不要跟應徵混在一起
-          { message_thread_id: (await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問')) || THREAD.intake }
+          (await tgRoute(env, 'client_inbound')) || { message_thread_id: (await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問')) || THREAD.intake }
         ).catch(() => {});
 
         return json(request, { ok: true });

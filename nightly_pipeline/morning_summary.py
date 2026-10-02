@@ -158,7 +158,15 @@ def send(text):
             if k and not k.startswith('#'):
                 env[k] = v.strip('"\'')
     topic = (q("SELECT topic_id FROM bot_topics WHERE key='bd_signals'") or [{}])[0].get('topic_id')
-    body = {'chat_id': env['TG_CHAT_ID'], 'text': text}
+    chat = env['TG_CHAT_ID']
+    try:   # 2026-10-02：搬到「step1ne客戶」群組 ☎️ 電訪・日報；沒設照舊
+        import tg_route
+        _c, _t = tg_route.route('client_calls')
+        if _c and _t:
+            chat, topic = _c, _t
+    except Exception:
+        pass
+    body = {'chat_id': chat, 'text': text}
     if topic:
         body['message_thread_id'] = topic
     req = urllib.request.Request(f"https://api.telegram.org/bot{env['TG_BOT_TOKEN']}/sendMessage",

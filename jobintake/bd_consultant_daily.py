@@ -373,6 +373,13 @@ def main():
     if not dry:
         env = tg_env()
         topic = (q("SELECT topic_id FROM bot_topics WHERE key='bd_signals'") or [{}])[0].get('topic_id')
+        try:   # 2026-10-02：搬到「step1ne客戶」群組 ☎️ 電訪・日報；沒設照舊
+            import tg_route
+            _c, _t = tg_route.route('client_calls')
+            if _c and _t and env:
+                env = dict(env, TG_CHAT_ID=_c); topic = _t
+        except Exception:
+            pass
 
     all_d = {name: collect(day, monday, name) for name in CONSULTANTS}
     team_signed = sum(x['wk_signed'] for x in all_d.values())

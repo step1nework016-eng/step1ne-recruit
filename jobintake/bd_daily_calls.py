@@ -114,6 +114,14 @@ def render(name, follow, ranked, pool, today):
 def tg_send(text):
     e = env_file('step1ne-tg.env')
     topic = 6416
+    try:   # 2026-10-02：搬到「step1ne客戶」群組 ☎️ 電訪・日報；沒設照舊
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import tg_route
+        _c, _t = tg_route.route('client_calls')
+        if _c and _t:
+            e = dict(e, TG_CHAT_ID=_c); topic = _t
+    except Exception:
+        pass
     chunks, cur = [], ''
     for ln in text.split('\n'):
         if len(cur) + len(ln) + 1 > 3800:

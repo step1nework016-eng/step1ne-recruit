@@ -44,6 +44,16 @@ def _post(method, payload):
         print('⚠️ 找不到 Telegram 設定，訊息沒有推出去')
         return None
     thread = c.get(THREAD_BD_ENV) or THREAD_BD_DEFAULT
+    # 2026-10-02：客戶相關通知搬到「step1ne客戶」群組（tg_routes client_approve）；沒設照舊
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
+        import tg_route
+        _c, _t = tg_route.route('client_approve')
+        if _c and _t:
+            chat, thread = _c, _t
+    except Exception:
+        pass
     payload.setdefault('chat_id', chat)
     payload.setdefault('message_thread_id', int(thread))
     req = urllib.request.Request(
