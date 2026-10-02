@@ -3755,6 +3755,38 @@ async function handleSourcedAction(env, cq) {
   }
 }
 
+// 2026-10-02 Jacky：「TG 我沒收到履歷，那這個是直接放在卡片嗎？」——人選回「寄信約電話」那封時附的履歷，
+// 直接存進檔案庫、掛到人選卡片（applications.resume_file_id；原本的履歷連結留著）。
+// 只收 PDF／Word，跳過信件簽名檔那種內嵌小圖。下載網址 1 小時內有效，收信當下就抓。
+async function saveReplyResumes(env, emailId, appId) {
+  if (!env.RESEND_READ_KEY || !emailId || !appId) return [];
+  const saved = [];
+  try {
+    const r = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}/attachments`, {
+      headers: { Authorization: `Bearer ${env.RESEND_READ_KEY}` }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const list = ((await r.json()) || {}).data || [];
+    const now = nowTaipei();
+    for (const a of list) {
+      const name = String(a.filename || '');
+      const isDoc = /\.(pdf|docx?)$/i.test(name) || /pdf|msword|officedocument\.wordprocessing/i.test(String(a.content_type || ''));
+      if (!isDoc || String(a.content_disposition || '') === 'inline' || !a.download_url) continue;
+      if (a.size && a.size > MAX_RESUME_BYTES) continue;
+      const f = await fetch(a.download_url, { signal: AbortSignal.timeout(20000) });
+      if (!f.ok) continue;
+      const bin = new Uint8Array(await f.arrayBuffer());
+      if (!bin.length || bin.length > MAX_RESUME_BYTES) continue;
+      const fileId = uid();
+      await env.FILES.put(fileId, bin, { httpMetadata: { contentType: a.content_type || 'application/pdf' } });
+      await env.DB.prepare(`INSERT INTO files (id, created_at, filename, mime, size, chunks, storage) VALUES (?,?,?,?,?,0,'r2')`)
+        .bind(fileId, now, name || 'resume.pdf', a.content_type || 'application/pdf', bin.length).run();
+      await env.DB.prepare(`UPDATE applications SET resume_file_id = ? WHERE id = ?`).bind(fileId, appId).run();
+      saved.push(name || 'resume.pdf');
+    }
+  } catch { /* 抓不到就算了，TG 會提醒去 official@ 下載 */ }
+  return saved;
+}
+
 // 官網企業詢問：TG 上按「誰接」→ 這家所有開發紀錄指派給那個人（只有 BD_APPROVERS 能按）
 async function handleInboundLeadAction(env, cq) {
   const [, bdId, who] = String(cq.data).split(':');
@@ -4430,10 +4462,13 @@ export default {
         if (cbm) {
           await env.DB.prepare(`UPDATE call_booking_mails SET reply_at=?, reply_body=? WHERE id=?`)
             .bind(now, body.slice(0, 8000) || null, cbm.id).run().catch(() => {});
+          const hasAtt = Array.isArray(d.attachments) && d.attachments.some((x) => String(x.content_disposition || '') !== 'inline');
+          const cvSaved = hasAtt ? await saveReplyResumes(env, d.email_id, cbm.application_id) : [];
           const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner ? cbm.owner : '（還沒指派顧問）');
           await notify(env,
             `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n`
             + (body ? body.slice(0, 1500) : '（這封沒有帶文字內容，請到 Resend 收件紀錄查看）')
+            + (cvSaved.length ? `\n\n📎 附的履歷（${cvSaved.join('、')}）已放進人選卡片，可以產生電洽前準備了` : (hasAtt ? '\n\n📎 有附件但沒有存進卡片（不是 PDF／Word 或太大），請到 official@ 信箱下載' : ''))
             + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`).catch(() => {});
           return json(request, { ok: true, received: true, matched: 'call_booking' });
         }
@@ -4573,6 +4608,13 @@ export default {
     // 企業端文章 30 天 257 人進站、0 人留下聯絡方式：唯一的出口是「加 LINE」，
     // 企業決策者通常不會為了問一句話去加陌生 LINE。改在文章 CTA 裡直接放三欄小表單
     // （公司／職缺／Email 或電話），送到這裡：寫進 company_leads，推 TG「🏢 官網企業詢問」。
+    // 補抓：功能上線前已經收到的回信附件（總指揮手動用，需要 ADMIN_TOKEN）
+    if (p === '/internal/reply-resume' && request.method === 'POST') {
+      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      const b = await request.json().catch(() => ({}));
+      const files = await saveReplyResumes(env, String(b.email_id || ''), String(b.application_id || ''));
+      return json(request, { ok: true, saved: files });
+    }
     if (p === '/bd/inbound-lead' && request.method === 'POST') {
       let b;
       try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
