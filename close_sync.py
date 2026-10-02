@@ -103,6 +103,8 @@ def main():
         r = subprocess.run(['git', 'pull', '--rebase', '--quiet', 'deploy', 'main'],
                            cwd=SITE, capture_output=True, text=True, errors='replace')
         if r.returncode != 0:
+            # rebase 卡在一半的話要退回原狀，不然之後每一輪都會卡在同一個半成品上
+            subprocess.run(['git', 'rebase', '--abort'], cwd=SITE, capture_output=True)
             log(f'❌ 官網 repo 拉不到最新版，這輪不同步（先處理衝突）：{(r.stderr or r.stdout)[-300:].strip()}')
             sys.exit(1)
     rows = d1_http.query(
