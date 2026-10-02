@@ -5772,7 +5772,9 @@ export default {
           } catch { return rawUrl; }
         };
 
-        if (spRow && !(spRow.from && spRow.from.is_bot)) {
+        // 2026-10-02：新群組裡管理員可能是「匿名」發言（寄件人顯示群組名、from 是 GroupAnonymousBot），那也是人，不能當機器人略過
+        const spAnonAdmin = !!(spRow && spRow.sender_chat && spRow.from && spRow.from.username === 'GroupAnonymousBot');
+        if (spRow && (!(spRow.from && spRow.from.is_bot) || spAnonAdmin)) {
           const spSess = await ncSession(env, spRow.chat.id, spRow.from.id);
           const spText = String(spRow.text || '').trim();
           const spThreadId = spRow.message_thread_id;

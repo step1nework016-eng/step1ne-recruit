@@ -82,6 +82,21 @@ def tg_conf():
     return conf
 
 
+
+def _jobs_route(c):
+    """2026-10-02 Jacky：TG 統一搬新群組——職缺擬稿／上架通知發到「step1ne客戶」群組 📋 職缺審核（tg_routes client_jobs）。沒設照舊。"""
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
+        import tg_route
+        ch, th = tg_route.route('client_jobs')
+        if ch and th:
+            return ch, th
+    except Exception:
+        pass
+    return c['TG_CHAT_ID'], (int(c['TG_THREAD_ID']) if c.get('TG_THREAD_ID') else None)
+
+
 def tg_send(text, buttons, intake_id):
     """把送審訊息推到 step1ne 群組。回傳 message_id（推失敗回 None）。"""
     import urllib.request
@@ -90,14 +105,14 @@ def tg_send(text, buttons, intake_id):
         log('⚠️ 找不到 Telegram 設定，訊息沒有推出去')
         return None
     body = {
-        'chat_id': c['TG_CHAT_ID'],
+        'chat_id': _jobs_route(c)[0],
         'text': text,
         'parse_mode': 'HTML',
         'disable_web_page_preview': True,
         'reply_markup': {'inline_keyboard': buttons},
     }
-    if c.get('TG_THREAD_ID'):
-        body['message_thread_id'] = int(c['TG_THREAD_ID'])
+    if _jobs_route(c)[1]:
+        body['message_thread_id'] = _jobs_route(c)[1]
     req = urllib.request.Request(
         f'https://api.telegram.org/bot{c["TG_BOT_TOKEN"]}/sendMessage',
         data=json.dumps(body).encode('utf-8'),
@@ -616,10 +631,10 @@ def tg_send_doc(html_text, filename, caption, buttons, iid):
         return None
     b = '----' + _uuid.uuid4().hex
     parts = []
-    fields = {'chat_id': c['TG_CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML',
+    fields = {'chat_id': _jobs_route(c)[0], 'caption': caption, 'parse_mode': 'HTML',
               'reply_markup': json.dumps({'inline_keyboard': buttons})}
-    if c.get('TG_THREAD_ID'):
-        fields['message_thread_id'] = str(int(c['TG_THREAD_ID']))
+    if _jobs_route(c)[1]:
+        fields['message_thread_id'] = str(_jobs_route(c)[1])
     for k, v in fields.items():
         parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
     parts.append((f'--{b}\r\nContent-Disposition: form-data; name="document"; '
