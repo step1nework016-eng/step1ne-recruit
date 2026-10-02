@@ -3962,9 +3962,10 @@ async function handleSocAction(env, cq) {
             if (!Number.isNaN(schedMs) && schedMs > Date.now()) {
               await env.DB.prepare(
                 `UPDATE social_post_queue SET status='approved_scheduled', approved_at=?, approved_by=?,
-                        tg_message_id=?, tg_thread_id=? WHERE id=?`
+                        tg_message_id=?, tg_thread_id=?, tg_chat_id=? WHERE id=?`
               ).bind(nowTaipei(), who, String(cq.message.message_id),
-                     cq.message.message_thread_id ? String(cq.message.message_thread_id) : null, qid).run();
+                     cq.message.message_thread_id ? String(cq.message.message_thread_id) : null,
+                     cq.message.chat && cq.message.chat.id != null ? String(cq.message.chat.id) : null, qid).run();
               await answer(`✅ 已核准，會在 ${row.scheduled_at} 準時發布，不用再按`, true);
               await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
                 method: 'POST', headers: { 'content-type': 'application/json' },
@@ -5696,8 +5697,12 @@ export default {
         const THREADS_URL_RE = /https?:\/\/(www\.)?threads\.(com|net)\/[^\s]+/i;
 
         // 從網址反查是哪個顧問帳號在發——比對這則訊息所在的topic。
-        const findAccountByThread = async (threadId) => {
+        const findAccountByThread = async (threadId, chatId) => {
           if (!threadId) return null;
+          // 2026-10-02：社群搬到獨立群組後，主題編號只在該群組裡有意義（新群組的小編號可能撞到舊群組別的主題）
+          const sr = await env.DB.prepare(`SELECT chat_id FROM tg_routes WHERE key='social'`).first().catch(() => null);
+          const socialChat = sr && sr.chat_id ? String(sr.chat_id) : String(env.TG_CHAT_ID);
+          if (chatId != null && String(chatId) !== socialChat) return null;
           return await env.DB.prepare(
             `SELECT id, label FROM social_accounts WHERE tg_thread_id = ? AND platform = 'threads'`
           ).bind(threadId).first();
@@ -5744,7 +5749,7 @@ export default {
           // 不管原本卡在哪一步——「貼新網址」本身就是最明確的糾正意圖，
           // 不需要顧問先手動取消上一筆。
           if (urlMatch) {
-            const account = await findAccountByThread(spThreadId);
+            const account = await findAccountByThread(spThreadId, spRow.chat && spRow.chat.id);
             if (account) {
               const resolvedUrl = await resolveThreadsUrl(urlMatch[0]);
               const replacedNote = spSess ? '（換成這則，剛剛那則不處理了）\n' : '';
@@ -7079,7 +7084,7 @@ export default {
     // 搬過去要嘛重複存一份金鑰，要嘛跨 Worker 呼叫，兩個都不划算。
     try {
       const { results: dueApproved } = await env.DB.prepare(
-        `SELECT id, tg_message_id, tg_thread_id, approved_by FROM social_post_queue
+        `SELECT id, tg_message_id, tg_thread_id, tg_chat_id, approved_by FROM social_post_queue
           WHERE status='approved_scheduled'
             AND datetime(scheduled_at) <= datetime('now','+8 hours')
           LIMIT 20`
@@ -7093,7 +7098,7 @@ export default {
           data: `soc_approve:${r.id}`,
           from: { username: r.approved_by || '排程' },
           message: {
-            chat: { id: env.TG_CHAT_ID },
+            chat: { id: r.tg_chat_id || env.TG_CHAT_ID },   // 2026-10-02：社群搬群組後，審核訊息可能在新群組
             message_id: r.tg_message_id,
             message_thread_id: r.tg_thread_id || undefined,
           },
