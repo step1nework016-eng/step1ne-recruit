@@ -3765,8 +3765,9 @@ async function handleReviewAction(env, cq) {
     }).catch(() => {});
   };
   const uname = String((cq.from && cq.from.username) || '').toLowerCase();
-  const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
-  if (!allow.includes(uname)) { await answer('⛔ 放不放官網只有 Jacky 可以決定', true); return; }
+  // 2026-10-02 Jacky：「以後我可以的，ph 就可以」→ 放官網也開放給 Phoebe
+  const allow = [...String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean), ...BD_APPROVERS];
+  if (!allow.includes(uname)) { await answer('⛔ 放不放官網只有 Jacky、Phoebe 可以決定', true); return; }
   const row = await env.DB.prepare(`SELECT id, publish_consent FROM service_reviews WHERE id = ?`).bind(id).first();
   if (!row) { await answer('❌ 找不到這則心得'); return; }
   if (row.publish_consent === 'private') { await answer('人選選了不要公開，不能放', true); return; }
@@ -4323,8 +4324,8 @@ async function handleSocAction(env, cq) {
         return;
 }
 
-// 2026-10-02 Jacky：寄給公司的信（公司介紹、收尾信、開發信）Jacky 和 Phoebe 都能按核准。
-// 刻意不沿用 JACKY_TG_USERNAMES：那份還管「放官網」等只有 Jacky 能按的按鈕。
+// 2026-10-02 Jacky：「以後我可以的，ph 就可以」——Jacky 能按的 TG 核准按鈕，Phoebe 都能按
+// （寄給公司的信、放官網）。新增 Jacky 專用按鈕時，用這份名單。
 const BD_APPROVERS = ['jackyyuqi', 'behe10'];
 
 export default {
