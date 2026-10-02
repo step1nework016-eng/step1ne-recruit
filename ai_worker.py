@@ -24,7 +24,6 @@ import datetime
 import hashlib
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -82,14 +81,14 @@ def sanitize(t):
     return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
 
 
-def run_claude(prompt, want_json=False):
+def run_claude(prompt, want_json=False, timeout=None):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)      # 巢狀 session 裡 claude CLI 會拒跑
     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
     r = subprocess.run(
         [CLAUDE_BIN, '-p', '--model', MODEL, *NO_TOOLS, '--output-format', 'text'],
         input=sanitize(prompt),
-        capture_output=True, text=True, env=env, timeout=TIMEOUT, cwd=HERE)
+        capture_output=True, text=True, env=env, timeout=timeout or TIMEOUT, cwd=HERE)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
     out = r.stdout.strip()
@@ -1434,14 +1433,15 @@ def process(job):
     # 07 Contract 的 root 欄位（_wrap_precall_card）才回傳，不是原始 AI 輸出。
     if kind == 'precall_card':
         try:
-            out = run_claude(builder(payload), want_json=True)
+            # 2026-10-02：結構化卡片輸出很長，實測 4～9 分鐘，原本 8 分鐘逾時就整張退回純文字（李佳龍連兩次）——這一步放寬到 15 分鐘
+            out = run_claude(builder(payload), want_json=True, timeout=900)
             ai_data = _repair_precall_card(json.loads(out))
             try:
                 _validate_precall_card(ai_data, payload)
             except Exception as ve:
                 # 修不掉的（缺欄位、gate 對不上…）再請 AI 照錯誤訊息重產一次，還不行才退回舊版
                 log(f'  ↻ precall_card 格式不合（{str(ve)[:100]}），帶著錯誤再產一次')
-                out = run_claude(builder(payload) + f'\n\n⚠️ 上一次輸出不合格：{ve}。請完全照規則重新輸出整份 JSON。', want_json=True)
+                out = run_claude(builder(payload) + f'\n\n⚠️ 上一次輸出不合格：{ve}。請完全照規則重新輸出整份 JSON。', want_json=True, timeout=900)
                 ai_data = _repair_precall_card(json.loads(out))
                 _validate_precall_card(ai_data, payload)
             wrapped = _wrap_precall_card(ai_data, payload)
