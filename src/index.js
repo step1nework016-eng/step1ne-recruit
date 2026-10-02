@@ -4390,6 +4390,23 @@ export default {
           } catch { /* 抓不到就算了，TG 會提醒去後台看 */ }
         }
         const domain = fromEmail.split('@')[1] || '';
+        // 2026-10-02：人選回「寄信約電話」那封（顧問後台寄的，記在 call_booking_mails）。
+        // 先對這個：人選多半用私人信箱，跟開發信的公司網域不會撞；對到就不再往開發信那邊找。
+        const cbm = fromEmail ? await env.DB.prepare(
+          `SELECT m.id, m.application_id, a.name, a.job_title, a.owner FROM call_booking_mails m
+             JOIN applications a ON a.id = m.application_id
+            WHERE m.to_email = ? AND m.status = 'sent' AND m.sent_at >= datetime('now','+8 hours','-30 days')
+            ORDER BY m.sent_at DESC LIMIT 1`).bind(fromEmail).first().catch(() => null) : null;
+        if (cbm) {
+          await env.DB.prepare(`UPDATE call_booking_mails SET reply_at=?, reply_body=? WHERE id=?`)
+            .bind(now, body.slice(0, 8000) || null, cbm.id).run().catch(() => {});
+          const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner ? cbm.owner : '（還沒指派顧問）');
+          await notify(env,
+            `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n`
+            + (body ? body.slice(0, 1500) : '（這封沒有帶文字內容，請到 Resend 收件紀錄查看）')
+            + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`).catch(() => {});
+          return json(request, { ok: true, received: true, matched: 'call_booking' });
+        }
         // 先對完整信箱，對不到就對同網域最近寄出的那封（常見：窗口轉給同事回）
         let orow = fromEmail ? await env.DB.prepare(
           `SELECT * FROM bd_outreach WHERE lower(contact_email)=? AND status='sent' ORDER BY sent_at DESC LIMIT 1`
