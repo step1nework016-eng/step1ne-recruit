@@ -4465,11 +4465,14 @@ export default {
           const hasAtt = Array.isArray(d.attachments) && d.attachments.some((x) => String(x.content_disposition || '') !== 'inline');
           const cvSaved = hasAtt ? await saveReplyResumes(env, d.email_id, cbm.application_id) : [];
           const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner ? cbm.owner : '（還沒指派顧問）');
+          // 2026-10-02 Jacky：人選回信要有自己的主題，不要跟面試通知混在一起
+          const candTopic = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
           await notify(env,
             `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n`
             + (body ? body.slice(0, 1500) : '（這封沒有帶文字內容，請到 Resend 收件紀錄查看）')
             + (cvSaved.length ? `\n\n📎 附的履歷（${cvSaved.join('、')}）已放進人選卡片，可以產生電洽前準備了` : (hasAtt ? '\n\n📎 有附件但沒有存進卡片（不是 PDF／Word 或太大），請到 official@ 信箱下載' : ''))
-            + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`).catch(() => {});
+            + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`,
+            candTopic ? { message_thread_id: candTopic } : undefined).catch(() => {});
           return json(request, { ok: true, received: true, matched: 'call_booking' });
         }
         // 先對完整信箱，對不到就對同網域最近寄出的那封（常見：窗口轉給同事回）
