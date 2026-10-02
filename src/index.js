@@ -3755,6 +3755,31 @@ async function handleSourcedAction(env, cq) {
   }
 }
 
+// 官網企業詢問：TG 上按「誰接」→ 這家所有開發紀錄指派給那個人（只有 BD_APPROVERS 能按）
+async function handleInboundLeadAction(env, cq) {
+  const [, bdId, who] = String(cq.data).split(':');
+  const answer = async (text, alert) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cq.id, text, show_alert: !!alert }),
+    }).catch(() => {});
+  };
+  const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+  if (!BD_APPROVERS.includes(uname)) { await answer('⛔ 只有 Jacky、Phoebe 可以按', true); return; }
+  if (!['Jacky', 'Phoebe'].includes(who)) { await answer('不認得的顧問'); return; }
+  const row = await env.DB.prepare(`SELECT company FROM bd_outreach WHERE id = ?`).bind(bdId).first();
+  if (!row) { await answer('❌ 找不到這張卡片'); return; }
+  await env.DB.prepare(`UPDATE bd_outreach SET assigned_to = ?, updated_at = ? WHERE company = ?`).bind(who, nowTaipei(), row.company).run();
+  await answer(`✅ 已指派給 ${who}`);
+  if (cq.message) {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+        reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 接手了（按這裡改成${who === 'Jacky' ? ' Phoebe' : ' Jacky'}）`, callback_data: `il_take:${bdId}:${who === 'Jacky' ? 'Phoebe' : 'Jacky'}` }]] } }),
+    }).catch(() => {});
+  }
+}
+
 async function handleReviewAction(env, cq) {
   const [action, idRaw] = String(cq.data).split(':');
   const id = Number(idRaw);
@@ -4573,14 +4598,38 @@ export default {
         await notify(env, `⚠️ 官網企業詢問寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
           { message_thread_id: THREAD.system }).catch(() => {});
       });
+      // 2026-10-02 Jacky：「收到這個，我的下一步可以怎麼做？有地方可以讓我下一步嗎？」
+      // → 直接在「開發進度」建一張卡片（已經有這家就沿用），TG 上按「誰接」就指派好，
+      //    接下來在卡片上打電話記結果、寄公司介紹信，跟其他開發對象同一條路。
+      let bdId = null;
+      try {
+        const ex = await env.DB.prepare(`SELECT id FROM bd_outreach WHERE company = ? ORDER BY created_at DESC LIMIT 1`).bind(company).first();
+        const why = `【官網主動詢問】${now.slice(0, 10)} 從 ${page || '官網'} 留需求｜職缺：${job || '未填'}${plan ? `｜想用：${plan}` : ''}｜聯絡：${name ? name + ' ' : ''}${contact}`;
+        if (ex) {
+          bdId = ex.id;
+          await env.DB.prepare(`UPDATE bd_outreach SET why_company = ? || char(10) || COALESCE(why_company,''),
+                 contact_email = COALESCE(contact_email, ?), hr_phone = COALESCE(hr_phone, ?), updated_at = ? WHERE id = ?`)
+            .bind(why, isEmail ? contact : null, isPhone ? contact : null, now, ex.id).run();
+        } else {
+          bdId = crypto.randomUUID();
+          await env.DB.prepare(
+            `INSERT INTO bd_outreach (id, created_at, updated_at, batch_id, company, why_company, contact_name, contact_email, hr_contact, hr_phone, job_title, status, channel, phone_source)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending','phone',?)`
+          ).bind(bdId, now, now, `inbound-${now.slice(0, 10)}`, company, why, name || null, isEmail ? contact : null, name || null,
+                 isPhone ? contact : null, job || null, isPhone ? '官網詢問自己留的' : null).run();
+        }
+      } catch (e) { bdId = null; }
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
         + (plan ? `想用：${plan}\n` : '')
         + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
         + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
+        + (bdId ? `\n→ 已建在後台「客戶 → 開發進度」（搜尋公司名就找得到）。先按下面誰接，再到卡片上記電話結果、寄公司介紹信。` : '')
         + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
-        topic ? { message_thread_id: topic } : undefined).catch(() => {});
+        { ...(topic ? { message_thread_id: topic } : {}),
+          ...(bdId ? { reply_markup: { inline_keyboard: [[
+            { text: '🙋 Jacky 接', callback_data: `il_take:${bdId}:Jacky` }, { text: '🙋 Phoebe 接', callback_data: `il_take:${bdId}:Phoebe` }]] } } : {}) }).catch(() => {});
       return json(request, { ok: true });
     }
 
@@ -6693,6 +6742,11 @@ export default {
 
       if (cq && cq.data && String(cq.data).startsWith('sei_')) {
         await handleSourcedAction(env, cq);
+        return new Response('ok');
+      }
+
+      if (cq && cq.data && String(cq.data).startsWith('il_take:')) {
+        await handleInboundLeadAction(env, cq);
         return new Response('ok');
       }
 
