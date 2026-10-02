@@ -1381,6 +1381,20 @@ def context_for(app_id):
             ctx['plan'] = json.loads(_pl[0]['interview_plan_json'])
     except Exception as e:
         log(f'讀題目計畫失敗（不影響面談，改走現場生成）：{str(e)[:80]}')
+    # 2026-10-02 胡耀中：職缺在「排題目」之後才改成要考英文（14:42 改、他 15:02 開始面談），
+    # 但職缺資料在排題目時就被快取住了，整場都用舊的、沒考英文。
+    # 面談語言／職級這兩個「顧問隨時可能改、而且直接決定阿財怎麼問」的欄位，每輪都重新讀一次。
+    try:
+        _job = dict(ctx.get('job') or {})
+        if _job.get('slug'):
+            _live = d1(f"SELECT interview_language, seniority FROM jobs WHERE slug = {q(_job['slug'])}")
+            if _live:
+                _job['interview_language'] = _live[0].get('interview_language')
+                if _live[0].get('seniority'):
+                    _job['seniority'] = _live[0].get('seniority')
+                ctx['job'] = _job
+    except Exception as e:
+        log(f'重讀職缺面談語言失敗（沿用快取）：{str(e)[:80]}')
     ctx['conversation'] = d1(f"SELECT role, content, created_at FROM messages "
                              f"WHERE application_id = {q(app_id)} ORDER BY id ASC LIMIT 200")
     return ctx
