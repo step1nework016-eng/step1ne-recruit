@@ -343,6 +343,15 @@ def spectrum(data, meta):
 _VERDICT_ICON = {'符合': '✅', '不符': '❌', '待確認': '⚠️'}
 
 
+def _logo_img():
+    try:
+        import base64
+        b = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reporttpl', 'step1ne-logo-small.png'), 'rb').read()
+        return f'<img class="logo" src="data:image/png;base64,{base64.b64encode(b).decode()}" alt="Step1ne">'
+    except Exception:
+        return ''
+
+
 def _branding(meta, phrase):
     """依 jobs.client_relation 決定報告掛不掛 Step1ne 品牌。
 
@@ -355,6 +364,7 @@ def _branding(meta, phrase):
     record_kind = '面談紀錄' if meta.get('has_real_interview') else '電洽紀錄'
     if private:
         return {
+            'LOGO_HTML': '',
             'DOC_TITLE': '人選推薦',
             'BRAND_LABEL': '人選推薦',
             'STAMP_TEXT': (f'本人選已完成<b>{phrase}</b>，上述內容為{record_kind}與應徵資料之摘要整理。'
@@ -362,6 +372,8 @@ def _branding(meta, phrase):
             'FOOTER': '',
         }
     return {
+        # 2026-10-02 Jacky：客戶版履歷要放 Step1ne logo（私人協助的除外，見上）。圖檔內嵌，PDF 不用連網
+        'LOGO_HTML': _logo_img(),
         'DOC_TITLE': '人選推薦｜Step1ne',
         'BRAND_LABEL': 'STEP1NE 人選推薦',
         'STAMP_TEXT': (f'本人選已完成 Step1ne 的<b>{phrase}</b>，上述內容為{record_kind}與應徵資料之摘要整理。'

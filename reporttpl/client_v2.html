@@ -8,6 +8,9 @@
 @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
 * { box-sizing: border-box; }
 body { font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif; color: #1f2733; font-size: 10.5pt; line-height: 1.65; margin: 0; }
+.brandrow { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.brandrow .logo { height: 34px; width: auto; }
+.brandrow .brand { margin: 0; }
 .brand { font-size: 9.5pt; font-weight: 700; color: #5a6472; letter-spacing: .5px; margin: 0 0 6px; }
 h1 { font-size: 20pt; margin: 0 0 4px; }
 .job { color: #1f4e79; font-weight: 700; font-size: 11pt; margin: 0 0 8px; }
@@ -41,7 +44,7 @@ li { margin: 2px 0; }
 </style>
 </head>
 <body>
-<p class="brand">{{BRAND_LABEL}}</p>
+<div class="brandrow">{{LOGO_HTML}}<p class="brand">{{BRAND_LABEL}}</p></div>
 <h1>{{NAME}}</h1>
 <p class="job">推薦職缺：{{JOB}}</p>
 <p class="intro">{{INTRO}}</p>
