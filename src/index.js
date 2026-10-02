@@ -992,13 +992,12 @@ async function ncSession(env, chatId, userId) {
   const row = await env.DB.prepare(
     `SELECT step, data FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`
   ).bind(String(chatId), String(userId)).first();
-  // 2026-10-02：群組裡用「匿名管理員」發言時，訊息的 user 是 GroupAnonymousBot（1087968824），
-  // 但按按鈕時 TG 給的是本人——兩邊對不上就會一直說「流程過期」。任一邊是匿名的，就找這個群組 30 分鐘內最新的那筆。
-  const ANON = '1087968824';
+  // 2026-10-02：同一個人可能用不同 TG 帳號操作（電腦登「step1ne社群」、手機登本人，或匿名管理員），
+  // 打字跟按按鈕的帳號不同就會一直說「流程過期」。自己沒有流程時，接手這個群組 30 分鐘內最新的那筆。
   const row2 = row || (await env.DB.prepare(
-    `SELECT step, data FROM tg_bot_sessions WHERE chat_id=? AND (user_id=? OR ?=?)
+    `SELECT step, data FROM tg_bot_sessions WHERE chat_id=?
        AND updated_at >= datetime('now','+8 hours','-30 minutes') ORDER BY updated_at DESC LIMIT 1`
-  ).bind(String(chatId), ANON, String(userId), ANON).first());
+  ).bind(String(chatId)).first());
   if (!row2) return null;
   let data = {};
   try { data = JSON.parse(row2.data || '{}'); } catch {}
@@ -1014,17 +1013,11 @@ async function ncSetSession(env, chatId, userId, step, data) {
   await ncSyncAnon(env, chatId, userId, `UPDATE tg_bot_sessions SET step=?, data=?, updated_at=? WHERE chat_id=? AND user_id=?`, [step, JSON.stringify(data || {}), now]);
 }
 async function ncSyncAnon(env, chatId, userId, sql, vals) {
-  const ANON = '1087968824';
+  // 同一筆流程如果被另一個帳號接手過，兩邊的進度一起走（只動 30 分鐘內的那筆）
   try {
-    let other = null;
-    if (String(userId) === ANON) {
-      const r = await env.DB.prepare(`SELECT user_id FROM tg_bot_sessions WHERE chat_id=? AND user_id<>? AND updated_at >= datetime('now','+8 hours','-30 minutes') ORDER BY updated_at DESC LIMIT 1`).bind(String(chatId), ANON).first();
-      other = r && r.user_id;
-    } else {
-      const r = await env.DB.prepare(`SELECT user_id FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`).bind(String(chatId), ANON).first();
-      other = r && r.user_id;
-    }
-    if (other) await env.DB.prepare(sql).bind(...vals, String(chatId), String(other)).run();
+    const r = await env.DB.prepare(`SELECT user_id FROM tg_bot_sessions WHERE chat_id=? AND user_id<>?
+        AND updated_at >= datetime('now','+8 hours','-30 minutes') ORDER BY updated_at DESC LIMIT 1`).bind(String(chatId), String(userId)).first();
+    if (r && r.user_id) await env.DB.prepare(sql).bind(...vals, String(chatId), String(r.user_id)).run();
   } catch { /* 同步失敗不影響本人那筆 */ }
 }
 async function ncClearSession(env, chatId, userId) {
