@@ -5812,9 +5812,27 @@ export default {
           // 不管原本卡在哪一步——「貼新網址」本身就是最明確的糾正意圖，
           // 不需要顧問先手動取消上一筆。
           if (urlMatch) {
-            const account = await findAccountByThread(spThreadId, spRow.chat && spRow.chat.id);
+            // 2026-10-02 Jacky：「讓他放所有顧問的，沒有限制」——社群群組任何主題都能貼任何顧問的貼文：
+            // ① 網址的 @帳號 對得到就用它 ② 不然看是哪個顧問的主題 ③ 都沒有就問「這篇是哪位顧問的？」
+            let account = await findAccountByThread(spThreadId, spRow.chat && spRow.chat.id);
+            const resolvedUrl0 = await resolveThreadsUrl(urlMatch[0]);
+            const handle = (String(resolvedUrl0).match(/@([A-Za-z0-9._]+)/) || [])[1];
+            if (handle) {
+              const byH = await env.DB.prepare(`SELECT id, label FROM social_accounts WHERE platform='threads' AND lower(account_username)=lower(?) LIMIT 1`).bind(handle).first();
+              if (byH) account = byH;
+            }
+            const scr = await env.DB.prepare(`SELECT chat_id FROM tg_routes WHERE key='social'`).first().catch(() => null);
+            const inSocial = String(spRow.chat && spRow.chat.id) === String((scr && scr.chat_id) || env.TG_CHAT_ID);
+            if (!account && inSocial) {
+              const { results: accs } = await env.DB.prepare(`SELECT id, label FROM social_accounts WHERE platform='threads' AND is_active=1 ORDER BY id`).all();
+              await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_pick_account', { url: resolvedUrl0, handle: handle || null });
+              const btns = (accs || []).map((a) => ({ text: String(a.label).replace(/\s*[–-]\s*Threads$/i, ''), callback_data: `sp_acc:${a.id}` }));
+              const rows = []; for (let i = 0; i < btns.length; i += 3) rows.push(btns.slice(i, i + 3));
+              await ncSend(env, spRow.chat.id, spThreadId, `這篇是哪位顧問的？${handle ? `（網址帳號 @${handle}，選過一次以後會記住）` : ''}`, { inline_keyboard: rows });
+              return new Response('ok');
+            }
             if (account) {
-              const resolvedUrl = await resolveThreadsUrl(urlMatch[0]);
+              const resolvedUrl = resolvedUrl0;
               const replacedNote = spSess ? '（換成這則，剛剛那則不處理了）\n' : '';
               await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_choose_type',
                 { url: resolvedUrl, accountId: account.id, accountLabel: account.label });
@@ -6056,6 +6074,25 @@ export default {
           const spThreadId2 = spCq.message.message_thread_id;
           const sess = await ncSession(env, spChatId, spCq.from.id);
           if (!sess) { await spAns('這個流程已經過期了，重新貼一次網址'); return new Response('ok'); }
+
+          if (spCq.data.startsWith('sp_acc:')) {
+            const accId = Number(spCq.data.slice('sp_acc:'.length));
+            const acc = await env.DB.prepare(`SELECT id, label, account_username FROM social_accounts WHERE id=?`).bind(accId).first();
+            if (!acc || !sess.data || !sess.data.url) { await spAns('找不到這個帳號，重新貼一次網址'); return new Response('ok'); }
+            // 網址的 @帳號 記到這位顧問身上，下次就不用再問
+            if (sess.data.handle && !acc.account_username) {
+              await env.DB.prepare(`UPDATE social_accounts SET account_username=? WHERE id=? AND COALESCE(account_username,'')=''`).bind(sess.data.handle, acc.id).run().catch(() => {});
+            }
+            await ncSetSession(env, spChatId, spCq.from.id, 'sp_choose_type', { url: sess.data.url, accountId: acc.id, accountLabel: acc.label });
+            await spAns(`帳號：${acc.label}`);
+            await ncSend(env, spChatId, spThreadId2, `這篇是哪一種？（帳號：${acc.label}）`, {
+              inline_keyboard: [[
+                { text: '📋 職缺文', callback_data: 'sp_type_job' },
+                { text: '💬 話題文', callback_data: 'sp_mis:topic' },
+              ]],
+            });
+            return new Response('ok');
+          }
 
           if (spCq.data === 'sp_type_topic') {
             await spAns();
