@@ -865,13 +865,35 @@ async function tgRoute(env, key) {
   return null;
 }
 
+// 2026-10-02 Jacky：人選通知搬到「step1ne人選」群組。原本要發到「舊群組某主題」的，
+// 查 tg_routes key='remap:<群組>:<主題>' 換成新群組的主題；沒有對應就原樣（社群／客戶已經自己指定群組，不受影響）。
+// 舊群組的對話主題（電洽新增、顧問找人才）搬到人選群組後，新群組的那個主題也要認得
+async function inTopic(env, msg, oldTopic) {
+  if (!msg || msg.message_thread_id == null) return false;
+  const chat = String(msg.chat && msg.chat.id), th = Number(msg.message_thread_id);
+  if (chat === String(env.TG_CHAT_ID) && th === Number(oldTopic)) return true;
+  const m = await tgRemapBody(env, { chat_id: env.TG_CHAT_ID, message_thread_id: Number(oldTopic) });
+  return String(m.chat_id) === chat && Number(m.message_thread_id) === th && String(m.chat_id) !== String(env.TG_CHAT_ID);
+}
+
+async function tgRemapBody(env, body) {
+  try {
+    const chat = String(body.chat_id || env.TG_CHAT_ID || '');
+    const th = body.message_thread_id != null ? Number(body.message_thread_id) : null;
+    if (!chat || th == null) return body;
+    const r = await env.DB.prepare(`SELECT chat_id, thread_id FROM tg_routes WHERE key = ?`).bind(`remap:${chat}:${th}`).first();
+    if (r && r.chat_id && r.thread_id) return { ...body, chat_id: String(r.chat_id), message_thread_id: Number(r.thread_id) };
+  } catch { /* 照舊 */ }
+  return body;
+}
+
 async function notify(env, text, extra) {
   if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return;
   try {
     await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(await tgRemapBody(env, {
         chat_id: env.TG_CHAT_ID, text, disable_web_page_preview: true,
         // 群組是 forum（有分主題），不帶 thread id 訊息會落到 General。
         // 2026-08-05 起分兩個主題：需要顧問決定的進「面試通知確認」(預設 TG_THREAD_ID)，
@@ -880,7 +902,7 @@ async function notify(env, text, extra) {
         ...((extra && extra.message_thread_id) ? {}
             : (env.TG_THREAD_ID ? { message_thread_id: Number(env.TG_THREAD_ID) } : {})),
         ...(extra || {}),
-      }),
+      })),
       // ⚠️ 一定要有逾時。2026-08-11 PH 送職缺時看到「Failed to fetch」，
       //    但資料其實已經寫進 D1 了——因為這支是「寫完 DB → 等 Telegram 回來 →
       //    才回應瀏覽器」，Telegram 一慢就把整個連線拖到被砍。
@@ -902,10 +924,10 @@ async function notifyAndCaptureId(env, text, extra) {
     const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(await tgRemapBody(env, {
         chat_id: env.TG_CHAT_ID, text, disable_web_page_preview: true,
         ...(extra || {}),
-      }),
+      })),
       signal: AbortSignal.timeout(6000),
     });
     const rd = await r.json().catch(() => ({}));
@@ -1138,9 +1160,10 @@ async function notifyScreening(env, app, job) {
     }
 
     if (resumeBuf) {
+      const rmS = await tgRemapBody(env, { chat_id: env.TG_CHAT_ID, message_thread_id: env.TG_THREAD_ID ? Number(env.TG_THREAD_ID) : null });
       const form = new FormData();
-      form.append('chat_id', env.TG_CHAT_ID);
-      if (env.TG_THREAD_ID) form.append('message_thread_id', env.TG_THREAD_ID);
+      form.append('chat_id', rmS.chat_id);
+      if (rmS.message_thread_id != null) form.append('message_thread_id', String(rmS.message_thread_id));
       form.append('caption', lines);
       form.append('parse_mode', 'HTML');
       form.append('reply_markup', JSON.stringify(buttons));
@@ -1151,12 +1174,12 @@ async function notifyScreening(env, app, job) {
       await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(await tgRemapBody(env, {
           chat_id: env.TG_CHAT_ID,
           ...(env.TG_THREAD_ID ? { message_thread_id: Number(env.TG_THREAD_ID) } : {}),
           text: lines + resumeLine, parse_mode: 'HTML',
           reply_markup: buttons, disable_web_page_preview: true,
-        }),
+        })),
       });
     }
   } catch (e) {
@@ -5295,7 +5318,7 @@ export default {
         const rm2 = update.message;
         const cq2 = update.callback_query;
 
-        if (rm2 && callIntakeTopic && Number(rm2.message_thread_id) === callIntakeTopic
+        if (rm2 && callIntakeTopic && await inTopic(env, rm2, callIntakeTopic)
             && !(rm2.from && rm2.from.is_bot)) {
           const sess = await ncSession(env, rm2.chat.id, rm2.from.id);
           // 2026-09-01 改：拿掉 `/new` 文字指令——這個群組另一支通用機器人
@@ -5666,7 +5689,7 @@ export default {
           return new Response('ok');
         }
 
-        if (rm3 && sourcingTopic && Number(rm3.message_thread_id) === sourcingTopic
+        if (rm3 && sourcingTopic && await inTopic(env, rm3, sourcingTopic)
             && !(rm3.from && rm3.from.is_bot)) {
           const kw = String(rm3.text || '').trim();
           if (!kw) return new Response('ok');
@@ -6224,7 +6247,7 @@ export default {
         // 這裡不再寫進 consultant_reports（report_tick.py 這支背景腳本也已經
         // 停用，就算漏寫了訊息也不會有東西去處理），改成回一句話引導顧問
         // 去系統操作，不要讓訊息看起來「有送出但沒反應」。
-        if (rm && Number(rm.message_thread_id) === THREAD.report &&
+        if (rm && await inTopic(env, rm, THREAD.report) &&
             String(rm.text || '').trim() && !(rm.from && rm.from.is_bot)) {
           await notify(env,
             '這裡已經不會自動處理進度回報了——請直接到顧問後台「初篩報告」頁的階段條調整，客戶跟候選人那邊會自動同步，不用再打字回報。',

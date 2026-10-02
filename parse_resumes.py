@@ -25,6 +25,17 @@ NPX_BIN = shutil.which('npx') or 'npx'
 MAX_CHARS = 12000   # 履歷再長也不會超過這個；超過通常是抽到雜訊
 
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def env_with_cf():
     env = dict(os.environ)
     conf = os.path.expanduser('~/.config/workflow-os/cf.env')
@@ -647,13 +658,14 @@ def main():
             e = dict(l.strip().split('=', 1) for l in open(conf, encoding='utf-8')
                      if '=' in l and not l.startswith('#'))
             import urllib.parse, urllib.request
+            _rc, _rt = _rm_chat_thread(e['TG_CHAT_ID'], e.get('TG_THREAD_ID'))
             body = {
-                'chat_id': e['TG_CHAT_ID'],
+                'chat_id': _rc,
                 'text': f'⚠️ {fail} 份履歷讀不到，阿財面談時會看不到內容\n\n'
                         + '\n'.join(f'• {n}' for n in failed)
                         + '\n\n這幾位需要請他重傳履歷。'}
-            if e.get('TG_THREAD_ID'):
-                body['message_thread_id'] = e['TG_THREAD_ID']
+            if _rt:
+                body['message_thread_id'] = _rt
             urllib.request.urlopen(
                 f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
                 data=urllib.parse.urlencode(body).encode(), timeout=20)

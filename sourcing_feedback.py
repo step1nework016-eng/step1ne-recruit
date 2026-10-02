@@ -48,6 +48,17 @@ NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
 # 不排除的話，一個熱門職缺會因為「大家都有工作」被判定成要改搜尋詞，越調越偏。
 NOISE = {'已有工作或沒意願'}
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 
 def log(m):
     print(f'[{datetime.datetime.now():%H:%M:%S}] {m}', flush=True)
@@ -205,8 +216,9 @@ def notify(job_slug, obj, stats, n):
                  open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
         tok = e['TG_BOT_TOKEN'].strip('"\''); chat = e['TG_CHAT_ID'].strip('"\'')
+        chat, _t = _rm_chat_thread(chat, TG_THREAD_SOURCED)
         data = urllib.parse.urlencode({'chat_id': chat, 'text': text,
-                                       'message_thread_id': TG_THREAD_SOURCED}).encode()
+                                       'message_thread_id': _t}).encode()
         urllib.request.urlopen(f'https://api.telegram.org/bot{tok}/sendMessage', data, timeout=20)
         log(f'{job_slug}：建議已送到 TG')
     except Exception as ex:

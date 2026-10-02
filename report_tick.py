@@ -183,6 +183,17 @@ def parse(text):
     return json.loads(out[s:e + 1])
 
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def tg(text, buttons=None, reply_to=None):
     import urllib.request
     c = {}
@@ -190,7 +201,8 @@ def tg(text, buttons=None, reply_to=None):
         if '=' in line and not line.startswith('#'):
             k, v = line.strip().split('=', 1)
             c[k.strip()] = v.strip().strip('\'"')
-    payload = {'chat_id': c['TG_CHAT_ID'], 'message_thread_id': THREAD_REPORT,
+    _c, _t = _rm_chat_thread(c['TG_CHAT_ID'], THREAD_REPORT)
+    payload = {'chat_id': _c, 'message_thread_id': _t,
                'text': text, 'disable_web_page_preview': True}
     if buttons:
         payload['reply_markup'] = buttons

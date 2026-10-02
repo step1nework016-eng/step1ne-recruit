@@ -50,6 +50,17 @@ SCHEMA = """{
   "one_call": "如果 blocker 是 missing_info，寫出「打這通電話要問哪幾件事」，一句話；否則空字串"
 }"""
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def build_prompt(app, job, resume_text):
     return f"""你是有 15 年經驗的資深招募經理。針對下面的職缺與履歷做初篩，
 判準照 Step1ne 現行的《獵頭顧問助理 SOP》。
@@ -208,7 +219,7 @@ def _tg_thread(text, thread):
         urllib.request.urlopen(
             f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
             data=urllib.parse.urlencode(
-                {'chat_id': e['TG_CHAT_ID'], 'message_thread_id': thread, 'text': text}).encode(),
+                dict(zip(('chat_id', 'message_thread_id'), _rm_chat_thread(e['TG_CHAT_ID'], thread)), text=text)).encode(),
             timeout=20)
     except Exception as ex:
         print(f'  ⚠️ 推播失敗：{ex}')

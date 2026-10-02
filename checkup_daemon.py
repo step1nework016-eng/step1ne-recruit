@@ -182,14 +182,25 @@ def runlog(task, status, summary, metrics=None):
         log(f'runlog 寫入失敗（不影響主流程）：{e}')
 
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def tg(text, thread=None):
     # 跟 interview_daemon.py 一樣讀 step1ne-tg.env，不要跟總指揮 yuqi 共用的 tg.env 混在一起。
     try:
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {'chat_id': e['TG_CHAT_ID'], 'text': text}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        _c, tid = _rm_chat_thread(e['TG_CHAT_ID'], thread if thread is not None else e.get('TG_THREAD_ID'))
+        body = {'chat_id': _c, 'text': text}
         if tid:
             body['message_thread_id'] = tid
         urllib.request.urlopen(
@@ -206,9 +217,10 @@ def tg_doc(data, filename, caption='', thread=None):
                  if '=' in l and not l.startswith('#'))
         import uuid, mimetypes
         b = '----s1c' + uuid.uuid4().hex
-        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{e["TG_CHAT_ID"]}\r\n'.encode()]
-        if thread is not None:
-            e = dict(e, TG_THREAD_ID=str(thread))
+        _c, _t = _rm_chat_thread(e['TG_CHAT_ID'], thread if thread is not None else e.get('TG_THREAD_ID'))
+        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{_c}\r\n'.encode()]
+        if _t is not None:
+            e = dict(e, TG_THREAD_ID=str(_t))
         if e.get('TG_THREAD_ID'):
             parts.append(f'--{b}\r\nContent-Disposition: form-data; name="message_thread_id"'
                          f'\r\n\r\n{e["TG_THREAD_ID"]}\r\n'.encode())

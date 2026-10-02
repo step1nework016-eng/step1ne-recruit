@@ -38,6 +38,17 @@ SCHEMA = """{
 }"""
 
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def pool_people():
     """池子裡的人＝初篩低分、或從來沒被送件出去過的。
 
@@ -122,7 +133,7 @@ def push(text, thread):
     urllib.request.urlopen(
         f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
         data=urllib.parse.urlencode(
-            {'chat_id': e['TG_CHAT_ID'], 'message_thread_id': thread, 'text': text}).encode(),
+            dict(zip(('chat_id', 'message_thread_id'), _rm_chat_thread(e['TG_CHAT_ID'], thread)), text=text)).encode(),
         timeout=20)
 
 

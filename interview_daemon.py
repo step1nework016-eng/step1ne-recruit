@@ -572,6 +572,17 @@ def save_report(app_id, content_md, content_json):
         return None
 
 
+
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組的主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def tg(text, thread=None, chat_id=None):
     # 這支用獨立的設定檔（step1ne-tg.env），不要跟總指揮 yuqi 共用的 tg.env 混在一起——
     # 2026-07-31 差點把 yuqi 的 bot token 換成這個 bot，那樣 yuqi 會整個換身分。
@@ -584,8 +595,9 @@ def tg(text, thread=None, chat_id=None):
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {'chat_id': chat_id if chat_id is not None else e['TG_CHAT_ID'], 'text': text}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        _c, tid = _rm_chat_thread(chat_id if chat_id is not None else e['TG_CHAT_ID'],
+                                  thread if thread is not None else e.get('TG_THREAD_ID'))
+        body = {'chat_id': _c, 'text': text}
         if tid:
             body['message_thread_id'] = tid
         r = json.loads(urllib.request.urlopen(
@@ -611,9 +623,11 @@ def tg_buttons(text, buttons, thread=None, chat_id=None):
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        body = {'chat_id': chat_id if chat_id is not None else e['TG_CHAT_ID'], 'text': text,
+        _c, _t = _rm_chat_thread(chat_id if chat_id is not None else e['TG_CHAT_ID'],
+                                 thread if thread is not None else e.get('TG_THREAD_ID'))
+        body = {'chat_id': _c, 'text': text,
                 'reply_markup': json.dumps({'inline_keyboard': buttons})}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        tid = _t
         if tid:
             body['message_thread_id'] = tid
         r = json.loads(urllib.request.urlopen(
@@ -644,11 +658,12 @@ def tg_doc(data, filename, caption='', thread=None, chat_id=None):
         e = dict(l.strip().split('=', 1)
                  for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
-        target_chat = chat_id if chat_id is not None else e['TG_CHAT_ID']
+        target_chat, _t = _rm_chat_thread(chat_id if chat_id is not None else e['TG_CHAT_ID'],
+                                          thread if thread is not None else e.get('TG_THREAD_ID'))
         b = '----s1' + uuid.uuid4().hex
         parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{target_chat}\r\n'.encode()]
-        if thread is not None:
-            e = dict(e, TG_THREAD_ID=str(thread))
+        if _t is not None:
+            e = dict(e, TG_THREAD_ID=str(_t))
         if e.get('TG_THREAD_ID'):
             parts.append(f'--{b}\r\nContent-Disposition: form-data; name="message_thread_id"'
                          f'\r\n\r\n{e["TG_THREAD_ID"]}\r\n'.encode())

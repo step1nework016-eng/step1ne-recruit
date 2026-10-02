@@ -33,6 +33,17 @@ sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
 
 
+def _rm_chat_thread(chat, thread):
+    """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
+    try:
+        import os as _o, sys as _s
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        import tg_route
+        return tg_route.remap(str(chat) if chat is not None else None, int(thread) if thread not in (None, '') else None)
+    except Exception:
+        return chat, thread
+
+
 def log(msg):
     """這支模組原本完全沒有輸出管道——被 ai_worker 匯入使用，訊息都靠呼叫端印。
     2026-09-21 加了「報告內容不足就不配對」這種**會靜默跳過整個人**的規則之後，
@@ -619,9 +630,10 @@ def _tg_buttons(text, keyboard, thread=None, chat=None):
             for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
             if '=' in l and not l.startswith('#')
         )
-        body = {'chat_id': chat or e['TG_CHAT_ID'], 'text': text,
+        _rc, _rt = _rm_chat_thread(chat or e['TG_CHAT_ID'], thread if thread is not None else e.get('TG_THREAD_ID'))
+        body = {'chat_id': _rc, 'text': text,
                 'reply_markup': _json.dumps({'inline_keyboard': keyboard})}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        tid = _rt
         if tid:
             body['message_thread_id'] = tid
         urllib.request.urlopen(
@@ -647,8 +659,9 @@ def _tg(text, thread=None, chat=None):
             for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
             if '=' in l and not l.startswith('#')
         )
-        body = {'chat_id': chat or e['TG_CHAT_ID'], 'text': text}
-        tid = thread if thread is not None else e.get('TG_THREAD_ID')
+        _rc, _rt = _rm_chat_thread(chat or e['TG_CHAT_ID'], thread if thread is not None else e.get('TG_THREAD_ID'))
+        body = {'chat_id': _rc, 'text': text}
+        tid = _rt
         if tid:
             body['message_thread_id'] = tid
         urllib.request.urlopen(
