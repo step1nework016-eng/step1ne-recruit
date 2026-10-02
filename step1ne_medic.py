@@ -320,6 +320,23 @@ def check_orphan_jobs(dry):
               '到「客戶資訊」建好這家客戶，或告訴我公司全名我來接')
 
 
+def check_job_interview_language(dry):
+    """職缺有寫外語要求，但「面談語言」沒設——阿財只看 interview_language 決定要不要考外語。
+
+    2026-10-02 踩到：營運發展主管、集團資訊主管、集團財務主管都寫了「英文商務溝通」，
+    但 interview_language 空白，阿財整場用中文、沒考英文，報告只能寫「英文待確認」。
+    不自動補：要考「對談」還是「閱讀」得由人決定（日本項目財務會計就是只要閱讀）。
+    """
+    rows = D.d1(
+        "SELECT slug, title, language_requirement lr FROM jobs "
+        "WHERE COALESCE(status,'open') IN ('open','active') AND COALESCE(interview_language,'')='' "
+        "AND (language_requirement LIKE '%英%' OR language_requirement LIKE '%日%' OR language_requirement LIKE '%韓%')") or []
+    for r in rows:
+        alert(f'職缺沒設面談語言：{r.get("title") or r.get("slug")}',
+              f'語言要求寫「{(r.get("lr") or "")[:60]}」，但阿財不會考外語（面談語言是空的）',
+              '到職缺設定把「面談語言」填上（例：英文／日文；只要看得懂就填「英文閱讀」）')
+
+
 def check_social_threads(dry):
     """社群帳號有沒有忘了設 Telegram 主題。
 
@@ -376,7 +393,8 @@ def main():
 
     for fn in (check_daemons, check_stuck_intakes, check_stuck_locks,
                check_schedules, check_unreadable_resumes, check_site_drift,
-               check_blocked_employers, check_social_threads, check_orphan_jobs):
+               check_blocked_employers, check_social_threads, check_orphan_jobs,
+               check_job_interview_language):
         try:
             fn(a.dry)
         except Exception as e:
