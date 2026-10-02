@@ -4661,6 +4661,9 @@ export default {
                  isPhone ? contact : null, job || null, isPhone ? '官網詢問自己留的' : null).run();
         }
       } catch (e) { bdId = null; }
+      // 開發進度看板有 5 分鐘快取（在後台 Worker），請它清掉，新卡片才會馬上出現
+      if (bdId) await fetch('https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/bd/cache-bust', {
+        method: 'POST', headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` }, signal: AbortSignal.timeout(5000) }).catch(() => {});
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
