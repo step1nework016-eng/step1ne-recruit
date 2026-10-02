@@ -1468,6 +1468,8 @@ def process(job):
     # 2026-10-01 反向配對：職缺開出來回頭找人才庫，整條自己跑完（同 rematch）
     if kind == 'job_reverse_match':
         return _run_reverse_match_job(payload)
+    if kind == 'cand_bd':
+        return _run_cand_bd(payload)
     # 2026-09-20 加：顧問在後台按「產生題庫」。跟 rematch 同一類——不是「產一段
     # 文字寫回某個欄位」，而是整條自己跑完（上網查該職務的專業內涵→出題→寫進
     # job_expertise）。Worker（Cloudflare）跑不了本機的 claude CLI 與網路查證，
@@ -2127,6 +2129,82 @@ def seed_reverse_baseline():
 
 # HANDLERS 在檔案前面就定義了，這支的提示詞在後面，所以在這裡補登記
 HANDLERS['job_reverse_match'] = (prompt_reverse_match, True)
+
+# ── 2026-10-02 人選敲門：拿一位人選去開發客戶 ─────────────────────────────
+# Jacky：「人選卡片上面加一個把此人選履歷反向開發客戶」。AI 找到的公司只放「人選敲門名單」
+# （cand_bd_targets），顧問篩過按「加入開發進度」才進 bd_outreach——不讓前端誤以為電洽過。
+# ⚠️ 這台 AI 沒有上網工具，公司名單是 AI 依產業知識推測，名單頁會講明「先查 104／官網確認」。
+def prompt_cand_bd(payload):
+    return f"""你是台灣獵頭顧問的開發助理。下面是一位人選的資料，請想出「哪些台灣的公司可能需要這種人」，
+讓顧問拿這位人選當敲門磚去開發新客戶。
+
+【人選資料（只給你看，不准原樣寫進輸出）】
+{payload.get('candidate_text') or ''}
+
+【不要列的公司】（已經是客戶、或人選目前／最近任職的公司）
+{payload.get('exclude_text') or '（無）'}
+
+只輸出一段 JSON，不要有其他文字：
+{{"brief": ["匿名人選重點，3～5 點，每點一行，例：半導體設備 8 年，熟 PVD／CVD"],
+  "targets": [{{"company": "公司全名（台灣登記名稱，例：台灣積體電路製造股份有限公司）",
+               "angle": "同業 / 在徵類似職缺 / 擴編展店 / 其他 四選一",
+               "why": "為什麼這家可能需要他，一句話，要具體（產品線、新廠、擴點…）",
+               "job_hint": "可能對應的職缺名稱"}}]}}
+
+規則：
+1. brief 不准出現人選姓名、目前或過去任職的公司名稱、年齡、性別、婚育——要讓企業看得懂這個人強在哪，但認不出是誰。
+2. targets 列 10～15 家，必須是真實存在、在台灣有據點的公司；不確定是否存在的不要列。
+3. 不要列【不要列的公司】裡的任何一家，也不要列人選目前任職的公司。
+4. 優先順序：跟人選最近一份工作同產業的同業 > 正在擴編／新廠的公司 > 相關上下游。
+"""
+
+
+def _run_cand_bd(payload):
+    run_id = payload.get('run_id')
+    try:
+        out = run_claude(prompt_cand_bd(payload), want_json=True, timeout=600)
+        data = json.loads(out[out.find('{'): out.rfind('}') + 1])
+        brief = [str(x).strip() for x in (data.get('brief') or []) if str(x).strip()][:6]
+        targets = [t for t in (data.get('targets') or []) if isinstance(t, dict) and str(t.get('company') or '').strip()][:20]
+        clients = {str(r['display_name']).strip() for r in d1_http.query(
+            "SELECT display_name FROM client_companies WHERE COALESCE(display_name,'')<>''")['results']}
+        bds = {str(r['company']).strip() for r in d1_http.query(
+            "SELECT DISTINCT company FROM bd_outreach WHERE COALESCE(company,'')<>''")['results']}
+        def _hit(name, pool):
+            n = name.replace('股份有限公司', '').replace('有限公司', '').strip()
+            return any(n and (n in p or p.replace('股份有限公司', '').replace('有限公司', '').strip() in name) for p in pool if p)
+        saved = 0
+        for t in targets:
+            name = str(t['company']).strip()[:80]
+            existing = 'client' if _hit(name, clients) else ('bd' if _hit(name, bds) else None)
+            d1_http.query(
+                "INSERT INTO cand_bd_targets (id, run_id, company, angle, why, job_hint, existing, status, created_at) VALUES ("
+                f"{q(str(uuid.uuid4()))}, {q(run_id)}, {q(name)}, {q(str(t.get('angle') or '')[:20])}, "
+                f"{q(str(t.get('why') or '')[:300])}, {q(str(t.get('job_hint') or '')[:80])}, "
+                f"{q(existing) if existing else 'NULL'}, 'new', datetime('now','+8 hours'))")
+            saved += 1
+        d1_http.query(f"UPDATE cand_bd_runs SET status='done', brief={q(chr(10).join(brief))}, "
+                      f"done_at=datetime('now','+8 hours') WHERE id={q(run_id)}")
+        try:
+            import tg_route
+            c, t = tg_route.route('client_candbd')
+            rs._tg(f"🧲 人選敲門名單好了｜{payload.get('candidate_name') or ''}（{payload.get('job_title') or ''}）\n"
+                   f"AI 找了 {saved} 家可能需要這種人的公司，還沒聯繫任何一家。\n"
+                   f"→ 後台「客戶 → 人選敲門名單」看完，按「加入開發進度」才會進開發進度。\n"
+                   f"（{payload.get('requested_by') or '顧問'} 按的）",
+                   thread=t, chat=c)
+        except Exception:
+            pass
+        return json.dumps({'saved': saved, 'brief': brief}, ensure_ascii=False)
+    except Exception as e:
+        if run_id:
+            d1_http.query(f"UPDATE cand_bd_runs SET status='failed', error={q(str(e)[:400])}, "
+                          f"done_at=datetime('now','+8 hours') WHERE id={q(run_id)}")
+        raise
+
+
+HANDLERS['cand_bd'] = (prompt_cand_bd, True)
+
 
 
 def _build_call_prep_md(prep):
