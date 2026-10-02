@@ -160,7 +160,16 @@ def _tg_env():
 
 def send_tg(text):
     env = _tg_env()
-    body = {'chat_id': env['TG_CHAT_ID'], 'text': text[:4000], 'message_thread_id': topic_id()}
+    chat, thread = env['TG_CHAT_ID'], None
+    try:   # 2026-10-02：搬到「step1ne客戶」群組 🍊 客戶需求表；沒設照舊
+        sys.path.insert(0, os.path.dirname(HERE))
+        import tg_route
+        _c, _t = tg_route.route('client_sheet')
+        if _c and _t:
+            chat, thread = _c, _t
+    except Exception:
+        pass
+    body = {'chat_id': chat, 'text': text[:4000], 'message_thread_id': thread or topic_id()}
     req = urllib.request.Request(f"https://api.telegram.org/bot{env['TG_BOT_TOKEN']}/sendMessage",
                                  data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
     return json.load(urllib.request.urlopen(req, timeout=20)).get('ok')

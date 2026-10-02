@@ -155,6 +155,13 @@ def notify(ntype, text):
                  if '=' in l and not l.startswith('#'))
         tok = e['TG_BOT_TOKEN'].strip('"\'')
         chat = e['TG_CHAT_ID'].strip('"\'')
+        try:   # 2026-10-02：推薦卡關／客戶沒窗口 搬到「step1ne客戶」群組 💼 客戶動態；沒設照舊
+            import tg_route
+            _c, _t = tg_route.route('client_portal')
+            if _c and _t:
+                chat, thread = _c, _t
+        except Exception:
+            pass
         data = urllib.parse.urlencode({'chat_id': chat, 'text': text,
                                        'message_thread_id': thread}).encode()
         urllib.request.urlopen(f'https://api.telegram.org/bot{tok}/sendMessage', data, timeout=20)
