@@ -738,6 +738,9 @@ Jacky 針對上一版提出的修改意見：
 "call_summary_client_md":"一段 150-250 字、可以直接給用人企業看的電洽摘要，第三人稱敘述（候選人表示…），不要出現候選人現在領多少錢（只能寫期望），不要出現其他機會/測驗分數，沒有電洽紀錄就給空字串"}}
 
 🚨 intro／summary_row／education_lines／gap_note／qa／condition_check／recommend_points／gaps／axis_notes／one_line_summary／notes_to_client／alt_suggestion 是 2026-09-29 新版版型的主要欄位，**每一個都要輸出**；qa 請列出對話中實際問到的每一題（8～14 題），沒問到的不准編。
+🚨 2026-10-02 Jacky 抓到：這份是**直接給企業看的**，one_line_summary／notes_to_client／gaps 不准出現寫給顧問的內部指示——
+例如「建議進一步安排電訪確認後再送件」「建議安排第二次電洽」「本次電洽尚未觸及…」。電洽還沒問到的職缺內容，
+改寫成給企業的說法：「Project Budget vs. Actual、Cash Flow Forecast 的實務深度，建議於面試時進一步確認」。
 ⚠️ overview／motivation_notes／condition_acceptance／consultant_observations／things_to_flag 這五個欄位
 都是新加的——一樣適用最上面的規則：沒有根據就誠實留空（字串留空字串、陣列留空陣列），
 不要為了讓報告看起來完整就硬湊內容。"""
