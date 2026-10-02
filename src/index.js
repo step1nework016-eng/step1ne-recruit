@@ -992,10 +992,17 @@ async function ncSession(env, chatId, userId) {
   const row = await env.DB.prepare(
     `SELECT step, data FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`
   ).bind(String(chatId), String(userId)).first();
-  if (!row) return null;
+  // 2026-10-02：群組裡用「匿名管理員」發言時，訊息的 user 是 GroupAnonymousBot（1087968824），
+  // 但按按鈕時 TG 給的是本人——兩邊對不上就會一直說「流程過期」。任一邊是匿名的，就找這個群組 30 分鐘內最新的那筆。
+  const ANON = '1087968824';
+  const row2 = row || (await env.DB.prepare(
+    `SELECT step, data FROM tg_bot_sessions WHERE chat_id=? AND (user_id=? OR ?=?)
+       AND updated_at >= datetime('now','+8 hours','-30 minutes') ORDER BY updated_at DESC LIMIT 1`
+  ).bind(String(chatId), ANON, String(userId), ANON).first());
+  if (!row2) return null;
   let data = {};
-  try { data = JSON.parse(row.data || '{}'); } catch {}
-  return { step: row.step, data };
+  try { data = JSON.parse(row2.data || '{}'); } catch {}
+  return { step: row2.step, data };
 }
 async function ncSetSession(env, chatId, userId, step, data) {
   const now = nowTaipei();
@@ -1003,10 +1010,27 @@ async function ncSetSession(env, chatId, userId, step, data) {
     `INSERT INTO tg_bot_sessions (chat_id, user_id, step, data, updated_at) VALUES (?,?,?,?,?)
      ON CONFLICT(chat_id, user_id) DO UPDATE SET step=excluded.step, data=excluded.data, updated_at=excluded.updated_at`
   ).bind(String(chatId), String(userId), step, JSON.stringify(data || {}), now).run();
+  // 匿名管理員和本人是同一個人：兩邊的流程進度要一起走，不然打字（匿名）跟按鈕（本人）會各看到不同步驟
+  await ncSyncAnon(env, chatId, userId, `UPDATE tg_bot_sessions SET step=?, data=?, updated_at=? WHERE chat_id=? AND user_id=?`, [step, JSON.stringify(data || {}), now]);
+}
+async function ncSyncAnon(env, chatId, userId, sql, vals) {
+  const ANON = '1087968824';
+  try {
+    let other = null;
+    if (String(userId) === ANON) {
+      const r = await env.DB.prepare(`SELECT user_id FROM tg_bot_sessions WHERE chat_id=? AND user_id<>? AND updated_at >= datetime('now','+8 hours','-30 minutes') ORDER BY updated_at DESC LIMIT 1`).bind(String(chatId), ANON).first();
+      other = r && r.user_id;
+    } else {
+      const r = await env.DB.prepare(`SELECT user_id FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`).bind(String(chatId), ANON).first();
+      other = r && r.user_id;
+    }
+    if (other) await env.DB.prepare(sql).bind(...vals, String(chatId), String(other)).run();
+  } catch { /* 同步失敗不影響本人那筆 */ }
 }
 async function ncClearSession(env, chatId, userId) {
   await env.DB.prepare(`DELETE FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`)
     .bind(String(chatId), String(userId)).run();
+  await ncSyncAnon(env, chatId, userId, `DELETE FROM tg_bot_sessions WHERE chat_id=? AND user_id=?`, []);
 }
 // ── TG 匯入貼文（2026-09-24 改成跟後台「一鍵發文」同一個問法順序）──
 //   職缺文：哪一種 → 寫法 → （純CTA／對話討論）公式 → 客戶 → 職缺 → 存
