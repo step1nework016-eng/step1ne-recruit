@@ -24,6 +24,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -384,6 +385,47 @@ def prompt_precall_card(p):
 
 {('電洽逐字稿：' + chr(10) + transcript) if transcript else ''}
 """
+
+
+def _repair_precall_card(data):
+    """2026-10-02 李佳龍：AI 多給一個重點提醒、或電話旁小抄給成 7 條，整張卡就被丟掉、
+    退回純文字舊版，顧問以為壞了只能重產（重產又踩一次）。
+    這裡只修「數量超過／型別包錯」這種機械性問題（截掉多的、包成陣列），
+    內容本身不改、缺必要欄位也不補——那種還是交給驗證擋下。"""
+    if not isinstance(data, dict):
+        return data
+    for key, n in (('hard_gates', 3), ('must_ask_questions', 3)):
+        if isinstance(data.get(key), list) and len(data[key]) > n:
+            data[key] = data[key][:n]
+    gate_ids = {g.get('id') for g in (data.get('hard_gates') or []) if isinstance(g, dict)}
+    if isinstance(data.get('must_ask_questions'), list):
+        data['must_ask_questions'] = [q for q in data['must_ask_questions']
+                                      if not isinstance(q, dict) or q.get('validates_gate_id') in gate_ids] or data['must_ask_questions']
+    seen = False
+    for f in data.get('ai_flags') or []:
+        if not isinstance(f, dict):
+            continue
+        if f.get('show_on_main_card'):
+            if seen:
+                f['show_on_main_card'] = False
+            seen = True
+        if f.get('evidence_confidence') == 'low' and f.get('risk_level') == 'high':
+            f['risk_level'] = 'medium'
+    vp = (data.get('call_goal') or {}).get('validation_points') if isinstance(data.get('call_goal'), dict) else None
+    if isinstance(vp, list) and len(vp) > 3:
+        data['call_goal']['validation_points'] = vp[:3]
+    cf = data.get('conversation_flow')
+    if isinstance(cf, dict):
+        for key, n in (('top_questions', 3), ('extra_questions', 3)):
+            if isinstance(cf.get(key), list) and len(cf[key]) > n:
+                cf[key] = cf[key][:n]
+        sc = cf.get('phone_sidecar')
+        if isinstance(sc, str):
+            sc = [x.strip() for x in re.split(r'[\n、；;]', sc) if x.strip()]
+        if isinstance(sc, list):
+            sc = [str(x).strip() if not isinstance(x, dict) else str(x.get('text') or x.get('label') or '').strip() for x in sc]
+            cf['phone_sidecar'] = [x for x in sc if x][:6]
+    return data
 
 
 def _validate_precall_card(data, payload=None):
@@ -1393,8 +1435,15 @@ def process(job):
     if kind == 'precall_card':
         try:
             out = run_claude(builder(payload), want_json=True)
-            ai_data = json.loads(out)
-            _validate_precall_card(ai_data, payload)
+            ai_data = _repair_precall_card(json.loads(out))
+            try:
+                _validate_precall_card(ai_data, payload)
+            except Exception as ve:
+                # 修不掉的（缺欄位、gate 對不上…）再請 AI 照錯誤訊息重產一次，還不行才退回舊版
+                log(f'  ↻ precall_card 格式不合（{str(ve)[:100]}），帶著錯誤再產一次')
+                out = run_claude(builder(payload) + f'\n\n⚠️ 上一次輸出不合格：{ve}。請完全照規則重新輸出整份 JSON。', want_json=True)
+                ai_data = _repair_precall_card(json.loads(out))
+                _validate_precall_card(ai_data, payload)
             wrapped = _wrap_precall_card(ai_data, payload)
             return json.dumps(wrapped, ensure_ascii=False)
         except Exception as e:
