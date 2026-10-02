@@ -266,8 +266,8 @@ def send_confirm_draft(req_id, name, synth):
         # awaiting_confirm又沒有對應的訊息可以回覆。
         return False
     D.d1(f"UPDATE client_report_requests SET status='awaiting_confirm', "
-         f"tg_confirm_message_id={D.q(str(mid))}, tg_confirm_chat_id={D.q(CONFIRM_CHAT_ID)}, "
-         f"tg_confirm_thread_id={D.q(CONFIRM_THREAD_ID)} WHERE id={D.q(req_id)}")
+         f"tg_confirm_message_id={D.q(str(mid))}, tg_confirm_chat_id={D.q(str(D._rm_chat_thread(CONFIRM_CHAT_ID, CONFIRM_THREAD_ID)[0]))}, "
+         f"tg_confirm_thread_id={D.q(str(D._rm_chat_thread(CONFIRM_CHAT_ID, CONFIRM_THREAD_ID)[1]))} WHERE id={D.q(req_id)}")
     return True
 
 
