@@ -4373,8 +4373,22 @@ export default {
         const fromEmail = ((fromRaw.match(/<([^>]+)>/) || [])[1] || fromRaw).trim().toLowerCase();
         const fromName = fromRaw.replace(/<[^>]+>/, '').replace(/"/g, '').trim() || null;
         const subject = String(d.subject || '');
-        const body = String(d.text || (d.html ? String(d.html).replace(/<[^>]+>/g, ' ') : '') || '')
+        let body = String(d.text || (d.html ? String(d.html).replace(/<[^>]+>/g, ' ') : '') || '')
           .replace(/\s+\n/g, '\n').trim();
+        // 2026-10-02：Resend 的 email.received 通知只帶寄件人／主旨，不帶內文（京元回信那次 TG 只看到空白）。
+        // 內文要另外跟 Resend 拿，需要「可以讀信」的金鑰 RESEND_READ_KEY（寄信用的 RESEND_API_KEY 是只能寄的）。
+        // 沒設金鑰或抓失敗就維持原狀（TG 照舊提醒去後台看），不影響回信偵測本身。
+        if (!body && env.RESEND_READ_KEY && d.email_id) {
+          try {
+            const rr = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(d.email_id)}`, {
+              headers: { Authorization: `Bearer ${env.RESEND_READ_KEY}` }, signal: AbortSignal.timeout(8000) });
+            if (rr.ok) {
+              const full = await rr.json();
+              body = String(full.text || (full.html ? String(full.html).replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ') : '') || '')
+                .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+            }
+          } catch { /* 抓不到就算了，TG 會提醒去後台看 */ }
+        }
         const domain = fromEmail.split('@')[1] || '';
         // 先對完整信箱，對不到就對同網域最近寄出的那封（常見：窗口轉給同事回）
         let orow = fromEmail ? await env.DB.prepare(
