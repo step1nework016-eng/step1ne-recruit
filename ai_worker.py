@@ -40,6 +40,7 @@ import d1_http  # noqa: E402
 # 把「哪些職缺可以推薦」「安全閥怎麼篩」收在一個地方，之後 interview_daemon
 # 與 precall/postcall 那兩套也要改成呼叫它，才不會再各走各的。
 import recommendation_service as rs  # noqa: E402
+import autoupdate  # noqa: E402  # 啟動當下就要 import，START_HEAD 才是真正載入的版本
 
 # Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
 # 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
@@ -2300,20 +2301,10 @@ def _maybe_self_update(last_checked):
     裝置都能用同一套邏輯）——這樣只要曾經手動重啟過一次裝上這個機制，之後
     永遠不會再跑到舊版超過 5 分鐘。只在兩次工作之間檢查，不會打斷正在跑的工作。
     """
-    now = time.time()
-    if now - last_checked < SELF_UPDATE_CHECK_SEC:
-        return last_checked
-    try:
-        subprocess.run(['git', 'fetch', 'origin', 'main', '--quiet'], cwd=HERE, timeout=30, check=True)
-        local = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=HERE, capture_output=True, text=True, timeout=10).stdout.strip()
-        remote = subprocess.run(['git', 'rev-parse', 'origin/main'], cwd=HERE, capture_output=True, text=True, timeout=10).stdout.strip()
-        if local and remote and local != remote:
-            log(f'🔄 偵測到新版本（{local[:7]}→{remote[:7]}），git pull 後重啟自己')
-            subprocess.run(['git', 'pull', 'origin', 'main', '--quiet'], cwd=HERE, timeout=30, check=True)
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-    except Exception as e:
-        log(f'⚠️ 自動更新檢查失敗（不影響這一輪處理，下次再試）：{str(e)[:150]}')
-    return now
+    # 2026-10-01：改用共用的 autoupdate.maybe_self_update（比對「啟動時載入的版本」，
+    # 不再只比 HEAD vs origin/main——共用資料夾時別支先 pull 了，這支就永遠不換版）。
+    # ai_worker 只在兩次工作之間呼叫這裡，本來就不會打斷正在跑的工作，不需要 can_restart。
+    return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker')
 
 
 def main():

@@ -39,6 +39,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CHECK_INTERVAL_SEC = 300
 
 
+def _rev(ref):
+    return subprocess.run(['git', 'rev-parse', ref], cwd=HERE,
+                          capture_output=True, text=True, timeout=10).stdout.strip()
+
+
+# 這個程序啟動時載入的是哪一版程式（import 的當下記下來）。見 maybe_self_update 的說明。
+try:
+    START_HEAD = _rev('HEAD')
+except Exception:  # noqa: BLE001
+    START_HEAD = ''
+
+
 def maybe_self_update(last_checked, log=print, can_restart=None, name=''):
     """檢查 origin/main 有沒有新 commit，有就 pull 並重啟自己。
 
@@ -61,11 +73,19 @@ def maybe_self_update(last_checked, log=print, can_restart=None, name=''):
     try:
         subprocess.run(['git', 'fetch', 'origin', 'main', '--quiet'],
                        cwd=HERE, timeout=30, check=True)
-        local = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=HERE,
-                               capture_output=True, text=True, timeout=10).stdout.strip()
-        remote = subprocess.run(['git', 'rev-parse', 'origin/main'], cwd=HERE,
-                                capture_output=True, text=True, timeout=10).stdout.strip()
-        if not local or not remote or local == remote:
+        local = _rev('HEAD')
+        remote = _rev('origin/main')
+        if not local or not remote:
+            return now
+        # ⚠️ 2026-10-01 修（WSL2 E6 回報）：原本只比「磁碟上的 HEAD vs origin/main」。
+        #    WSL2 有 6～7 支常駐程式共用同一個資料夾，第一支 pull 完之後，其他支看到
+        #    HEAD == origin/main 就以為自己是最新的、不重啟——記憶體裡跑的還是舊程式。
+        #    （ai_worker 因此回報 266 次「未知的工作類型」；Mac 開發機推完程式碼後
+        #    daemon 不會自己換版也是同一個原因。）
+        #    現在改成：要不要重啟，看的是「磁碟上的程式」跟「我啟動時載入的那一版」
+        #    （START_HEAD）一不一樣。本機有還沒推的 commit（HEAD 領先 origin）時
+        #    pull 是空動作、HEAD 也沒變，所以不會一直重啟。
+        if local == remote and local == START_HEAD:
             return now
 
         if can_restart is not None:
@@ -77,14 +97,17 @@ def maybe_self_update(last_checked, log=print, can_restart=None, name=''):
                 log(f'⚠️ {tag}無法判斷現在能不能重啟（{str(e)[:80]}），這輪先不更新')
                 return now
             if not ok:
-                log(f'⏸️ {tag}有新版本（{local[:7]}→{remote[:7]}），'
+                log(f'⏸️ {tag}有新版本（{START_HEAD[:7]}→{remote[:7]}），'
                     f'但現在有人在使用，等閒下來再更新')
                 return now
 
-        log(f'🔄 {tag}偵測到新版本（{local[:7]}→{remote[:7]}），git pull 後重啟自己')
-        subprocess.run(['git', 'pull', 'origin', 'main', '--quiet'],
-                       cwd=HERE, timeout=30, check=True)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        if local != remote:
+            subprocess.run(['git', 'pull', 'origin', 'main', '--quiet'],
+                           cwd=HERE, timeout=30, check=True)
+        head_now = _rev('HEAD')
+        if head_now and head_now != START_HEAD:
+            log(f'🔄 {tag}偵測到新版本（執行中 {START_HEAD[:7]} → 磁碟上 {head_now[:7]}），重啟自己')
+            os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         log(f'⚠️ {tag}自動更新檢查失敗（不影響這一輪，下次再試）：{str(e)[:150]}')
     return now
