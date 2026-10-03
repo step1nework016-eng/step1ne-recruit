@@ -112,9 +112,10 @@ def send(text):
     chat, thread = '-1003967585448', 6   # step1ne人選 → 📊 面談報告
     if tg_route:
         try:
-            r = tg_route.route('candidate_reports')
-            if r:
-                chat, thread = r
+            # 跟面談報告同一個主題：舊群組 304 → 新人選群組（tg_routes remap）
+            c, t = tg_route.remap('-1003231629634', 304)
+            if c and t:
+                chat, thread = c, t
         except Exception:
             pass
     d = urllib.parse.urlencode({'chat_id': chat, 'message_thread_id': thread, 'text': text}).encode()
