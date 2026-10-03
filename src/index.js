@@ -92,7 +92,7 @@ const INTAKE_THREAD = THREAD.intake;
 // ── 寄信 ──
 // 候選人拿不到面談室連結就等於流失：關掉分頁、選「稍後提醒」、面談中斷，
 // 三種情況都需要一封信把他帶回來。信寄不出去不能讓表單失敗，所以全程吞例外。
-const FROM = 'Step1ne 德仁管理顧問 <noreply@step1ne.com>';
+const FROM = 'Step1ne 德仁管理顧問 <official@step1ne.com>'; // 2026-10-03 從 noreply 改：人選直接回信會被 noreply 退信（胡耀中實際遇到），official@ 是真的收件匣
 const LINE_URL = 'https://lin.ee/XcSWPzM';
 
 // LINE 圖文選單「追蹤面試進度」按鈕固定送出的文字（message-type action）。
