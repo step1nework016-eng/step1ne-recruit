@@ -178,8 +178,12 @@ def build_page(draft, body_html, faq, sources):
                  f'<meta property="og:description" content="{e(og_desc)}">', tpl, count=1)
     tpl = re.sub(r'<meta property="og:url" content=".*?">',
                  f'<meta property="og:url" content="https://step1ne.com/articles/{slug}/">', tpl, count=1)
-    # og:image／twitter:image 沿用原模板圖（沒有這篇專屬的圖，先不擋上線——
-    # 之後想補圖再回來換掉這兩行，不是這支腳本的責任範圍）。
+    # og:image／twitter:image：2026-10-03 Jacky 定案全站（含文章）統一用官網品牌圖，
+    # 不管模板是哪一篇、原本有沒有專屬圖，一律蓋成 og-image.jpg。
+    tpl = re.sub(r'<meta property="og:image" content=".*?">',
+                 '<meta property="og:image" content="https://step1ne.com/assets/og-image.jpg">', tpl, count=1)
+    tpl = re.sub(r'<meta name="twitter:image" content=".*?">',
+                 '<meta name="twitter:image" content="https://step1ne.com/assets/og-image.jpg">', tpl, count=1)
 
     # schema headline／description／date
     tpl = re.sub(r'"headline": ".*?"', f'"headline": "{e(title)}"', tpl, count=1)
