@@ -7177,26 +7177,41 @@ export default {
     // 搬過去要嘛重複存一份金鑰，要嘛跨 Worker 呼叫，兩個都不划算。
     try {
       const { results: dueApproved } = await env.DB.prepare(
-        `SELECT id, tg_message_id, tg_thread_id, tg_chat_id, approved_by FROM social_post_queue
-          WHERE status='approved_scheduled'
-            AND datetime(scheduled_at) <= datetime('now','+8 hours')
+        `SELECT q.id, q.tg_message_id, q.tg_thread_id, q.tg_chat_id, q.approved_by, sa.tg_thread_id AS acc_thread
+           FROM social_post_queue q LEFT JOIN social_accounts sa ON sa.id = q.account_id
+          WHERE q.status='approved_scheduled'
+            AND datetime(q.scheduled_at) <= datetime('now','+8 hours')
           LIMIT 20`
       ).all();
+      const soc = await env.DB.prepare(`SELECT chat_id FROM tg_routes WHERE key='social'`).first().catch(() => null);
       for (const r of dueApproved || []) {
         // 重建一個假的 callback_query——handleSocAction() 只會用到這幾個欄位。
         // answer() 會打一次 answerCallbackQuery，cq.id 是假的所以那次呼叫必失敗，
         // 但那個 fetch 本來就包在 try/catch 裡，失敗不影響後面真正發文那段。
+        // 2026-10-03：搬群組前就排好的（審核訊息還在舊群組），發布通知改發到新群組該顧問的主題，
+        // 不再回覆到舊群組（Jacky：「舊的 TG 社群還有審核訊息」）；舊訊息的按鈕另外改成已發布。
+        const oldChat = String(env.TG_CHAT_ID || '');
+        const legacy = soc && soc.chat_id && String(r.tg_chat_id || oldChat) === oldChat && String(soc.chat_id) !== oldChat;
         const fakeCq = {
           id: `sched_${r.id}`,
           data: `soc_approve:${r.id}`,
           from: { username: r.approved_by || '排程' },
-          message: {
-            chat: { id: r.tg_chat_id || env.TG_CHAT_ID },   // 2026-10-02：社群搬群組後，審核訊息可能在新群組
-            message_id: r.tg_message_id,
-            message_thread_id: r.tg_thread_id || undefined,
-          },
+          message: legacy
+            ? { chat: { id: soc.chat_id }, message_id: undefined, message_thread_id: r.acc_thread ? Number(r.acc_thread) : undefined }
+            : {
+              chat: { id: r.tg_chat_id || env.TG_CHAT_ID },   // 2026-10-02：社群搬群組後，審核訊息可能在新群組
+              message_id: r.tg_message_id,
+              message_thread_id: r.tg_thread_id || undefined,
+            },
         };
         await handleSocAction(env, fakeCq);
+        if (legacy && r.tg_message_id) {
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: oldChat, message_id: r.tg_message_id,
+              reply_markup: { inline_keyboard: [[{ text: '✅ 已排程發布（通知在新社群群組）', callback_data: 'noop' }]] } }),
+          }).catch(() => {});
+        }
       }
     } catch (e) {
       await notify(env, `⚠️ 排程貼文到時間發布失敗：${String(e).slice(0, 200)}`, { message_thread_id: THREAD.system }).catch(() => {});
