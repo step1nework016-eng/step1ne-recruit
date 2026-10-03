@@ -78,8 +78,19 @@ PROMPT = '''你要為一個職缺設計「做事風格」行為面談題，讓 A
 }}'''
 
 
+TIER_COUNT = {'basic': (1, '基層服務'), 'pro': (2, '一般專業'), 'manager': (3, '中階主管'), 'exec': (3, '高階主管')}
+
+
 def count_for(job):
-    """面向數量由程式決定：資深 3、一般 2、培訓 1——面談長度要控制住。"""
+    """面向數量由程式決定：高階／中階 3、一般專業 2、基層 1——面談長度要控制住。
+    優先看 job_expertise.screen_tier（build_screen_tier.py 判的，顧問可改），沒有才退回看 seniority。"""
+    try:
+        t = BE.d1(f"SELECT screen_tier FROM job_expertise WHERE job_slug = {BE.q(job['slug'])}")
+        tier = (t[0].get('screen_tier') if t else None)
+        if tier in TIER_COUNT:
+            return TIER_COUNT[tier]
+    except Exception:
+        pass
     sen = (job.get('seniority') or '').lower()
     title = job.get('title') or ''
     if sen in ('junior', 'entry') or any(w in title for w in BL._TRAINEE_WORDS):

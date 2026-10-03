@@ -19,6 +19,15 @@ import interview_daemon as D
 OUT = os.path.join(HERE, 'ladder_dryrun', 'sim')
 
 PERSONAS = {
+    # 2026-10-03 基層服務層級：VIP 接待服務員，確認不會問慰留／股票／職涯規劃
+    'vip_basic': {
+        'slug': 'vip-hospitality-attendant',
+        'sample_app': '812fff3a-bbc9-420d-a2bb-02d0e2ab1c52',
+        'resume': '張雅婷。飯店櫃檯接待 2 年、婚宴會館服務 1 年。會基本英文。',
+        'truth': '做過飯店櫃檯，遇過客人因為房間沒升等大吵，你先道歉、請主管授權送早餐券處理掉。'
+                 '想換是因為飯店輪三班太累，這份工作的班別比較固定。期望月薪 4 萬，兩週可到職。'
+                 '目前也有在面另一家百貨的服務台，下週會有結果。猶豫的是通勤要 50 分鐘。',
+    },
     # 2026-10-03 做事風格模擬：集團資訊主管，中階往上爬型
     'it_head_mid': {
         'slug': 'group-it-head',
@@ -102,6 +111,8 @@ def main():
     ctx['blockers'] = src.get('blockers') or []
     if src.get('job_card_summary'):
         ctx['job_card_summary'] = src['job_card_summary']
+    ctx['screen_tier'] = src.get('screen_tier')
+    ctx['acai_v2'] = src.get('acai_v2', False)
     ex = dict(src.get('expertise') or {})
     if lad:
         ex['ladder'] = dict(lad, start_level=lad['start_level'], expected_level=lad['expected_level'])
@@ -133,6 +144,8 @@ def main():
         print(f"  {f['topic']}｜問了第{f.get('asked_levels')}級｜到第{f['reached_level']}級｜{f['evidence'][:60]}")
     for w in data.get('work_style_findings') or []:
         print(f"  [做事風格] {w['dimension']}｜{w['leaning']}｜{w['story'][:60]}｜「{w['evidence'][:50]}」")
+    for k in ('motive', 'move_risk', 'number_checks', 'consistency_flags', 'referral'):
+        print(f'  [{k}]', json.dumps(data.get(k), ensure_ascii=False)[:300])
     fs = data.get('fit_scores') or {}
     print('總分', fs.get('total'), fs.get('grade'), '分流', (data.get('route') or {}).get('label'))
 

@@ -1178,7 +1178,7 @@ def fetch_job_understanding_sources(job_slug):
         return out
     try:
         ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json, ladder_json, "
-                f"start_level, expected_level, workstyle_json FROM job_expertise WHERE job_slug = {q(job_slug)}")
+                f"start_level, expected_level, workstyle_json, screen_tier, acai_v2 FROM job_expertise WHERE job_slug = {q(job_slug)}")
         if ex:
             out['expertise'] = {
                 'domain': ex[0].get('domain'),
@@ -1194,6 +1194,9 @@ def fetch_job_understanding_sources(job_slug):
                     out['expertise']['ladder'] = lad
             except Exception:
                 pass
+            out['screen_tier'] = ex[0].get('screen_tier')
+            # 2026-10-03：做事風格＋資深獵頭必做項先在試跑職缺開（job_expertise.acai_v2=1），沒問題再全開
+            out['acai_v2'] = bool(ex[0].get('acai_v2'))
             # 2026-10-03 加：做事風格行為題（build_workstyle.py 產，見 _workstyle_prompt_lines）
             try:
                 ws = json.loads(ex[0].get('workstyle_json') or 'null')
@@ -1346,6 +1349,8 @@ def _fetch_static(app_id):
     if src.get('expertise'):
         static['expertise'] = src['expertise']
     static['blockers'] = src.get('blockers') or []
+    static['screen_tier'] = src.get('screen_tier')
+    static['acai_v2'] = src.get('acai_v2', False)
     if src.get('job_card_summary'):
         static['job_card_summary'] = src['job_card_summary']
 
@@ -1581,8 +1586,6 @@ def build_prompt(ctx, skill_md):
     ex = ctx.get('expertise')
     if ex and ex.get('ladder'):
         lines.extend(_ladder_prompt_lines(ex))
-    if ex and ex.get('workstyle'):
-        lines.extend(_workstyle_prompt_lines(ex['workstyle']))
     elif ex and ex.get('questions'):
         lines.append(f'\n【這個職缺的專業題庫（領域：{ex.get("domain") or "—"}）】')
         lines.append('  🎯 這一段是這場面談的重點。用人主管最想知道的是「他到底會不會做這份工作」，'
@@ -1610,6 +1613,10 @@ def build_prompt(ctx, skill_md):
             if x.get('followup'):
                 lines.append(f'      含糊就追問：{x["followup"]}')
 
+    if ctx.get('acai_v2'):
+        if ex and ex.get('workstyle'):
+            lines.extend(_workstyle_prompt_lines(ex['workstyle']))
+        lines.extend(_screen_tier_lines(ctx.get('screen_tier')))
     # 2026-09-24 加（Jacky 交辦：讓阿財越評越準）：職缺卡——顧問聽過客戶對
     # 之前人選的真實回饋後整理出來的判斷標準。跟上面的專業題庫不同：題庫是
     # 「該問什麼」，職缺卡是「客戶實際上在意什麼、什麼樣的人會被刷掉」，
@@ -2319,6 +2326,14 @@ REPORT_JSON_SPEC = r'''
      "evidence": "他的原話一句（最能代表他到這一級的那句）",
      "note": "為什麼是這一級：哪一級答得具體、哪一級含糊"}
   ],
+  "motive": {"push": "現在哪裡讓他想離開（他的說法）", "pull": "這個機會哪裡吸引他", "direction": "三到五年想往哪走；沒問到填空字串"},
+  "move_risk": {"other_processes": "還在跟哪些公司談、進度（沒問到填空字串）",
+                "counteroffer_view": "被慰留會怎麼考慮（沒問到填空字串）",
+                "decision_timeline": "大概什麼時候要決定", "hesitation": "對這個職缺會猶豫的點",
+                "level": "低|中|高|看不出來"},
+  "number_checks": [{"claim": "他講的成果數字", "explained": "他怎麼說明這個數字、他負責哪段", "clarity": "說得清楚|部分說明|說不清楚"}],
+  "consistency_flags": [{"what": "哪兩段說法兜不起來（例：離職原因前後不同、同一數字講兩次不一樣）", "detail": "兩段原話"}],
+  "referral": "有沒有提供推薦人選（有／沒有／沒問），只寫這一句，不寫被推薦者的個資",
   "work_style_findings": [
     {"dimension": "做事風格面向名稱（照【本職缺做事風格】原文）",
      "story": "他講的那一次實際狀況，一句話摘要；沒講出具體的一次就寫「沒有講出具體例子」",
@@ -2420,6 +2435,10 @@ REPORT_JSON_RULES = (
     '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
     '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
     '9. 不要自己算總分或等第——那是系統用固定權重算的，你只要給六個維度的分數。\n'
+    '10-000. `motive`／`move_risk`／`number_checks`／`consistency_flags`／`referral`：照逐字稿實際談到的填，'
+    '沒談到就留空字串或空陣列，不要推測。`move_risk.level` 只依他講的事實判斷（例：手上已有其他 offer、說會考慮慰留＝高）。'
+    '`number_checks` 的 clarity 只描述他「說不說得清楚」，**不准寫說謊、灌水、誇大**。'
+    '`consistency_flags` 只列逐字稿或履歷裡真的對不上的地方，沒有就給空陣列。\n'
     '10-00. `work_style_findings`：只有提示裡有【本職缺做事風格】才填，每個面向一筆；這一面向沒問到就 story 填「沒問到」、'
     'leaning 填「看不出來」。只依他講的具體行為判斷，不要用人格標籤（例如「他很外向」），'
     '也絕對不可以跟年齡、性別、家庭扯上關係。沒有這一段就給空陣列。\n'
@@ -2562,6 +2581,60 @@ def _ladder_prompt_lines(ex):
     return L
 
 
+SCREEN_TIER_NAMES = {'basic': '基層服務', 'pro': '一般專業', 'manager': '中階主管', 'exec': '高階主管'}
+
+
+def _screen_tier_lines(tier):
+    """資深獵頭初談的必做項，依職缺層級決定問多深（2026-10-03 Jacky 拍板的對照表）。
+
+    ⚠️ 一場大約只有 9 次提問機會——這段新增的只有「會不會真的走」一題，
+    其他都是併進原本題目的追問方式、收尾一句、或交給報告整理，不另外多問。
+    基層服務職不問慰留、股票、職涯規劃這類問了會很奇怪的題目。"""
+    tier = tier if tier in SCREEN_TIER_NAMES else 'pro'
+    deep = tier in ('manager', 'exec')
+    L = [f'\n【資深獵頭初談必做（這個職缺屬於「{SCREEN_TIER_NAMES[tier]}」層級，照下面的深度做）】']
+    # ① 動機
+    if tier == 'basic':
+        L.append('  ① 動機：問一句為什麼想換、這份工作哪裡吸引他就好，不用深挖。')
+    else:
+        L.append('  ① 動機：問「為什麼想換」時要分兩邊——推力（現在哪裡讓他想離開）跟拉力（這個機會哪裡吸引他）。'
+                 '他只講一邊就追問另一邊。'
+                 + ('順勢問一句「接下來三到五年想往哪個方向走」，看跟這個職缺順不順路。' if deep else ''))
+    # ② 驗證數字
+    if tier != 'basic':
+        L.append('  ② 數字：他講到成果數字（省多少、成長幾成、帶幾個人）時，'
+                 + ('追問一句「這個數字怎麼算出來的？您負責的是哪一段？」。' if deep
+                    else '有講到再追問一句怎麼算的、他負責哪段；沒講到就不用特別問。')
+                 + '語氣是好奇不是質疑，不准表現出懷疑。')
+    # ③ 會不會真的走＋決定時間＋⑫ 猶豫點
+    if tier == 'basic':
+        L.append('  ③ 動向：在收尾前問一句「目前還有在面試其他工作嗎？大概什麼時候想確定？」，'
+                 '再問「這份工作有沒有哪一點會讓您猶豫？」。')
+    else:
+        L.append('  ③ 動向（這是新增的一題，排在薪資與到職日附近）：一題裡自然帶到——還有在跟其他公司談嗎、進度到哪、'
+                 '大概什麼時候要做決定'
+                 + ('；「如果現在公司加薪或升職留您，您會怎麼考慮？」' if deep else '')
+                 + '。最後補一句「這個職缺有沒有哪一點會讓您猶豫？」。')
+    # ④ 薪資
+    sal = {'basic': '只問期望月薪就好', 'pro': '問期望月薪，順口問目前一年大概領幾個月（含年終）',
+           'manager': '問目前底薪、一年幾個月、獎金，再問期望', 'exec': '問目前底薪、一年幾個月、績效獎金、股票或分紅，再問期望的總年薪'}[tier]
+    L.append(f'  ④ 薪資：{sal}。應徵表單已經填過的就用確認語氣，不要重問。')
+    # 推薦人
+    if tier == 'exec':
+        L.append('  ⑤ 收尾：結束前輕輕問一句「身邊有沒有也在看機會、背景類似的朋友？方便的話可以介紹給我們」，'
+                 '對方說沒有就直接謝謝，不要追問。')
+    elif tier == 'manager':
+        L.append('  ⑤ 收尾：時間夠、氣氛好再問一句「身邊有沒有背景類似、也在看機會的朋友？」，沒有就算了。')
+    L.append('  ⑥ 開場自我介紹時說清楚：我們是受用人公司委託，協助做第一輪了解。')
+    L.append('  ⑦ 應徵表單的 screen_extra 欄位是他自己選填的：cur_monthly／cur_months／cur_bonus＝目前薪資結構，'
+             'deal_breakers＝一定不能接受的條件，applied_elsewhere＝最近自己投過或在面試的公司。'
+             '有填的就用確認語氣帶過（「您表單寫輪大夜班不考慮，這個職缺是固定班，沒問題」），不要重問；'
+             '底線條件跟這個職缺衝突時一定要當面確認。')
+    L.append('  ⚠️ 這些都不能擠掉原本的必問項（硬條件、到職日、外語驗證、專業分級、做事風格）；'
+             '時間不夠時，①②的追問可以省，③ 不能省。')
+    return L
+
+
 def _workstyle_prompt_lines(ws):
     """做事風格行為題（2026-10-03）：看他「怎麼做事」，不是看專業到第幾級。"""
     L = ['\n【這個職缺的做事風格（行為題）】',
@@ -2583,7 +2656,7 @@ def _workstyle_prompt_lines(ws):
 def _workstyle_report_block(ctx):
     """寫報告與產 JSON 時要看到每個面向的兩種風格，才判得出他偏哪一種。"""
     ws = ((ctx or {}).get('expertise') or {}).get('workstyle')
-    if not ws:
+    if not ws or not (ctx or {}).get('acai_v2'):
         return ''
     L = ['\n\n【本職缺做事風格（行為題）】']
     for d in ws.get('dimensions') or []:
@@ -2869,6 +2942,17 @@ def _normalize_report_json(obj, name='', job=None):
         if isinstance(f, dict) and s(f.get('dimension')):
             wsf.append({k: s(f.get(k)) for k in ('dimension', 'story', 'approach', 'evidence', 'leaning', 'fit_note')})
     out['work_style_findings'] = wsf
+    # 2026-10-03 資深獵頭初談必做項（試跑職缺）
+    mo = obj.get('motive') if isinstance(obj.get('motive'), dict) else {}
+    out['motive'] = {k: s(mo.get(k)) for k in ('push', 'pull', 'direction')} if any(s(mo.get(k)) for k in ('push', 'pull', 'direction')) else None
+    mr = obj.get('move_risk') if isinstance(obj.get('move_risk'), dict) else {}
+    out['move_risk'] = ({k: s(mr.get(k)) for k in ('other_processes', 'counteroffer_view', 'decision_timeline', 'hesitation', 'level')}
+                        if any(s(mr.get(k)) for k in ('other_processes', 'counteroffer_view', 'decision_timeline', 'hesitation')) else None)
+    out['number_checks'] = [{k: s(f.get(k)) for k in ('claim', 'explained', 'clarity')}
+                            for f in arr(obj.get('number_checks')) if isinstance(f, dict) and s(f.get('claim'))]
+    out['consistency_flags'] = [{k: s(f.get(k)) for k in ('what', 'detail')}
+                                for f in arr(obj.get('consistency_flags')) if isinstance(f, dict) and s(f.get('what'))]
+    out['referral'] = s(obj.get('referral')) or None
     out['skill_ladder'] = None
     got_lv = [f['reached_level'] for f in lf if f['reached_level'] is not None]
     if lad and got_lv:
