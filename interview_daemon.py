@@ -1178,7 +1178,7 @@ def fetch_job_understanding_sources(job_slug):
         return out
     try:
         ex = d1(f"SELECT domain, topics_json, questions_json, blockers_json, ladder_json, "
-                f"start_level, expected_level FROM job_expertise WHERE job_slug = {q(job_slug)}")
+                f"start_level, expected_level, workstyle_json FROM job_expertise WHERE job_slug = {q(job_slug)}")
         if ex:
             out['expertise'] = {
                 'domain': ex[0].get('domain'),
@@ -1192,6 +1192,13 @@ def fetch_job_understanding_sources(job_slug):
                     lad['start_level'] = int(ex[0].get('start_level') or lad.get('start_level') or 2)
                     lad['expected_level'] = int(ex[0].get('expected_level') or lad.get('expected_level') or 3)
                     out['expertise']['ladder'] = lad
+            except Exception:
+                pass
+            # 2026-10-03 加：做事風格行為題（build_workstyle.py 產，見 _workstyle_prompt_lines）
+            try:
+                ws = json.loads(ex[0].get('workstyle_json') or 'null')
+                if ws and ws.get('dimensions'):
+                    out['expertise']['workstyle'] = ws
             except Exception:
                 pass
             out['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
@@ -1574,6 +1581,8 @@ def build_prompt(ctx, skill_md):
     ex = ctx.get('expertise')
     if ex and ex.get('ladder'):
         lines.extend(_ladder_prompt_lines(ex))
+    if ex and ex.get('workstyle'):
+        lines.extend(_workstyle_prompt_lines(ex['workstyle']))
     elif ex and ex.get('questions'):
         lines.append(f'\n【這個職缺的專業題庫（領域：{ex.get("domain") or "—"}）】')
         lines.append('  🎯 這一段是這場面談的重點。用人主管最想知道的是「他到底會不會做這份工作」，'
@@ -1958,6 +1967,9 @@ def build_prompt(ctx, skill_md):
     else:
         lines.append('  ⚠️ 讀不到履歷內容：' + str(ctx.get('resume_note') or '未提供'))
         lines.append('  ⚠️ 絕對不要說「您的履歷我看過了」。改成請對方口頭介紹經歷。')
+    lines.append('\n【稱呼與回應方式（每一輪都適用）】')
+    lines.append('  ・稱呼一律用全名＋「您」，或直接說「您」；不要自己加「先生／小姐」——名字看不出性別。')
+    lines.append('  ・不要講評他的回答（「聽起來算具體」「處理得算快」「這不算扣分項」都不行），簡短複述重點或直接接下一題就好。')
 
     lines.append('\n【目前對話】')
     if not conv or all(m['content'] == '（候選人已進入面談室）' for m in conv):
@@ -2307,6 +2319,14 @@ REPORT_JSON_SPEC = r'''
      "evidence": "他的原話一句（最能代表他到這一級的那句）",
      "note": "為什麼是這一級：哪一級答得具體、哪一級含糊"}
   ],
+  "work_style_findings": [
+    {"dimension": "做事風格面向名稱（照【本職缺做事風格】原文）",
+     "story": "他講的那一次實際狀況，一句話摘要；沒講出具體的一次就寫「沒有講出具體例子」",
+     "approach": "他實際怎麼做（照他講的，不要美化）",
+     "evidence": "他的原話一句",
+     "leaning": "偏風格一|偏風格二|兩者都有|看不出來",
+     "fit_note": "對這個職缺的意義，一句，只寫看得到的事實"}
+  ],
   "language_verification": {
     "required_language": "職缺要求驗證的語言，例如「日文」；職缺沒有要求就填 null",
     "tested": true,
@@ -2400,6 +2420,9 @@ REPORT_JSON_RULES = (
     '   年齡、性別、婚姻、生育、國籍、外貌、口音**一律不得影響任何一維的分數**，\n'
     '   也不得出現在 `evidence` 或 `note` 裡。這是就業服務法第 5 條，不是風格偏好。\n'
     '9. 不要自己算總分或等第——那是系統用固定權重算的，你只要給六個維度的分數。\n'
+    '10-00. `work_style_findings`：只有提示裡有【本職缺做事風格】才填，每個面向一筆；這一面向沒問到就 story 填「沒問到」、'
+    'leaning 填「看不出來」。只依他講的具體行為判斷，不要用人格標籤（例如「他很外向」），'
+    '也絕對不可以跟年齡、性別、家庭扯上關係。沒有這一段就給空陣列。\n'
     '10-0. `ladder_findings`：只有提示裡有【本職缺專業分級階梯】才填，每個主題一筆；\n'
     '    `reached_level` 是他答得具體的最高級（0～5 整數；沒問到填 null）。沒有階梯就給空陣列。\n'
     '    有階梯時，`專業技能深度` 的 score 由系統依階梯算，你照填也會被覆蓋。\n'
@@ -2537,6 +2560,47 @@ def _ladder_prompt_lines(ex):
             if lv.get('followup'):
                 L.append(f'       含糊就追問：{lv["followup"]}')
     return L
+
+
+def _workstyle_prompt_lines(ws):
+    """做事風格行為題（2026-10-03）：看他「怎麼做事」，不是看專業到第幾級。"""
+    L = ['\n【這個職缺的做事風格（行為題）】',
+         '  🎯 用人主管除了專業，也想知道他「怎麼做事」。下面每個面向問一題，請他講**實際發生過的某一次**。',
+         '  ⚠️ 怎麼問：',
+         '   ① 用自己的話自然接進對話，不要說「接下來問做事風格」、不要照稿念。',
+         '   ② 他講得空泛（「我都會溝通」「看情況」）→ 用附的追問把他拉回「那一次」：什麼情況、他做了什麼、結果如何。',
+         '   ③ 每個面向最多問 2 次（原題＋追問）；沒有工作經驗的人，學校、打工、社團、生活的例子都可以。',
+         '   ④ 不評價他的做法好不好，不說「這樣很好」；你只負責把他實際怎麼做問清楚。',
+         '   ⑤ 絕對不問、不推論年齡、性別、家庭、健康這類事。']
+    for d in ws.get('dimensions') or []:
+        L.append(f'  ■ {d.get("name")}（{d.get("why") or ""}）')
+        L.append(f'    問：{d.get("q")}')
+        if d.get('followup'):
+            L.append(f'    太空泛就追問：{d.get("followup")}')
+    return L
+
+
+def _workstyle_report_block(ctx):
+    """寫報告與產 JSON 時要看到每個面向的兩種風格，才判得出他偏哪一種。"""
+    ws = ((ctx or {}).get('expertise') or {}).get('workstyle')
+    if not ws:
+        return ''
+    L = ['\n\n【本職缺做事風格（行為題）】']
+    for d in ws.get('dimensions') or []:
+        st = d.get('styles') or []
+        L.append(f'■ {d.get("name")}：{d.get("q")}')
+        if d.get('good_signs'):
+            L.append(f'  做得好的人會講到：{"；".join(d["good_signs"][:3])}')
+        if d.get('watch_signs'):
+            L.append(f'  要留意：{"；".join(d["watch_signs"][:2])}')
+        if len(st) >= 2:
+            L.append(f'  {st[0]}｜{st[1]}')
+        if d.get('fit_hint'):
+            L.append(f'  這個職缺：{d["fit_hint"]}')
+    L.append('⚠️ 報告裡要有一段「做事風格」：每個面向寫他講的那一次、他實際怎麼做、原話一句、偏哪一種風格，'
+             '最後一句總結他整體的做事方式跟這個職缺合不合（只依他講的具體行為，不下人格標籤）。'
+             '沒講出具體例子就照實寫「沒有講出具體例子」，不要替他補。')
+    return '\n'.join(L)
 
 
 def _ladder_report_block(ctx):
@@ -2800,6 +2864,11 @@ def _normalize_report_json(obj, name='', job=None):
                    'unverified_below': unverified,
                    'evidence': s(f.get('evidence')), 'note': s(f.get('note'))})
     out['ladder_findings'] = lf
+    wsf = []
+    for f in arr(obj.get('work_style_findings')):
+        if isinstance(f, dict) and s(f.get('dimension')):
+            wsf.append({k: s(f.get(k)) for k in ('dimension', 'story', 'approach', 'evidence', 'leaning', 'fit_note')})
+    out['work_style_findings'] = wsf
     out['skill_ladder'] = None
     got_lv = [f['reached_level'] for f in lf if f['reached_level'] is not None]
     if lad and got_lv:
@@ -2949,6 +3018,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         + '\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx, for_json=True)
         + _ladder_report_block(ctx)
+        + _workstyle_report_block(ctx)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         # ⚠️ 履歷一定要送。basics（居住地、年齡、學歷、語言、證照）的來源就是這裡，
         #    而規則寫「報告裡沒有的不要自己補」——不送履歷就永遠是 null。
@@ -3113,6 +3183,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
         + _ladder_report_block(ctx)
+        + _workstyle_report_block(ctx)
         + '\n\n【應徵表單】\n' + json.dumps(ctx.get('application') or {}, ensure_ascii=False, indent=1)
         + resume_block
         + other_jobs_block
@@ -3594,6 +3665,7 @@ PLAN_PROMPT = (
     '   那種不算一題。\n'
     '2. 到職障礙（能不能來上班）排在專業題前面。人再好，簽證下不來就是到不了職。\n'
     '3. 專業題庫裡的題目要用進去，但用你自己的話問，不要照稿念。\n'
+    '3-1. 有【做事風格】段落的話，每個面向都要排一題進去（意思不變、口語化），排在專業題之後。\n'
     '4. 一題只問一件事。兩個問題塞同一則，人選只會答其中一個。\n'
     '5. 不准出現年齡、性別、婚育、國籍、外貌相關的題目（就業服務法第 5 條）。\n\n'
     '【另外預測 5–8 個「這位候選人很可能會問」的問題，並寫好答案】\n'
@@ -3693,6 +3765,9 @@ TALK_LITE = """你是「阿財」，德仁管理顧問的 AI 面談助理，正�
 ・不知道的事就說「這個我幫你問顧問」，不要當場編。
 ・不要評價他的答案對不對（「這個答案不錯」這種都不行）——你不是這個領域的專家，
   專業對錯留給顧問跟用人主管判斷。
+  也不要用「聽起來算具體」「處理得算快」「這不算扣分項」「這個判斷邏輯不錯」這種講評接話——
+  回應時只要簡短複述你聽到的重點或直接接下一題，評估留給報告。
+・稱呼：一律用全名＋「您」，或直接說「您」。**不要自己加「先生／小姐」**——名字看不出性別，猜錯很失禮。
 ・不要主動說出用人單位的公司名稱。
 ・**對候選人絕對不要說「客戶」兩個字**（包括「客戶名稱」「客戶端」「客戶那邊」）——那是我們內部的講法，候選人聽起來像在被賣。一律改說「用人公司」「這間公司」「用人主管」。
 

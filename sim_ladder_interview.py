@@ -19,6 +19,18 @@ import interview_daemon as D
 OUT = os.path.join(HERE, 'ladder_dryrun', 'sim')
 
 PERSONAS = {
+    # 2026-10-03 做事風格模擬：集團資訊主管，中階往上爬型
+    'it_head_mid': {
+        'slug': 'group-it-head',
+        'sample_app': '812fff3a-bbc9-420d-a2bb-02d0e2ab1c52',
+        'resume': '林志遠。某中型電子零組件製造集團 MIS 經理 6 年，管台灣總部＋越南廠 IT（5 人團隊），'
+                  '主導鼎新 T100 從 Workflow GP 升級、BPM 簽核上線；負責防火牆與網路架構。英文可開會。',
+        'truth': '你真的做過 T100 升級（第 3～4 級），網路資安普通（第 3 級）。'
+                 '做事風格：推跨部門時習慣先私下找關鍵主管談、再上會議；帶越南團隊用每週固定視訊＋共用待辦清單，'
+                 '曾經因為放太鬆導致越南廠備份沒做被稽核抓到，之後改成每月抽查；'
+                 '系統當機時會先自己衝去處理，處理完才通知老闆，被老闆唸過一次後改成先發群組訊息。'
+                 '動機：想升到集團層級的資訊主管。期望年薪 160 萬，一個月可到職。',
+    },
     # 培訓版、真的是新手：土木系應屆，只在課堂畫過平面圖作業
     'trainee_l1': {
         'slug': 'trainee-engineering-design-engineer',
@@ -69,7 +81,10 @@ def persona_reply(p, conv):
 def main():
     key = sys.argv[1]
     p = PERSONAS[key]
-    lad = json.load(open(os.path.join(HERE, 'ladder_dryrun', f'{p["slug"]}.json'), encoding='utf-8'))
+    _lp = os.path.join(HERE, 'ladder_dryrun', f'{p["slug"]}.json')
+    lad = json.load(open(_lp, encoding='utf-8')) if os.path.exists(_lp) else None
+    _wp = os.path.join(HERE, 'workstyle_dryrun', f'{p["slug"]}.json')
+    ws = json.load(open(_wp, encoding='utf-8')) if os.path.exists(_wp) else None
     # 9/29 第一輪模擬的教訓：直接沿用 sample_app 的整包資料會帶進那位真人的東西——
     # 兩週前的開始時間（阿財以為已經談了幾百分鐘，立刻收尾）、電訪紀錄、題目計畫、讀不到履歷。
     # 所以只借「職缺相關」的欄位，人選這一側全部換成乾淨的模擬資料。
@@ -88,7 +103,10 @@ def main():
     if src.get('job_card_summary'):
         ctx['job_card_summary'] = src['job_card_summary']
     ex = dict(src.get('expertise') or {})
-    ex['ladder'] = dict(lad, start_level=lad['start_level'], expected_level=lad['expected_level'])
+    if lad:
+        ex['ladder'] = dict(lad, start_level=lad['start_level'], expected_level=lad['expected_level'])
+    if ws:
+        ex['workstyle'] = ws
     ctx['expertise'] = ex
     ctx['conversation'] = [{'role': 'candidate', 'content': '（候選人已進入面談室）'}]
     os.makedirs(OUT, exist_ok=True)
@@ -113,6 +131,8 @@ def main():
     print(json.dumps(data.get('skill_ladder'), ensure_ascii=False, indent=1))
     for f in data.get('ladder_findings') or []:
         print(f"  {f['topic']}｜問了第{f.get('asked_levels')}級｜到第{f['reached_level']}級｜{f['evidence'][:60]}")
+    for w in data.get('work_style_findings') or []:
+        print(f"  [做事風格] {w['dimension']}｜{w['leaning']}｜{w['story'][:60]}｜「{w['evidence'][:50]}」")
     fs = data.get('fit_scores') or {}
     print('總分', fs.get('total'), fs.get('grade'), '分流', (data.get('route') or {}).get('label'))
 
