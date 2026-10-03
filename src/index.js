@@ -7275,6 +7275,9 @@ export default {
           WHERE superseded_by IS NULL
             AND applied_notified_at IS NULL
             AND ready_notified_at IS NULL
+            -- 2026-10-03：顧問自己建檔的人選（utm_source='consultant'）寄不寄信由顧問決定，
+            -- 這封自動信不能替顧問寄（LEON 事件：Jacky 要自己面，系統卻自動把測驗＋面談連結寄給他）
+            AND COALESCE(utm_source,'') != 'consultant'
             AND (interview_state IS NULL OR interview_state = 'not_started')
             AND chat_token IS NOT NULL AND email IS NOT NULL AND email != ''
             AND created_at <= datetime('now','+8 hours','-10 minutes')
