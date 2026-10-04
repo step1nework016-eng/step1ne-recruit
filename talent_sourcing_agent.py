@@ -53,6 +53,14 @@ def load_job(slug):
         f"salary_unit, employment, required_conditions, education_level, years_min, "
         f"nice_to_have_skills, seniority, client_name FROM jobs WHERE slug={D.q(slug)}"
     )
+    # 2026-10-03：顧問在後台把這個職缺設成「不找」，就不找（job_sourcing_settings.mode='off'）
+    try:
+        m = D.d1(f"SELECT mode FROM job_sourcing_settings WHERE job_slug={D.q(slug)}")
+        if m and m[0].get('mode') == 'off':
+            log(f'⛔ {slug} 在後台設成「外部找人選：不找」，跳過')
+            return None
+    except Exception:
+        pass
     return rows[0] if rows else None
 
 

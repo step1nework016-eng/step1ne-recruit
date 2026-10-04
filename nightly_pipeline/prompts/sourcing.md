@@ -43,13 +43,18 @@
 ```bash
 cd {{PIPE_DIR}}
 python3 d1q.py q "SELECT j.slug, j.title, COALESCE(j.company_id, j.client_name, '') AS client, j.seniority,
+  COALESCE(ss.mode,'auto') AS mode,
   (SELECT COUNT(*) FROM applications a WHERE a.job_slug=j.slug AND a.created_at >= date('now','-45 days')) AS apps45
-  FROM jobs j WHERE j.status='open' AND j.slug <> 'unspecified'
-  AND EXISTS (SELECT 1 FROM applications a WHERE a.job_slug=j.slug AND a.created_at >= date('now','-45 days'))
-  ORDER BY client, apps45 DESC"
+  FROM jobs j LEFT JOIN job_sourcing_settings ss ON ss.job_slug = j.slug
+  WHERE j.status='open' AND j.slug <> 'unspecified'
+  AND COALESCE(ss.mode,'auto') <> 'off'
+  AND (ss.mode = 'priority'
+       OR EXISTS (SELECT 1 FROM applications a WHERE a.job_slug=j.slug AND a.created_at >= date('now','-45 days')))
+  ORDER BY (COALESCE(ss.mode,'auto') = 'priority') DESC, client, apps45 DESC"
 ```
-- 對象：狀態是開放中、而且近 45 天有人應徵的職缺。
-- **每個客戶至少做一個職缺**：先每個客戶挑一個（近 45 天應徵最多的那個），全部做完一輪還有時間，再回頭做同客戶的其他職缺。
+- 顧問在後台設定每個職缺的「外部找人選」：**優先**（mode=priority）／**一般**（auto）／**不找**（off，查詢已排除，絕對不要找）。
+- **先把所有「優先」職缺各做一輪**（不管近期有沒有人應徵），做完才輪到一般職缺。
+- 一般職缺：狀態開放中、而且近 45 天有人應徵；**每個客戶至少做一個**（近 45 天應徵最多的那個），全部做完一輪還有時間，再回頭做同客戶的其他職缺。
 
 ### 第二步：每個職缺先讀清楚條件和顧問的回饋
 
