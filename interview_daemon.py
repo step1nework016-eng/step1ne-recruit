@@ -4145,6 +4145,10 @@ def _safe_to_restart():
     return True
 
 
+_VER_LAST = 0
+_STARTED_AT = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
 def main():
     once = '--once' in sys.argv
     # 鎖的到期時間是用本機時間字串比較的，兩台時區不同會讓鎖提早或延後失效——
@@ -4162,6 +4166,17 @@ def main():
         with _lock:
             busy_n = len(_busy)
         taskboard_beat(f'面談中 {busy_n} 場' if busy_n else 'idle')
+        # 2026-10-03：每 10 分鐘回報「這台跑的是哪一版」到 D1 daemon_versions——
+        # 以前要問 WSL2 才知道它換版了沒，Jacky 問「WSL2 的阿財有更新到最新版了嗎」查不到。
+        global _VER_LAST
+        if time.time() - _VER_LAST > 600:
+            _VER_LAST = time.time()
+            try:
+                d1(f"INSERT INTO daemon_versions (host, name, head, started_at, last_seen) VALUES "
+                   f"({q(INTERVIEW_HOST)}, 'interview', {q(autoupdate.START_HEAD[:12])}, {q(_STARTED_AT)}, datetime('now','+8 hours')) "
+                   f"ON CONFLICT(host, name) DO UPDATE SET head=excluded.head, started_at=excluded.started_at, last_seen=excluded.last_seen")
+            except Exception:
+                pass
         # 自動更新：兩台機器（Mac／WSL2）靠 git 同步程式碼，沒有這個就得人工
         # 上去 pull——實際出過事（WSL2 跑舊版不認得新的工作類型，王仁君的
         # rematch 直接失敗）。放在 tick() 之後、sleep 之前，只在兩輪之間檢查。
