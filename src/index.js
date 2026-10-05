@@ -5503,7 +5503,7 @@ export default {
           if (!env.BACKOFFICE || !env.ADMIN_TOKEN) { await ncSend(env, chatId, bdtRoute.message_thread_id, '❌ 系統設定缺少後台連線，請通知工程'); return; }
           const r = await env.BACKOFFICE.fetch('https://backoffice/admin/bd/transcript', {
             method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}`, 'user-agent': 'step1ne-recruit' },
-            body: JSON.stringify({ company, transcript: data.transcript, caller: data.caller }) }).catch(() => null);
+            body: JSON.stringify({ company, transcript: data.transcript, caller: data.caller || 'Jacky' }) }).catch(() => null);
           const j = r ? await r.json().catch(() => ({})) : {};
           await ncClearSession(env, chatId, userId);
           await ncSend(env, chatId, bdtRoute.message_thread_id, j && j.ok
@@ -5549,18 +5549,10 @@ export default {
             await ncSend(env, chatId, th, '在這裡貼開發電話的逐字稿（文字或 .txt／Word 檔），我會問你是哪一家，存進那家的通話紀錄。');
             return new Response('ok');
           }
-          // 收到逐字稿 → 猜是哪一家：逐字稿裡提到的公司名＋這位顧問最近 7 天打過的公司
-          const caller = callerOf(bm.from);
-          const { results: cos } = await env.DB.prepare(`SELECT DISTINCT company FROM bd_outreach WHERE company IS NOT NULL`).all();
-          const short = (c) => String(c).replace(/(股份)?有限公司$/, '').replace(/^(台灣|臺灣)/, '');
-          const mentioned = (cos || []).map((r) => r.company).filter((c) => { const k = short(c); return k.length >= 2 && txt.includes(k); });
-          const { results: recent } = await env.DB.prepare(
-            `SELECT company, max(created_at) at FROM bd_call_logs WHERE lower(caller)=? AND deleted_at IS NULL
-                AND created_at >= datetime('now','+8 hours','-7 days') GROUP BY company ORDER BY at DESC LIMIT 6`).bind(caller.toLowerCase()).all();
-          const options = [...new Set([...mentioned, ...(recent || []).map((r) => r.company)])].slice(0, 6);
-          await ncSetSession(env, chatId, userId, 'bdt_pick', { transcript: txt.slice(0, 60000), caller, options });
-          await ncSend(env, chatId, th, `收到逐字稿（${txt.length} 字）。這是哪一家？` + (mentioned.length ? '\n（逐字稿裡有提到的排最前面）' : ''),
-            { inline_keyboard: [...options.map((c, i) => [{ text: c, callback_data: `bdt_pick:${i}` }]), [{ text: '✏️ 都不是，我打字輸入公司名', callback_data: 'bdt_type' }]] });
+          // 收到逐字稿 → 先問誰打的（2026-10-05 Jacky：匿名發言分不出是 Jacky 還是 Phoebe，一律讓顧問自己選）
+          await ncSetSession(env, chatId, userId, 'bdt_who', { transcript: txt.slice(0, 60000) });
+          await ncSend(env, chatId, th, `收到逐字稿（${txt.length} 字）。這通是誰打的？`,
+            { inline_keyboard: [[{ text: 'Jacky', callback_data: 'bdt_who:Jacky' }, { text: 'Phoebe', callback_data: 'bdt_who:Phoebe' }]] });
           return new Response('ok');
         }
         if (bq && bq.message && inBdt(bq.message) && /^bdt_/.test(String(bq.data || ''))) {
@@ -5569,6 +5561,21 @@ export default {
             body: JSON.stringify({ callback_query_id: bq.id }) }).catch(() => {});
           const sess = await ncSession(env, chatId, userId);
           if (!sess || !sess.data || !sess.data.transcript) { await ncSend(env, chatId, bdtRoute.message_thread_id, '這則逐字稿已經處理過或過期了，再貼一次就好。'); return new Response('ok'); }
+          if (String(bq.data).startsWith('bdt_who:')) {
+            const caller = String(bq.data).split(':')[1] === 'Phoebe' ? 'Phoebe' : 'Jacky';
+            const txt = sess.data.transcript;
+            const { results: cos } = await env.DB.prepare(`SELECT DISTINCT company FROM bd_outreach WHERE company IS NOT NULL`).all();
+            const short = (c) => String(c).replace(/(股份)?有限公司$/, '').replace(/^(台灣|臺灣)/, '');
+            const mentioned = (cos || []).map((r) => r.company).filter((c) => { const k = short(c); return k.length >= 2 && txt.includes(k); });
+            const { results: recent } = await env.DB.prepare(
+              `SELECT company, max(created_at) at FROM bd_call_logs WHERE lower(caller)=? AND deleted_at IS NULL
+                  AND created_at >= datetime('now','+8 hours','-7 days') GROUP BY company ORDER BY at DESC LIMIT 6`).bind(caller.toLowerCase()).all();
+            const options = [...new Set([...mentioned, ...(recent || []).map((r) => r.company)])].slice(0, 6);
+            await ncSetSession(env, chatId, userId, 'bdt_pick', { transcript: txt, caller, options });
+            await ncSend(env, chatId, bdtRoute.message_thread_id, `${caller} 打的。這是哪一家？` + (mentioned.length ? '\n（逐字稿裡有提到的排最前面，其他是你最近 7 天打過的）' : '\n（下面是你最近 7 天打過的）'),
+              { inline_keyboard: [...options.map((c, i) => [{ text: c, callback_data: `bdt_pick:${i}` }]), [{ text: '✏️ 都不是，我打字輸入公司名', callback_data: 'bdt_type' }]] });
+            return new Response('ok');
+          }
           if (bq.data === 'bdt_type') {
             await ncSetSession(env, chatId, userId, 'bdt_company', sess.data);
             await ncSend(env, chatId, bdtRoute.message_thread_id, '請打公司名稱（簡稱也可以）：');
