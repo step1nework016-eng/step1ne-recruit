@@ -411,7 +411,7 @@ def prompt_precall_card(p):
 """
 
 
-def _repair_precall_card(data):
+def _repair_precall_card(data, payload=None):
     """2026-10-02 李佳龍：AI 多給一個重點提醒、或電話旁小抄給成 7 條，整張卡就被丟掉、
     退回純文字舊版，顧問以為壞了只能重產（重產又踩一次）。
     這裡只修「數量超過／型別包錯」這種機械性問題（截掉多的、包成陣列），
@@ -452,7 +452,113 @@ def _repair_precall_card(data):
         if isinstance(sc, list):
             sc = [str(x).strip() if not isinstance(x, dict) else str(x.get('text') or x.get('label') or '').strip() for x in sc]
             cf['phone_sidecar'] = [x for x in sc if x][:6]
+    _repair_precall_more(data, payload)
     return data
+
+
+def _repair_precall_more(data, payload=None):
+    """2026-10-05 Jacky 要求電洽準備卡 10 分鐘內：之前只要一個小地方不合格式（例如漏了
+    validation_points、電話旁小抄給了 0 條、備案職缺多一個理由），整張卡就叫 AI 重寫，
+    一張從 5 分鐘變 10 分鐘。這裡把「答案已經在卡片裡、只是沒放對位置」的機械性問題補齊：
+    內容一律取自 AI 自己寫的其他欄位，不憑空編；真的缺內容（開場白空白、沒有任何 gate）
+    還是交給驗證擋下來重寫。"""
+    gates = [g for g in (data.get('hard_gates') or []) if isinstance(g, dict)]
+    for i, g in enumerate(gates, 1):
+        g.setdefault('id', f'gate_{i}')
+        if g.get('status') not in ('matched', 'unknown', 'unmatched'):
+            g['status'] = 'unknown'
+        if not isinstance(g.get('source'), dict) or not g['source'].get('type'):
+            g['source'] = {'type': 'ai_fallback', 'raw_label': g.get('label') or ''}
+    gate_ids = [g['id'] for g in gates if g.get('label')]
+    # validation_points 應 2-3 個：不夠就從 hard_gates 依序補（unknown 優先）
+    cg = data.get('call_goal')
+    if isinstance(cg, dict) and gate_ids:
+        vp = [v for v in (cg.get('validation_points') or []) if isinstance(v, dict) and v.get('gate_id') in gate_ids]
+        if len(vp) < 2:
+            have = {v['gate_id'] for v in vp}
+            order = sorted(gates, key=lambda g: {'unknown': 0, 'unmatched': 1, 'matched': 2}.get(g.get('status'), 1))
+            for g in order:
+                if len(vp) >= min(3, max(2, len(gate_ids))):
+                    break
+                if g['id'] not in have and g.get('label'):
+                    vp.append({'gate_id': g['id'], 'label': g['label']}); have.add(g['id'])
+        cg['validation_points'] = vp[:3]
+    # must_ask_questions：沒對到 gate 的丟掉（上面已處理），舊欄位名稱改成新名稱
+    for qq in data.get('must_ask_questions') or []:
+        if isinstance(qq, dict):
+            if 'why' in qq:
+                qq.setdefault('why_it_matters', qq.pop('why'))
+            for old_k in ('validates', 'validates_gate'):
+                if old_k in qq:
+                    qq.setdefault('validates_gate_id', qq.pop(old_k))
+    # ai_flags：合約只准 1 個——留主卡那個（沒有就第一個）；缺建議動作就補「電話中確認」
+    flags = [f for f in (data.get('ai_flags') or []) if isinstance(f, dict) and f.get('title') and f.get('short_message')]
+    if len(flags) > 1:
+        main = [f for f in flags if f.get('show_on_main_card')]
+        flags = (main or flags)[:1]
+    for f in flags:
+        if f.get('risk_level') not in ('high', 'medium', 'low'):
+            f['risk_level'] = 'medium'
+        if f.get('evidence_confidence') == 'low' and f['risk_level'] == 'high':
+            f['risk_level'] = 'medium'
+        ra = f.get('recommended_action')
+        if isinstance(ra, str) and ra.strip():
+            f['recommended_action'] = {'type': 'verify_in_call', 'label': ra.strip()[:8]}
+        elif not isinstance(ra, dict) or not ra.get('type') or not ra.get('label'):
+            f['recommended_action'] = {'type': 'verify_in_call', 'label': '電話中確認'}
+    data['ai_flags'] = flags
+    cf = data.get('conversation_flow')
+    if isinstance(cf, dict):
+        # 問題對到不存在的 gate → 改成不綁 gate（薪資、地點這類本來就可以不綁）
+        for key in ('top_questions', 'extra_questions'):
+            qs = [x for x in (cf.get(key) or []) if isinstance(x, dict) and x.get('question')]
+            for x in qs:
+                x.setdefault('title', (x.get('goal') or x['question'])[:10])
+                if x.get('validates_gate_id') not in (None, '') and x.get('validates_gate_id') not in gate_ids:
+                    x['validates_gate_id'] = None
+            cf[key] = qs[:3]
+        # top_questions 0 題 → 拿 must_ask_questions 轉
+        if not cf.get('top_questions'):
+            cf['top_questions'] = [{'id': f'tq_{i}', 'title': (m.get('why_it_matters') or m['question'])[:10],
+                                    'goal': m.get('why_it_matters') or '', 'lead_in': '', 'question': m['question'],
+                                    'backup_probe': m.get('backup_probe'), 'record_hint': '',
+                                    'validates_gate_id': m.get('validates_gate_id')}
+                                   for i, m in enumerate(data.get('must_ask_questions') or [], 1)
+                                   if isinstance(m, dict) and m.get('question')][:3]
+        # 電話旁小抄 0 條 → 用必問題標題
+        if not cf.get('phone_sidecar'):
+            cf['phone_sidecar'] = [str(x.get('title'))[:12] for x in cf.get('top_questions') or [] if x.get('title')][:6]
+        # known_do_not_ask 沒有佐證的直接拿掉（規則本來就是寧可少列）
+        kd = cf.get('known_do_not_ask')
+        if isinstance(kd, list):
+            cf['known_do_not_ask'] = [k for k in kd if isinstance(k, str) or (
+                isinstance(k, dict) and k.get('label') and k.get('value') and k.get('sources')
+                and all(isinstance(s, dict) and s.get('type') and s.get('snippet') for s in k['sources']))]
+    rs = data.get('resume_summary')
+    if isinstance(rs, dict):
+        if isinstance(rs.get('core_skills'), list):
+            rs['core_skills'] = rs['core_skills'][:8]
+        if isinstance(rs.get('career_timeline'), list):
+            rs['career_timeline'] = [t for t in rs['career_timeline'] if isinstance(t, dict) and t.get('company') and t.get('title')]
+    # 備案職缺：不在清單／跟目前職缺相同／缺話術的丟掉；理由、注意事項超過就截
+    alt = data.get('alternative_jobs')
+    if isinstance(alt, list):
+        allowed = {j.get('job_slug') for j in ((payload or {}).get('alternative_job_candidates') or [])}
+        cur = (payload or {}).get('job_slug')
+        keep = []
+        for a in alt:
+            if not isinstance(a, dict) or not a.get('job_slug') or not a.get('title') or a['job_slug'] == cur:
+                continue
+            if allowed and a['job_slug'] not in allowed:
+                continue
+            if not (a.get('consultant_talk_track') or '').strip():
+                continue
+            if a.get('recommendation_level') not in ('primary_alternative', 'secondary_alternative'):
+                a['recommendation_level'] = 'secondary_alternative'
+            a['fit_reasons'] = (a.get('fit_reasons') or [])[:3]
+            a['watchouts'] = (a.get('watchouts') or [])[:2]
+            keep.append(a)
+        data['alternative_jobs'] = keep[:5]
 
 
 def _validate_precall_card(data, payload=None):
@@ -1479,14 +1585,14 @@ def process(job):
         try:
             # 2026-10-02：結構化卡片輸出很長，實測 4～9 分鐘，原本 8 分鐘逾時就整張退回純文字（李佳龍連兩次）——這一步放寬到 15 分鐘
             out = run_claude(builder(payload), want_json=True, timeout=900)
-            ai_data = _repair_precall_card(json.loads(out))
+            ai_data = _repair_precall_card(json.loads(out), payload)
             try:
                 _validate_precall_card(ai_data, payload)
             except Exception as ve:
                 # 修不掉的（缺欄位、gate 對不上…）再請 AI 照錯誤訊息重產一次，還不行才退回舊版
                 log(f'  ↻ precall_card 格式不合（{str(ve)[:100]}），帶著錯誤再產一次')
                 out = run_claude(builder(payload) + f'\n\n⚠️ 上一次輸出不合格：{ve}。請完全照規則重新輸出整份 JSON。', want_json=True, timeout=900)
-                ai_data = _repair_precall_card(json.loads(out))
+                ai_data = _repair_precall_card(json.loads(out), payload)
                 _validate_precall_card(ai_data, payload)
             wrapped = _wrap_precall_card(ai_data, payload)
             return json.dumps(wrapped, ensure_ascii=False)
@@ -2424,9 +2530,17 @@ def tick():
         scan_reverse_match_jobs()
     except Exception as e:
         log(f'  ⚠️ 反向配對掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
+    # 2026-10-05 Jacky：電洽準備卡要 10 分鐘內。原本一台一次只做一件、做完才撈下一件，
+    # 一口氣排 5 張的話後面的要等前面全部寫完。改成同時最多 CONCURRENCY 件（各開一個
+    # claude 程序），而且電洽準備卡（顧問在畫面前等）排最前面。
+    _reap_done()
+    free = CONCURRENCY - len(_INFLIGHT)
+    if free <= 0:
+        return 0
     rows = d1_http.query(
         "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
-        "ORDER BY created_at LIMIT 3" % MAX_ATTEMPTS)['results']
+        "ORDER BY CASE kind WHEN 'precall_card' THEN 0 ELSE 1 END, created_at LIMIT %d"
+        % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
     for job in rows:
@@ -2443,34 +2557,55 @@ def tick():
         if not claim.get('meta', {}).get('changes'):
             log(f'  ⏭️ {job["kind"]}（{jid[:8]}）已被其他裝置搶走，跳過')
             continue
-        log(f'處理 {job["kind"]}（{jid[:8]}），裝置：{WORKER_ID}')
-        try:
-            out = process(job)
-            d1_http.query(
-                f"UPDATE ai_jobs SET status='done', result_text={q(out)}, error=NULL, "
-                f"done_at=datetime('now','+8 hours') WHERE id={q(jid)}")
-            log(f'  ✅ 完成，{len(out)} 字')
-        except Exception as e:
-            msg = str(e)[:400]
-            # 還有重試機會就退回 pending，用完才標 failed——暫時性失敗不該直接放棄
-            attempts = (job.get('attempts') or 0) + 1
-            final = attempts >= MAX_ATTEMPTS
-            d1_http.query(
-                f"UPDATE ai_jobs SET status={q('failed' if final else 'pending')}, "
-                f"error={q(msg)} WHERE id={q(jid)}")
-            log(f'  ❌ 失敗（第 {attempts} 次）：{msg[:120]}')
-            # 2026-09-30：逐字稿評分放棄時，卡片要顯示「AI 分析失敗」而不是一直「分析中」
-            if final and job['kind'] == 'call_transcript_review':
-                try:
-                    tid = json.loads(job.get('payload_json') or '{}').get('transcript_id')
-                    if tid:
-                        d1_http.query(f"UPDATE call_transcripts SET ai_status='error', ai_error={q(msg[:300])} WHERE id={q(tid)}")
-                except Exception:
-                    pass
+        log(f'處理 {job["kind"]}（{jid[:8]}），裝置：{WORKER_ID}（同時進行 {len(_INFLIGHT) + 1}/{CONCURRENCY}）')
+        _INFLIGHT[jid] = _POOL.submit(_run_job, job)
     return len(rows)
 
 
+def _reap_done():
+    for jid, fut in list(_INFLIGHT.items()):
+        if fut.done():
+            _INFLIGHT.pop(jid, None)
+            try:
+                fut.result()
+            except Exception as e:  # _run_job 自己會吞例外，這裡只是保險
+                log(f'  ⚠️ 背景工作 {jid[:8]} 例外：{str(e)[:150]}')
+
+
+def _run_job(job):
+    jid = job['id']
+    try:
+        out = process(job)
+        d1_http.query(
+            f"UPDATE ai_jobs SET status='done', result_text={q(out)}, error=NULL, "
+            f"done_at=datetime('now','+8 hours') WHERE id={q(jid)}")
+        log(f'  ✅ {job["kind"]}（{jid[:8]}）完成，{len(out)} 字')
+    except Exception as e:
+        msg = str(e)[:400]
+        # 還有重試機會就退回 pending，用完才標 failed——暫時性失敗不該直接放棄
+        attempts = (job.get('attempts') or 0) + 1
+        final = attempts >= MAX_ATTEMPTS
+        d1_http.query(
+            f"UPDATE ai_jobs SET status={q('failed' if final else 'pending')}, "
+            f"error={q(msg)} WHERE id={q(jid)}")
+        log(f'  ❌ {job["kind"]}（{jid[:8]}）失敗（第 {attempts} 次）：{msg[:120]}')
+        # 2026-09-30：逐字稿評分放棄時，卡片要顯示「AI 分析失敗」而不是一直「分析中」
+        if final and job['kind'] == 'call_transcript_review':
+            try:
+                tid = json.loads(job.get('payload_json') or '{}').get('transcript_id')
+                if tid:
+                    d1_http.query(f"UPDATE call_transcripts SET ai_status='error', ai_error={q(msg[:300])} WHERE id={q(tid)}")
+            except Exception:
+                pass
+
+
 SELF_UPDATE_CHECK_SEC = 300
+
+# 同時處理幾件：預設 3（8GB 的 Mac 實測一個 claude 程序約 150～250MB）。各台可用環境變數調。
+import concurrent.futures as _cf
+CONCURRENCY = max(1, int(os.environ.get('AI_WORKER_CONCURRENCY', '3')))
+_POOL = _cf.ThreadPoolExecutor(max_workers=CONCURRENCY)
+_INFLIGHT = {}
 
 
 def _maybe_self_update(last_checked):
@@ -2487,7 +2622,10 @@ def _maybe_self_update(last_checked):
     # 2026-10-01：改用共用的 autoupdate.maybe_self_update（比對「啟動時載入的版本」，
     # 不再只比 HEAD vs origin/main——共用資料夾時別支先 pull 了，這支就永遠不換版）。
     # ai_worker 只在兩次工作之間呼叫這裡，本來就不會打斷正在跑的工作，不需要 can_restart。
-    return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker')
+    # 2026-10-05 改成可同時處理多件後，換版（os.execv）會把還在跑的工作砍掉——有工作在跑就等下一輪。
+    _reap_done()
+    return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker',
+                                        can_restart=lambda: not _INFLIGHT)
 
 
 def main():
