@@ -2534,7 +2534,11 @@ def tick():
     # 一口氣排 5 張的話後面的要等前面全部寫完。改成同時最多 CONCURRENCY 件（各開一個
     # claude 程序），而且電洽準備卡（顧問在畫面前等）排最前面。
     _reap_done()
-    free = CONCURRENCY - len(_INFLIGHT)
+    # 2026-10-05 踩雷：WSL2 同時開 2 個電洽卡的 claude，剛好那台在跟陳南宏面談，
+    # 阿財回覆被拖慢到逾時，人選收到「系統出了點狀況」。這台有人在面談時只准做 1 件，
+    # 面談的即時回覆優先。
+    limit = 1 if _interview_active_here() else CONCURRENCY
+    free = limit - len(_INFLIGHT)
     if free <= 0:
         return 0
     rows = d1_http.query(
@@ -2560,6 +2564,19 @@ def tick():
         log(f'處理 {job["kind"]}（{jid[:8]}），裝置：{WORKER_ID}（同時進行 {len(_INFLIGHT) + 1}/{CONCURRENCY}）')
         _INFLIGHT[jid] = _POOL.submit(_run_job, job)
     return len(rows)
+
+
+def _interview_active_here():
+    """這台機器上是不是有阿財面談正在進行（查不到就保守當作有）。"""
+    try:
+        import platform
+        host = os.environ.get('INTERVIEW_HOST') or ('wsl2' if 'microsoft' in platform.release().lower() else 'mac')
+        r = d1_http.query(
+            f"SELECT COUNT(*) n FROM applications WHERE interview_state='active' AND interview_host={q(host)} "
+            f"AND interview_started_at >= datetime('now','+8 hours','-3 hours')")['results']
+        return bool(r and r[0].get('n'))
+    except Exception:
+        return True
 
 
 def _reap_done():
