@@ -14,5 +14,5 @@
 ## interview_timeout_retry_20261005.patch（阿財：claude 逾時也重跑一次＋記錄耗時）
 - 問題：claude 呼叫送出後沒有模型回應，等滿 240 秒才放棄，阿財直接對候選人道歉並中斷面談（10/2 胡耀中、10/5 陳南宏）。
 - 修法：第一次呼叫只給 120 秒，逾時重跑，總預算仍是 240 秒；每次成功記一行耗時與嘗試次數。
-- 已驗證：`git apply --check` 通過；測試副本 py_compile＋4 個假 subprocess 情境全過。**這台未套用**，等沒人在面談時由總指揮決定上線；套用後阿財要在沒人面談時重啟。
+- 已驗證：`git apply --check` 通過；測試副本 py_compile＋4 個假 subprocess 情境全過。**已於 2026-10-05 併入主線**（Jacky 確認），阿財在回合之間閒下來時會自己換上新版，不用手動重啟。
 - `interview_lock_and_apology_20261002.patch` 已被上游採用（不用再套，現在套不上是正常的）；本補丁對最新 `origin/main` `apply --check` 通過。詳見 `docs/wsl2/回報/E12_阿財AI呼叫卡住_20261005-1425.md`。
