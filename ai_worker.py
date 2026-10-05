@@ -345,8 +345,9 @@ def prompt_precall_card(p):
     # 2026-10-05 Jacky（Fiona 案例）：沒跟阿財談到內容的人選，這通電話就是第一輪面試，
     # 題目要把阿財本來會問的都排進去，不能只靠履歷問 3 題。
     cov = p.get('interview_coverage') or 'full'
-    first_round = cov in ('none', 'entered_only', 'partial')
+    first_round = cov in ('none', 'entered_only', 'partial', 'consultant_direct')
     cov_desc = {'none': '這位人選完全沒有跟 AI 面談助理（阿財）談過',
+                'consultant_direct': '這位人選是顧問直接建檔、直接電洽，沒有經過 AI 面談助理（阿財）',
                 'entered_only': '這位人選有進 AI 面談室，但一題都沒有回答就離開',
                 'partial': '這位人選只跟 AI 面談助理（阿財）談了一小部分就離開'}.get(cov, '')
     first_round_block = (f'''
@@ -465,7 +466,7 @@ def _repair_precall_card(data, payload=None):
         data['call_goal']['validation_points'] = vp[:3]
     cf = data.get('conversation_flow')
     if isinstance(cf, dict):
-        _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3
+        _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial', 'consultant_direct') else 3
         for key, n in (('top_questions', 3), ('extra_questions', _xmax)):
             if isinstance(cf.get(key), list) and len(cf[key]) > n:
                 cf[key] = cf[key][:n]
@@ -539,7 +540,7 @@ def _repair_precall_more(data, payload=None):
                 x.setdefault('title', (x.get('goal') or x['question'])[:10])
                 if x.get('validates_gate_id') not in (None, '') and x.get('validates_gate_id') not in gate_ids:
                     x['validates_gate_id'] = None
-            cf[key] = qs[:(6 if key == 'extra_questions' and (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3)]
+            cf[key] = qs[:(6 if key == 'extra_questions' and (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial', 'consultant_direct') else 3)]
         # top_questions 0 題 → 拿 must_ask_questions 轉
         if not cf.get('top_questions'):
             cf['top_questions'] = [{'id': f'tq_{i}', 'title': (m.get('why_it_matters') or m['question'])[:10],
@@ -703,7 +704,7 @@ def _validate_precall_card(data, payload=None):
     extra_q = cf.get('extra_questions')
     if not isinstance(top_q, list) or not (1 <= len(top_q) <= 3):
         raise ValueError(f'conversation_flow.top_questions 應該是 1-3 題，實際 {len(top_q) if isinstance(top_q, list) else "型別不對"}')
-    _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3
+    _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial', 'consultant_direct') else 3
     if not isinstance(extra_q, list) or len(extra_q) > _xmax:
         raise ValueError(f'conversation_flow.extra_questions 應該是 0-{_xmax} 題')
     for q in list(top_q) + list(extra_q):
