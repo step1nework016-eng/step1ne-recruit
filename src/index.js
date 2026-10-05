@@ -5496,6 +5496,7 @@ export default {
         const inBdt = (m) => bdtRoute && m && String(m.chat.id) === String(bdtRoute.chat_id) && Number(m.message_thread_id) === Number(bdtRoute.message_thread_id);
         const callerOf = (from) => {
           const u = String((from && from.username) || '').toLowerCase();
+          if (u === 'groupanonymousbot') return 'Jacky';   // 客戶群組匿名發言的是 Jacky（群組管理員）
           return u === 'behe10' ? 'Phoebe' : (u === 'jackyyuqi' ? 'Jacky' : ((from && from.first_name) || '顧問'));
         };
         const bdtSubmit = async (chatId, userId, company, data) => {
@@ -5509,7 +5510,9 @@ export default {
             ? `✅ 已存進「${company}」的通話紀錄（${data.caller}）\nAI 大約 1～3 分鐘整理好通話紀錄跟下一步建議，到客戶卡片「通話紀錄與進度」看。`
             : `❌ 沒存進去：${(j && j.error) || '後台沒有回應'}，請到網頁客戶卡片手動上傳。`);
         };
-        if (inBdt(bm) && !(bm.from && bm.from.is_bot)) {
+        // 管理員匿名發言（寄件人顯示群組名、from 是 GroupAnonymousBot）也是人，不能當機器人略過
+        const bdtAnon = !!(bm && bm.sender_chat && bm.from && bm.from.username === 'GroupAnonymousBot');
+        if (inBdt(bm) && (!(bm.from && bm.from.is_bot) || bdtAnon)) {
           const chatId = bm.chat.id, userId = bm.from.id, th = bdtRoute.message_thread_id;
           let txt = String(bm.text || '').trim();
           if (!txt && bm.document) {
