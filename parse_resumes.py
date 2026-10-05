@@ -11,7 +11,11 @@
 
 用法：
     python3 parse_resumes.py          # 處理所有未解析的
-    python3 parse_resumes.py --force  # 全部重抽（改了抽取邏輯時用）
+    python3 parse_resumes.py --force  # 全部重抽（改了抽取邏輯時用；圖片型履歷不重做 OCR）
+    python3 parse_resumes.py --ocr-backfill [--dry-run]     # 舊資料：文字空的／太短的圖片履歷補做 OCR
+    python3 parse_resumes.py --ocr-file <file_id> [--dry-run] # 單一份重做 OCR（驗收用）
+
+2026-10-05 起：抽不到文字的 PDF／圖片履歷會自動看圖轉錄（OCR），見 ocr_extract()。
 """
 import base64, io, json, os, re, subprocess, sys, tempfile, datetime
 import shutil
@@ -861,6 +865,10 @@ def main():
                 ext = (os.path.splitext(r['filename'] or '')[1] or '').lower()
                 if ext == '.pdf' or ext in IMAGE_EXTS or 'pdf' in (r['mime'] or '') \
                         or (r['mime'] or '').startswith('image/'):
+                    # 這台缺工具就別搶號，留給另一台（搶到又做不出來會把檔案標成失敗）
+                    if not shutil.which('claude') or not shutil.which('pdftoppm'):
+                        print(f"  ⏭  {r['filename']}　這台沒有 claude／pdftoppm，留給另一台做 OCR")
+                        continue
                     if not _claim_for_ocr(r['id'], now):
                         print(f"  ⏭  {r['filename']}　另一台機器正在 OCR，跳過")
                         continue
