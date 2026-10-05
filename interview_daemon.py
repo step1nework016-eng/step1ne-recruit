@@ -701,7 +701,8 @@ def push_report_files(app_id, name, job_slug):
         if r.returncode == 0 and os.path.exists(out):
             with open(out, 'rb') as f:
                 tg_doc(f.read(), f'初篩報告_{name}_{job_slug}.pdf',
-                       f'📄 {name} 的初篩報告與逐字稿', THREAD_POOL)
+                       f'📄 {name} 的初篩報告與逐字稿\n📱 手機直接看、快速判斷：'
+                       f'https://step1ne.com/consultant/candidates/?tab=triage&app={app_id}', THREAD_POOL)
             os.remove(out)
         else:
             log(f'報告 PDF 產生失敗：{(r.stderr or r.stdout or "")[-200:]}')
