@@ -385,7 +385,8 @@ def prompt_precall_card(p):
 "phone_sidecar":["電話旁可以快速瞄一眼的極短提示，1-6個字串，每個不超過12字"]}},
 "alternative_jobs":[{{"job_slug":"必須完全照抄上面清單裡的job_slug","title":"","recommendation_level":"primary_alternative|secondary_alternative","fit_reasons":["最多3個，必須具體，不能寫綜合條件不錯這種空話"],"watchouts":["最多2個"],"known_conflicts":[],"unknowns_to_confirm":[],"salary_summary":"","location_summary":"","consultant_talk_track":"顧問可以直接口頭使用的一段話，說明為什麼想順便分享這個職缺"}}],
 "verdict":{{"one_line":"一句話結論，先講他是什麼類型的人、對這個職缺大概對得上幾成、最大的落差是什麼，30-70字","fit_level":"strong|partial|weak","compared_job":"condition_table 拿哪個職缺比對的職缺名稱"}},
-"condition_table":[{{"condition":"職缺的一項條件，照職缺原文精簡，4-20字","resume_evidence":"履歷上對應的具體內容（公司、年資、數字），沒有就寫「履歷沒有寫」","status":"matched|partial|unmatched|unknown","note":"一句話判斷，例如「年資夠，但幾乎都是業務端」，沒有就空字串"}}],
+"condition_table":[{{"condition":"職缺的一項條件，照職缺原文精簡，4-20字","resume_evidence":"履歷上對應的具體內容（公司、年資、數字），沒有就寫「履歷沒有寫」","interview_evidence":"AI 面談逐字稿裡他對這條怎麼說——引用他的原話片段（加「」），沒談到就空字串","status":"matched|partial|unmatched|unknown","note":"一句話判斷，綜合履歷跟面談，例如「年資夠，但幾乎都是業務端」，沒有就空字串"}}],
+"key_judgments":["這通電話真正要判斷的事，1-2 條，每條一句、具體到可以直接拿來問或想，例如「美國原料採購案是他的正職還是下班幫忙、做多久、量多大」「美德能不能接受沒待過工廠、但做過實體原料採購的人」"],
 "not_fit_jobs":[{{"job_slug":"必須完全照抄上面清單裡的job_slug","title":"","reason":"為什麼不適合，具體講卡在哪，一句話"}}],
 "watchouts":[{{"title":"要注意的事，4-12字，例如「最近工作都很短」「數字要驗證」「現職是顧問」","detail":"履歷上的具體依據，一句話","ask":"電話裡可以怎麼問，一句話"}}],
 "meta":{{"generation_status":"ready","used_ai_fallback_for_gates":{str(source_kind == 'derive_from_jd').lower()},"warnings":[]}}}}
@@ -401,6 +402,9 @@ def prompt_precall_card(p):
 - job_pitch_60s／opening／closing 都必須是「顧問可以直接照著說出口」的口語句子，不是條列式的內部說明
 - alternative_jobs：{alt_block}
 - verdict／condition_table／not_fit_jobs／watchouts（2026-10-05 加，給顧問電話前一眼看懂用）：
+  - **有 AI 面談逐字稿時**，condition_table 每一條都要看他在面談裡有沒有談到：有就把他的原話片段填進 interview_evidence（只引用逐字稿裡真的有的句子，不准改寫成你的話）；
+    履歷沒寫但面談有講到的（例如兼職、協助案、口頭補充的經歷），status 要把面談內容算進去判斷。沒有逐字稿就全部留空字串。
+  - key_judgments：看完履歷＋面談後，這通電話最需要釐清、會決定推不推的 1-2 件事。不要寫空泛的「確認意願」，要寫具體到這個人的疑點。
   - condition_table 要**逐條**對照職缺的所有主要條件（必要條件、主要工作、加分項目都算），4-10 條，不是只挑 3 條；status：matched＝履歷有明確證據、partial＝部分符合、unmatched＝履歷明確不符、unknown＝履歷看不出來
   - not_fit_jobs 只能從上面的職缺清單挑，0-3 個，只放「乍看相關但其實不合」的，不要把八竿子打不著的職缺都列進來
   - watchouts 0-4 個，只放履歷上真的看得到的：工作年資很短或頻繁換工作、數字要驗證（是個人還是團隊）、現職狀態不清楚（顧問／兼職／待業）、時間軸有空窗、履歷前後矛盾；每個都附一句電話裡怎麼問。不准用年齡／性別／婚育／國籍
@@ -747,6 +751,8 @@ def _validate_precall_card(data, payload=None):
     # 2026-10-05 新增的四塊是輔助資訊：形狀不對就丟掉那一塊，不要讓整張卡退回舊版。
     if not isinstance(data.get('verdict'), dict) or not (data['verdict'].get('one_line') or '').strip():
         data['verdict'] = None
+    kj = data.get('key_judgments')
+    data['key_judgments'] = [str(x).strip() for x in kj if str(x).strip()][:2] if isinstance(kj, list) else []
     for key, need in (('condition_table', 'condition'), ('watchouts', 'title'), ('not_fit_jobs', 'job_slug')):
         v = data.get(key)
         data[key] = [x for x in v if isinstance(x, dict) and (x.get(need) or '').strip()] if isinstance(v, list) else []
@@ -1596,6 +1602,7 @@ def _wrap_precall_card(ai_data, payload):
         'condition_table': ai_data.get('condition_table') or [],
         'not_fit_jobs': ai_data.get('not_fit_jobs') or [],
         'watchouts': ai_data.get('watchouts') or [],
+        'key_judgments': ai_data.get('key_judgments') or [],
         'no_job_mode': bool(payload.get('no_job_mode')) or payload.get('job_slug') == 'unspecified',
         'interview_coverage': payload.get('interview_coverage') or 'full',
         'candidate_msg_count': payload.get('candidate_msg_count'),
