@@ -3858,7 +3858,9 @@ async function ingestMailboxMessage(env, b) {
       WHERE lower(m.to_email) = ? AND m.status = 'sent' AND m.sent_at >= datetime('now','+8 hours','-30 days')
       ORDER BY m.sent_at DESC LIMIT 1`).bind(fromEmail).first().catch(() => null);
   if (cbm) {
-    const already = cbm.reply_at && cbm.reply_at >= String(b.date_taipei || now).slice(0, 19).replace('T', ' ').slice(0, 13);
+    // 同一封信 Resend 那邊已經記過（回信時間跟這封寄出時間差 30 分鐘內）＝重複，不再推
+    const mailAt = String(b.date_taipei || now).slice(0, 19);
+    const already = !!cbm.reply_at && Math.abs(Date.parse(cbm.reply_at.replace(' ', 'T') + '+08:00') - Date.parse(mailAt.replace(' ', 'T') + '+08:00')) <= 30 * 60 * 1000;
     await env.DB.prepare(`UPDATE call_booking_mails SET reply_at=?, reply_body=? WHERE id=?`)
       .bind(cbm.reply_at && already ? cbm.reply_at : now, body || null, cbm.id).run().catch(() => {});
     const cv = await saveAtt(cbm.application_id);
@@ -3880,8 +3882,10 @@ async function ingestMailboxMessage(env, b) {
     orow = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE lower(contact_email) LIKE ? AND status='sent' ORDER BY sent_at DESC LIMIT 1`).bind('%@' + domain).first().catch(() => null);
   }
   if (orow) {
-    const dup = await env.DB.prepare(`SELECT id FROM bd_replies WHERE lower(from_email)=? AND subject=? AND created_at >= datetime('now','+8 hours','-2 hours')`)
-      .bind(fromEmail, subject).first().catch(() => null);
+    const at = String(b.date_taipei || now).slice(0, 19);
+    const dup = await env.DB.prepare(`SELECT id FROM bd_replies WHERE lower(from_email)=? AND subject=?
+        AND abs(julianday(created_at) - julianday(?)) <= 0.0209`)   /* 30 分鐘內＝Resend 那邊已收過同一封 */
+      .bind(fromEmail, subject, at).first().catch(() => null);
     await mark('bd_reply', orow.id);
     if (dup) return { ok: true, matched: 'bd_reply', notified: false };
     await env.DB.prepare(`INSERT INTO bd_replies (id, created_at, outreach_id, from_email, from_name, subject, body, handled, updated_at)
