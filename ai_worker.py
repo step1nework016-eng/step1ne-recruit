@@ -317,7 +317,8 @@ def prompt_precall_card(p):
     # 2026-10-05 Jacky：顧問常常在「還不知道這個人適合什麼」的時候就先電洽（人選還沒跟阿財
     # 面談、掛在「尚未指定職缺」）。這時卡片要改成「先幫顧問看他適合哪幾個職缺、不適合哪些」。
     no_job = bool(p.get('no_job_mode')) or (p.get('job_slug') == 'unspecified')
-    alt_max = 5 if no_job else 3
+    # 2026-10-05：電洽前準備分成「對照目前職缺／他適合哪些職缺」兩頁，有指定職缺也要給完整的適合清單。
+    alt_max = 5
     if alt_candidates:
         alt_block = (f'可推薦的其他職缺清單（只能從這裡面選，最多 {alt_max} 個，job_slug 必須完全照抄，'
                      '不可以自己編一個不在清單裡的職缺，也不可以選跟目前這個職缺相同的）：\n'
@@ -380,7 +381,7 @@ def prompt_precall_card(p):
   - condition_table 要**逐條**對照職缺的所有主要條件（必要條件、主要工作、加分項目都算），4-10 條，不是只挑 3 條；status：matched＝履歷有明確證據、partial＝部分符合、unmatched＝履歷明確不符、unknown＝履歷看不出來
   - not_fit_jobs 只能從上面的職缺清單挑，0-3 個，只放「乍看相關但其實不合」的，不要把八竿子打不著的職缺都列進來
   - watchouts 0-4 個，只放履歷上真的看得到的：工作年資很短或頻繁換工作、數字要驗證（是個人還是團隊）、現職狀態不清楚（顧問／兼職／待業）、時間軸有空窗、履歷前後矛盾；每個都附一句電話裡怎麼問。不准用年齡／性別／婚育／國籍
-- alternative_jobs 最多 {alt_max} 個，預設 1-2 個就好，沒有合理的就給空陣列 []，**不要為了湊數硬推薦明顯不合的職缺**
+- alternative_jobs 最多 {alt_max} 個：清單裡合理適合的都列出來（部分符合也算，最合的給 primary_alternative），這會顯示在「他適合哪些職缺」那一頁；沒有合理的就給空陣列 []，**不要為了湊數硬推薦明顯不合的職缺**
 - **hard_gates 最多 3 項，依優先順序排列：unknown 優先、其次 unmatched，明確 matched 的放最後**
 - {gate_source_block}
 - hard_gates[].status 只能是 matched（履歷有明確證據符合）／unknown（履歷看不出來，需要電話確認）／unmatched（履歷明確顯示不符合）三選一，**不確定一律給 unknown，不要用猜的判 matched 或 unmatched**
@@ -591,7 +592,7 @@ def _validate_precall_card(data, payload=None):
     # 就不准推薦），也不接受推薦跟目前這個職缺相同的 job_slug。
     alt = data.get('alternative_jobs')
     no_job = bool((payload or {}).get('no_job_mode')) or (payload or {}).get('job_slug') == 'unspecified'
-    alt_max = 5 if no_job else 3
+    alt_max = 5
     if not isinstance(alt, list) or len(alt) > alt_max:
         raise ValueError(f'alternative_jobs 應該是最多 {alt_max} 個的陣列')
     allowed_slugs = {j.get('job_slug') for j in ((payload or {}).get('alternative_job_candidates') or [])}
