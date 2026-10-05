@@ -2395,6 +2395,11 @@ def _run_cand_bd(payload):
 
 
 HANDLERS['cand_bd'] = (prompt_cand_bd, True)
+# 2026-10-05 修：職缺卡回饋、產生題庫這兩種工作在 process() 裡是整條自己跑完、不用 builder，
+# 但從沒登記進 HANDLERS，process() 開頭的檢查就直接丟「未知的工作類型」——
+# 顧問在後台貼的客戶回饋（例如美德 10/5 書審回饋）全部沒進職缺卡，阿財也就學不到。
+HANDLERS.setdefault('job_card_feedback', (lambda p: '', False))
+HANDLERS.setdefault('expertise_build', (lambda p: '', False))
 
 
 
