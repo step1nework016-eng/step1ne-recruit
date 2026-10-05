@@ -5485,6 +5485,99 @@ export default {
         }
       }
 
+      // ── 開發電話逐字稿：客戶群組「📞 開發電話逐字稿」主題（2026-10-05 Jacky）──
+      // 開發客戶打完電話，直接在 TG 貼逐字稿（文字或 .txt／.md／Word／PDF 附件）→ 選是哪一家 →
+      // 存進那家的「通話紀錄與進度」，AI 1～3 分鐘整理成通話紀錄＋建議。跟網頁「只上傳逐字稿讓 AI 看」
+      // 同一支後台端點（/admin/bd/transcript），不另外寫一套。
+      {
+        const bdtRoute = await tgRoute(env, 'bd_transcript_intake');
+        const bm = update.message;
+        const bq = update.callback_query;
+        const inBdt = (m) => bdtRoute && m && String(m.chat.id) === String(bdtRoute.chat_id) && Number(m.message_thread_id) === Number(bdtRoute.message_thread_id);
+        const callerOf = (from) => {
+          const u = String((from && from.username) || '').toLowerCase();
+          return u === 'behe10' ? 'Phoebe' : (u === 'jackyyuqi' ? 'Jacky' : ((from && from.first_name) || '顧問'));
+        };
+        const bdtSubmit = async (chatId, userId, company, data) => {
+          if (!env.BACKOFFICE || !env.ADMIN_TOKEN) { await ncSend(env, chatId, bdtRoute.message_thread_id, '❌ 系統設定缺少後台連線，請通知工程'); return; }
+          const r = await env.BACKOFFICE.fetch('https://backoffice/admin/bd/transcript', {
+            method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}`, 'user-agent': 'step1ne-recruit' },
+            body: JSON.stringify({ company, transcript: data.transcript, caller: data.caller }) }).catch(() => null);
+          const j = r ? await r.json().catch(() => ({})) : {};
+          await ncClearSession(env, chatId, userId);
+          await ncSend(env, chatId, bdtRoute.message_thread_id, j && j.ok
+            ? `✅ 已存進「${company}」的通話紀錄（${data.caller}）\nAI 大約 1～3 分鐘整理好通話紀錄跟下一步建議，到客戶卡片「通話紀錄與進度」看。`
+            : `❌ 沒存進去：${(j && j.error) || '後台沒有回應'}，請到網頁客戶卡片手動上傳。`);
+        };
+        if (inBdt(bm) && !(bm.from && bm.from.is_bot)) {
+          const chatId = bm.chat.id, userId = bm.from.id, th = bdtRoute.message_thread_id;
+          let txt = String(bm.text || '').trim();
+          if (!txt && bm.document) {
+            const docMime = (bm.document.mime_type || '').toLowerCase();
+            const isPlain = docMime.startsWith('text/') || /\.(txt|md)$/i.test(bm.document.file_name || '');
+            try {
+              const fd = await (await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${bm.document.file_id}`)).json();
+              if (fd.ok) {
+                const buf = await (await fetch(`https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${fd.result.file_path}`)).arrayBuffer();
+                if (isPlain) txt = new TextDecoder('utf-8').decode(buf).trim();
+                else {
+                  const md = await env.AI.toMarkdown([{ name: bm.document.file_name || 'upload', blob: new Blob([buf], { type: bm.document.mime_type || 'application/octet-stream' }) }]);
+                  txt = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+                }
+              }
+            } catch { txt = ''; }
+            if (!txt) { await ncSend(env, chatId, th, '這個檔案讀不出文字，麻煩直接貼逐字稿文字，或換 .txt／Word 檔再試一次。'); return new Response('ok'); }
+          }
+          const sess = await ncSession(env, chatId, userId);
+          // 正在等「打字輸入公司名」
+          if (sess && sess.step === 'bdt_company' && txt && txt.length <= 60) {
+            const kw = txt.replace(/(股份)?有限公司$/, '').trim();
+            const { results } = await env.DB.prepare(
+              `SELECT DISTINCT company FROM bd_outreach WHERE company LIKE ? ORDER BY company LIMIT 6`).bind('%' + kw + '%').all();
+            const list = (results || []).map((r) => r.company);
+            if (list.length === 1) { await bdtSubmit(chatId, userId, list[0], sess.data); return new Response('ok'); }
+            if (!list.length) { await ncSend(env, chatId, th, `找不到「${txt}」這家，換個關鍵字再打一次（例如公司簡稱）。`); return new Response('ok'); }
+            sess.data.options = list;
+            await ncSetSession(env, chatId, userId, 'bdt_pick', sess.data);
+            await ncSend(env, chatId, th, '是哪一家？', { inline_keyboard: list.map((c, i) => [{ text: c, callback_data: `bdt_pick:${i}` }]) });
+            return new Response('ok');
+          }
+          if (!txt || txt.length < 60) {
+            await ncSend(env, chatId, th, '在這裡貼開發電話的逐字稿（文字或 .txt／Word 檔），我會問你是哪一家，存進那家的通話紀錄。');
+            return new Response('ok');
+          }
+          // 收到逐字稿 → 猜是哪一家：逐字稿裡提到的公司名＋這位顧問最近 7 天打過的公司
+          const caller = callerOf(bm.from);
+          const { results: cos } = await env.DB.prepare(`SELECT DISTINCT company FROM bd_outreach WHERE company IS NOT NULL`).all();
+          const short = (c) => String(c).replace(/(股份)?有限公司$/, '').replace(/^(台灣|臺灣)/, '');
+          const mentioned = (cos || []).map((r) => r.company).filter((c) => { const k = short(c); return k.length >= 2 && txt.includes(k); });
+          const { results: recent } = await env.DB.prepare(
+            `SELECT company, max(created_at) at FROM bd_call_logs WHERE lower(caller)=? AND deleted_at IS NULL
+                AND created_at >= datetime('now','+8 hours','-7 days') GROUP BY company ORDER BY at DESC LIMIT 6`).bind(caller.toLowerCase()).all();
+          const options = [...new Set([...mentioned, ...(recent || []).map((r) => r.company)])].slice(0, 6);
+          await ncSetSession(env, chatId, userId, 'bdt_pick', { transcript: txt.slice(0, 60000), caller, options });
+          await ncSend(env, chatId, th, `收到逐字稿（${txt.length} 字）。這是哪一家？` + (mentioned.length ? '\n（逐字稿裡有提到的排最前面）' : ''),
+            { inline_keyboard: [...options.map((c, i) => [{ text: c, callback_data: `bdt_pick:${i}` }]), [{ text: '✏️ 都不是，我打字輸入公司名', callback_data: 'bdt_type' }]] });
+          return new Response('ok');
+        }
+        if (bq && bq.message && inBdt(bq.message) && /^bdt_/.test(String(bq.data || ''))) {
+          const chatId = bq.message.chat.id, userId = bq.from.id;
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: bq.id }) }).catch(() => {});
+          const sess = await ncSession(env, chatId, userId);
+          if (!sess || !sess.data || !sess.data.transcript) { await ncSend(env, chatId, bdtRoute.message_thread_id, '這則逐字稿已經處理過或過期了，再貼一次就好。'); return new Response('ok'); }
+          if (bq.data === 'bdt_type') {
+            await ncSetSession(env, chatId, userId, 'bdt_company', sess.data);
+            await ncSend(env, chatId, bdtRoute.message_thread_id, '請打公司名稱（簡稱也可以）：');
+            return new Response('ok');
+          }
+          const company = (sess.data.options || [])[Number(String(bq.data).split(':')[1])];
+          if (!company) { await ncSend(env, chatId, bdtRoute.message_thread_id, '找不到這個選項，再貼一次逐字稿試試。'); return new Response('ok'); }
+          await bdtSubmit(chatId, userId, company, sess.data);
+          return new Response('ok');
+        }
+      }
+
       // ── 電洽新增人選：TG bot 多輪對話（2026-09-01 加）──
       // 顧問電話洽談完，不用開網頁後台，直接在這個獨立 topic 走完整套：
       // /new 開始 → 貼逐字稿 → 問履歷（有就傳檔案）→ 選客戶按鈕 → 選職缺按鈕
