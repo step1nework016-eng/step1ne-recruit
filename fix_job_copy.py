@@ -153,6 +153,9 @@ PROMPT = '''稽核抓出這個職缺的文案有問題。你要**把它改掉**�
   1. **只用手上有的事實**，不准編造沒提供的資訊。
   2. 不准出現佔位符（待補、待確認、［…］、TBD）。資料不足的段落整段不要寫。
   3. 對候選人的文字不准用「客戶」，用「業主」或「用人單位」。
+  3-1. **絕對不准寫出用人公司的名稱、簡稱、英文名、子公司或品牌名**（資料庫 client_name 只給你判斷用）——
+     一律寫成產業＋規模的描述，例如「上市遊戲集團」「日本不動產開發企業」。公開頁面寫出客戶名會被擋下、不能上線
+     （2026-10-05 自動修正把三家客戶名寫進頁面，整批被擋）。
   4. 不要拿「顧問／我們」當句子主詞，站在候選人（您）的視角寫。
   5. 繁體中文（台灣用語）。
 
@@ -304,12 +307,20 @@ def apply_fixes(slug, obj, push=True):
                    + '\n\n由 fix_job_copy.py 依 audit_job_copy.py 的稽核結果產出並套用。\n'
                    + '事實互相矛盾的部分沒有自動改——那種只能問業主。\n\n'
                    + 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')
+            # 2026-10-05：上線前先過客戶名守門員；沒過就把頁面退回原樣、不 commit，回報「沒上線」。
+            g = subprocess.run(['bash', 'scripts/predeploy.sh'], cwd=SITE_REPO, capture_output=True, text=True, timeout=120)
+            if g.returncode != 0:
+                subprocess.run(['git', 'checkout', '--', f'jobs/{slug}/index.html'], cwd=SITE_REPO, capture_output=True)
+                failed.append(('page', '修正版會露出客戶名稱，已退回原頁面、沒有上線'))
+                obj['_not_live'] = True
+                return ok, failed
             subprocess.run(['git', 'add', '-A', f'jobs/{slug}'], cwd=SITE_REPO, capture_output=True)
             subprocess.run(['git', 'commit', '-q', '-m', msg], cwd=SITE_REPO, capture_output=True)
             r = subprocess.run(['git', 'push', 'deploy', 'HEAD:main'], cwd=SITE_REPO,
                                capture_output=True, text=True, timeout=120)
             if r.returncode != 0:
                 failed.append(('page', f'推上線失敗：{(r.stderr or "")[-120:]}'))
+                obj['_not_live'] = True
     return ok, failed
 
 
@@ -329,7 +340,7 @@ def notify(slug, title, obj):
 
     head = f'✏️ {title}'
     if applied is not None:
-        head += f'　已改 {n_fix} 處並上線' if n_fix else '　沒有改動'
+        head += ((f'　改了 {n_fix} 處但沒有上線' if obj.get('_not_live') else f'　已改 {n_fix} 處並上線') if n_fix else '　沒有改動')
     else:
         head += f'　產出 {n_fix} 處修正（未套用）'
 
