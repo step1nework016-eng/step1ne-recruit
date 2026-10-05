@@ -2350,13 +2350,80 @@ def prompt_cand_bd(payload):
 """
 
 
+def _cand_bd_keywords_prompt(payload):
+    return f"""你是台灣獵頭顧問的開發助理。下面是一位人選的資料。要拿他去 104 人力銀行搜「現在有在徵這種人」的公司，
+當開發客戶的名單。請想出搜尋關鍵字，並寫匿名重點。
+
+【人選資料（只給你看，不准原樣寫進輸出）】
+{payload.get('candidate_text') or ''}
+
+只輸出 JSON：
+{{"brief": ["匿名人選重點 3～5 點，不准有姓名、任職公司名、年齡、性別、婚育"],
+  "keywords": ["3～5 個 104 搜尋關鍵字，用 104 上真的會出現的職稱寫法，例：採購主管、供應鏈經理、海外業務主管；可加產業詞，例：採購主管 紡織"],
+  "fit_rule": "一句話：什麼樣的職缺算對得上他（職能＋大概職級），例：中高階採購／供應鏈主管，不是助理或專員"}}"""
+
+
+def _cand_bd_pick_prompt(payload, brief, fit_rule, postings):
+    lines = '\n'.join(f"{i}｜{p['company']}｜{p['job']}｜刊登 {p['date']}｜{p['area']}｜{p['salary']}" for i, p in enumerate(postings))
+    return f"""你是台灣獵頭顧問的開發助理。下面是 104 上最近 30 天真的有在徵的職缺，請挑出最適合拿這位人選去敲門的公司。
+
+【人選匿名重點】
+{chr(10).join(brief)}
+【什麼樣的職缺算對得上】{fit_rule}
+【不要挑的公司】（已經是客戶、或人選目前／最近任職的公司）
+{payload.get('exclude_text') or '（無）'}
+
+【104 職缺清單】編號｜公司｜職稱｜刊登日｜地區｜月薪
+{lines}
+
+規則：
+1. 只挑職能跟職級真的對得上的（助理、專員、門市、工讀這類比他低太多的不要挑）；同一家公司只挑一筆。
+2. 挑 10～15 家，不夠就少挑，不要硬湊。
+3. why 一句話講為什麼這家可能要他（職缺內容＋他的哪個經歷對得上），不准出現人選姓名或任職公司名。
+只輸出 JSON：{{"picks": [{{"idx": 編號, "why": "一句話"}}]}}"""
+
+
 def _run_cand_bd(payload):
     run_id = payload.get('run_id')
     try:
-        out = run_claude(prompt_cand_bd(payload), want_json=True, timeout=600)
-        data = json.loads(out[out.find('{'): out.rfind('}') + 1])
-        brief = [str(x).strip() for x in (data.get('brief') or []) if str(x).strip()][:6]
-        targets = [t for t in (data.get('targets') or []) if isinstance(t, dict) and str(t.get('company') or '').strip()][:20]
+        # 2026-10-05 Jacky：不要 AI 憑印象猜公司，要「真的在 104 上徵這種人」的公司。
+        # ① AI 看履歷想關鍵字 → ② 到 104 搜最近 30 天職缺 → ③ AI 挑真的對得上的 10～15 家，附職缺連結。
+        # 104 搜不到東西（被擋、斷線）才退回舊做法（AI 依產業知識列公司）。
+        targets, brief = [], []
+        try:
+            import search_104
+            k = json.loads((lambda o: o[o.find('{'): o.rfind('}') + 1])(run_claude(_cand_bd_keywords_prompt(payload), want_json=True, timeout=300)))
+            brief = [str(x).strip() for x in (k.get('brief') or []) if str(x).strip()][:6]
+            kws = [str(x).strip() for x in (k.get('keywords') or []) if str(x).strip()][:5]
+            postings = search_104.search(kws, days=30, pages=2)[:120]
+            log(f'  🔎 人選敲門：104 關鍵字 {kws} → {len(postings)} 筆職缺')
+            if postings:
+                pk = json.loads((lambda o: o[o.find('{'): o.rfind('}') + 1])(run_claude(
+                    _cand_bd_pick_prompt(payload, brief, k.get('fit_rule') or '', postings), want_json=True, timeout=300)))
+                used = set()
+                for x in pk.get('picks') or []:
+                    try:
+                        pst = postings[int(x.get('idx'))]
+                    except Exception:
+                        continue
+                    if pst['company'] in used:
+                        continue
+                    used.add(pst['company'])
+                    d = pst['date']
+                    targets.append({'company': pst['company'], 'angle': '在徵類似職缺',
+                                    'why': f"{str(x.get('why') or '').strip()}（104 刊登 {d[4:6]}/{d[6:8]}）" if len(d) == 8 else str(x.get('why') or ''),
+                                    'job_hint': pst['job'], 'job_url': pst['url'], 'posted': d})
+        except Exception as e:
+            log(f'  ⚠️ 人選敲門 104 搜尋失敗，退回 AI 依產業知識列公司：{str(e)[:150]}')
+        if not targets:
+            out = run_claude(prompt_cand_bd(payload), want_json=True, timeout=600)
+            data = json.loads(out[out.find('{'): out.rfind('}') + 1])
+            brief = brief or [str(x).strip() for x in (data.get('brief') or []) if str(x).strip()][:6]
+            targets = [t for t in (data.get('targets') or []) if isinstance(t, dict) and str(t.get('company') or '').strip()][:20]
+        try:
+            d1_http.query("ALTER TABLE cand_bd_targets ADD COLUMN job_url TEXT")
+        except Exception:
+            pass
         clients = {str(r['display_name']).strip() for r in d1_http.query(
             "SELECT display_name FROM client_companies WHERE COALESCE(display_name,'')<>''")['results']}
         bds = {str(r['company']).strip() for r in d1_http.query(
@@ -2369,10 +2436,10 @@ def _run_cand_bd(payload):
             name = str(t['company']).strip()[:80]
             existing = 'client' if _hit(name, clients) else ('bd' if _hit(name, bds) else None)
             d1_http.query(
-                "INSERT INTO cand_bd_targets (id, run_id, company, angle, why, job_hint, existing, status, created_at) VALUES ("
+                "INSERT INTO cand_bd_targets (id, run_id, company, angle, why, job_hint, existing, status, created_at, job_url) VALUES ("
                 f"{q(str(uuid.uuid4()))}, {q(run_id)}, {q(name)}, {q(str(t.get('angle') or '')[:20])}, "
-                f"{q(str(t.get('why') or '')[:300])}, {q(str(t.get('job_hint') or '')[:80])}, "
-                f"{q(existing) if existing else 'NULL'}, 'new', datetime('now','+8 hours'))")
+                f"{q(str(t.get('why') or '')[:300])}, {q(str(t.get('job_hint') or '')[:120])}, "
+                f"{q(existing) if existing else 'NULL'}, 'new', datetime('now','+8 hours'), {q(t.get('job_url')) if t.get('job_url') else 'NULL'})")
             saved += 1
         d1_http.query(f"UPDATE cand_bd_runs SET status='done', brief={q(chr(10).join(brief))}, "
                       f"done_at=datetime('now','+8 hours') WHERE id={q(run_id)}")
@@ -2380,7 +2447,7 @@ def _run_cand_bd(payload):
             import tg_route
             c, t = tg_route.route('client_candbd')
             rs._tg(f"🧲 人選敲門名單好了｜{payload.get('candidate_name') or ''}（{payload.get('job_title') or ''}）\n"
-                   f"AI 找了 {saved} 家可能需要這種人的公司，還沒聯繫任何一家。\n"
+                   f"{'104 上最近 30 天有在徵類似職缺的' if any(t.get('job_url') for t in targets) else 'AI 依產業判斷可能需要這種人的'} {saved} 家公司，還沒聯繫任何一家。\n"
                    f"→ 後台「客戶 → 人選敲門名單」看完，按「加入開發進度」才會進開發進度。\n"
                    f"（{payload.get('requested_by') or '顧問'} 按的）",
                    thread=t, chat=c)
