@@ -1430,9 +1430,13 @@ def prompt_call_transcript_review(p):
 - 過總機的建議講法要用「真的發生過的事」當理由（公開的職缺、真的寄過的資料、知道名字的窗口），或只跟總機要人資姓名／信箱；不能建議說沒發生過的事（例如沒聯絡過卻說「之前聯絡過」），也不能假冒送貨、客戶或任何身分。
 - 語氣像資深前輩帶新人：直接、具體、不說教。
 - 標點一律用全形（，。、：「」），不要用半形逗號。
+- 另外要寫一份中性的「通話紀錄」（call_record），像秘書做的電話紀錄，不評論顧問表現：
+  對方是誰（姓名／職稱，沒講到就不寫）、對方說了什麼（需求、現況、顧慮、問了什麼）、
+  問到的聯絡資訊（電話分機、信箱）、雙方約定了什麼（寄什麼、何時再聯絡）。3～8 條，每條一句，只寫逐字稿裡真的有的。
 
 只輸出一個 JSON，不要其他文字，格式：
 {{"score":整數,"summary":"兩句話講這通電話整體怎麼樣",
+"call_record":["一條一句的通話紀錄", "..."],
 "axes":[{{"name":"開場","score":整數或null,"comment":"一句話"}},{{"name":"問需求",...}},{{"name":"處理拒絕",...}},{{"name":"收尾",...}},{{"name":"拿到下一步",...}}],
 "got_next_step":true或false,
 "improvements":[{{"original":"逐字稿原句","better":"建議改成這樣說","why":"一句話為什麼"}}],
@@ -1463,6 +1467,8 @@ def _validate_call_transcript_review(d, payload=None):
     if len(imps) < 1:
         raise RuntimeError('沒有改進講法')
     d['improvements'] = imps[:5]
+    cr = d.get('call_record')
+    d['call_record'] = [str(x).strip() for x in cr if str(x).strip()][:8] if isinstance(cr, list) else []
     key = 'prospect' if (payload or {}).get('kind') == 'bd' else 'candidate'
     if not isinstance(d.get(key), dict):
         raise RuntimeError(f'少了 {key} 判斷')
