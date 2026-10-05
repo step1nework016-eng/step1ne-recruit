@@ -3125,6 +3125,15 @@ async function handleLineEvent(env, ev) {
     // 一切順利的話系統自己收著就好，不用每次都吵顧問。
     if (data.startsWith('care_resp:')) {
       const [, resp, appId, point] = data.split(':');
+      // 2026-10-05 加：記下人選怎麼回，顧問後台「進度看板」到職那欄靠這個亮紅黃綠燈
+      // （想聊聊＝紅、一切順利＝綠、卡片發了沒回＝黃）。之前按了只發 TG，沒有留紀錄。
+      try {
+        await env.DB.prepare(
+          `UPDATE placements SET care_signal = ?, care_signal_at = datetime('now','+8 hours'), care_signal_point = ?
+            WHERE id = (SELECT id FROM placements WHERE application_id = ? AND onboard_date IS NOT NULL
+                         ORDER BY updated_at DESC LIMIT 1)`
+        ).bind(resp === 'talk' ? 'talk' : 'ok', Number(point) || null, appId).run();
+      } catch (e) { console.error('care_signal 寫入失敗', e && e.message); }
       if (resp === 'talk') {
         const app = await env.DB.prepare(`SELECT name, job_title, job_slug FROM applications WHERE id = ?`).bind(appId).first();
         await notify(env,
@@ -8020,10 +8029,15 @@ async function candidateCareTick(env) {
     1: '第一天上班辛苦了！環境跟同事還算好相處嗎？剛開始難免會有點生疏，有任何狀況都可以直接跟顧問說 😊',
     3: '到職滿 3 天了，這幾天下來還適應嗎？有任何狀況都可以直接跟顧問說，不用不好意思 😊',
     7: '到職滿一週了，工作內容跟一開始想的差不多嗎？如果有落差或想聊的，顧問都在 🙌',
-    28: '到職滿一個月了，恭喜順利度過剛開始最需要適應的階段！之後有任何狀況，顧問還是隨時都在 😊',
+    // 2026-10-05 Jacky 拍板到職關懷計畫：時間點改 1／3／7／14／30／60／90 天（保證期通常 90 天，
+    // 原本 28 天之後就沒人問了）。舊的 28 天紀錄視同 30 天已發，不會重複推。
+    14: '到職兩週了，工作節奏有慢慢抓到嗎？跟主管、同事的配合還順利嗎？有任何卡住的地方都可以說 😊',
+    30: '到職滿一個月了，恭喜順利度過剛開始最需要適應的階段！現在的工作內容跟當初談的一樣嗎？有落差都可以說 😊',
+    60: '到職兩個月了，最近工作還順利嗎？有沒有哪裡跟預期不一樣、想找人聊聊的？',
+    90: '到職滿三個月了，恭喜！這段時間辛苦了。之後職涯上有任何想法，隨時都可以聊聊 🙌',
   };
-  const CARE_HEADER = { 1: '💚 到職第一天', 3: '💚 到職關懷', 7: '💚 到職關懷', 28: '💚 到職關懷' };
-  const POINTS = [1, 3, 7, 28];
+  const CARE_HEADER = { 1: '💚 到職第一天', 3: '💚 到職關懷', 7: '💚 到職關懷', 14: '💚 到職關懷', 30: '💚 到職滿一個月', 60: '💚 到職關懷', 90: '💚 到職滿三個月' };
+  const POINTS = [1, 3, 7, 14, 30, 60, 90];
 
   try {
     const { results: rows } = await env.DB.prepare(
@@ -8038,6 +8052,7 @@ async function candidateCareTick(env) {
       if (!p.application_id) continue;
       let done = [];
       try { done = JSON.parse(p.candidate_care_log || '[]'); } catch { done = []; }
+      if (done.includes(28) && !done.includes(30)) done.push(30);   // 舊版 28 天＝新版 30 天
       const hit = POINTS.filter((pt) => p.days_since >= pt && !done.includes(pt));
       if (!hit.length) continue;
       const point = Math.max(...hit);
