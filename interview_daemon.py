@@ -2082,6 +2082,11 @@ def sanitize(t):
     return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
 
 
+# 2026-10-05：第一次呼叫的逾時（一般一輪約 25 秒、P90 約 50 秒、>90 秒只有約 6%）。
+# 逾時就重跑一次，總預算仍是 CLAUDE_TIMEOUT。見 run_claude 內說明。
+FIRST_TRY_TIMEOUT = 120
+
+
 def run_claude(prompt):
     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
     # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
@@ -2095,13 +2100,35 @@ def run_claude(prompt):
     # 原提示詞原封不動重試最多 2 次；其他原因（額度打滿、逾時、exit!=0）
     # 不在這裡重試，交給外層既有的重試/降級邏輯處理，避免浪費時間重試
     # 一個重跑也沒用的錯誤。
+    #
+    # ⚠️ 2026-10-05 改：「逾時」也重跑一次，不是直接放棄。
+    #
+    # 由來：10/2 胡耀中、10/5 陳南宏兩次，claude 呼叫等滿 240 秒被殺，阿財就對候選人說
+    # 「系統出了點狀況，顧問會直接與您聯繫」，面談卡住。查那兩次留下的 claude session 檔：
+    # 只有開頭載入的資料，**從頭到尾沒有任何模型回應**（連「思考」都沒有）——請求送出去
+    # 之後什麼都沒回來。這種情況重跑一次通常就好（一般一輪約 25 秒，P90 約 50 秒）。
+    #
+    # 做法：總時間預算不變（仍是 CLAUDE_TIMEOUT）。第一次只給 FIRST_TRY_TIMEOUT 秒；
+    # 逾時就重跑，用剩下的時間。兩次都沒回才放棄（交給外層道歉）。
+    # 另外每次成功都記一行耗時與第幾次嘗試，之後再慢可以直接從 log 判斷。
     last_err = None
+    t0 = time.time()
     for attempt in range(3):
-        r = subprocess.run(
-            [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
-             *NO_TOOLS, '--output-format', 'text'],
-            input=sanitize(prompt),
-            capture_output=True, text=True, env=env_with_cf(), timeout=CLAUDE_TIMEOUT)
+        remaining = CLAUDE_TIMEOUT - (time.time() - t0)
+        if attempt > 0 and remaining < 30:
+            break
+        budget = min(FIRST_TRY_TIMEOUT, remaining) if attempt == 0 else remaining
+        t1 = time.time()
+        try:
+            r = subprocess.run(
+                [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
+                 *NO_TOOLS, '--output-format', 'text'],
+                input=sanitize(prompt),
+                capture_output=True, text=True, env=env_with_cf(), timeout=budget)
+        except subprocess.TimeoutExpired as e:
+            last_err = e
+            log(f'⏱️ claude 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
+            continue
         if r.returncode != 0:
             raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
         out = r.stdout.strip()
@@ -2111,11 +2138,13 @@ def run_claude(prompt):
             last_err = RuntimeError(f'回覆裡沒有 JSON：{out[:200]}')
             continue
         try:
-            return json.loads(out[i:j + 1])
+            res = json.loads(out[i:j + 1])
         except json.JSONDecodeError as e:
             last_err = e
             continue
-    raise RuntimeError(f'回覆連續 3 次都不是合法 JSON，放棄這輪：{last_err}')
+        log(f'claude 回覆耗時 {time.time() - t1:.0f} 秒（第 {attempt + 1} 次嘗試）')
+        return res
+    raise RuntimeError(f'claude 呼叫連續失敗（逾時或回覆不是合法 JSON），放棄這輪：{last_err}')
 
 
 def snap_signals(app_id, at):
