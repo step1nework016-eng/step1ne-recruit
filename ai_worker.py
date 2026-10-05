@@ -342,8 +342,30 @@ def prompt_precall_card(p):
 - job_pitch_60s：介紹最合適的那個職缺
 ''' if no_job else '')
 
+    # 2026-10-05 Jacky（Fiona 案例）：沒跟阿財談到內容的人選，這通電話就是第一輪面試，
+    # 題目要把阿財本來會問的都排進去，不能只靠履歷問 3 題。
+    cov = p.get('interview_coverage') or 'full'
+    first_round = cov in ('none', 'entered_only', 'partial')
+    cov_desc = {'none': '這位人選完全沒有跟 AI 面談助理（阿財）談過',
+                'entered_only': '這位人選有進 AI 面談室，但一題都沒有回答就離開',
+                'partial': '這位人選只跟 AI 面談助理（阿財）談了一小部分就離開'}.get(cov, '')
+    first_round_block = (f'''
+【⚠️ {cov_desc}——這通電話就是第一輪面試】
+除了驗證職缺條件，top_questions（最多 3 題）＋ extra_questions（最多 6 題）合起來要涵蓋下面這些（逐字稿裡已經答過的就不要再問）：
+1. 為什麼想換工作：現職推力（不滿意什麼）跟這次的拉力（想要什麼），要問到具體事件
+2. 目前狀態：在職／離職、預告期多久、最快何時能到職
+3. 薪資：現在的年薪怎麼組成（底薪×月數＋獎金），期望多少、底線多少
+4. 地點、出差、外派能接受到什麼程度
+5. 最在意的條件跟絕對不能接受的條件
+6. 未來 3～5 年想往哪個方向發展
+7. 做事風格：一題行為題，請他講一次實際發生的狀況（例如跨部門卡住時怎麼推動）
+8. 推薦同意：是否同意我們推薦、最近有沒有透過其他獵頭或自己投過同一家公司（避免重複推薦）
+履歷上看到的數字（業績、成本節省、團隊規模）挑最重要的一個，問清楚是個人還是團隊的成果。
+''' if first_round else '')
+    extra_max = 6 if first_round else 3
+
     return f"""你是獵頭顧問的助理，要幫顧問準備一份「電話前只要看這張卡就好」的 Pre-call Card。
-{no_job_block}
+{no_job_block}{first_round_block}
 {TERM_FIX}
 
 只輸出 JSON（不要任何說明文字、不要用 markdown code block 包起來），格式如下：
@@ -369,7 +391,7 @@ def prompt_precall_card(p):
 
 規則：
 - **conversation_flow 是給顧問電話中照順序用的口頭稿，跟上面 hard_gates／must_ask_questions 服務同一組判斷，但用顧問聽得懂、可以直接說出口的方式重寫**——不是另外發明一套新內容
-- top_questions 1-3 題、extra_questions 0-3 題，第一層 top_questions 一定要是最重要的；沒有值得補問的就給空陣列，不要硬湊
+- top_questions 1-3 題、extra_questions 0-{extra_max} 題，第一層 top_questions 一定要是最重要的；沒有值得補問的就給空陣列，不要硬湊
 - resume_summary.career_timeline 的 period（日期區間）一定要照履歷原文抄，履歷沒寫清楚就老實填「履歷未載明」，不准自己推算或編造日期
 - resume_summary.core_skills／current_status 都只能根據履歷（跟逐字稿，如果有）判斷，看不出來的欄位就給空字串或空陣列，不要為了填滿而編
 - known_do_not_ask 每一項都要有 sources（至少 1 個，可以有履歷跟 AI 面談兩個來源），sources[].snippet 必須是履歷原文或逐字稿裡真的出現過的片段，**不是你自己重新描述的一句話**
@@ -443,7 +465,8 @@ def _repair_precall_card(data, payload=None):
         data['call_goal']['validation_points'] = vp[:3]
     cf = data.get('conversation_flow')
     if isinstance(cf, dict):
-        for key, n in (('top_questions', 3), ('extra_questions', 3)):
+        _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3
+        for key, n in (('top_questions', 3), ('extra_questions', _xmax)):
             if isinstance(cf.get(key), list) and len(cf[key]) > n:
                 cf[key] = cf[key][:n]
         sc = cf.get('phone_sidecar')
@@ -516,7 +539,7 @@ def _repair_precall_more(data, payload=None):
                 x.setdefault('title', (x.get('goal') or x['question'])[:10])
                 if x.get('validates_gate_id') not in (None, '') and x.get('validates_gate_id') not in gate_ids:
                     x['validates_gate_id'] = None
-            cf[key] = qs[:3]
+            cf[key] = qs[:(6 if key == 'extra_questions' and (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3)]
         # top_questions 0 題 → 拿 must_ask_questions 轉
         if not cf.get('top_questions'):
             cf['top_questions'] = [{'id': f'tq_{i}', 'title': (m.get('why_it_matters') or m['question'])[:10],
@@ -680,8 +703,9 @@ def _validate_precall_card(data, payload=None):
     extra_q = cf.get('extra_questions')
     if not isinstance(top_q, list) or not (1 <= len(top_q) <= 3):
         raise ValueError(f'conversation_flow.top_questions 應該是 1-3 題，實際 {len(top_q) if isinstance(top_q, list) else "型別不對"}')
-    if not isinstance(extra_q, list) or len(extra_q) > 3:
-        raise ValueError('conversation_flow.extra_questions 應該是 0-3 題')
+    _xmax = 6 if (payload or {}).get('interview_coverage') in ('none', 'entered_only', 'partial') else 3
+    if not isinstance(extra_q, list) or len(extra_q) > _xmax:
+        raise ValueError(f'conversation_flow.extra_questions 應該是 0-{_xmax} 題')
     for q in list(top_q) + list(extra_q):
         if not isinstance(q, dict) or not q.get('question') or not q.get('title'):
             raise ValueError('conversation_flow 問題項目缺 title/question')
@@ -1566,6 +1590,8 @@ def _wrap_precall_card(ai_data, payload):
         'not_fit_jobs': ai_data.get('not_fit_jobs') or [],
         'watchouts': ai_data.get('watchouts') or [],
         'no_job_mode': bool(payload.get('no_job_mode')) or payload.get('job_slug') == 'unspecified',
+        'interview_coverage': payload.get('interview_coverage') or 'full',
+        'candidate_msg_count': payload.get('candidate_msg_count'),
         'meta': meta,
     }
 
