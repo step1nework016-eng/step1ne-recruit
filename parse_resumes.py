@@ -806,12 +806,35 @@ def parse_urls():
     return ok, fail, failed_names
 
 
+def _claim_run_lock():
+    import socket
+    host = socket.gethostname()
+    try:
+        rows = d1(
+            "INSERT INTO deploy_locks (target, owner, host, acquired_at) "
+            f"VALUES ('cron:parse_resumes', 'parse_resumes', '{host.replace(chr(39), '')}', datetime('now','+8 hours')) "
+            "ON CONFLICT(target) DO UPDATE SET host=excluded.host, acquired_at=excluded.acquired_at "
+            "WHERE deploy_locks.host = excluded.host "
+            "OR deploy_locks.acquired_at < datetime('now','+8 hours','-10 minutes') "
+            "RETURNING host")
+        return bool(rows) and rows[0].get('host') == host
+    except Exception as e:
+        print(f'  （搶鎖失敗，照常執行：{e}）')
+        return True
+
+
 def main():
     if '--ocr-backfill' in sys.argv or '--ocr-file' in sys.argv:
         fid = sys.argv[sys.argv.index('--ocr-file') + 1] if '--ocr-file' in sys.argv else None
         ocr_backfill(only_id=fid, dry='--dry-run' in sys.argv)
         return
     force = '--force' in sys.argv
+    # 2026-10-05：Mac 跟 WSL2 兩台都排了這支（搬家過渡期），同一份解析失敗會發兩則 TG、
+    # 同一份履歷也被兩台各解析一次。用 deploy_locks 搶一個 10 分鐘的「這一輪我來」：
+    # 搶到才跑；另一台這輪直接跳過。上一輪那台掛了，10 分鐘後別台自動接手。
+    if not _claim_run_lock():
+        print('  另一台機器這一輪已經在解析，跳過')
+        return
     # --force 只重抽「還有檔案可以重抽」的。
     # 早期有些資料只存了文字沒存檔案（前端抽取時期），對那些做 --force
     # 等於把唯一的一份文字清成 NULL——那是資料損毀，不是重新解析。
