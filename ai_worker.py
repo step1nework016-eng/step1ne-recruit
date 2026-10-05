@@ -314,19 +314,35 @@ def prompt_precall_card(p):
     # 自己發明職缺（規格 A 第 12 節）。沒有給清單就當作沒有候選職缺，直接
     # 輸出空陣列，不強迫湊數。
     alt_candidates = p.get('alternative_job_candidates') or []
+    # 2026-10-05 Jacky：顧問常常在「還不知道這個人適合什麼」的時候就先電洽（人選還沒跟阿財
+    # 面談、掛在「尚未指定職缺」）。這時卡片要改成「先幫顧問看他適合哪幾個職缺、不適合哪些」。
+    no_job = bool(p.get('no_job_mode')) or (p.get('job_slug') == 'unspecified')
+    alt_max = 5 if no_job else 3
     if alt_candidates:
-        alt_block = ('可推薦的其他職缺清單（只能從這裡面選，最多 3 個，job_slug 必須完全照抄，'
+        alt_block = (f'可推薦的其他職缺清單（只能從這裡面選，最多 {alt_max} 個，job_slug 必須完全照抄，'
                      '不可以自己編一個不在清單裡的職缺，也不可以選跟目前這個職缺相同的）：\n'
                      + '\n'.join(
                          f'- job_slug={j.get("job_slug")}｜{j.get("title")}｜薪資{j.get("salary_min") or "?"}'
                          f'-{j.get("salary_max") or "?"}｜地點{_fmt_locations(j.get("locations"))}｜'
-                         f'{(j.get("main_duties") or "")[:80]}'
+                         f'{(j.get("main_duties") or "")[:80]}｜條件：{(j.get("required_conditions") or "")[:80]}'
                          for j in alt_candidates))
     else:
         alt_block = '目前沒有提供其他可推薦職缺的清單，alternative_jobs 一律輸出空陣列 []。'
 
-    return f"""你是獵頭顧問的助理，要幫顧問準備一份「電話前只要看這張卡就好」的 Pre-call Card。
+    no_job_block = ('''
+【⚠️ 這位人選還沒有指定職缺】
+顧問還不知道他適合什麼，下面的「職缺」只是佔位用的空白職缺，**不要拿它來比對**。這張卡改成：
+- verdict.one_line：他是什麼類型的人才、最適合哪一兩個職缺（用職缺名稱講）
+- alternative_jobs：就是「適合的職缺」，從清單挑最合適的 1～5 個，最合的給 primary_alternative
+- condition_table：拿 alternative_jobs 裡最合適的那一個職缺的條件來逐條對照，verdict.compared_job 填那個職缺名稱
+- not_fit_jobs：清單裡乍看相關、但其實不適合的職缺，講清楚卡在哪
+- hard_gates／call_goal：改成「這通電話要先確認的關鍵事項」（例如想找的方向、期望薪資、能接受的地點、目前工作狀態），
+  call_goal.decision 填「確認適合哪個職缺」，target_role 填最合適的職缺名稱
+- job_pitch_60s：介紹最合適的那個職缺
+''' if no_job else '')
 
+    return f"""你是獵頭顧問的助理，要幫顧問準備一份「電話前只要看這張卡就好」的 Pre-call Card。
+{no_job_block}
 {TERM_FIX}
 
 只輸出 JSON（不要任何說明文字、不要用 markdown code block 包起來），格式如下：
@@ -344,6 +360,10 @@ def prompt_precall_card(p):
 "closing":{{"script":"收尾script，含簡短總結候選人優勢、尚待確認的部分、直接詢問下一步意願"}},
 "phone_sidecar":["電話旁可以快速瞄一眼的極短提示，1-6個字串，每個不超過12字"]}},
 "alternative_jobs":[{{"job_slug":"必須完全照抄上面清單裡的job_slug","title":"","recommendation_level":"primary_alternative|secondary_alternative","fit_reasons":["最多3個，必須具體，不能寫綜合條件不錯這種空話"],"watchouts":["最多2個"],"known_conflicts":[],"unknowns_to_confirm":[],"salary_summary":"","location_summary":"","consultant_talk_track":"顧問可以直接口頭使用的一段話，說明為什麼想順便分享這個職缺"}}],
+"verdict":{{"one_line":"一句話結論，先講他是什麼類型的人、對這個職缺大概對得上幾成、最大的落差是什麼，30-70字","fit_level":"strong|partial|weak","compared_job":"condition_table 拿哪個職缺比對的職缺名稱"}},
+"condition_table":[{{"condition":"職缺的一項條件，照職缺原文精簡，4-20字","resume_evidence":"履歷上對應的具體內容（公司、年資、數字），沒有就寫「履歷沒有寫」","status":"matched|partial|unmatched|unknown","note":"一句話判斷，例如「年資夠，但幾乎都是業務端」，沒有就空字串"}}],
+"not_fit_jobs":[{{"job_slug":"必須完全照抄上面清單裡的job_slug","title":"","reason":"為什麼不適合，具體講卡在哪，一句話"}}],
+"watchouts":[{{"title":"要注意的事，4-12字，例如「最近工作都很短」「數字要驗證」「現職是顧問」","detail":"履歷上的具體依據，一句話","ask":"電話裡可以怎麼問，一句話"}}],
 "meta":{{"generation_status":"ready","used_ai_fallback_for_gates":{str(source_kind == 'derive_from_jd').lower()},"warnings":[]}}}}
 
 規則：
@@ -356,7 +376,11 @@ def prompt_precall_card(p):
 - **如果履歷跟逐字稿對同一件事講的不一樣（例如履歷寫仍在職，逐字稿說已離職），這件事絕對不能放進 known_do_not_ask**，改成放進 extra_questions 當一題要在電話中確認清楚的問題，題目裡要講清楚「履歷寫O，但面談時說O，麻煩跟他確認」
 - job_pitch_60s／opening／closing 都必須是「顧問可以直接照著說出口」的口語句子，不是條列式的內部說明
 - alternative_jobs：{alt_block}
-- alternative_jobs 最多 3 個，預設 1-2 個就好，沒有合理的就給空陣列 []，**不要為了湊數硬推薦明顯不合的職缺**
+- verdict／condition_table／not_fit_jobs／watchouts（2026-10-05 加，給顧問電話前一眼看懂用）：
+  - condition_table 要**逐條**對照職缺的所有主要條件（必要條件、主要工作、加分項目都算），4-10 條，不是只挑 3 條；status：matched＝履歷有明確證據、partial＝部分符合、unmatched＝履歷明確不符、unknown＝履歷看不出來
+  - not_fit_jobs 只能從上面的職缺清單挑，0-3 個，只放「乍看相關但其實不合」的，不要把八竿子打不著的職缺都列進來
+  - watchouts 0-4 個，只放履歷上真的看得到的：工作年資很短或頻繁換工作、數字要驗證（是個人還是團隊）、現職狀態不清楚（顧問／兼職／待業）、時間軸有空窗、履歷前後矛盾；每個都附一句電話裡怎麼問。不准用年齡／性別／婚育／國籍
+- alternative_jobs 最多 {alt_max} 個，預設 1-2 個就好，沒有合理的就給空陣列 []，**不要為了湊數硬推薦明顯不合的職缺**
 - **hard_gates 最多 3 項，依優先順序排列：unknown 優先、其次 unmatched，明確 matched 的放最後**
 - {gate_source_block}
 - hard_gates[].status 只能是 matched（履歷有明確證據符合）／unknown（履歷看不出來，需要電話確認）／unmatched（履歷明確顯示不符合）三選一，**不確定一律給 unknown，不要用猜的判 matched 或 unmatched**
@@ -410,6 +434,9 @@ def _repair_precall_card(data):
             seen = True
         if f.get('evidence_confidence') == 'low' and f.get('risk_level') == 'high':
             f['risk_level'] = 'medium'
+    for key, n in (('condition_table', 10), ('not_fit_jobs', 3), ('watchouts', 4), ('alternative_jobs', 5)):
+        if isinstance(data.get(key), list) and len(data[key]) > n:
+            data[key] = data[key][:n]
     vp = (data.get('call_goal') or {}).get('validation_points') if isinstance(data.get('call_goal'), dict) else None
     if isinstance(vp, list) and len(vp) > 3:
         data['call_goal']['validation_points'] = vp[:3]
@@ -563,8 +590,10 @@ def _validate_precall_card(data, payload=None):
     # 不接受 AI 自己編出來的 job_slug（規格 A 第 12 節：沒有 Production Job
     # 就不准推薦），也不接受推薦跟目前這個職缺相同的 job_slug。
     alt = data.get('alternative_jobs')
-    if not isinstance(alt, list) or len(alt) > 3:
-        raise ValueError('alternative_jobs 應該是最多 3 個的陣列')
+    no_job = bool((payload or {}).get('no_job_mode')) or (payload or {}).get('job_slug') == 'unspecified'
+    alt_max = 5 if no_job else 3
+    if not isinstance(alt, list) or len(alt) > alt_max:
+        raise ValueError(f'alternative_jobs 應該是最多 {alt_max} 個的陣列')
     allowed_slugs = {j.get('job_slug') for j in ((payload or {}).get('alternative_job_candidates') or [])}
     current_slug = (payload or {}).get('job_slug')
     for a in alt:
@@ -582,6 +611,15 @@ def _validate_precall_card(data, payload=None):
             raise ValueError('alternative_jobs.watchouts 超過 2 個')
         if not (a.get('consultant_talk_track') or '').strip():
             raise ValueError('alternative_jobs 項目缺 consultant_talk_track')
+
+    # 2026-10-05 新增的四塊是輔助資訊：形狀不對就丟掉那一塊，不要讓整張卡退回舊版。
+    if not isinstance(data.get('verdict'), dict) or not (data['verdict'].get('one_line') or '').strip():
+        data['verdict'] = None
+    for key, need in (('condition_table', 'condition'), ('watchouts', 'title'), ('not_fit_jobs', 'job_slug')):
+        v = data.get(key)
+        data[key] = [x for x in v if isinstance(x, dict) and (x.get(need) or '').strip()] if isinstance(v, list) else []
+    if allowed_slugs:
+        data['not_fit_jobs'] = [x for x in data['not_fit_jobs'] if x['job_slug'] in allowed_slugs]
 
     return data
 
@@ -1416,6 +1454,11 @@ def _wrap_precall_card(ai_data, payload):
         'conversation_flow': conversation_flow,
         'alternative_jobs': alt_jobs,
         'resume_summary': ai_data.get('resume_summary'),
+        'verdict': ai_data.get('verdict'),
+        'condition_table': ai_data.get('condition_table') or [],
+        'not_fit_jobs': ai_data.get('not_fit_jobs') or [],
+        'watchouts': ai_data.get('watchouts') or [],
+        'no_job_mode': bool(payload.get('no_job_mode')) or payload.get('job_slug') == 'unspecified',
         'meta': meta,
     }
 
