@@ -1318,7 +1318,22 @@ def build_client_html_v2(data, meta, show=None):
     qa_html = ''.join(f'<div class="qa"><div class="q"><b>Q｜</b>{e(q)}</div><div>A：{e(a)}</div></div>' for q, a in qa)
     qa_title = '電洽逐項查證（顧問詢問內容與人選回覆）' if (meta.get('call_summary_client') or not meta.get('has_real_interview')) else '面談逐項查證（詢問內容與人選回覆）'
 
-    cond = ''.join(f'<li>{e(txt(x.get("requirement")))}　<span class="ok">✓</span> {e(txt(x.get("evidence")))}</li>'
+    # 2026-10-05 修：這裡原本每一條都寫死綠色 ✓——周亦宣客戶版「10年以上」明明寫了「未達10年」、
+    # 「Excel 還沒問到」、「對單獨派駐柬埔寨有疑慮」，旁邊一樣打勾，等於跟客戶說全部符合。
+    # 改成照 hard_conditions 同一條的 verdict 給圖示；對不到的才看 evidence 文字有沒有落差字眼。
+    _verdict_by_item = {txt(h.get('item')): txt(h.get('verdict')) for h in (data.get('hard_conditions') or []) if isinstance(h, dict)}
+
+    def _cond_mark(x):
+        v = _verdict_by_item.get(txt(x.get('requirement')), '')
+        ev = txt(x.get('evidence'))
+        if not v:
+            v = '待確認' if re.search(r'未達|未具體|未問|待確認|尚未|疑慮|不清楚|未提及|落差', ev) else '符合'
+        if v == '符合':
+            return '<span class="ok">✓</span>'
+        if v in ('不符', '不符合'):
+            return '<span class="no">✗ 不符</span>'
+        return f'<span class="warn">! {e(v if v != "待確認" else "待確認")}</span>'
+    cond = ''.join(f'<li>{e(txt(x.get("requirement")))}　{_cond_mark(x)} {e(txt(x.get("evidence")))}</li>'
                    for x in (data.get('condition_check') or []) if isinstance(x, dict) and txt(x.get('requirement')))
     pros = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('recommend_points') or []) if txt(x))
     gaps = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('gaps') or []) if txt(x))
