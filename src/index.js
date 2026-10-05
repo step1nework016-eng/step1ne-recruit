@@ -8019,7 +8019,12 @@ async function candidateCareTick(env) {
     // 這則失敗不能擋到下面的到職關懷
   }
 
-  // ── 8：到職關懷 第 1／3／7／28 天 ──
+  // ── 8：到職關懷 第 1／3／7／14／30／60／90 天 ──
+  // ⏸ 2026-10-05 Jacky：「關懷文案都先不要啟動」——文案跟流程先給顧問們看過再決定，
+  // 這段整個先不發。要恢復把 CANDIDATE_CARE_PAUSED 改成 false 再部署。
+  // （上面 7b 報到前準備事項不受影響；給顧問的 TG「該關懷了」提醒是另一支 pipelineReminders，也不受影響。）
+  const CANDIDATE_CARE_PAUSED = true;
+  if (CANDIDATE_CARE_PAUSED) return;
   // 只在傍晚 18:30–18:44 這格窗口發（Jacky 確認過的「下班後」時間點），
   // 一天只會命中一次；candidate_care_log 記錄已經發過哪些天數，避免重複。
   const tpe = new Date(Date.now() + 8 * 3600 * 1000);
