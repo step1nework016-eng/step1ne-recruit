@@ -3905,9 +3905,16 @@ async function ingestMailboxMessage(env, b) {
     return { ok: true, matched: 'bd_reply', notified: true };
   }
 
-  // ③ 其他人選來信（信箱對得上應徵紀錄）
-  const app = await env.DB.prepare(`SELECT id, name, job_title, owner FROM applications WHERE lower(email)=? ORDER BY created_at DESC LIMIT 1`)
+  // ③ 其他人選來信（信箱對得上應徵紀錄；對不上但主旨有人選姓名＋附履歷的也算——阿財會請人選「主旨寫姓名＋應徵職缺」）
+  let app = await env.DB.prepare(`SELECT id, name, job_title, owner FROM applications WHERE lower(email)=? ORDER BY created_at DESC LIMIT 1`)
     .bind(fromEmail).first().catch(() => null);
+  if (!app && att.length && subject) {
+    const { results: byName } = await env.DB.prepare(
+      `SELECT id, name, job_title, owner FROM applications WHERE length(name) >= 2 AND instr(?, name) > 0
+          AND created_at >= datetime('now','+8 hours','-60 days') ORDER BY created_at DESC LIMIT 3`).bind(subject).all().catch(() => ({ results: [] }));
+    const uniq = [...new Map((byName || []).map((r) => [r.name, r])).values()];
+    if (uniq.length === 1) app = uniq[0];
+  }
   if (app) {
     const cv = await saveAtt(app.id);
     await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
