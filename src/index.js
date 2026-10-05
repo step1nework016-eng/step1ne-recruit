@@ -3808,6 +3808,128 @@ async function handleSourcedAction(env, cq) {
 // 2026-10-02 Jacky：「TG 我沒收到履歷，那這個是直接放在卡片嗎？」——人選回「寄信約電話」那封時附的履歷，
 // 直接存進檔案庫、掛到人選卡片（applications.resume_file_id；原本的履歷連結留著）。
 // 只收 PDF／Word，跳過信件簽名檔那種內嵌小圖。下載網址 1 小時內有效，收信當下就抓。
+// ── official@ 信箱收信（mailbox_poll.py → /internal/mailbox-ingest）──────────────
+async function ingestMailboxMessage(env, b) {
+  const msgId = String(b.message_id || '').trim().slice(0, 300);
+  const fromRaw = String(b.from || '');
+  const fromEmail = ((fromRaw.match(/<([^>]+)>/) || [])[1] || fromRaw).trim().toLowerCase();
+  const fromName = fromRaw.replace(/<[^>]+>/, '').replace(/"/g, '').trim() || null;
+  const subject = String(b.subject || '').slice(0, 300);
+  const body = String(b.text || '').trim().slice(0, 8000);
+  const now = nowTaipei();
+  if (!fromEmail || !fromEmail.includes('@')) return { ok: true, skipped: 'no_from' };
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS inbound_mail_seen (message_id TEXT PRIMARY KEY, from_email TEXT,
+      subject TEXT, matched TEXT, matched_id TEXT, source TEXT, created_at TEXT)`).run();
+  if (msgId) {
+    const seen = await env.DB.prepare(`SELECT matched FROM inbound_mail_seen WHERE message_id=?`).bind(msgId).first();
+    if (seen) return { ok: true, skipped: 'seen', matched: seen.matched };
+  }
+  const mark = async (matched, matchedId) => {
+    if (!msgId) return;
+    await env.DB.prepare(`INSERT OR IGNORE INTO inbound_mail_seen (message_id, from_email, subject, matched, matched_id, source, created_at)
+        VALUES (?,?,?,?,?,'imap',?)`).bind(msgId, fromEmail, subject, matched, matchedId || null, now).run().catch(() => {});
+  };
+  const att = Array.isArray(b.attachments) ? b.attachments : [];
+  const saveAtt = async (appId) => {
+    const saved = [];
+    for (const a of att.slice(0, 3)) {
+      try {
+        const name = String(a.filename || 'resume.pdf');
+        if (!/\.(pdf|docx?)$/i.test(name)) continue;
+        const bin = Uint8Array.from(atob(String(a.b64 || '')), (c) => c.charCodeAt(0));
+        if (!bin.length || bin.length > MAX_RESUME_BYTES) continue;
+        const fileId = uid();
+        await env.FILES.put(fileId, bin, { httpMetadata: { contentType: a.mime || 'application/pdf' } });
+        await env.DB.prepare(`INSERT INTO files (id, created_at, filename, mime, size, chunks, storage) VALUES (?,?,?,?,?,0,'r2')`)
+          .bind(fileId, now, name, a.mime || 'application/pdf', bin.length).run();
+        await env.DB.prepare(`UPDATE applications SET resume_file_id = ? WHERE id = ?`).bind(fileId, appId).run();
+        saved.push(name);
+      } catch { /* 存不了就提醒去信箱下載 */ }
+    }
+    return saved;
+  };
+  const excerpt = body ? body.slice(0, 1500) : '（這封沒有文字內容，請到 official@ 信箱看）';
+  const cardUrl = (id) => `https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(id)}`;
+
+  // ① 約電話的回信（跟 Resend 那段同一張表；Resend 那邊已經記過＝兩邊都收到，只補附件不重推）
+  const cbm = await env.DB.prepare(
+    `SELECT m.id, m.application_id, m.reply_at, a.name, a.job_title, a.owner FROM call_booking_mails m
+       JOIN applications a ON a.id = m.application_id
+      WHERE lower(m.to_email) = ? AND m.status = 'sent' AND m.sent_at >= datetime('now','+8 hours','-30 days')
+      ORDER BY m.sent_at DESC LIMIT 1`).bind(fromEmail).first().catch(() => null);
+  if (cbm) {
+    const already = cbm.reply_at && cbm.reply_at >= String(b.date_taipei || now).slice(0, 19).replace('T', ' ').slice(0, 13);
+    await env.DB.prepare(`UPDATE call_booking_mails SET reply_at=?, reply_body=? WHERE id=?`)
+      .bind(cbm.reply_at && already ? cbm.reply_at : now, body || null, cbm.id).run().catch(() => {});
+    const cv = await saveAtt(cbm.application_id);
+    await mark('call_booking', cbm.application_id);
+    if (already && !cv.length) return { ok: true, matched: 'call_booking', notified: false };
+    const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner || '（還沒指派顧問）');
+    const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
+    await notify(env, `📞 人選回信（official@ 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
+      + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+      + `\n\n人選卡片：${cardUrl(cbm.application_id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
+    return { ok: true, matched: 'call_booking', notified: true };
+  }
+
+  // ② 開發信回信（同 Resend 那段；bd_replies 兩小時內已有同寄件人同主旨＝重複）
+  const domain = fromEmail.split('@')[1] || '';
+  const freeMail = /^(gmail|yahoo|hotmail|outlook|icloud|msn|live)\./i.test(domain) || /yahoo\.com\.tw$/i.test(domain);
+  let orow = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE lower(contact_email)=? AND status='sent' ORDER BY sent_at DESC LIMIT 1`).bind(fromEmail).first().catch(() => null);
+  if (!orow && domain && !freeMail) {
+    orow = await env.DB.prepare(`SELECT * FROM bd_outreach WHERE lower(contact_email) LIKE ? AND status='sent' ORDER BY sent_at DESC LIMIT 1`).bind('%@' + domain).first().catch(() => null);
+  }
+  if (orow) {
+    const dup = await env.DB.prepare(`SELECT id FROM bd_replies WHERE lower(from_email)=? AND subject=? AND created_at >= datetime('now','+8 hours','-2 hours')`)
+      .bind(fromEmail, subject).first().catch(() => null);
+    await mark('bd_reply', orow.id);
+    if (dup) return { ok: true, matched: 'bd_reply', notified: false };
+    await env.DB.prepare(`INSERT INTO bd_replies (id, created_at, outreach_id, from_email, from_name, subject, body, handled, updated_at)
+        VALUES (?,?,?,?,?,?,?,0,?)`).bind(crypto.randomUUID(), now, orow.id, fromEmail, fromName, subject, body, now).run().catch(() => {});
+    await env.DB.prepare(`UPDATE bd_outreach SET last_event_at=? WHERE id=?`).bind(now, orow.id).run().catch(() => {});
+    const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信').catch(() => null);
+    const cRoute = await tgRoute(env, 'client_signals');
+    await notify(env, `✉️ 客戶回信了！（official@ 信箱）\n\n公司：${orow.company}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1200)}`,
+      cRoute || (topic ? { message_thread_id: topic } : undefined)).catch(() => {});
+    return { ok: true, matched: 'bd_reply', notified: true };
+  }
+
+  // ③ 其他人選來信（信箱對得上應徵紀錄）
+  const app = await env.DB.prepare(`SELECT id, name, job_title, owner FROM applications WHERE lower(email)=? ORDER BY created_at DESC LIMIT 1`)
+    .bind(fromEmail).first().catch(() => null);
+  if (app) {
+    const cv = await saveAtt(app.id);
+    await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+      .bind(uid(), app.id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, 'official@ 信箱').run().catch(() => {});
+    await mark('candidate', app.id);
+    const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
+    await notify(env, `📧 人選來信（official@ 信箱）｜${app.name}\n職缺：${app.job_title || '—'}\n主旨：${subject || '—'}\n\n${excerpt}`
+      + (cv.length ? `\n\n📎 附件（${cv.join('、')}）已放進人選卡片` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+      + `\n\n人選卡片：${cardUrl(app.id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
+    return { ok: true, matched: 'candidate', notified: true };
+  }
+
+  // ④ 客戶來信（客戶聯絡人信箱，或客戶公司網域）——推到那家客戶自己的主題
+  let client = await env.DB.prepare(`SELECT id, display_name, tg_topic_id, tg_topic_chat_id FROM client_companies WHERE lower(contact_email)=? LIMIT 1`)
+    .bind(fromEmail).first().catch(() => null);
+  if (!client && domain && !freeMail) {
+    client = await env.DB.prepare(`SELECT id, display_name, tg_topic_id, tg_topic_chat_id FROM client_companies WHERE lower(contact_email) LIKE ? LIMIT 1`)
+      .bind('%@' + domain).first().catch(() => null);
+  }
+  if (client) {
+    await mark('client', client.id);
+    const extra = client.tg_topic_id ? { message_thread_id: Number(client.tg_topic_id), ...(client.tg_topic_chat_id ? { chat_id: client.tg_topic_chat_id } : {}) }
+      : (await tgRoute(env, 'client_signals')) || undefined;
+    await notify(env, `🏢 客戶來信（official@ 信箱）｜${client.display_name}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1500)}`
+      + (att.length ? `\n\n📎 有 ${att.length} 個附件，請到 official@ 信箱下載` : ''), extra).catch(() => {});
+    return { ok: true, matched: 'client', notified: true };
+  }
+
+  // ⑤ 對不上的：只記錄、不推播（避免電子報、系統通知洗版）；mailbox_poll 會在每日摘要列出
+  await mark('none', null);
+  return { ok: true, matched: 'none', notified: false };
+}
+
 async function saveReplyResumes(env, emailId, appId) {
   if (!env.RESEND_READ_KEY || !emailId || !appId) return [];
   const saved = [];
@@ -4665,6 +4787,15 @@ export default {
     // 企業端文章 30 天 257 人進站、0 人留下聯絡方式：唯一的出口是「加 LINE」，
     // 企業決策者通常不會為了問一句話去加陌生 LINE。改在文章 CTA 裡直接放三欄小表單
     // （公司／職缺／Email 或電話），送到這裡：寫進 company_leads，推 TG「🏢 官網企業詢問」。
+    // 2026-10-05 Jacky：official@step1ne.com（GoDaddy 信箱）收到的信，原本系統完全看不到——
+    // 只回 official@、沒回到 reply@reply.step1ne.com 的人（李佳龍、杜偉銘、恩群 Penny）全部漏接。
+    // Mac 上的 mailbox_poll.py 每 5 分鐘用 IMAP 唯讀撈新信送到這裡，比對規則跟 Resend 收信那段一樣：
+    // 約電話回信 → 開發信回信 → 其他人選來信 → 客戶來信。同一封信兩邊都收到時用 Message-ID 去重。
+    if (p === '/internal/mailbox-ingest' && request.method === 'POST') {
+      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      const b = await request.json().catch(() => ({}));
+      return json(request, await ingestMailboxMessage(env, b));
+    }
     // 補抓：功能上線前已經收到的回信附件（總指揮手動用，需要 ADMIN_TOKEN）
     if (p === '/internal/reply-resume' && request.method === 'POST') {
       if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
