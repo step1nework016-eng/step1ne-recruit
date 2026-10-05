@@ -3815,6 +3815,17 @@ async function handleSourcedAction(env, cq) {
 // 2026-10-02 Jacky：「TG 我沒收到履歷，那這個是直接放在卡片嗎？」——人選回「寄信約電話」那封時附的履歷，
 // 直接存進檔案庫、掛到人選卡片（applications.resume_file_id；原本的履歷連結留著）。
 // 只收 PDF／Word，跳過信件簽名檔那種內嵌小圖。下載網址 1 小時內有效，收信當下就抓。
+// 2026-10-05 Jacky：從信箱收到人選補的履歷 → 自動重產電洽準備卡（用新履歷）。走 service binding 呼叫後台同一支端點。
+async function refreshPrecallAfterResume(env, appId) {
+  if (!env.BACKOFFICE || !env.ADMIN_TOKEN || !appId) return false;
+  try {
+    const r = await env.BACKOFFICE.fetch(`https://backoffice/admin/application/${encodeURIComponent(appId)}/precall-card`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}`, 'user-agent': 'step1ne-recruit' },
+      body: JSON.stringify({ force: true }) });
+    return r.ok;
+  } catch { return false; }
+}
+
 // ── official@ 信箱收信（mailbox_poll.py → /internal/mailbox-ingest）──────────────
 async function ingestMailboxMessage(env, b) {
   const msgId = String(b.message_id || '').trim().slice(0, 300);
@@ -3871,12 +3882,13 @@ async function ingestMailboxMessage(env, b) {
     await env.DB.prepare(`UPDATE call_booking_mails SET reply_at=?, reply_body=? WHERE id=?`)
       .bind(cbm.reply_at && already ? cbm.reply_at : now, body || null, cbm.id).run().catch(() => {});
     const cv = await saveAtt(cbm.application_id);
+    const pcQueued = cv.length ? await refreshPrecallAfterResume(env, cbm.application_id) : false;
     await mark('call_booking', cbm.application_id);
     if (already && !cv.length) return { ok: true, matched: 'call_booking', notified: false };
     const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner || '（還沒指派顧問）');
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
     await notify(env, `📞 人選回信（official@ 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
-      + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+      + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片${pcQueued ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(cbm.application_id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'call_booking', notified: true };
   }
@@ -3917,12 +3929,13 @@ async function ingestMailboxMessage(env, b) {
   }
   if (app) {
     const cv = await saveAtt(app.id);
+    const pcQueued2 = cv.length ? await refreshPrecallAfterResume(env, app.id) : false;
     await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
       .bind(uid(), app.id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, 'official@ 信箱').run().catch(() => {});
     await mark('candidate', app.id);
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
     await notify(env, `📧 人選來信（official@ 信箱）｜${app.name}\n職缺：${app.job_title || '—'}\n主旨：${subject || '—'}\n\n${excerpt}`
-      + (cv.length ? `\n\n📎 附件（${cv.join('、')}）已放進人選卡片` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+      + (cv.length ? `\n\n📎 附件（${cv.join('、')}）已放進人選卡片${pcQueued2 ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(app.id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'candidate', notified: true };
   }
@@ -4655,13 +4668,14 @@ export default {
             .bind(now, body.slice(0, 8000) || null, cbm.id).run().catch(() => {});
           const hasAtt = Array.isArray(d.attachments) && d.attachments.some((x) => String(x.content_disposition || '') !== 'inline');
           const cvSaved = hasAtt ? await saveReplyResumes(env, d.email_id, cbm.application_id) : [];
+          if (cvSaved.length) await refreshPrecallAfterResume(env, cbm.application_id);
           const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner ? cbm.owner : '（還沒指派顧問）');
           // 2026-10-02 Jacky：人選回信要有自己的主題，不要跟面試通知混在一起
           const candTopic = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
           await notify(env,
             `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n`
             + (body ? body.slice(0, 1500) : '（這封沒有帶文字內容，請到 Resend 收件紀錄查看）')
-            + (cvSaved.length ? `\n\n📎 附的履歷（${cvSaved.join('、')}）已放進人選卡片，可以產生電洽前準備了` : (hasAtt ? '\n\n📎 有附件但沒有存進卡片（不是 PDF／Word 或太大），請到 official@ 信箱下載' : ''))
+            + (cvSaved.length ? `\n\n📎 附的履歷（${cvSaved.join('、')}）已放進人選卡片，電洽準備卡正在用新履歷自動重產（約 5 分鐘）` : (hasAtt ? '\n\n📎 有附件但沒有存進卡片（不是 PDF／Word 或太大），請到 official@ 信箱下載' : ''))
             + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`,
             candTopic ? { message_thread_id: candTopic } : undefined).catch(() => {});
           return json(request, { ok: true, received: true, matched: 'call_booking' });
