@@ -2564,6 +2564,8 @@ def tick():
     # 2026-10-05 踩雷：WSL2 同時開 2 個電洽卡的 claude，剛好那台在跟陳南宏面談，
     # 阿財回覆被拖慢到逾時，人選收到「系統出了點狀況」。這台有人在面談時只准做 1 件，
     # 面談的即時回覆優先。
+    if _DRAIN:
+        return 0
     limit = 1 if _interview_active_here() else CONCURRENCY
     free = limit - len(_INFLIGHT)
     if free <= 0:
@@ -2650,6 +2652,7 @@ import concurrent.futures as _cf
 CONCURRENCY = max(1, int(os.environ.get('AI_WORKER_CONCURRENCY', '3')))
 _POOL = _cf.ThreadPoolExecutor(max_workers=CONCURRENCY)
 _INFLIGHT = {}
+_DRAIN = False   # 偵測到新版、等手上工作做完準備換版時為 True，這段期間不接新工作
 
 
 def _maybe_self_update(last_checked):
@@ -2668,8 +2671,20 @@ def _maybe_self_update(last_checked):
     # ai_worker 只在兩次工作之間呼叫這裡，本來就不會打斷正在跑的工作，不需要 can_restart。
     # 2026-10-05 改成可同時處理多件後，換版（os.execv）會把還在跑的工作砍掉——有工作在跑就等下一輪。
     _reap_done()
-    return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker',
-                                        can_restart=lambda: not _INFLIGHT)
+    # 2026-10-05 E13（WSL2 建議）：原本「有工作在跑就不換版」，佇列一直有卡片時會一路延後（實測延後 10 分鐘，
+    # 期間新卡片還是用舊版產）。改成偵測到新版就先停止接新工作（drain），手上的做完立刻換版。
+    def _can_restart():
+        global _DRAIN
+        if _INFLIGHT:
+            if not _DRAIN:
+                log('⏸️ 有新版本，先不接新工作，手上的做完就換版')
+            _DRAIN = True
+            return False
+        return True
+    _reap_done()
+    if _DRAIN and not _INFLIGHT:
+        last_checked = 0   # 手上工作剛做完、正在等換版：不要再等 5 分鐘的檢查週期，立刻換
+    return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker', can_restart=_can_restart)
 
 
 def main():
