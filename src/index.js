@@ -285,7 +285,12 @@ async function clientNameTerms(env) {
       }
     }
   } catch { return []; }
+  // 2026-10-05 修：自家招募把「Step1ne／德仁管理顧問」登記成客戶（co_step1ne），
+  // 每則貼文結尾的 step1ne.com/go/ 連結都會命中 → 10/1 起 12 則社群貼文被誤擋。
+  // 跟 social_post_agent.py client_name_terms() 同一條規則：含「德仁」「Step1ne」的詞不算客戶名。
+  // （不能直接跳過 relation='private'：「私人招待所」也是 private，那個名字仍然要擋。）
   return [...terms].filter((t) => !/^[A-Za-z0-9]{1,3}$/.test(t))
+                   .filter((t) => !/德仁|step1ne/i.test(t))
                    .sort((a, b) => b.length - a.length);
 }
 function hitsClientNames(text, terms) {
@@ -4106,10 +4111,22 @@ async function handleSocAction(env, cq) {
         const answer = async (text, alert) => {
           if (isScheduledRun) {
             if (/^[❌🚫⚠️]/u.test(String(text))) {
-              await notify(env, `⏰ 排程時間到，但這則沒有發出去：\n${text}`, {
-                ...(cq.message.message_thread_id ? { message_thread_id: Number(cq.message.message_thread_id) } : {}),
-                ...(cq.message.message_id ? { reply_to_message_id: Number(cq.message.message_id) } : {}),
-              }).catch(() => {});
+              // ⚠️ 2026-10-05 修：原本用 notify()——它固定發到 env.TG_CHAT_ID（舊主群組），
+              // 卻帶著社群新群組的主題編號跟訊息編號，Telegram 直接拒收、錯誤又被吞掉。
+              // 10/2 社群搬群組後，被擋下的排程貼文一則通知都沒出去（10/1～10/5 共 12 則）。
+              // 改成發到審核訊息實際所在的群組；回覆不到原訊息也照樣發（allow_sending_without_reply）。
+              const chatId = (cq.message && cq.message.chat && cq.message.chat.id) || env.TG_CHAT_ID;
+              const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: chatId, text: `⏰ 排程時間到，但這則沒有發出去：\n${text}`, disable_web_page_preview: true,
+                  ...(cq.message.message_thread_id ? { message_thread_id: Number(cq.message.message_thread_id) } : {}),
+                  ...(cq.message.message_id ? { reply_parameters: { message_id: Number(cq.message.message_id), allow_sending_without_reply: true } } : {}),
+                }),
+                signal: AbortSignal.timeout(6000),
+              }).catch(() => null);
+              const ok = r && (await r.json().catch(() => ({}))).ok;
+              if (!ok) await notify(env, `⚠️ 排程貼文 #${qid} 沒發出去，而且通知顧問也失敗了：\n${text}`, { message_thread_id: THREAD.system }).catch(() => {});
             }
             return;
           }
