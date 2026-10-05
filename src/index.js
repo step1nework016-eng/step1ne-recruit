@@ -1090,6 +1090,13 @@ async function spAskCompany(env, chatId, threadId, userId, data) {
 }
 
 async function ncSend(env, chatId, threadId, text, replyMarkup) {
+  // 2026-10-05 修：10/2 人選通知搬到新群組後，電洽新增收到的是「新群組」的訊息，
+  // 但回覆用的還是舊群組的主題編號（3898），Telegram 在新群組找不到這個主題→靜靜失敗，
+  // 顧問貼了逐字稿完全沒反應。舊主題編號一律先換成新群組對應的主題。
+  if (threadId != null && String(chatId) !== String(env.TG_CHAT_ID)) {
+    const m = await tgRemapBody(env, { chat_id: env.TG_CHAT_ID, message_thread_id: Number(threadId) });
+    if (String(m.chat_id) === String(chatId)) threadId = m.message_thread_id;
+  }
   await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
