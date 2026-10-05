@@ -7061,8 +7061,20 @@ export default {
           `SELECT id FROM social_accounts WHERE platform='linkedin' AND consultant_name=?
              AND (platform_user_id IS NULL OR platform_user_id='') LIMIT 1`
         ).bind(consultantName).first();
+        // 2026-10-05 加：重新授權時 LinkedIn 給的 sub 跟舊的那筆不一樣（10/4 Jacky #30、
+        // 10/5 Phoebe #31 都因此多建一筆，新那筆沒設 TG 主題、也沒有發文紀錄）。
+        // 同一個顧問已經有一筆 LinkedIn 就當作「重新授權」，更新那筆（帶新的 sub）。
+        const sameConsultant = (exist || placeholder) ? null : await env.DB.prepare(
+          `SELECT id FROM social_accounts WHERE platform='linkedin' AND consultant_name=?
+             ORDER BY is_active DESC, id ASC LIMIT 1`
+        ).bind(consultantName).first();
 
-        if (exist) {
+        if (sameConsultant) {
+          await env.DB.prepare(
+            `UPDATE social_accounts SET platform_user_id=?, access_token=?, refresh_token=?,
+                    token_expires_at=?, is_active=1 WHERE id=?`
+          ).bind(sub, td.access_token, td.refresh_token || null, expAt, sameConsultant.id).run();
+        } else if (exist) {
           await env.DB.prepare(
             `UPDATE social_accounts SET access_token=?, refresh_token=?, token_expires_at=?,
                     label=?, consultant_name=?, is_active=1 WHERE id=?`
