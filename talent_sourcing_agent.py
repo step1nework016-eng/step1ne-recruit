@@ -177,7 +177,8 @@ Cake 履歷其實是景觀設計＋藝術協會＋便利商店主題店鋪設計
 - 只能用「工作經歷／專案經歷」裡**實際做過的事**當依據；技能清單、自評、證照只能加分，不能單獨撐起 60 分以上
 - 職缺的核心任務（例如看得懂土木／建築／機電／水電工程圖）要在經歷裡找到對應的具體工作，找不到就不准給 70 分以上
 - 最近一份工作跟職缺領域無關（例如藝術、行銷、教育推廣），最高 60 分（C/B 邊緣），evidence 要寫出最近一份做什麼
-- recruitability_class 是 REFERRAL_ONLY 或 LONG_TERM_POOL 的，fit_score 最高 59；只在公司官網／公司頁看到名字、找不到本人聯絡管道的，fit_score 也最高 59
+- recruitability_class 是 REFERRAL_ONLY 或 LONG_TERM_POOL 的，fit_score 最高 59
+- 找不到本人聯絡方式沒關係，顧問可以打公司總機請轉：phone 填公司總機並寫明「公司總機」，evidence 寫要請轉的部門與職稱
 - 年資、做過的事要照履歷原文寫，不准誇大或改寫成更接近職缺的說法；evidence 必須引用經歷裡的公司＋職稱＋做的事
 
 完成後，只輸出一個 JSON 物件（不要有其他文字說明、不要用 ```json 包起來、不要在 JSON 前後加任何字），格式：
@@ -274,7 +275,8 @@ def save_candidates(job_slug, candidates, dry):
         # 等第門檻同 full-prompt-v3.4.md：A 80-100、B 60-79、C 40-59、D 39 以下。
         fit = int(c.get('fit_score') or 0)
         # 2026-10-06：只能引薦／長期觀察、或完全沒有本人聯絡管道的，程式再擋一次最高 C（林沛宏被排成 B）
-        if c.get('recruitability_class') in ('REFERRAL_ONLY', 'LONG_TERM_POOL') or not (c.get('email') or c.get('phone') or c.get('linkedin_url')):
+        # 沒有個人聯絡方式不扣分——Jacky：可以打公司總機請轉（10/6）。只擋「只能引薦／長期觀察」。
+        if c.get('recruitability_class') in ('REFERRAL_ONLY', 'LONG_TERM_POOL'):
             fit = min(fit, 59)
         grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
         src_url = (c.get('source_url') or '').strip() or None
