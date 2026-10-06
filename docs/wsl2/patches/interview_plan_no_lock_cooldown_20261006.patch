@@ -1,0 +1,76 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index 82d1845..3833268 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -148,6 +148,25 @@ P3B_SUGGEST_MODE = os.environ.get('P3B_SUGGEST_MODE', 'live')
+ _busy = set()           # 正在處理的 application_id，避免同一場被跑兩次
+ _lock = threading.Lock()
+ 
++# ── 擬題目計畫專用（2026-10-06）────────────────────────────────
++# 由來：擬計畫（do_plan）原本跟回覆（handle）共用「這場面談的鎖」和 _busy。
++# 10/6 葉筱屏那場的計畫呼叫連續卡住（每次 120 秒×2 次嘗試），失敗後因為計畫沒存成功，
++# 下一輪又再擬一次，每次都把這場的鎖佔住約 4 分鐘——他的回覆（#2456、#2458）因此各多等 2～4 分鐘。
++# 修法兩點：
++#   1. 擬計畫不再佔該場的 DB 鎖／_busy，改用自己的 _plan_busy（上限 MAX_PLAN_PARALLEL）；
++#      計畫只寫 interview_plan_json（且有 IS NULL 保護），跟回覆寫 messages 互不干擾，不需要互斥。
++#   2. 擬失敗（或產出是空的）後，同一場冷卻 PLAN_COOLDOWN_SEC 秒不再試，不要每一輪都重來。
++# 冷卻表放記憶體：阿財重啟就清掉（重啟後會再試一次，可以接受）。
++_plan_busy = set()
++_plan_cooldown = {}     # application_id -> 冷卻到的 time.time()
++PLAN_COOLDOWN_SEC = 1800
++MAX_PLAN_PARALLEL = 2
++
++
++def _plan_cooling(app_id):
++    t = _plan_cooldown.get(app_id)
++    return bool(t and time.time() < t)
++
+ # ⚠️ 2026-08-14 加：這台機器上跟 checkup_daemon.py 共用同一個本機 claude 登入
+ # 額度，額度打滿時 claude -p 不一定乾脆地失敗——有時候會回一段文字說「這段對話
+ # 結尾怪怪的，我不該亂編」，不是預期的 JSON，被當成一般錯誤處理。一般錯誤的
+@@ -3841,6 +3860,7 @@ def do_plan(app):
+         qs = [x for x in (result.get('questions') or []) if isinstance(x, dict) and x.get('q')]
+         if not qs:
+             log(f'⚠️ {name}：題目計畫產出是空的，這場照舊走現場生成')
++            _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
+             return
+         plan = {'questions': qs[:12],
+                 'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
+@@ -3850,10 +3870,11 @@ def do_plan(app):
+         log(f'{name}：題目計畫已擬好（{len(plan["questions"])} 題、預測 {len(plan["faq"])} 個提問）')
+     except Exception as e:
+         log(f'⚠️ {name}（{app_id}）擬題目計畫失敗（不影響面談）：{e}')
++        _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
+     finally:
+-        release_lock(app_id)
++        # 不 release_lock、不動 _busy：擬計畫現在不佔那兩樣（見檔案上方 _plan_busy 的說明）
+         with _lock:
+-            _busy.discard(app_id)
++            _plan_busy.discard(app_id)
+ 
+ 
+ # ── 對談中的精簡人設（2026-09-21 加）────────────────────────────
+@@ -4111,6 +4132,7 @@ def tick():
+     except Exception as e:
+         log(f'查詢待擬題目計畫名單失敗：{e}')
+         plan_rows = []
++    plan_rows = [a for a in plan_rows if not _plan_cooling(a['id'])]
+ 
+     # 收尾之後才問的問題。優先權排在強制收尾之後、一般回話之前——
+     # 這些人已經等了一段時間（沒有人在盯著這個房間），不該再排到最後。
+@@ -4130,6 +4152,15 @@ def tick():
+     if BACKUP_DELAY_SEC > 0:
+         jobs = _backup_filter(jobs, post_wrap + pending(remaining))
+     for app, fn in jobs:
++        if fn is do_plan:
++            # 擬計畫走自己的名額，不佔這場面談的 DB 鎖／_busy，所以不會擋住候選人的回覆。
++            with _lock:
++                if (app['id'] in _plan_busy or len(_plan_busy) >= MAX_PLAN_PARALLEL
++                        or _plan_cooling(app['id'])):
++                    continue
++                _plan_busy.add(app['id'])
++            threading.Thread(target=fn, args=(app,), daemon=True).start()
++            continue
+         with _lock:
+             if app['id'] in _busy or len(_busy) >= MAX_PARALLEL:
+                 continue
