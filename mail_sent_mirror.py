@@ -31,7 +31,7 @@ TPE = datetime.timezone(datetime.timedelta(hours=8))
 FROM = 'Step1ne 德仁管理顧問 <official@step1ne.com>'
 # 2026-10-06 起三支 Worker 經 Resend 寄出的每一封都會記進 mail_sent_log（含原本的寄件人、HTML）。
 # 這個時間點之後的信一律從 mail_sent_log 補，各業務表只補這之前的舊信，避免同一封放兩次。
-CUTOVER = '2026-10-06 13:45:00'
+CUTOVER = '2026-10-06 13:19:00'   # recruit/public 13:19、backoffice 13:21 部署
 
 
 def log(m):
