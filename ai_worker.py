@@ -2366,6 +2366,7 @@ def _cand_bd_keywords_prompt(payload):
 def _cand_bd_pick_prompt(payload, brief, fit_rule, postings):
     lines = '\n'.join(f"{i}｜{p['company']}｜{p['job']}｜刊登 {p['date']}｜{p['area']}｜{p['salary']}" for i, p in enumerate(postings))
     return f"""你是台灣獵頭顧問的開發助理。下面是 104 上最近 30 天真的有在徵的職缺，請挑出最適合拿這位人選去敲門的公司。
+⚠️ 獵頭公司、人事顧問、人力仲介／派遣公司（例：藝珂、立福、萬寶華、任仕達、○○人事顧問）是同業，替別人刊的缺不會說客戶是誰——一律不要挑。
 
 【人選匿名重點】
 {chr(10).join(brief)}

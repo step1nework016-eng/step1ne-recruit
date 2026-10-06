@@ -20,7 +20,11 @@ import urllib.request
 
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/129.0 Safari/537.36')
-STAFFING = ('人力', '派遣', '人才顧問', '獵頭', '管理顧問', '人資顧問', '外包')
+# 2026-10-06 Jacky：藝珂人事顧問（Adecco）出現在人選敲門名單——同業刊的缺不會說客戶是誰，等於白打。
+# 原本漏了「人事顧問」這種寫法，外商同業也要列英文名。
+STAFFING = ('人力', '派遣', '人才顧問', '獵頭', '獵才', '管理顧問', '人資顧問', '人事顧問', '人力資源', '外包', '仲介',
+            '藝珂', '萬寶華', '任仕達', '華德士', '保聖那', 'Adecco', 'Manpower', 'Randstad', 'Robert Walters',
+            'Michael Page', 'PERSOL', 'Hays')
 
 
 def _opener():
@@ -57,7 +61,7 @@ def search(keywords, days=30, pages=2, opener=None):
                 date = str(j.get('appearDate') or '')
                 if not company or not job or (date and date < since):
                     continue
-                if any(w in company for w in STAFFING):
+                if any(w.lower() in company.lower() for w in STAFFING):
                     continue
                 key = (company, job)
                 if key in seen:
