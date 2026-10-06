@@ -1,0 +1,53 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index 3833268..add0e9c 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -3639,6 +3639,38 @@ def _mark_host(app_id, name):
+         log(f'（記錄面談機器失敗，不影響面談：{e}）')
+ 
+ 
++# ── 閒置收尾後回來的人，要接續面談（2026-10-06）────────────────
++# 由來：10/6 張景勛 13:15 面談開場、閒置 30 分鐘被 wrap_up() 收尾（只產報告、房間留著，
++# 並對他說「明天這個時間前隨時回來都可以接著談，不用重頭開始」）。16:35 他回來打「可以開始」，
++# 阿財卻回「剛剛的面談內容已經整理給顧問了，這邊先告一段落」——因為 handle() 一看到「有報告」
++# 就當成「收尾後追問」，只回流程、不再問題目。結果他被擋在一場根本還沒做的面談外面，跟收尾時的承諾相反。
++#
++# 判準：對話裡有「閒置收尾」那句話，而且它之後候選人又發過訊息（含進入面談室那一則）、
++# 之後沒有「時間到」的強制收尾 → 他是回來繼續的，不是收尾後的追問。
++# 「時間到」那種（timeout_close）本來就不會說「可以接著談」，維持原本收尾後追問的行為，不受影響。
++IDLE_BYE_PREFIX = '看您這邊暫時沒有回覆，我先把今天談到的內容整理給顧問'
++TIMEOUT_BYE_PREFIX = '不好意思，我們今天的面談時間到了'
++
++
++def _resumed_after_idle_wrap(app_id):
++    rows = d1(f"SELECT id, role, content FROM messages WHERE application_id={q(app_id)} ORDER BY id ASC") or []
++    idle_pre, timeout_pre = _trad(IDLE_BYE_PREFIX), _trad(TIMEOUT_BYE_PREFIX)
++    last_idle = last_timeout = None
++    for m in rows:
++        if m.get('role') != 'assistant':
++            continue
++        c = str(m.get('content') or '')
++        if c.startswith(idle_pre):
++            last_idle = m['id']
++        elif c.startswith(timeout_pre):
++            last_timeout = m['id']
++    if last_idle is None:
++        return False
++    if last_timeout is not None and last_timeout > last_idle:
++        return False
++    return any(m.get('role') == 'candidate' and m['id'] > last_idle for m in rows)
++
++
+ def handle(app):
+     app_id, name = app['id'], app['name']
+     rate_limited = False
+@@ -3660,6 +3692,9 @@ def handle(app):
+         # 不要再開新的面談題——報告都產完了，再問也進不去那份報告。
+         already_reported = bool(d1(
+             f"SELECT 1 FROM reports WHERE application_id={q(app_id)} LIMIT 1"))
++        if already_reported and _resumed_after_idle_wrap(app_id):
++            log(f'{name}：閒置收尾後又回來了，接續面談（不當成收尾後追問）')
++            already_reported = False
+         if already_reported:
+             talk_prompt += (
+                 '\n\n---\n\n🚨 **這場面談已經收尾、報告也已經產出了。**\n'
