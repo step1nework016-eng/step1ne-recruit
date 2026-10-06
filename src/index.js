@@ -353,6 +353,29 @@ const SERVICE_LINE = { dispatch: '人力派遣', direct: '正職代招', executi
 // base64 字串——目前只給人選客製表單用（連結是「上傳填完檔案」的入口，
 // 但人選要先拿到「空白表單長什麼樣子」才能填，不附檔案等於叫人選填一份
 // 他們沒看過的東西）。Resend 原生支援 attachments 欄位，不用自己組 MIME。
+
+// 2026-10-06 Jacky：「自動寄給客戶的按鈕都要在 GoDaddy 寄件備份看得到」。
+// Resend 不會把副本放進 official@ 的 Sent，所以每一封經 Resend 成功寄出的信都記一筆
+// mail_sent_log，本機 mail_sent_mirror.py 每 10 分鐘照原寄出時間補進寄件備份。
+// 只記錄、不改寄信本身；記錄失敗不影響寄信。
+async function resendSend(env, init, worker = 'recruit') {
+  const r = await fetch('https://api.resend.com/emails', init);
+  if (r.ok && env.DB) {
+    try {
+      const p = JSON.parse(init.body || '{}');
+      let rid = null;
+      try { rid = (await r.clone().json()).id || null; } catch { /* 沒有 id 就算了 */ }
+      const to = Array.isArray(p.to) ? p.to.join(', ') : String(p.to || '');
+      await env.DB.prepare(
+        `INSERT INTO mail_sent_log (sent_at, worker, from_addr, to_email, subject, text, html, resend_id)
+         VALUES (datetime('now','+8 hours'), ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(worker, String(p.from || ''), to, String(p.subject || ''), p.text ? String(p.text) : null,
+             p.html ? String(p.html).slice(0, 200000) : null, rid).run();
+    } catch (e) { console.error('mail_sent_log 寫入失敗', e && e.message); }
+  }
+  return r;
+}
+
 async function sendMail(env, to, subject, lines, cta, attachments) {
   if (!env.RESEND_API_KEY || !to) return false;
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -421,7 +444,7 @@ async function sendMail(env, to, subject, lines, cta, attachments) {
     `</p></div></div>`;
 
   try {
-    const r = await fetch('https://api.resend.com/emails', {
+    const r = await resendSend(env, {
       method: 'POST',
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -728,7 +751,7 @@ async function sendBdMail(env, to, subject, body, cvFileId, opts) {
     else if (opts && opts.requireAll) return { ok: false, error: `附件讀不到（${id}），沒有寄出` };
   }
   try {
-    const r = await fetch('https://api.resend.com/emails', {
+    const r = await resendSend(env, {
       method: 'POST',
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -843,7 +866,7 @@ async function sendPortalMail(env, to, contactName, companyName, portalUrl) {
     `統一編號：85046127<br>就業服務許可證：北市就服字第 0363 號<br>` +
     `地址：臺北市內湖區康寧路三段 54 之 7 號 3 樓</p></div></div>`;
   try {
-    const r = await fetch('https://api.resend.com/emails', {
+    const r = await resendSend(env, {
       method: 'POST',
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({

@@ -29,6 +29,9 @@ spec.loader.exec_module(D)
 
 TPE = datetime.timezone(datetime.timedelta(hours=8))
 FROM = 'Step1ne 德仁管理顧問 <official@step1ne.com>'
+# 2026-10-06 起三支 Worker 經 Resend 寄出的每一封都會記進 mail_sent_log（含原本的寄件人、HTML）。
+# 這個時間點之後的信一律從 mail_sent_log 補，各業務表只補這之前的舊信，避免同一封放兩次。
+CUTOVER = '2026-10-06 13:45:00'
 
 
 def log(m):
@@ -51,9 +54,14 @@ def pending():
     out = []
 
     def add(ref, at, to, subject, body):
-        if ref in done or not at:
+        if ref in done or not at or str(at) >= CUTOVER:
             return
-        out.append((ref, at, to or '', subject or '（無主旨）', body or ''))
+        out.append((ref, at, to or '', subject or '（無主旨）', body or '', None, None))
+
+    for r in D.d1("SELECT id, sent_at, from_addr, to_email, subject, text, html FROM mail_sent_log") or []:
+        ref = f"mail_sent_log:{r['id']}"
+        if ref not in done and r['sent_at']:
+            out.append((ref, r['sent_at'], r['to_email'] or '', r['subject'] or '（無主旨）', r['text'] or '', r['html'], r['from_addr']))
 
     for r in D.d1("SELECT id, contact_email, subject, body, sent_at FROM bd_outreach WHERE sent_at IS NOT NULL") or []:
         add(f"bd_outreach:{r['id']}", r['sent_at'], r['contact_email'], r['subject'], r['body'])
@@ -72,18 +80,25 @@ def pending():
     return out
 
 
-def build(at, to, subject, body):
+def build(at, to, subject, body, html=None, from_addr=None):
     try:
         dt = datetime.datetime.strptime(str(at)[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=TPE)
     except ValueError:
         dt = datetime.datetime.strptime(str(at)[:10], '%Y-%m-%d').replace(tzinfo=TPE)
     msg = email.message.EmailMessage()
-    msg['From'] = FROM
+    msg['From'] = from_addr or FROM
     msg['To'] = to
     msg['Subject'] = subject
     msg['Date'] = email.utils.format_datetime(dt)
     msg['X-Step1ne-Copy'] = 'system-sent-backup'
-    msg.set_content(f"{body}\n\n——\n（寄件備份副本：這封由系統於 {dt:%Y-%m-%d %H:%M} 自動寄出，這裡只是存檔，沒有再寄一次）")
+    note = f"（寄件備份副本：這封由系統於 {dt:%Y-%m-%d %H:%M} 自動寄出，這裡只是存檔，沒有再寄一次）"
+    if not body and html:
+        import re as _re, html as _h
+        body = _h.unescape(_re.sub(r'<[^>]+>', '\n', _re.sub(r'(?is)<(style|script).*?</\1>', '', html)))
+        body = _re.sub(r'\n\s*\n+', '\n\n', body).strip()
+    msg.set_content(f"{body}\n\n——\n{note}")
+    if html:
+        msg.add_alternative(f"{html}<p style=\"color:#888;font-size:12px\">{note}</p>", subtype='html')
     return dt, msg
 
 
@@ -94,7 +109,7 @@ def main():
         return
     log(f'要補進寄件備份：{len(todo)} 封')
     if dry:
-        for ref, at, to, subject, _ in todo[:50]:
+        for ref, at, to, subject, *_ in todo[:50]:
             log(f'  {at}｜{to}｜{subject[:40]}｜{ref}')
         return
     box = env_file('~/.config/workflow-os/step1ne-mailbox.env')
@@ -102,8 +117,8 @@ def main():
     imap.login(box['MAIL_IMAP_USER'], box['MAIL_IMAP_PASS'])
     n = 0
     try:
-        for ref, at, to, subject, body in todo:
-            dt, msg = build(at, to, subject, body)
+        for ref, at, to, subject, body, html, from_addr in todo:
+            dt, msg = build(at, to, subject, body, html, from_addr)
             typ, _ = imap.append('Sent', '\\Seen', imaplib.Time2Internaldate(dt.timestamp()), msg.as_bytes())
             if typ != 'OK':
                 log(f'⚠️ {ref} 放不進寄件備份：{typ}')
