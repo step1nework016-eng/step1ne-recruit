@@ -74,7 +74,11 @@ def search(keywords, days=30, pages=2, opener=None):
                 out.append({'company': company, 'job': job, 'date': date,
                             'area': str((j.get('jobAddrNoDesc') or j.get('jobAddress') or ''))[:20],
                             'salary': f"{sal_lo}-{sal_hi}" if sal_lo else '',
-                            'url': link, 'keyword': kw})
+                            'url': link, 'keyword': kw,
+                            # 2026-10-06：人選敲門挑不準——AI 只看職稱在猜。搜尋結果本來就帶職缺內容與產業，一併給 AI 判斷
+                            'industry': str(j.get('coIndustryDesc') or '')[:20],
+                            'desc': ' '.join(str(j.get('description') or '').split())[:350],
+                            'years': j.get('period'), 'size': j.get('employeeCount')})
             time.sleep(random.uniform(1.0, 2.0))
     return out
 

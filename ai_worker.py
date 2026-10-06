@@ -2375,30 +2375,55 @@ def _cand_bd_keywords_prompt(payload):
 【人選資料（只給你看，不准原樣寫進輸出）】
 {payload.get('candidate_text') or ''}
 
+分兩組想（2026-10-06 Jacky：經歷為主，想轉的方向另列）：
+- exp：照他「真的做過」的職能＋產業。關鍵字一定要帶產業或產品詞，不要只寫「業務開發經理」「大客戶經理」這種各行各業都有的職稱
+  （例：「醫材業務主管」「半導體設備業務經理」「工商顧問 業務主管」）。
+- dir：他自己說想轉、但過去沒做過的方向（例：做工商顧問業務、想轉醫美醫材）。沒有提到想轉就留空陣列。
+
 只輸出 JSON：
 {{"brief": ["匿名人選重點 3～5 點，不准有姓名、任職公司名、年齡、性別、婚育"],
-  "keywords": ["3～5 個 104 搜尋關鍵字，用 104 上真的會出現的職稱寫法，例：採購主管、供應鏈經理、海外業務主管；可加產業詞，例：採購主管 紡織"],
-  "fit_rule": "一句話：什麼樣的職缺算對得上他（職能＋大概職級），例：中高階採購／供應鏈主管，不是助理或專員"}}"""
+  "exp_keywords": ["3～5 個 104 搜尋關鍵字"],
+  "exp_rule": "一句話：什麼樣的職缺算經歷對得上（產業＋職能＋職級），例：醫材／生技公司的中高階業務主管，不是消費品或物流的業務",
+  "dir_keywords": ["0～3 個，沒有就空陣列"],
+  "dir_rule": "一句話：想轉方向裡，哪種職缺他過去的經歷還用得上；沒有就空字串",
+  "needs": ["人選自己講過的需求，逐條照原意寫（電洽摘要／電洽結果／筆記裡找）：想做什麼、不考慮什麼產業或職務、可上班地區、期望薪資、能不能出差外派、遠端…；沒講就不要寫"]}}"""
 
 
-def _cand_bd_pick_prompt(payload, brief, fit_rule, postings):
-    lines = '\n'.join(f"{i}｜{p['company']}｜{p['job']}｜刊登 {p['date']}｜{p['area']}｜{p['salary']}" for i, p in enumerate(postings))
-    return f"""你是台灣獵頭顧問的開發助理。下面是 104 上最近 30 天真的有在徵的職缺，請挑出最適合拿這位人選去敲門的公司。
-⚠️ 獵頭公司、人事顧問、人力仲介／派遣公司（例：藝珂、立福、萬寶華、任仕達、○○人事顧問）是同業，替別人刊的缺不會說客戶是誰——一律不要挑。
+def _cand_bd_pick_prompt(payload, brief, rule, postings, track='exp', needs=None):
+    lines = '\n'.join(
+        f"{i}｜{p['company']}（{p.get('industry') or '產業不明'}，{p.get('size') or '?'}人）｜{p['job']}｜{p['area']}｜月薪{p['salary'] or '面議'}｜要求年資{p.get('years') or '不拘'}"
+        f"\n   內容：{p.get('desc') or '（無）'}" for i, p in enumerate(postings))
+    if track == 'exp':
+        task = "挑出「人選過去的經歷直接對得上」的職缺。企業付獵頭費是要買即戰力，產業或產品對不上的一律不挑。"
+        n = "最多 12 家，對得上的只有 3 家就只給 3 家，不要硬湊"
+    else:
+        task = ("這組是人選「自己想轉的方向」，他過去沒做過這個產業。只挑他過去的某段經歷在這個職缺裡「真的用得上」的"
+                "（例：做過高資產客戶開發 → 醫美診所集團的 VIP 客戶經營），而且職缺沒寫死要同產業年資。")
+        n = "最多 5 家，寧缺勿濫"
+    return f"""你是台灣獵頭顧問的開發助理。下面是 104 上最近 30 天真的有在徵的職缺。{task}
+⚠️ 獵頭公司、人事顧問、人力仲介／派遣公司是同業，替別人刊的缺不會說客戶是誰——一律不要挑。
 
-【人選匿名重點】
-{chr(10).join(brief)}
-【什麼樣的職缺算對得上】{fit_rule}
+【人選資料（只給你看）】
+{str(payload.get('candidate_text') or '')[:7000]}
+
+【什麼樣的職缺算對得上】{rule}
+【人選自己講過的需求】（電洽時親口說的，是硬條件）
+{chr(10).join('・' + str(x) for x in (needs or [])) or '（沒講到）'}
 【不要挑的公司】（已經是客戶、或人選目前／最近任職的公司）
 {payload.get('exclude_text') or '（無）'}
 
-【104 職缺清單】編號｜公司｜職稱｜刊登日｜地區｜月薪
+【104 職缺清單】編號｜公司（產業，人數）｜職稱｜地區｜月薪｜要求年資，下一行是職缺內容
 {lines}
 
-規則：
-1. 只挑職能跟職級真的對得上的（助理、專員、門市、工讀這類比他低太多的不要挑）；同一家公司只挑一筆。
-2. 挑 10～15 家，不夠就少挑，不要硬湊。
-3. why 一句話講為什麼這家可能要他（職缺內容＋他的哪個經歷對得上），不准出現人選姓名或任職公司名。
+規則（2026-10-06 顧問反應名單不準後定的）：
+1. 先看「職缺內容」再看職稱。職稱一樣叫「業務開發經理」「Key Account」，賣珠寶、做物流、賣消費品是完全不同的人。
+2. 「會談判、會帶團隊、會經營客戶、跨部門協調」這種每個主管都有的能力，不能單獨當理由。
+   每一家都要講得出一段具體對得上的經歷：同產業、同類產品／客戶、做過同樣的事。講不出來就不挑。
+3. 職級要對：助理、專員、門市、工讀不挑；職缺要求的年資或月薪明顯比他低太多也不挑。
+4. 人選自己講過的需求一律照辦：說不考慮的產業／職務不挑、地區對不上的不挑、
+   職缺月薪明顯低於他的期望不挑（職缺寫面議的可以挑）。
+5. 同一家公司只挑一筆。{n}。
+6. why 一句話：「職缺要做 X」＋「他做過 Y」，不准出現人選姓名或任職公司名。
 只輸出 JSON：{{"picks": [{{"idx": 編號, "why": "一句話"}}]}}"""
 
 
@@ -2408,18 +2433,24 @@ def _run_cand_bd(payload):
         # 2026-10-05 Jacky：不要 AI 憑印象猜公司，要「真的在 104 上徵這種人」的公司。
         # ① AI 看履歷想關鍵字 → ② 到 104 搜最近 30 天職缺 → ③ AI 挑真的對得上的 10～15 家，附職缺連結。
         # 104 搜不到東西（被擋、斷線）才退回舊做法（AI 依產業知識列公司）。
-        targets, brief = [], []
+        targets, brief, searched = [], [], False
         try:
             import search_104
-            k = json.loads((lambda o: o[o.find('{'): o.rfind('}') + 1])(run_claude(_cand_bd_keywords_prompt(payload), want_json=True, timeout=300)))
+            _js = lambda o: json.loads(o[o.find('{'): o.rfind('}') + 1])
+            k = _js(run_claude(_cand_bd_keywords_prompt(payload), want_json=True, timeout=300))
             brief = [str(x).strip() for x in (k.get('brief') or []) if str(x).strip()][:6]
-            kws = [str(x).strip() for x in (k.get('keywords') or []) if str(x).strip()][:5]
-            postings = search_104.search(kws, days=30, pages=2)[:120]
-            log(f'  🔎 人選敲門：104 關鍵字 {kws} → {len(postings)} 筆職缺')
-            if postings:
-                pk = json.loads((lambda o: o[o.find('{'): o.rfind('}') + 1])(run_claude(
-                    _cand_bd_pick_prompt(payload, brief, k.get('fit_rule') or '', postings), want_json=True, timeout=300)))
-                used = set()
+            used = set()
+            # 經歷對得上的放前面（主要名單），人選想轉的方向另列一區（2026-10-06 Jacky：A+B 都要）
+            for track, kk, rk, angle in (('exp', 'exp_keywords', 'exp_rule', '經歷對得上'), ('dir', 'dir_keywords', 'dir_rule', '人選想轉的方向')):
+                kws = [str(x).strip() for x in (k.get(kk) or []) if str(x).strip()][:5]
+                if not kws:
+                    continue
+                postings = [p for p in search_104.search(kws, days=30, pages=2) if p['company'] not in used][:90]
+                searched = searched or bool(postings)
+                log(f'  🔎 人選敲門（{angle}）：104 關鍵字 {kws} → {len(postings)} 筆職缺')
+                if not postings:
+                    continue
+                pk = _js(run_claude(_cand_bd_pick_prompt(payload, brief, k.get(rk) or '', postings, track, k.get('needs') or []), want_json=True, timeout=400))
                 for x in pk.get('picks') or []:
                     try:
                         pst = postings[int(x.get('idx'))]
@@ -2429,12 +2460,13 @@ def _run_cand_bd(payload):
                         continue
                     used.add(pst['company'])
                     d = pst['date']
-                    targets.append({'company': pst['company'], 'angle': '在徵類似職缺',
+                    targets.append({'company': pst['company'], 'angle': angle,
                                     'why': f"{str(x.get('why') or '').strip()}（104 刊登 {d[4:6]}/{d[6:8]}）" if len(d) == 8 else str(x.get('why') or ''),
                                     'job_hint': pst['job'], 'job_url': pst['url'], 'posted': d})
         except Exception as e:
             log(f'  ⚠️ 人選敲門 104 搜尋失敗，退回 AI 依產業知識列公司：{str(e)[:150]}')
-        if not targets:
+        # 104 有搜到職缺、只是 AI 判斷都對不上 → 就是 0 家，照實回報，不退回去用猜的（猜的更不準）
+        if not targets and not searched:
             out = run_claude(prompt_cand_bd(payload), want_json=True, timeout=600)
             data = json.loads(out[out.find('{'): out.rfind('}') + 1])
             brief = brief or [str(x).strip() for x in (data.get('brief') or []) if str(x).strip()][:6]
@@ -2482,8 +2514,16 @@ def _run_cand_bd(payload):
         try:
             import tg_route
             c, t = tg_route.route('client_candbd')
+            n_exp = sum(1 for x in targets if x.get('angle') == '經歷對得上')
+            n_dir = sum(1 for x in targets if x.get('angle') == '人選想轉的方向')
+            if any(x.get('job_url') for x in targets):
+                summ = f"104 上最近 30 天有在徵、經歷對得上的 {n_exp} 家＋人選想轉方向 {n_dir} 家（已扣掉客戶／同業）"
+            elif saved:
+                summ = f"AI 依產業判斷可能需要這種人的 {saved} 家公司"
+            else:
+                summ = "104 上最近 30 天沒有對得上的職缺，這次 0 家"
             rs._tg(f"🧲 人選敲門名單好了｜{payload.get('candidate_name') or ''}（{payload.get('job_title') or ''}）\n"
-                   f"{'104 上最近 30 天有在徵類似職缺的' if any(t.get('job_url') for t in targets) else 'AI 依產業判斷可能需要這種人的'} {saved} 家公司，還沒聯繫任何一家。\n"
+                   f"{summ}，還沒聯繫任何一家。\n"
                    f"→ 後台「客戶 → 人選敲門名單」看完，按「加入開發進度」才會進開發進度。\n"
                    f"（{payload.get('requested_by') or '顧問'} 按的）",
                    thread=t, chat=c)
