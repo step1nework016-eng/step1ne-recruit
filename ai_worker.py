@@ -1661,6 +1661,8 @@ def process(job):
         return _run_reverse_match_job(payload)
     if kind == 'cand_bd':
         return _run_cand_bd(payload)
+    if kind == 'sourced_verify':
+        return _run_sourced_verify(payload)
     # 2026-09-20 加：顧問在後台按「產生題庫」。跟 rematch 同一類——不是「產一段
     # 文字寫回某個欄位」，而是整條自己跑完（上網查該職務的專業內涵→出題→寫進
     # job_expertise）。Worker（Cloudflare）跑不了本機的 claude CLI 與網路查證，
@@ -2480,6 +2482,94 @@ def _run_cand_bd(payload):
 
 
 HANDLERS['cand_bd'] = (prompt_cand_bd, True)
+
+# ── 2026-10-06 履歷核對：AI 找到的人，看過「完整履歷」才下判斷 ─────────────────────────
+# Jacky：「缺一個真的有看過履歷這個環節才能去下判斷」。顧問在 LinkedIn 打開本人頁面按外掛
+# 「送進 Step1ne」（或在後台上傳 PDF），全文存進 sourced_candidates.profile_text，這支照
+# 全文逐條比對職缺條件重新打分，標成已核對。只認履歷原文寫的事，不推測。
+def _run_sourced_verify(payload):
+    sid = str(payload.get('sourced_id') or '')
+    rows = d1_http.query(f"SELECT * FROM sourced_candidates WHERE id={q(sid)}")['results']
+    if not rows:
+        return json.dumps({'ok': False, 'error': '找不到這位人選'}, ensure_ascii=False)
+    c = rows[0]
+    text = (c.get('profile_text') or '').strip()
+    # Cake／cakeresume 公開履歷頁不用登入，自己抓全文來核對（LinkedIn 不抓，那要顧問用外掛送）
+    if len(text) < 200:
+        import re as _re, html as _html, urllib.request as _ur
+        urls = [u for u in [c.get('source_url'), *str(c.get('other_links') or '').split()] if u and _re.search(r'cake(resume)?\.(me|com)', str(u))]
+        for u in urls[:1]:
+            try:
+                raw = _ur.urlopen(_ur.Request(str(u).split('#')[0], headers={'User-Agent': 'Mozilla/5.0'}), timeout=30).read().decode('utf-8', 'replace')
+                t2 = _html.unescape(_re.sub(r'\s+', ' ', _re.sub(r'<[^>]+>', ' ', _re.sub(r'(?is)<(script|style).*?</\1>', '', raw))))
+                if len(t2) >= 200:
+                    text = t2[:60000]
+                    d1_http.query(f"UPDATE sourced_candidates SET profile_text={q(text)}, verified_by='AI（Cake 公開履歷）' WHERE id={q(sid)}")
+                    c['verified_by'] = 'AI（Cake 公開履歷）'
+            except Exception as e:
+                log(f'  抓 Cake 履歷失敗：{str(e)[:120]}')
+    if len(text) < 200:
+        d1_http.query(f"UPDATE sourced_candidates SET verify_status='unverified', verify_note={q('送進來的履歷內容太少，沒辦法核對（' + str(len(text)) + ' 字）')} WHERE id={q(sid)}")
+        return json.dumps({'ok': False, 'error': '履歷內容太少'}, ensure_ascii=False)
+    jobs = d1_http.query(f"SELECT title, required_conditions, must_skills, client_screen_conditions, scoring_notes, seniority, years_min, salary_min, salary_max, salary_unit, locations FROM jobs WHERE slug={q(c.get('job_slug'))}")['results']
+    j = jobs[0] if jobs else {}
+    fb = d1_http.query(f"SELECT headline, company, fit, reject_reason FROM sourced_candidates WHERE job_slug={q(c.get('job_slug'))} AND fit IN ('fit','unfit') LIMIT 20")['results']
+    prompt = f"""你是台灣獵頭顧問的履歷核對助理。下面是一位人選的「完整履歷原文」（顧問從本人 LinkedIn 頁面或 PDF 送進來的），
+以及他被配對的職缺條件。請**只根據履歷原文**逐條核對，重新判斷他適不適合這個職缺。
+
+規則：
+- 只認履歷裡寫出來、真的做過的事；技能清單、自我介紹只能當輔助，不能單獨撐起「符合」。
+- 年資、職稱、公司、做過的事都照原文，不准誇大或改寫成更接近職缺的說法。
+- 必要條件逐條判：符合／部分符合／不符合／履歷沒寫（沒寫就是沒寫，不要猜）。
+- 職缺有客戶硬條件（例如指定產業背景）的，不符合就直接判不適合。
+- 不得用年齡、性別、婚育、國籍等就業服務法第5條保護項目做判斷。
+- 最近一份工作跟職缺領域無關的，最高 60 分。
+
+【職缺】{j.get('title') or c.get('job_slug')}
+必要條件：{j.get('required_conditions') or j.get('must_skills') or '（未填）'}
+客戶硬條件與回饋：{j.get('client_screen_conditions') or '（無）'}
+評分備註：{(j.get('scoring_notes') or '')[:1500]}
+職級：{j.get('seniority') or ''}　年資下限：{j.get('years_min') or ''}　地點：{j.get('locations') or ''}
+顧問以前標過的符合／不符合（參考哪一類人對、哪一類不對）：{json.dumps(fb, ensure_ascii=False)[:2000]}
+
+【AI 原本的判斷（只看到公開摘要時打的分，可能是錯的）】
+{c.get('grade')}・{c.get('score')} 分｜{c.get('headline') or ''}｜{c.get('company') or ''}
+
+【完整履歷原文】
+{text[:15000]}
+
+只輸出一個 JSON（不要其他文字）：
+{{"current_title": "現職職稱（照原文）", "current_company": "現職公司（照原文）",
+  "fit_score": 0到100的整數, "verdict": "符合 或 部分符合 或 不符合",
+  "one_line": "一句話結論（白話，顧問一眼看懂）",
+  "conditions": [{{"item": "必要條件", "result": "符合/部分符合/不符合/履歷沒寫", "evidence": "履歷原文依據（公司＋職稱＋做的事）"}}],
+  "gaps": ["缺什麼／要電話確認什麼"],
+  "changed_from_ai": "跟 AI 原本判斷差在哪（一句話；沒差就寫「跟原判斷一致」）"}}"""
+    out = run_claude(prompt, want_json=True, timeout=600)
+    data = json.loads(out[out.find('{'): out.rfind('}') + 1])
+    fit = max(0, min(100, int(data.get('fit_score') or 0)))
+    grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
+    lines = [f"✅ 已核對（{c.get('verified_by') or '顧問'}・完整履歷，AI 照原文判斷）：{data.get('verdict') or ''}｜{data.get('one_line') or ''}"]
+    for x in (data.get('conditions') or [])[:10]:
+        lines.append(f"・{x.get('item')}：{x.get('result')}——{x.get('evidence') or ''}")
+    if data.get('gaps'):
+        lines.append('要確認：' + '；'.join(str(g) for g in data['gaps'][:5]))
+    if data.get('changed_from_ai'):
+        lines.append('跟 AI 原判斷差在：' + str(data['changed_from_ai']))
+    note = '\n'.join(lines)
+    sets = [f"score={fit}", f"grade={q(grade)}", "verify_status='verified'",
+            "verified_at=datetime('now','+8 hours')", f"verify_note={q(note[:4000])}"]
+    if data.get('current_title'):
+        sets.append(f"headline={q(str(data['current_title'])[:200])}")
+    if data.get('current_company'):
+        sets.append(f"company={q(str(data['current_company'])[:200])}")
+    d1_http.query(f"UPDATE sourced_candidates SET {', '.join(sets)} WHERE id={q(sid)}")
+    log(f"  履歷核對：{c.get('name')} → {grade}·{fit}（原 {c.get('grade')}·{c.get('score')}）")
+    return json.dumps({'ok': True, 'grade': grade, 'score': fit, 'verdict': data.get('verdict')}, ensure_ascii=False)
+
+
+HANDLERS.setdefault('sourced_verify', (lambda p: '', False))
+
 # 2026-10-05 修：職缺卡回饋、產生題庫這兩種工作在 process() 裡是整條自己跑完、不用 builder，
 # 但從沒登記進 HANDLERS，process() 開頭的檢查就直接丟「未知的工作類型」——
 # 顧問在後台貼的客戶回饋（例如美德 10/5 書審回饋）全部沒進職缺卡，阿財也就學不到。

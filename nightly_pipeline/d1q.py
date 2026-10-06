@@ -131,6 +131,13 @@ def cmd_insert(table, payload, ignore=False):
         if not rows:
             print('（這批人選全部是客戶公司的人，沒有寫入任何一筆）')
             return
+    if table == 'sourced_candidates':
+        # 2026-10-06：還沒人看過完整履歷，最高 B（A 只給已核對的，核對走外掛／上傳 PDF／Cake 自動核對）
+        for r in rows:
+            if isinstance(r, dict) and r.get('grade') == 'A' and r.get('verify_status') != 'verified':
+                r['grade'] = 'B'
+                if isinstance(r.get('score'), (int, float)) and r['score'] > 79:
+                    r['score'] = 79
     cols = set(_cols(table))
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     done = 0

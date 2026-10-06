@@ -278,6 +278,8 @@ def save_candidates(job_slug, candidates, dry):
         # 沒有個人聯絡方式不扣分——Jacky：可以打公司總機請轉（10/6）。只擋「只能引薦／長期觀察」。
         if c.get('recruitability_class') in ('REFERRAL_ONLY', 'LONG_TERM_POOL'):
             fit = min(fit, 59)
+        # 2026-10-06：還沒人看過完整履歷，最高 B（A 只給已核對的）
+        fit = min(fit, 79)
         grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
         src_url = (c.get('source_url') or '').strip() or None
         if src_url and '#' not in src_url:
