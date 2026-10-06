@@ -1,0 +1,66 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index add0e9c..394ab1b 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -3639,6 +3639,38 @@ def _mark_host(app_id, name):
+         log(f'（記錄面談機器失敗，不影響面談：{e}）')
+ 
+ 
++# ── 寫回覆前，檢查有沒有更新的候選人訊息（2026-10-06）────────────
++# 由來：handle() 開頭讀一次對話、算完直接寫回覆。呼叫變慢或重跑時（10/6 下午常見，一輪最久 2～4 分鐘），
++# 候選人在等待中又補了話，這輪的回覆卻是依據舊對話寫的：
++#   · 楊政翰：回答了「英文是我的工作語言」，阿財還是把同一題英文問了一次，他回「你問過了」。
++#   · 張景勛：回「休息」，阿財卻回「請問還在線上嗎？剛剛問的空窗期…」——當他沒回。
++# 修法：開頭先記下這場最後一則訊息的 id；寫回覆前再查一次，如果有比它新的候選人訊息，就把這輪的回覆丟掉
++# （不寫、不收尾），釋放鎖，下一輪用完整對話重算。
++# 防呆：連續丟掉 STALE_DISCARD_MAX 次後這次就照寫，避免候選人一直在打字而阿財永遠不回。
++_stale_discards = {}
++STALE_DISCARD_MAX = 2
++
++
++def _max_msg_id(app_id):
++    try:
++        r = d1(f"SELECT COALESCE(MAX(id), 0) AS m FROM messages WHERE application_id={q(app_id)}")
++        return int(r[0]['m']) if r else None
++    except Exception:
++        return None
++
++
++def _newer_candidate_msgs(app_id, since_id):
++    """since_id 之後候選人又發了幾則。查不到就當 0（不能因為查詢失敗讓候選人沒有回覆）。"""
++    if since_id is None:
++        return 0
++    try:
++        r = d1(f"SELECT COUNT(*) AS c FROM messages WHERE application_id={q(app_id)} "
++               f"AND role='candidate' AND id > {int(since_id)}")
++        return int(r[0]['c']) if r else 0
++    except Exception:
++        return 0
++
++
+ # ── 閒置收尾後回來的人，要接續面談（2026-10-06）────────────────
+ # 由來：10/6 張景勛 13:15 面談開場、閒置 30 分鐘被 wrap_up() 收尾（只產報告、房間留著，
+ # 並對他說「明天這個時間前隨時回來都可以接著談，不用重頭開始」）。16:35 他回來打「可以開始」，
+@@ -3676,6 +3708,7 @@ def handle(app):
+     rate_limited = False
+     _mark_host(app_id, name)
+     try:
++        _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
+         ctx = context_for(app_id)
+         n = len(ctx.get('conversation') or [])
+         _notify_cross_job_interest(app, ctx)
+@@ -3712,6 +3745,14 @@ def handle(app):
+         result = run_claude(talk_prompt)
+         log_token_usage(app_id, 'talk', talk_prompt, _before_files)
+ 
++        _newer = _newer_candidate_msgs(app_id, _start_max_id)
++        if _newer and _stale_discards.get(app_id, 0) < STALE_DISCARD_MAX:
++            _stale_discards[app_id] = _stale_discards.get(app_id, 0) + 1
++            log(f'↩️ {name}：這輪算的時候候選人又發了 {_newer} 則，這份回覆已經過時，丟掉、下一輪用完整對話重算'
++                f'（連續第 {_stale_discards[app_id]} 次）')
++            return
++        _stale_discards.pop(app_id, None)
++
+         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+         if not msgs:
+             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
