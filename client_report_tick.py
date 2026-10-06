@@ -476,7 +476,8 @@ def main():
     while True:
         if os.path.getmtime(me) != born:
             print('[tick] 程式已更新，重新啟動', file=sys.stderr, flush=True)
-            os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])
+            # 用原本的啟動參數（含 -u、相對路徑），WSL2 看門狗是用指令字串找這支的，參數變了會以為它掛了又多開一支
+            os.execv(sys.executable, getattr(sys, 'orig_argv', None) or [sys.executable, me] + sys.argv[1:])
         try:
             tick()
         except Exception as e:

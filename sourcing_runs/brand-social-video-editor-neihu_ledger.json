@@ -1,10 +1,10 @@
 {
  "job_slug": "brand-social-video-editor-neihu",
  "first_run": "2026-09-16",
- "last_run": "2026-09-29",
+ "last_run": "2026-10-05",
  "ledger_created": "2026-09-21",
  "ledger_note": "此 slug 前五輪的身分紀錄散在各 run 檔內，未建立集中 ledger。本輪依 daily-agent-loop-v1.md『Candidate Memory Ledger』要求補建，回填 round 1-5 的 25 筆已否決身分 + round 6 的 5 筆新身分 = 30 筆。",
- "calibration_state": "ROUTE_CALIBRATION_FAILED (13 rounds, 65 samples, 7 MATCH, 10.8%)",
+ "calibration_state": "ROUTE_CALIBRATION_FAILED (14 rounds, 80 samples, 12 MATCH, 15.0%)",
  "bulk_sourcing_unlocked": false,
  "identities": [
   {
@@ -1465,6 +1465,251 @@
    "reason": "組織頁，無具名個人（同 round 2 黑焦耳攝影工作室型態）。",
    "source_url": "https://www.cake.me/me/besmarterstudio",
    "in_calibration_sample_set": false
+  },
+  {
+   "name": "王品媗 (Nina Wang)",
+   "company": "表演工作坊文化創意股份有限公司（2024/09-2025/03，任期已結束）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MATCH",
+   "reason": "民視 網路編輯/社群小編 2022/08-2024/05＋MTV電視台 剪輯小編 2022/03-07＋富邦期貨影片行銷實習＋淡江電視台美術組助理；Ps/Ai/Premiere/AE＋社群 FB/IG/Threads/YouTube/LINE＋美編三項必要能力齊備；約4年相關資歷；基隆（可通勤內湖，比照寶雅/土城先例）；IC；EMERGING。待確認：英文程度、現職狀態（比照王玟貽先例可列電訪確認項）",
+   "calibration_test": "test1",
+   "source_url": "https://www.cake.me/resumes/nina-wang-ccef53",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "林前忠",
+   "company": "三貝德數位文創股份有限公司（行銷副理，2022/12-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "能力齊備（影片腳本、攝影、社群 FB/LINE、Canva 美編、KOL）且台北現職，但 2010 年起約14年資歷、現職副理且前職為品牌暨社群溝通主任；月薪 40K 起對14年副理不現實（同 round 1 陳禹瑞13年、round 11 Rex Yan13年之成熟度/薪資錯配型態）。影音證據偏腳本/專題/訪談，hands-on 剪輯證據弱",
+   "calibration_test": "test1",
+   "source_url": "https://www.cake.me/resumes/edlinccc",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "蔡舜柔 Sama Tsai",
+   "company": "酒訊文化事業股份有限公司（Social Media Editor，2024/09-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "Archetype Lock 負向原型：ComDAO 創辦人（11人）2021/11-2023/04＋益碩管理顧問 COO（6人）2023/07-2024/05；2008 年起15年以上資歷；另自營個人品牌『三媽從來不說謊』2017 起。現職雖為 IC 社群編輯，但負責人/COO 經歷與成熟度皆超出 Lock",
+   "calibration_test": "test1",
+   "source_url": "https://www.cake.me/resumes/sama-tsai",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "蕭雅云 (HSIAO, YA YUN)",
+   "company": "美捷媚國際企業有限公司（社群企劃小編，2021/04-2023/01，已離職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "能力組合正確（FB文案、IG設計、Photoshop 美編、影片剪輯製作、影片腳本、GA）且為 IC，但 JD 必要條件『3年以上社群行銷或影音製作相關經驗』僅約1.75年（2021/04-2023/01），前兩段為 NET／韓系女裝門市銷售不計入；且最近職務於 2023/01 結束，無近期在職證據",
+   "calibration_test": "test1",
+   "source_url": "https://www.cake.me/resumes/ya71334",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "張庭瑋 (Una)",
+   "company": "未公開（Cake 履歷頁需擁有者授權）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "UNCERTAIN",
+   "reason": "Cake 搜尋索引摘要顯示高度吻合：6年行銷經驗、社群行銷/口碑行銷/影音企劃、台北、資深行銷專員、熟 Premiere/Ps/Ai、負責社群經營＋圖片美編＋影片企劃＋拍攝剪輯。但 /resumes/una8516 回『您需要權限』，全程未登入故無法取得公司名、起訖日期；僅姓名＋索引摘要，身分錨點不足2項",
+   "calibration_test": "test1",
+   "source_url": "https://www.cake.me/resumes/una8516",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "簡志為 (Terence)",
+   "company": "雨果健康行銷公司（社群行銷組長＋影片企劃，2024/04-2025/08）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MATCH",
+   "reason": "台灣達人秀 編輯部社群組長 2022/03-2024/04＋寶雅 數位行銷影音剪輯部 2021/08-2022/02（與已知人選 Hsiao-Ai Liang 同公司，graph 錨點）；銘傳大學廣電系影視製作；約5-6年相關資歷；社群經營＋影音剪輯＋腳本 hands-on 齊備；台北；組長層級比照已知人選周立晞（影音著作組長）先例屬可接受 IC。待確認：英文程度未載明、2025/09-12 於首爾語學院進修故現況與到職時間需確認",
+   "calibration_test": "test2",
+   "source_url": "https://www.cake.me/resumes/zxzx121756",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "彭琦崴 (Peng Chi-Wei)",
+   "company": "晶鑽時尚診所（行銷企劃，2021/11-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MATCH",
+   "reason": "現職約4年；社群經營＋文案＋影片製作/拍攝＋媒體公關＋KOL 合作；英文 GEPT 中級＋TOEIC 730，為本輪唯一明確滿足 JD『英文聽說讀寫中等』公開證據者；文化大學英文系；IC 非主管。待確認：hands-on 剪輯深度（公開證據為製作/拍攝，剪輯未明述）、居住地未載明",
+   "calibration_test": "test2",
+   "source_url": "https://www.cake.me/resumes/wei-peng",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "傅琪庭 (Lisa)",
+   "company": "舜程創意行銷有限公司（專案企劃，2020/06-2024/12）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "能力齊備（影片剪輯 EDIUS/PowerDirector、腳本、攝影、美編、社群 FB/LINE@）且為 IC，但地點台中市（地點非台北第5次，超出 checkpoint #7 所述桃園/新北外圍範圍）；2011 年起11年以上資歷與 40K 月薪錯配",
+   "calibration_test": "test2",
+   "source_url": "https://www.cake.me/resumes/winds90084",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "陳佳茵 (Julie Chen)",
+   "company": "欣新網股份有限公司（電子商務主要客戶業務副理，2020/07-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "職能為電商業務/客戶管理，技能列 Photoshop、Excel、文案、社群經營，但零影音拍攝/剪輯證據 — JD 必要條件『具備影音短片剪輯能力』不符（純行銷/業務無剪輯型態，本 slug 第4次）；9年以上資歷＋副理職級與薪資帶錯配",
+   "calibration_test": "test2",
+   "source_url": "https://www.cake.me/resumes/jiayin83jiayin83",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "Ang Wen",
+   "company": "未公開（Cake 履歷頁需擁有者授權）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "UNCERTAIN",
+   "reason": "搜尋索引顯示新北市八里區、Adobe Ps/Ai/Premiere/AE、影音企劃/影音製作/影片剪輯。但 /resumes/ang-wen 回『您需要權限』，無公司、無年資、無社群營運證據；身分錨點不足",
+   "calibration_test": "test2",
+   "source_url": "https://www.cake.me/resumes/ang-wen",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "黃子洋 (Isaac Huang)",
+   "company": "CAPSULE Taiwan 日商點子膠囊股份有限公司（AE/Creative/Producer，2021/10-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MATCH",
+   "reason": "同公司 2018/11-2021/04 任 Buddy Assistant；約6年內容製作資歷；hands-on 影片製作與剪輯、社群平台經營與數據分析、攝影與空拍、Podcast、直播導播、腳本撰寫；經營頻道月觀看 1200-2000 萬、單系列總觀看 388-924 萬；世新大學新聞系；台北；英文 conversational；IC（含團隊協調職責）。代理商/內容公司側比照已知人選周立晞（艾美克）、柯紹葳（潮準）、吳崑榮（加點力）、陳冠瑀（虹耀文創）先例屬已驗證原型。待確認：6年資歷對 40K 起薪之接受度",
+   "calibration_test": "test3",
+   "source_url": "https://www.cake.me/resumes/dennyhuang0809",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "蔡詠宣 (Ivy Tsai)",
+   "company": "奇實美有限公司（品牌社群經營，2023/07-現職；品牌 basiik、美妝保養小編辦公室）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MATCH",
+   "reason": "JD 四項必要能力全具公開證據：社群經營＋內容行銷（3年以上）、影片拍攝企劃與拍攝剪輯 hands-on、Photoshop/Canva/CapCut、復興商工設計科（基礎美編學歷錨點）；文化大學時尚創意產業品牌發展；現職為 IC 層級品牌社群經營；前職采妍國際資深行銷企劃、PayEasy/91APP 副理。待確認：英文程度未揭露、居住地未載明、約9年資歷與 40K 起薪錯配風險",
+   "calibration_test": "test3",
+   "source_url": "https://www.cake.me/resumes/forever_love_u909",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "林俞彣",
+   "company": "社群行銷企劃人員（多家小型客戶／自媒體 KOL）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "社群編輯相關僅約2年（2019/07 起，含3個月實習），未達 JD『3年以上』；地點台南/高雄（地點非台北第6次）；自營 IG @fei.model.food 1.4萬追蹤。能力偏文案、手機攝影、平面設計，影音剪輯 hands-on 證據弱",
+   "calibration_test": "test3",
+   "source_url": "https://www.cake.me/resumes/free700016",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "陳怡珊 (I-Shan Chen)",
+   "company": "威剛科技股份有限公司（品牌行銷副理，2022/08-現職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "MISMATCH",
+   "reason": "能力極完整（獨立企劃/製作/剪輯行銷宣傳影片、Premiere、社群 3K→10K、美編修圖、英文 TOEIC 900）、新北板橋、7-8年資歷。但為上市公司品牌行銷副理，前職雷亞遊戲 Team Leader 帶約5人團隊、管理7位數預算、執行百場活動 — 實質管理職與薪資帶明顯高於 40K/月，依 full-prompt-v3.4 第五步與 calibration 第4條『senior/expensive/unlikely to accept』判定 MISMATCH；能力面可列 REFERRAL_ONLY/ADJACENT 不列 Direct",
+   "calibration_test": "test3",
+   "source_url": "https://www.cake.me/resumes/sh333n",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "蔡佳珉 (Isaac)",
+   "company": "未取得（新北市，品牌策略企劃與廣告影片製作）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "UNCERTAIN",
+   "reason": "搜尋索引顯示新北市、品牌策略企劃、廣告影片製作、曾任代理商與品牌端。WebFetch 連續兩次回 HTTP 429 Too Many Requests — 依 full-prompt-v3.4『工具失敗處理』記為技術阻礙，不得改寫為 NOT_FOUND；列 HUMAN_ACTION_REQUIRED，第15輪優先重取",
+   "calibration_test": "test3",
+   "source_url": "https://www.cake.me/resumes/tsaiichiamin",
+   "source_type": "Cake 公開履歷頁 /resumes 命名空間（輔助來源）"
+  },
+  {
+   "name": "王奕云",
+   "company": "創造智能科技股份有限公司",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "已在後台22人名單（KNOWN）；本輪由 site:cake.me/resumes 三組查詢反覆回傳"
+  },
+  {
+   "name": "林沛臻 Jamie Lin",
+   "company": "907MALL（前職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "已在後台22人名單（KNOWN）；本輪4組查詢回傳"
+  },
+  {
+   "name": "王玟貽",
+   "company": "udn買東西購物中心（前職）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "已在後台22人名單（KNOWN）"
+  },
+  {
+   "name": "吳冠華 Hanna",
+   "company": "申豐國際事業股份有限公司",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "已在後台22人名單（KNOWN）；亦為 ledger round 11 身分"
+  },
+  {
+   "name": "陳璿文",
+   "company": "WeMo Scooter 威摩科技",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 11 MATCH"
+  },
+  {
+   "name": "許加臻",
+   "company": "好物數位行銷有限公司",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 11 MISMATCH"
+  },
+  {
+   "name": "徐維杉",
+   "company": "自由接案",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 11"
+  },
+  {
+   "name": "許倍瑄",
+   "company": "品牌行銷",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 13"
+  },
+  {
+   "name": "游凱翔",
+   "company": "（台中）",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 10 MISMATCH 地點"
+  },
+  {
+   "name": "Rex Yan",
+   "company": "13年行銷資歷",
+   "round": 14,
+   "first_seen": "2026-10-05",
+   "verdict": "CROSS_SOURCE_DUPLICATE",
+   "reason": "ledger round 11 型態（資歷超標）"
   }
  ],
  "round_7_note": "round 7（2026-09-23）新增 5 筆具名身分，0 MATCH。重大來源發現：「展覽／活動／講者／年會」與「得獎名單」這兩個八大來源家族對本 JD 具結構性反效果——講者席位與得獎具名欄位在台灣行銷產業幾乎只由創辦人、總經理、總監與經理級佔據，恰為 Archetype Lock 明列之禁止原型。此為前六輪未曾記錄之 false-positive 生成機制，非單次查詢失敗，故直接標記 RETIRED_FOR_THIS_JD 而非 COOLDOWN。",
@@ -1499,13 +1744,15 @@
   "機車／重機品牌端具名內容人員": "RETIRED_FOR_THIS_JD（第5次確認，本輪未重測）"
  },
  "open_human_checkpoints": [
-  "#4 是否接受個人接案影像工作者為可接受原型（未裁示）",
-  "#5 是否將『3年以上』與『現職受僱』改列電訪確認項而非公開證據門檻（未裁示）",
-  "#6 是否授權人工瀏覽器補全名、起訖日期與現職（未裁示；本輪 沈煜珩、鄭珽、葉宸瑋、陳柔羽、王筑涵、許倍瑄、林耘娸 及 MATCH 之 廖庭儀 年資驗證皆卡在此項——本輪起此項已成為阻擋 MATCH 認定本身的瓶頸，優先度升至最高）",
-  "#7 是否接受桃園／新北外圍每日通勤至台北內湖（未裁示）",
-  "#8（round 13 新增）是否接受『自營個人品牌社群帳號（數萬追蹤）』者為可接受原型，或視為 Lock 負向原型『KOL／網紅本人』（Edna Liu 卡在此項；round 4 陳穎萱、round 11 徐維杉等自營／接案型人選亦與此相關）",
-  "round 11 三案：(A) 放寬 checkpoint／(B) 改校準門檻為與公開來源密度相符／(C) 維持門檻逐位人工覆核（未裁示）",
-  "round 12/13 結構性衝突：退役非招募來源家族已達 10 個、連續 2 輪非招募占比 0%，即使校準通過亦無法在 70% 非招募配額下批量擴張（未裁示）"
+  "#4 自由接案影像工作者是否為可接受原型 — **ROUND 14 已由22人驗證名單實質裁示：可接受**（林佑謙、劉佳雯在名單內）。CLOSED",
+  "#5 『3年以上』與『現職受僱』是否改列電訪確認項 — **ROUND 14 已實質裁示：可（王玟貽『任期已結束，現況待確認』在名單內）**。CLOSED",
+  "#6 是否授權人工瀏覽器補全年資 — **ROUND 14 已由 site:cake.me/resumes 命名空間切換解除，無需授權登入**。CLOSED",
+  "#7 是否接受非台北／桃園新北外圍通勤 — **ROUND 14 已實質裁示：可接受非台北（寶雅台南、土城社大在名單內）**；惟台中/台南高雄仍判 MISMATCH，建議顧問明確界定可接受通勤半徑。PARTIALLY_CLOSED",
+  "#8 自營個人品牌帳號（數萬追蹤）是否為負向原型 — **ROUND 14 已實質裁示：非負向（Edna Liu 5.6萬粉在名單內）**。CLOSED",
+  "#9（round 14 新增，最高優先）**校準門檻本身的裁示**：三次五人測試於修訂後 Lock 下仍為 1/5、2/5、2/5。A 案（放寬 checkpoint）已由22人名單完成且仍不足，決策收斂為 B（門檻改為與公開來源密度相符，例如改為每輪 MATCH 絕對數或改以 2/5 為解鎖線）或 C（維持 4/5 並改為逐位人工覆核）。在此裁示前，本 slug 每輪期望產出為 1-2 位 MATCH、校準永不通過、candidates 恆為空。",
+  "#10（round 14 新增）薪資帶結構性衝突：本輪6筆 MISMATCH 中之成熟度/薪資錯配全部源於『能力完整者資歷普遍 7-14 年』。月薪 40K 起與 JD『3年以上＋社群營運＋短影音一人包＋基礎美編＋英文中等』之能力組合在公開市場存在系統性落差，建議顧問向客戶確認薪資上限或接受 3-5 年純 IC 以縮小衝突。",
+  "#11（round 14 新增）Cake /resumes 部分履歷頁需擁有者授權（張庭瑋、Ang Wen）或回 HTTP 429（蔡佳珉）；此三筆為能力索引摘要吻合但無法驗證者，列 HUMAN_ACTION_REQUIRED 待第15輪重取。",
+  "round 12/13 結構性衝突：退役非招募來源家族10個、非招募占比連續3輪 0%，即使校準通過亦無法在 70% 非招募配額下批量擴張（未裁示）"
  ],
  "matches_accumulated": [
   "陳穎萱(R4)",
@@ -1514,7 +1761,12 @@
   "王奕云(R9)",
   "白楷璘(R9)",
   "陳璿文(R11)",
-  "廖庭儀(R13)"
+  "廖庭儀(R13)",
+  "王品媗(R14)",
+  "簡志為(R14)",
+  "彭琦崴(R14)",
+  "黃子洋(R14)",
+  "蔡詠宣(R14)"
  ],
  "round_13_note": "round 13（2026-09-29）新增 36 筆新具名身分（5 筆列入校準樣本集、31 筆樣本集外）、1 MATCH（廖庭儀）、18 筆 CROSS_SOURCE_DUPLICATE（重複率 33%，與 round 12 同水準，未達 70% 換手門檻）、0 筆 EVIDENCE_UPDATE。三項發現。發現一：**瓶頸性質已從『找不到符合原型的人』改變為『公開頁無法驗證年資』**。本輪唯一 MATCH 廖庭儀（PressPlay 資深社群行銷專員，前 KKday 社群行銷資深專員）為十三輪來與正向原型#1 吻合度最高者——JD 四項必要能力（社群行銷經驗、基礎美編 Ps/Ai、影音短片拍攝剪輯、英文中等）全部具公開證據，現職與前職均在台北，職級為資深專員（IC，非 Lock 禁止之副理以上），知名度 EMERGING，無 KOL／負責人訊號。其唯一未驗證項為『3 年以上』——三段職涯＋兩次資深職稱可合理推定，但各段起訖日期須登入 Cake 才可見（全程未登入）。checkpoint #6（是否授權人工瀏覽器補全）因此由『影響 UNCERTAIN 判定』升級為『阻擋 MATCH 認定本身』，優先度最高。發現二：**非招募來源的結構性排除機制已可完整描述**。本輪首測 2 個家族全數結構性失敗——品牌官方 YouTube 頻道片尾／說明欄 credits（來源#6）僅回片尾名單製作工具導購頁（VEED／Filmora／FlexClip）與 YouTuber 排名整理文，台灣品牌官方頻道不列執行層 credits，說明欄具名者為合作 KOL 或製作公司行號；政府社群經營暨影音製作標案（來源#5）之公開欄位僅到機關／標案名稱／執行金額／受委託廠商名稱，執行層一律不具名。退役非招募家族由 8 增至 10。八大來源中屬『公開具名』性質者（#3 公協會、#4 活動講者、#5 標案、#6 作品/內容/credits、#7 目標公司團隊頁、#8 社群自介）已有 6 類被實測證明為同一生成機制：台灣行銷／影音產業的公開具名欄位由負責人、總監、經理與 KOL 佔據，品牌端執行層（本 JD 目標原型）系統性不具名。連續 2 輪非招募占比 0%，SOURCE_MIX_PARTIAL。發現三：Cake /me 錨點內部已分層 —— 早期『社群＋剪輯＋美編』核心三詞組合單次查詢重複率已升至 60-70%（許加臻、吳冠華、李恩頡、鄭名軒、江昀融、Frankie Li 反覆回傳），新身分改由『職稱層級詞＋平台詞』與『產業詞（總代理／汽車／機車／運動用品）』兩類尾端構句提供；產業詞構句首次使用即產出 4 筆新身分，列為第 14 輪優先。本輪失敗型態：職級出局 11 筆（負責人／CEO／總監／經理／副理）、純平面設計 3 筆、純影音無社群 4 筆、年資不足 2 筆、身分錨點不足 8 筆，無一筆為生態錯置（路由連續 7 輪未被證偽）。新增 checkpoint #8：自營數萬追蹤個人品牌帳號者（Edna Liu，5.6 萬追蹤）是否屬 Lock 負向原型『KOL／網紅本人』。",
  "source_memory_round_13": {
@@ -1535,5 +1787,18 @@
   "Link-in-bio／創作者變現平台（portaly.cc 等）": "RETIRED_FOR_THIS_JD",
   "泛用社群自介關鍵字（社群小編＋剪輯＋自我介紹／Threads）": "RETIRED_FOR_THIS_JD",
   "機車／重機品牌端具名內容人員": "RETIRED_FOR_THIS_JD（第5次確認，本輪未重測）"
+ },
+ "round_14_note": "round 14（2026-10-05）本輪為顧問首次提供『後台已有22位候選人＝已驗證有效人才畫像樣本』之增量輪。三項發現。發現一：**Archetype Lock 依22人驗證樣本修訂**。該22人名單實質裁示了四個自 round 4 起懸置的 checkpoint：#4 自由接案影像工作者可接受（林佑謙 沐木影像/尼卡媒體接案、劉佳雯 自由接案社群小編）；#5 現職與『3年以上』可列電訪確認項（王玟貽 標註『任期已結束，現況待確認』即在名單內）；#7 非台北可接受（Hsiao-Ai Liang 寶雅總部台南、謝宜家 土城社區大學）；#8 自營個人品牌帳號非負向原型（Edna Liu 自經營 IG 5.6萬粉在名單內）。另職級上限由『副理以上排除』放寬至『副理/組長層級 IC 可接受』（陳冠瑀 行銷副理、周立晞 影音著作組長在名單內），代理商/整合行銷公司側亦確認為已驗證原型（艾美克、潮準、加點力、虹耀文創）。據此 ARCHETYPE_LOCKED（修訂版）成立，無需再向顧問補問。發現二：**round 13 的 checkpoint #6（年資驗證卡登入）由來源命名空間切換直接解除，無需授權人工瀏覽器**。前13輪高產出錨點為 site:cake.me/me，該命名空間公開視圖僅顯示姓名＋自我介紹，經歷欄位需登入（本輪實測 5 筆 /me 頁全部回『請先註冊或登入』）。本輪改用 **site:cake.me/resumes 命名空間**，公開視圖完整顯示逐段經歷起訖日期、學歷、語言等級、技能清單，部分頁面並由本人公開顯示 Email 與手機。此為前13輪未使用之路徑，MATCH 密度由累計 10.8% 升至本輪 33%（15樣本5 MATCH），為十四輪來最大幅改善；round 11『方法論觸頂』第二次被證偽，瓶頸再次證明在查詢命名空間而非來源存量。發現三：**即使密度三倍化，單次『任取5需4 MATCH』＝80% 精確度門檻仍無法達成**。本輪依 calibration 規則執行三次獨立五人測試（非挑選verdict後組樣本）：test1 1 MATCH/3 MISMATCH/1 UNCERTAIN；test2 2 MATCH/2 MISMATCH/1 UNCERTAIN；test3 2 MATCH/2 MISMATCH/1 UNCERTAIN。三次皆未達 4/5，故 ROUTE_CALIBRATION_FAILED，candidates 留空，未執行批量搜尋與聯絡深查。關鍵判讀：**路由並非失敗原因**。本輪15筆樣本無一為生態錯置（CREATIVE_CONTENT 連續8輪未被證偽），15筆全為真實社群/影音內容人才；MISMATCH 全數落在生態內的篩選維度 — 成熟度/薪資錯配6筆（林前忠14年、蔡舜柔15年＋創辦人、傅琪庭11年、陳佳茵9年副理、陳怡珊副理帶團隊、Rex Yan13年）、地點2筆（傅琪庭台中、林俞彣台南高雄）、年資不足2筆（蕭雅云1.75年、林俞彣2年）、純行銷無剪輯1筆（陳佳茵）；UNCERTAIN 3筆全為存取障礙而非人選缺陷（張庭瑋與 Ang Wen 履歷頁需擁有者授權、蔡佳珉 HTTP 429）。即 round 11 提出的數學結論在新錨點下依然成立：目標原型（社群＋影音 hands-on＋美編＋3年以上＋台北可到班＋IC層級＋40K 可接受）在台灣公開專業檔案中的密度約為 15-33%，80% 單次精確度門檻不可由任何來源錨點選擇達成。此為自 round 11 起已交付顧問但仍未裁示之三案（A 放寬 checkpoint／B 門檻改為與公開來源密度相符／C 維持門檻逐位人工覆核）之同一決策，本輪以修訂後 Lock 重測後確認：A 案（放寬 checkpoint）已由22人名單實質完成，仍不足以通過門檻，故決策收斂為 B 或 C。附帶成果：本輪雖未解鎖批量搜尋，/resumes 錨點已附帶取得5位 MATCH 人選之本人公開聯絡資料（屬 calibration 規則允許之 incidental logging，未影響 Fit 判定、未執行深查）。",
+ "source_memory_round_14": {
+  "Cake 公開履歷頁 — site:cake.me/resumes 命名空間＋能力詞群組（社群＋剪輯＋美編＋平台詞＋地點）": "ACTIVE_PRIORITY（round 14 新增；前13輪未使用；公開視圖含逐段起訖日期/學歷/語言/技能，直接解除 checkpoint #6 年資驗證瓶頸；三組查詢產出15筆新具名身分、MATCH 密度33%；第15輪最高優先）",
+  "Cake 公開個人頁 — site:cake.me/me 命名空間（全部能力詞變體）": "RETIRED_VARIANT（round 14 實測5筆全部回『請先註冊或登入以檢視更多』，公開視圖無經歷欄位；前13輪年資無法驗證之根因，由 /resumes 命名空間取代）",
+  "Cake 公開個人頁 — site:cake.me/me ＋產業詞（總代理／汽車／機車／運動用品）": "SUPERSEDED（round 13 列最高優先；本輪確認產業詞構句本身有效但受 /me 命名空間公開欄位限制，應改以 /resumes 命名空間重跑）",
+  "Cake /resumes ＋品牌/總代理/代理商產業詞": "ACTIVE（round 14 新增；回傳含品牌端與代理商側人選，重複率低）",
+  "Behance 台灣命名空間作品頁（來源#6）": "COOLDOWN_30D（至 2026-10-28，本輪未使用）",
+  "Podcast 節目製作團隊 credits（來源#6）": "COOLDOWN_14D（至 2026-10-12，本輪未使用）",
+  "搜尋引擎 X-Ray — LinkedIn 公開索引＋中文職稱字串": "COOLDOWN_14D（至 2026-10-10，本輪未使用）",
+  "個人履歷/作品集自架站 X-Ray — Notion 命名空間": "COOLDOWN_30D（至 2026-10-26，本輪未使用）",
+  "機車／重機品牌端具名內容人員": "RETIRED_FOR_THIS_JD（第5次確認，本輪未重測）",
+  "非招募來源10個已退役家族": "RETIRED_FOR_THIS_JD（本輪未重測；非招募占比連續3輪 0%，SOURCE_MIX_PARTIAL 持續）"
  }
 }
