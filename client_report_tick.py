@@ -267,7 +267,11 @@ def anonymize_synth(synth, real_name):
     names = _name_variants(real_name)
     def fix(t):
         for n in names:
-            t = t.replace(n, '人選')
+            # 英文名字要整個字比對：Han Lin 的「Lin」不能把 LinkedIn 換成「人選kedIn」（10/6 Han Lin 匿名版）
+            if re.fullmatch(r'[A-Za-z .\'-]+', n):
+                t = re.sub(r'(?<![A-Za-z])' + re.escape(n) + r'(?![A-Za-z])', '人選', t)
+            else:
+                t = t.replace(n, '人選')
         return t
     synth = _walk_replace(synth, fix)
     sr = synth.get('summary_row') or {}
@@ -285,7 +289,9 @@ def anonymize_synth(synth, real_name):
 def anon_leaks(synth, real_name):
     """草稿裡疑似沒匿名到的東西：真名、看起來像公司全名的字、Email／電話。"""
     blob = json.dumps(synth, ensure_ascii=False)
-    hits = [n for n in _name_variants(real_name) if n in blob]
+    hits = [n for n in _name_variants(real_name)
+            if (re.search(r'(?<![A-Za-z])' + re.escape(n) + r'(?![A-Za-z])', blob)
+                if re.fullmatch(r'[A-Za-z .\'-]+', n) else n in blob)]
     hits += re.findall(r'[\u4e00-\u9fffA-Za-z0-9]{2,20}(?:股份有限公司|有限公司|株式會社|Co\.,? ?Ltd\.?|Inc\.|Corporation)', blob)
     hits += re.findall(r'[\w.+-]+@[\w-]+\.[\w.]+', blob)
     hits += re.findall(r'(?:\+?886|0)9\d{2}[- ]?\d{3}[- ]?\d{3}', blob)
@@ -463,7 +469,14 @@ def main():
     if a.once:
         tick()
         return
+    # 常駐程式不會自己換新版：WSL2 自動更新拉了新程式，這支還在跑舊的（10/6 匿名履歷就是這樣產成具名版）。
+    # 每輪檢查自己的檔案有沒有被改過，有就重新啟動自己。
+    me = os.path.abspath(__file__)
+    born = os.path.getmtime(me)
     while True:
+        if os.path.getmtime(me) != born:
+            print('[tick] 程式已更新，重新啟動', file=sys.stderr, flush=True)
+            os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])
         try:
             tick()
         except Exception as e:
