@@ -2578,7 +2578,7 @@ def _run_client_call_split(payload):
     jl = '\n'.join(f"{i}｜{j['title']}（{j.get('status') or 'open'}）｜現有條件：{str(j.get('required_conditions') or '')[:200]}"
                     f"｜客戶回饋：{str(j.get('client_screen_conditions') or '')[:200]}" for i, j in enumerate(jobs))
     prompt = f"""你是台灣獵頭顧問的助理。下面是顧問跟客戶「{lg['company_name']}」的一通電話逐字稿（可能是語音轉文字，有錯字）。
-這通電話可能同時講到這家客戶的好幾個職缺。請把客戶講的內容，依職缺分開整理。
+這通電話可能同時講到這家客戶的好幾個職缺。請整理成「會議紀錄」，並另外挑出「要改職缺卡的具體條件」。
 
 【這家客戶在系統裡的職缺】編號｜職稱（狀態）｜現有條件｜之前的客戶回饋
 {jl or '（系統裡沒有這家的職缺）'}
@@ -2586,25 +2586,34 @@ def _run_client_call_split(payload):
 【逐字稿】
 {str(lg['transcript'])[:40000]}
 
-規則：
-1. 只整理「客戶（對方）」講的資訊與決定；顧問自己的推銷、寒暄不要。
-2. 每個有被講到的職缺一筆：把客戶對這個職缺說的話整理成顧問看得懂的條列（條件改了什麼、人選回饋、薪資、面試流程、急不急、
-   哪些人選要/不要、為什麼）。照原意寫，不要加油添醋；數字、薪資、年資照原話。
-3. 對得上哪個職缺不確定時（客戶用簡稱、口語、同時講兩個缺），kind 寫 unsure，candidates 放最可能的 1～3 個編號。
-4. 客戶提到系統裡沒有的「新職缺需求」→ kind 寫 new_job，text 寫職稱、人數、條件、薪資、急迫度（有講到的才寫）。
-5. 跟特定職缺無關但重要的事（合約、付款、公司近況、組織異動、窗口換人）→ kind 寫 general。
-6. 沒講到的職缺不要列。
+每個被講到的職缺一筆，分兩塊：
+- record：客戶這通講了什麼，全部照原意條列（人選進度、面試安排、誰放哪個職位、對人選的評價、預算、急不急…都放這裡）。
+  這塊只是存紀錄，不會改職缺卡。
+- changes：只放「職缺卡要調整的判斷標準」，例如必要條件改了、加分條件、薪資預算範圍、面試流程、不要哪一類背景。
+  ⚠️ 不放：任何人選的進度或個別評價（誰在面試、誰錄取、誰試用期）——那些只放 record。
+  ⚠️ 不放：性別、年齡、婚育、外貌、國籍這類條件，客戶原話有講也不放（record 裡也改寫成中性說法，例如「男生助理」寫成「助理」）。
+  沒有要調整的就給空陣列。
+其他：
+- 對得上哪個職缺不確定 → kind 寫 unsure，candidates 放最可能的 1～3 個編號。
+- 系統裡沒有的新職缺需求 → kind 寫 new_job（record 寫職稱、人數、條件、薪資、急迫度）。
+- 跟職缺無關的事（合約、付款、窗口換人、公司近況）→ kind 寫 general。
+- 只整理客戶（對方）講的；顧問的推銷寒暄不要。沒講到的職缺不要列。
 只輸出 JSON：
 {{"summary": "這通電話三句話重點",
-  "items": [{{"kind": "job 或 unsure 或 new_job 或 general", "job_idx": 職缺編號（job 才填）, "candidates": [編號…]（unsure 才填）,
-             "title": "new_job 的職稱；general 的主題", "text": "整理好的內容（條列，換行分隔）"}}]}}"""
+  "items": [{{"kind": "job 或 unsure 或 new_job 或 general", "job_idx": 編號（job 才填）, "candidates": [編號…]（unsure 才填）,
+             "title": "new_job 的職稱；general 的主題", "record": ["條列…"], "changes": ["條列…"]}}]}}"""
     out = run_claude(prompt, want_json=True, timeout=600)
     data = json.loads(out[out.find('{'): out.rfind('}') + 1])
-    items = [x for x in (data.get('items') or []) if isinstance(x, dict) and str(x.get('text') or '').strip()]
+    import re as _re
+    _prot = _re.compile(r'(男|女)(生|性)|性別|年齡|歲|已婚|未婚|婚育|生育|外貌|長相')
+    def _lines(v):
+        return [str(t).strip() for t in (v if isinstance(v, list) else str(v or '').split('\n')) if str(t).strip()]
+    items = [x for x in (data.get('items') or []) if isinstance(x, dict) and (_lines(x.get('record')) or _lines(x.get('changes')))]
     summary = str(data.get('summary') or '').strip()
     d1_http.query(f"UPDATE client_call_logs SET summary={q(summary)}, status='split', done_at=datetime('now','+8 hours') WHERE id={q(log_id)}")
+    n_ch = sum(1 for x in items if _lines(x.get('changes')))
     _ccf_tg(f"📞 客戶電洽回饋｜{lg['company_name']}（{lg.get('caller') or ''}）\n{summary}\n\n"
-            f"AI 拆成 {len(items)} 則，下面每一則按「✅ 寫入」才會更新職缺卡（阿財面談與 AI 找人會跟著用）。")
+            f"整通紀錄已自動存進客戶卡片「客戶電洽紀錄」。下面有 {n_ch} 則「建議調整職缺卡」，按 ✅ 才會改（阿財面談與 AI 找人會跟著用）。")
     n = 0
     for x in items:
         kind = str(x.get('kind') or 'general')
@@ -2624,30 +2633,34 @@ def _run_client_call_split(payload):
                     pass
             if not opts:
                 opts = [{'slug': j['slug'], 'title': j['title']} for j in jobs[:4]]
+        record = _lines(x.get('record'))
+        changes = [c for c in _lines(x.get('changes')) if not _prot.search(c)]   # 程式再擋一次保護項目
+        if kind in ('new_job', 'general'):
+            changes = []
         title = jtitle or str(x.get('title') or '')
-        text = str(x.get('text')).strip()[:3500]
+        rec_txt = '\n'.join('・' + r for r in record)[:3500]
+        status = 'pending' if changes else 'recorded'
         d1_http.query(
-            "INSERT INTO client_call_items (id, log_id, kind, job_slug, job_title, text, options_json, status, created_at) VALUES ("
-            f"{q(iid)}, {q(log_id)}, {q(kind)}, {q(slug) if slug else 'NULL'}, {q(title)}, {q(text)}, "
-            f"{q(json.dumps(opts, ensure_ascii=False))}, 'pending', datetime('now','+8 hours'))")
-        if kind == 'job':
-            msg, btns = f"🎯 職缺：{title}\n\n{text}", [[{'text': '✅ 寫入這個職缺卡', 'callback_data': f'ccf_apply:{iid}'},
-                                                          {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
-        elif kind == 'unsure':
-            msg = f"❓ 不確定是哪個職缺（請選）\n\n{text}"
-            btns = [[{'text': f"寫進：{o['title'][:28]}", 'callback_data': f'ccf_pick:{iid}:{k}'}] for k, o in enumerate(opts)]
-            btns.append([{'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}])
+            "INSERT INTO client_call_items (id, log_id, kind, job_slug, job_title, text, changes_json, options_json, status, created_at) VALUES ("
+            f"{q(iid)}, {q(log_id)}, {q(kind)}, {q(slug) if slug else 'NULL'}, {q(title)}, {q(rec_txt)}, "
+            f"{q(json.dumps(changes, ensure_ascii=False))}, {q(json.dumps(opts, ensure_ascii=False))}, {q(status)}, datetime('now','+8 hours'))")
+        head = {'job': f'🎯 {title}', 'unsure': '❓ 不確定是哪個職缺', 'new_job': f'🆕 新職缺需求：{title}', 'general': f'🗂 {title or "其他事項"}'}.get(kind, title)
+        msg = f"{head}\n\n📋 紀錄（已自動存）\n{rec_txt or '（無）'}"
+        btns = None
+        if changes:
+            msg += '\n\n🔧 建議調整職缺卡（按了才改）\n' + '\n'.join(f'{k + 1}. {c}' for k, c in enumerate(changes))
+            if kind == 'job':
+                btns = [[{'text': '✅ 套用這些調整', 'callback_data': f'ccf_apply:{iid}'}, {'text': '❌ 只留紀錄', 'callback_data': f'ccf_drop:{iid}'}]]
+            else:
+                btns = [[{'text': f"套用到：{o['title'][:26]}", 'callback_data': f'ccf_pick:{iid}:{k}'}] for k, o in enumerate(opts)]
+                btns.append([{'text': '❌ 只留紀錄', 'callback_data': f'ccf_drop:{iid}'}])
         elif kind == 'new_job':
-            msg = f"🆕 新職缺需求：{title}\n\n{text}\n\n（不會自動開缺；按「記下來」會存在客戶電洽紀錄，要開缺請用用人需求表）"
-            btns = [[{'text': '📝 記下來', 'callback_data': f'ccf_apply:{iid}'}, {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
-        else:
-            msg = f"🗂 其他事項：{title}\n\n{text}"
-            btns = [[{'text': '📝 記下來', 'callback_data': f'ccf_apply:{iid}'}, {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
+            msg += '\n\n（不會自動開缺；要開請用用人需求表）'
         mid = _ccf_tg(msg, btns)
         if mid:
             d1_http.query(f"UPDATE client_call_items SET tg_message_id={int(mid)} WHERE id={q(iid)}")
         n += 1
-    return json.dumps({'ok': True, 'items': n, 'summary': summary}, ensure_ascii=False)
+    return json.dumps({'ok': True, 'items': n, 'changes': n_ch, 'summary': summary}, ensure_ascii=False)
 
 
 HANDLERS['client_call_split'] = (lambda p: '', True)

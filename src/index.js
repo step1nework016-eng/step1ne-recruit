@@ -5723,7 +5723,9 @@ export default {
             const [, act, iid, pick] = im;
             const it = await env.DB.prepare(`SELECT i.*, l.company_name, l.caller, l.created_at AS call_at FROM client_call_items i JOIN client_call_logs l ON l.id=i.log_id WHERE i.id=?`).bind(iid).first();
             if (!it) { await ack('找不到這一則'); return new Response('ok'); }
-            if (it.status !== 'pending') { await ack(`這則已經處理過了（${it.status === 'applied' ? '已寫入' : '不要'}・${it.decided_by || ''}）`); return new Response('ok'); }
+            if (it.status !== 'pending') { await ack(`這則已經處理過了（${it.status === 'applied' ? '已套用' : '只留紀錄'}・${it.decided_by || ''}）`); return new Response('ok'); }
+            // 2026-10-06 改版：紀錄一律自動存；按鈕只決定「建議調整」要不要套進職缺卡。送進職缺卡的只有調整條列，不含紀錄（人選進度等）。
+            let changes = []; try { changes = JSON.parse(it.changes_json || '[]'); } catch { changes = []; }
             const who = ccfWho(fq.from);
             const now = nowTaipei();
             let slug = it.job_slug, title = it.job_title, done = '';
@@ -5734,13 +5736,13 @@ export default {
               slug = o.slug; title = o.title;
             }
             if (act === 'drop') {
-              await env.DB.prepare(`UPDATE client_call_items SET status='dropped', decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(who, now, iid).run();
-              done = `❌ 不要（${who}）`;
-            } else if (slug && (it.kind === 'job' || act === 'pick')) {
+              await env.DB.prepare(`UPDATE client_call_items SET status='recorded', decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(who, now, iid).run();
+              done = `📋 只留紀錄，職缺卡不改（${who}）`;
+            } else if (slug && changes.length && (it.kind === 'job' || act === 'pick')) {
               await env.DB.prepare(`UPDATE client_call_items SET status='applied', job_slug=?, job_title=?, decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(slug, title, who, now, iid).run();
               await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'job_card_feedback', ?, 'pending', ?)`)
-                .bind(uid(), JSON.stringify({ job_slug: slug, text: `【客戶電洽回饋｜${it.company_name}｜${String(it.call_at || '').slice(0, 16)}｜${it.caller || ''}】\n${it.text}`, actor: who, application_id: null }), now).run();
-              done = `✅ 已寫入「${title}」職缺卡（${who}）——AI 1～2 分鐘整理進去`;
+                .bind(uid(), JSON.stringify({ job_slug: slug, text: `【客戶電洽回饋｜${it.company_name}｜${String(it.call_at || '').slice(0, 16)}｜${it.caller || ''}｜客戶要調整的職缺條件】\n${changes.map((c, k) => `${k + 1}. ${c}`).join('\n')}`, actor: who, application_id: null }), now).run();
+              done = `✅ 已套用到「${title}」職缺卡（${who}）——AI 1～2 分鐘整理進去`;
             } else {
               await env.DB.prepare(`UPDATE client_call_items SET status='applied', decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(who, now, iid).run();
               done = `📝 已記在「${it.company_name}」的客戶電洽紀錄（${who}）`;
