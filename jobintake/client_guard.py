@@ -103,7 +103,16 @@ def load_clients(d1_query):
 
     def add(name, aliases, relation, reason, via, owner):
         key = (name or '').strip()
-        if not key or key in seen:
+        if not key:
+            return
+        if key in seen:
+            # 2026-10-06 修：同一家兩張表都有時，原本整筆略過——client_companies 才補的
+            # 別名（例：美德的「Medtecs」）就永遠進不來。改成把別名併進先收的那一筆。
+            al2 = [x.strip() for x in (aliases or '').split('\n') if x.strip()]
+            for row in out:
+                if row['name'] == key and al2:
+                    row['_variants'] = sorted(set(row['_variants']) | set(variants(key, al2)), key=len, reverse=True)
+                    row['_py'] = [_py(v) for v in row['_variants']]
             return
         seen.add(key)
         al = [x.strip() for x in (aliases or '').split('\n') if x.strip()]
@@ -132,6 +141,17 @@ def load_clients(d1_query):
     return out
 
 
+def _hit(v, x):
+    """名單上的寫法 v 跟要比對的字串 x 有沒有對到。
+    中文：雙向包含（原本的規則）。英文：不分大小寫、但要整個字對到——
+    「Medtecs」要對到「Vice President - Medtecs Group」，可是帆宣的別名「MIC」不能對到「Microchip」。"""
+    if re.fullmatch(r'[A-Za-z0-9 .&,()-]+', v) and re.fullmatch(r'[A-Za-z0-9 .&,()/-]+', x):
+        a, b = v.strip(), x.strip()
+        pat = lambda t: re.compile(r'(?<![A-Za-z0-9])' + re.escape(t) + r'(?![A-Za-z0-9])', re.I)
+        return bool(pat(a).search(b) or pat(b).search(a))
+    return v in x or x in v
+
+
 def check(company, clients):
     """單一家公司比對結果。回 None 代表可以敲。"""
     c = (company or '').strip()
@@ -141,7 +161,7 @@ def check(company, clients):
     for row in clients:
         for v in row['_variants']:
             # 雙向比對：名單寫「帆宣」而 agent 寫「帆宣系統科技」要中；反過來也要中
-            if any(v in x or x in v for x in cv):
+            if any(_hit(v, x) for x in cv):
                 rel = row['relation']
                 if rel in BLOCK:
                     why = row.get('blocked_reason') or BLOCK[rel]

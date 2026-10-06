@@ -227,11 +227,25 @@ def extract_json(text):
 
 def save_candidates(job_slug, candidates, dry):
     saved = 0
+    # 2026-10-06：不能從客戶公司挖人（夜間找人把 Medtecs＝美德的副總排成美德職缺 A 級）。
+    try:
+        sys.path.insert(0, os.path.join(HERE, 'jobintake'))
+        import client_guard as G
+        _clients = G.load_clients(lambda sql: D.d1(sql) or [])
+    except Exception as e:
+        log(f'⚠️ 讀不到客戶名單，這次無法擋客戶公司的人：{e}')
+        G, _clients = None, []
     for c in candidates:
         name = (c.get('name') or '').strip()
         if not name:
             continue
         company = c.get('company') or ''
+        if G:
+            hit = next((h for h in (G.check(str(c.get(f) or ''), _clients) for f in ('company', 'headline') if c.get(f))
+                        if h and h.get('verdict') == 'block'), None)
+            if hit:
+                log(f'⛔ {name}（{company}）：現職對到客戶「{hit["matched"]}」，不能從客戶公司挖人，跳過')
+                continue
         # 去重：同職缺、同姓名、同公司算重複，不要每次跑都塞一樣的人進去
         dup = D.d1(
             f"SELECT id FROM sourced_candidates WHERE job_slug={D.q(job_slug)} "

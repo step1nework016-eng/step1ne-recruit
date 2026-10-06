@@ -107,6 +107,30 @@ def cmd_insert(table, payload, ignore=False):
         if not rows:
             print('（這批全部被客戶名單擋下，沒有寫入任何一筆）')
             return
+    # 2026-10-06：夜間找人把 Medtecs Group（＝美德醫療，就是這個職缺的客戶）的副總
+    # 排成美德營運發展主管的 A 級人選。從客戶自己公司挖人是獵頭大忌——改成寫入前由程式擋：
+    # 現職公司或職稱裡對到任何已簽約／洽談中／終端客戶／禁止接觸的公司，這一筆不寫。
+    if table == 'sourced_candidates':
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'jobintake'))
+        import client_guard as G  # noqa: E402
+        clients = G.load_clients(lambda sql: _post(sql).get('results') or [])
+        kept = []
+        for row in rows:
+            r = row if isinstance(row, dict) else {}
+            hit = None
+            for field in ('company', 'headline'):
+                h = G.check(str(r.get(field) or ''), clients) if r.get(field) else None
+                if h and h.get('verdict') == 'block':
+                    hit = h
+                    break
+            if hit:
+                print(f"⛔ 不寫入人選 {r.get('name')}：現職對到客戶名單「{hit['matched']}」——不能從客戶公司挖人")
+                continue
+            kept.append(row)
+        rows = kept
+        if not rows:
+            print('（這批人選全部是客戶公司的人，沒有寫入任何一筆）')
+            return
     cols = set(_cols(table))
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     done = 0
