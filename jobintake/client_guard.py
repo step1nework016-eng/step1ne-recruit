@@ -41,7 +41,14 @@ def variants(name, aliases=None):
     只比對全名等於沒比對——agent 幾乎不會寫全名。
     """
     out = set()
-    for raw in [name] + list(aliases or []):
+    raws = [name] + list(aliases or [])
+    # 2026-10-06：「CMoney（全躍財經資訊股份有限公司）」這種括號寫法，括號外、括號內各算一個名字，
+    # 不然人選現職寫「CMoney」對不到。
+    for raw in list(raws):
+        m = re.match(r'^\s*(.+?)\s*[（(](.+?)[)）]\s*$', raw or '')
+        if m:
+            raws += [m.group(1), m.group(2)]
+    for raw in raws:
         s = (raw or '').strip()
         if not s:
             continue
@@ -152,16 +159,35 @@ def _hit(v, x):
     return v in x or x in v
 
 
-def check(company, clients):
-    """單一家公司比對結果。回 None 代表可以敲。"""
+def _hit_one_way(v, x):
+    """客戶名 v 有沒有出現在字串 x 裡（不反過來）。英文整字、不分大小寫。"""
+    if re.fullmatch(r'[A-Za-z0-9 .&,()-]+', v):
+        return bool(re.search(r'(?<![A-Za-z0-9])' + re.escape(v.strip()) + r'(?![A-Za-z0-9])', x, re.I))
+    return v in x
+
+
+_GENERIC = {'台灣', 'Taiwan', 'taiwan', 'TW', '日商', '美商', '集團', '科技', '公司', '國際', '台北', '新竹', '台中'}
+
+
+def check(company, clients, strict=False):
+    """單一家公司比對結果。回 None 代表可以敲。
+    strict=True（人選用，2026-10-06）：只算「客戶名出現在對方字串裡」這個方向、不做讀音比對、
+    通用字（台灣、日商…）不算——人選的現職欄常寫「台灣」「日商」，雙向＋讀音會把一堆人誤擋。"""
     c = (company or '').strip()
     if not c:
         return None
     cv = variants(c)
     for row in clients:
         for v in row['_variants']:
+            if strict:
+                if v in _GENERIC or len(v) < 2:
+                    continue
+                if not any(_hit_one_way(v, x) for x in [c] + cv):
+                    continue
             # 雙向比對：名單寫「帆宣」而 agent 寫「帆宣系統科技」要中；反過來也要中
-            if any(_hit(v, x) for x in cv):
+            elif not any(_hit(v, x) for x in cv):
+                continue
+            if True:
                 rel = row['relation']
                 if rel in BLOCK:
                     why = row.get('blocked_reason') or BLOCK[rel]
@@ -173,6 +199,8 @@ def check(company, clients):
                     return {'company': c, 'matched': row['name'], 'relation': rel,
                             'verdict': 'warn', 'why': row.get('blocked_reason') or WARN[rel]}
 
+    if strict:
+        return None
     # 字面比不到，再用讀音比一次（同音別字）。
     # 寧可多擋：讀音撞到的最壞結果是「少敲一家」，
     # 沒擋到的最壞結果是「寄開發信去敲自己的客戶」。

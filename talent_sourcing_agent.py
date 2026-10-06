@@ -241,7 +241,7 @@ def save_candidates(job_slug, candidates, dry):
             continue
         company = c.get('company') or ''
         if G:
-            hit = next((h for h in (G.check(str(c.get(f) or ''), _clients) for f in ('company', 'headline') if c.get(f))
+            hit = next((h for h in (G.check(str(c.get(f) or ''), _clients, strict=True) for f in ('company', 'headline') if c.get(f))
                         if h and h.get('verdict') == 'block'), None)
             if hit:
                 log(f'⛔ {name}（{company}）：現職對到客戶「{hit["matched"]}」，不能從客戶公司挖人，跳過')

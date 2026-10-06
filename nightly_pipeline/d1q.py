@@ -119,7 +119,7 @@ def cmd_insert(table, payload, ignore=False):
             r = row if isinstance(row, dict) else {}
             hit = None
             for field in ('company', 'headline'):
-                h = G.check(str(r.get(field) or ''), clients) if r.get(field) else None
+                h = G.check(str(r.get(field) or ''), clients, strict=True) if r.get(field) else None
                 if h and h.get('verdict') == 'block':
                     hit = h
                     break
