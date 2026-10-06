@@ -1679,6 +1679,8 @@ def process(job):
         return _run_cand_bd(payload)
     if kind == 'sourced_verify':
         return _run_sourced_verify(payload)
+    if kind == 'client_call_split':
+        return _run_client_call_split(payload)
     # 2026-09-20 加：顧問在後台按「產生題庫」。跟 rematch 同一類——不是「產一段
     # 文字寫回某個欄位」，而是整條自己跑完（上網查該職務的專業內涵→出題→寫進
     # job_expertise）。Worker（Cloudflare）跑不了本機的 claude CLI 與網路查證，
@@ -2542,6 +2544,114 @@ def _run_cand_bd(payload):
 
 HANDLERS['cand_bd'] = (prompt_cand_bd, True)
 
+# ── 2026-10-06 客戶電洽回饋：一通電話講到好幾個職缺，AI 拆給每個職缺，顧問逐條確認才寫進職缺卡 ──
+# Jacky：「顧問跟客戶對焦職缺時一通電話可能包含全部職缺，AI 要分辨與分別更新客戶回饋，機制像新增電洽人選」。
+# 「每個職缺都確認」——AI 只負責分，寫進職缺卡（job_card_feedback，跟網頁「匯入客戶回饋」同一支）要顧問按 ✅。
+def _ccf_tg(text, buttons=None):
+    import urllib.parse as _up, urllib.request as _ur
+    e = dict(l.strip().split('=', 1) for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
+             if '=' in l and not l.startswith('#'))
+    r = d1_http.query("SELECT chat_id, thread_id FROM tg_routes WHERE key='client_call_feedback'")['results']
+    if not r:
+        return None
+    body = {'chat_id': r[0]['chat_id'], 'message_thread_id': r[0]['thread_id'], 'text': text[:4000]}
+    if buttons:
+        body['reply_markup'] = json.dumps({'inline_keyboard': buttons}, ensure_ascii=False)
+    try:
+        res = json.loads(_ur.urlopen(f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage", _up.urlencode(body).encode(), timeout=20).read())
+        return (res.get('result') or {}).get('message_id')
+    except Exception as ex:
+        log(f'  ⚠️ 客戶電洽回饋 TG 送不出去：{str(ex)[:120]}')
+        return None
+
+
+def _run_client_call_split(payload):
+    log_id = str(payload.get('log_id') or '')
+    lg = d1_http.query(f"SELECT * FROM client_call_logs WHERE id={q(log_id)}")['results']
+    if not lg:
+        return json.dumps({'ok': False, 'error': '找不到這筆電洽'}, ensure_ascii=False)
+    lg = lg[0]
+    jobs = d1_http.query(
+        f"SELECT slug, title, status, required_conditions, client_screen_conditions, salary_min, salary_max, salary_unit, locations FROM jobs "
+        f"WHERE company_id={q(lg['company_id'])} AND (COALESCE(status,'open') NOT IN ('closed','archived','filled') "
+        f"OR updated_at >= datetime('now','-60 days')) ORDER BY title")['results']
+    jl = '\n'.join(f"{i}｜{j['title']}（{j.get('status') or 'open'}）｜現有條件：{str(j.get('required_conditions') or '')[:200]}"
+                    f"｜客戶回饋：{str(j.get('client_screen_conditions') or '')[:200]}" for i, j in enumerate(jobs))
+    prompt = f"""你是台灣獵頭顧問的助理。下面是顧問跟客戶「{lg['company_name']}」的一通電話逐字稿（可能是語音轉文字，有錯字）。
+這通電話可能同時講到這家客戶的好幾個職缺。請把客戶講的內容，依職缺分開整理。
+
+【這家客戶在系統裡的職缺】編號｜職稱（狀態）｜現有條件｜之前的客戶回饋
+{jl or '（系統裡沒有這家的職缺）'}
+
+【逐字稿】
+{str(lg['transcript'])[:40000]}
+
+規則：
+1. 只整理「客戶（對方）」講的資訊與決定；顧問自己的推銷、寒暄不要。
+2. 每個有被講到的職缺一筆：把客戶對這個職缺說的話整理成顧問看得懂的條列（條件改了什麼、人選回饋、薪資、面試流程、急不急、
+   哪些人選要/不要、為什麼）。照原意寫，不要加油添醋；數字、薪資、年資照原話。
+3. 對得上哪個職缺不確定時（客戶用簡稱、口語、同時講兩個缺），kind 寫 unsure，candidates 放最可能的 1～3 個編號。
+4. 客戶提到系統裡沒有的「新職缺需求」→ kind 寫 new_job，text 寫職稱、人數、條件、薪資、急迫度（有講到的才寫）。
+5. 跟特定職缺無關但重要的事（合約、付款、公司近況、組織異動、窗口換人）→ kind 寫 general。
+6. 沒講到的職缺不要列。
+只輸出 JSON：
+{{"summary": "這通電話三句話重點",
+  "items": [{{"kind": "job 或 unsure 或 new_job 或 general", "job_idx": 職缺編號（job 才填）, "candidates": [編號…]（unsure 才填）,
+             "title": "new_job 的職稱；general 的主題", "text": "整理好的內容（條列，換行分隔）"}}]}}"""
+    out = run_claude(prompt, want_json=True, timeout=600)
+    data = json.loads(out[out.find('{'): out.rfind('}') + 1])
+    items = [x for x in (data.get('items') or []) if isinstance(x, dict) and str(x.get('text') or '').strip()]
+    summary = str(data.get('summary') or '').strip()
+    d1_http.query(f"UPDATE client_call_logs SET summary={q(summary)}, status='split', done_at=datetime('now','+8 hours') WHERE id={q(log_id)}")
+    _ccf_tg(f"📞 客戶電洽回饋｜{lg['company_name']}（{lg.get('caller') or ''}）\n{summary}\n\n"
+            f"AI 拆成 {len(items)} 則，下面每一則按「✅ 寫入」才會更新職缺卡（阿財面談與 AI 找人會跟著用）。")
+    n = 0
+    for x in items:
+        kind = str(x.get('kind') or 'general')
+        iid = str(uuid.uuid4())
+        slug, jtitle, opts = None, None, []
+        if kind == 'job':
+            try:
+                j = jobs[int(x.get('job_idx'))]
+                slug, jtitle = j['slug'], j['title']
+            except Exception:
+                kind = 'unsure'
+        if kind == 'unsure':
+            for c in (x.get('candidates') or [])[:3]:
+                try:
+                    opts.append({'slug': jobs[int(c)]['slug'], 'title': jobs[int(c)]['title']})
+                except Exception:
+                    pass
+            if not opts:
+                opts = [{'slug': j['slug'], 'title': j['title']} for j in jobs[:4]]
+        title = jtitle or str(x.get('title') or '')
+        text = str(x.get('text')).strip()[:3500]
+        d1_http.query(
+            "INSERT INTO client_call_items (id, log_id, kind, job_slug, job_title, text, options_json, status, created_at) VALUES ("
+            f"{q(iid)}, {q(log_id)}, {q(kind)}, {q(slug) if slug else 'NULL'}, {q(title)}, {q(text)}, "
+            f"{q(json.dumps(opts, ensure_ascii=False))}, 'pending', datetime('now','+8 hours'))")
+        if kind == 'job':
+            msg, btns = f"🎯 職缺：{title}\n\n{text}", [[{'text': '✅ 寫入這個職缺卡', 'callback_data': f'ccf_apply:{iid}'},
+                                                          {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
+        elif kind == 'unsure':
+            msg = f"❓ 不確定是哪個職缺（請選）\n\n{text}"
+            btns = [[{'text': f"寫進：{o['title'][:28]}", 'callback_data': f'ccf_pick:{iid}:{k}'}] for k, o in enumerate(opts)]
+            btns.append([{'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}])
+        elif kind == 'new_job':
+            msg = f"🆕 新職缺需求：{title}\n\n{text}\n\n（不會自動開缺；按「記下來」會存在客戶電洽紀錄，要開缺請用用人需求表）"
+            btns = [[{'text': '📝 記下來', 'callback_data': f'ccf_apply:{iid}'}, {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
+        else:
+            msg = f"🗂 其他事項：{title}\n\n{text}"
+            btns = [[{'text': '📝 記下來', 'callback_data': f'ccf_apply:{iid}'}, {'text': '❌ 不要', 'callback_data': f'ccf_drop:{iid}'}]]
+        mid = _ccf_tg(msg, btns)
+        if mid:
+            d1_http.query(f"UPDATE client_call_items SET tg_message_id={int(mid)} WHERE id={q(iid)}")
+        n += 1
+    return json.dumps({'ok': True, 'items': n, 'summary': summary}, ensure_ascii=False)
+
+
+HANDLERS['client_call_split'] = (lambda p: '', True)
+
 # ── 2026-10-06 履歷核對：AI 找到的人，看過「完整履歷」才下判斷 ─────────────────────────
 # Jacky：「缺一個真的有看過履歷這個環節才能去下判斷」。顧問在 LinkedIn 打開本人頁面按外掛
 # 「送進 Step1ne」（或在後台上傳 PDF），全文存進 sourced_candidates.profile_text，這支照
@@ -2827,7 +2937,7 @@ def tick():
         "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
         # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
         # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
-        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep') THEN 0 "
+        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback') THEN 0 "
         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d"
         % (MAX_ATTEMPTS, free))['results']
     if not rows:

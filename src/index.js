@@ -5637,6 +5637,151 @@ export default {
         }
       }
 
+      // ── 客戶電洽回饋（職缺對焦）：客戶群組「📞 客戶電洽回饋」主題（2026-10-06 Jacky）──
+      // 跟客戶對焦職缺的一通電話常常講到好幾個缺。貼逐字稿 → 選誰打的、哪一家 → ai_worker（client_call_split）
+      // 把客戶講的拆給每個職缺，一則一則貼回這裡；顧問按「✅ 寫入」才排 job_card_feedback 更新職缺卡
+      // （跟網頁職缺卡「匯入客戶回饋」同一支）。Jacky 定：每個職缺都要確認，AI 不直接寫。
+      {
+        const ccfRoute = await tgRoute(env, 'client_call_feedback');
+        const fm = update.message;
+        const fq = update.callback_query;
+        const inCcf = (m) => ccfRoute && m && String(m.chat.id) === String(ccfRoute.chat_id) && Number(m.message_thread_id) === Number(ccfRoute.message_thread_id);
+        const ccfWho = (from) => {
+          const u = String((from && from.username) || '').toLowerCase();
+          if (u === 'groupanonymousbot') return 'Jacky';
+          return u === 'behe10' ? 'Phoebe' : (u === 'jackyyuqi' ? 'Jacky' : ((from && from.first_name) || '顧問'));
+        };
+        const ccfSend = (text, kb) => ncSend(env, ccfRoute.chat_id, ccfRoute.message_thread_id, text, kb);
+        const ccfSubmit = async (chatId, userId, co, data) => {
+          const logId = uid();
+          const now = nowTaipei();
+          await env.DB.prepare(`INSERT INTO client_call_logs (id, company_id, company_name, caller, transcript, status, created_at) VALUES (?,?,?,?,?,?,?)`)
+            .bind(logId, co.id, co.name, data.caller || '', data.transcript, 'queued', now).run();
+          const jobId = uid();
+          await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'client_call_split', ?, 'pending', ?)`)
+            .bind(jobId, JSON.stringify({ log_id: logId }), now).run();
+          await env.DB.prepare(`UPDATE client_call_logs SET ai_job_id=? WHERE id=?`).bind(jobId, logId).run();
+          await ncClearSession(env, chatId, userId);
+          await ccfSend(`✅ 收到「${co.name}」這通（${data.caller}）。AI 大約 1～3 分鐘把內容拆到各職缺，會一則一則貼回這裡給你確認。`);
+        };
+        const ccfAnon = !!(fm && fm.sender_chat && fm.from && fm.from.username === 'GroupAnonymousBot');
+        if (inCcf(fm) && (!(fm.from && fm.from.is_bot) || ccfAnon)) {
+          const chatId = fm.chat.id, userId = fm.from.id;
+          let txt = String(fm.text || '').trim();
+          if (!txt && fm.document) {
+            const docMime = (fm.document.mime_type || '').toLowerCase();
+            const isPlain = docMime.startsWith('text/') || /\.(txt|md)$/i.test(fm.document.file_name || '');
+            try {
+              const fd = await (await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getFile?file_id=${fm.document.file_id}`)).json();
+              if (fd.ok) {
+                const buf = await (await fetch(`https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${fd.result.file_path}`)).arrayBuffer();
+                if (isPlain) txt = new TextDecoder('utf-8').decode(buf).trim();
+                else {
+                  const md = await env.AI.toMarkdown([{ name: fm.document.file_name || 'upload', blob: new Blob([buf], { type: fm.document.mime_type || 'application/octet-stream' }) }]);
+                  txt = (md && md[0] && md[0].data) ? String(md[0].data).trim() : '';
+                }
+              }
+            } catch { txt = ''; }
+            if (!txt) { await ccfSend('這個檔案讀不出文字，麻煩直接貼逐字稿文字，或換 .txt／Word 檔再試一次。'); return new Response('ok'); }
+          }
+          const sess = await ncSession(env, chatId, userId);
+          if (sess && sess.step === 'ccf_company' && txt && txt.length <= 60) {
+            const kw = txt.replace(/(股份)?有限公司$/, '').trim();
+            const { results } = await env.DB.prepare(
+              `SELECT id, display_name FROM client_companies WHERE display_name LIKE ? OR aliases LIKE ? ORDER BY display_name LIMIT 6`).bind('%' + kw + '%', '%' + kw + '%').all();
+            const list = (results || []).map((r) => ({ id: r.id, name: r.display_name }));
+            if (list.length === 1) { await ccfSubmit(chatId, userId, list[0], sess.data); return new Response('ok'); }
+            if (!list.length) { await ccfSend(`客戶名單裡找不到「${txt}」，換個關鍵字再打一次（例如簡稱）。`); return new Response('ok'); }
+            sess.data.options = list;
+            await ncSetSession(env, chatId, userId, 'ccf_pick', sess.data);
+            await ccfSend('是哪一家？', { inline_keyboard: list.map((c, i) => [{ text: c.name, callback_data: `ccf_co:${i}` }]) });
+            return new Response('ok');
+          }
+          // Telegram 會把很長的貼文拆成好幾則送：剛收過逐字稿、還在問「誰打的」時又來一大段，就接在後面
+          if (sess && sess.step === 'ccf_who' && txt.length >= 60) {
+            sess.data.transcript = (String(sess.data.transcript || '') + '\n' + txt).slice(0, 60000);
+            await ncSetSession(env, chatId, userId, 'ccf_who', sess.data);
+            return new Response('ok');
+          }
+          if (!txt || txt.length < 60) {
+            await ccfSend('在這裡貼跟客戶對焦職缺的電話逐字稿（文字或 .txt／Word 檔）。我會問誰打的、哪一家，AI 再把內容拆到各職缺給你逐條確認。');
+            return new Response('ok');
+          }
+          await ncSetSession(env, chatId, userId, 'ccf_who', { transcript: txt.slice(0, 60000) });
+          await ccfSend(`收到逐字稿（${txt.length} 字）。這通是誰打的？`,
+            { inline_keyboard: [[{ text: 'Jacky', callback_data: 'ccf_who:Jacky' }, { text: 'Phoebe', callback_data: 'ccf_who:Phoebe' }]] });
+          return new Response('ok');
+        }
+        if (fq && fq.message && inCcf(fq.message) && /^ccf_/.test(String(fq.data || ''))) {
+          const chatId = fq.message.chat.id, userId = fq.from.id;
+          const ack = (t) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: fq.id, text: t || '' }) }).catch(() => {});
+          const data = String(fq.data);
+          // 逐條確認：跟流程進度無關，誰按都可以（Jacky／Phoebe 同權），按過一次就鎖住
+          const im = data.match(/^ccf_(apply|drop|pick):([0-9a-f-]{36})(?::(\d+))?$/);
+          if (im) {
+            const [, act, iid, pick] = im;
+            const it = await env.DB.prepare(`SELECT i.*, l.company_name, l.caller, l.created_at AS call_at FROM client_call_items i JOIN client_call_logs l ON l.id=i.log_id WHERE i.id=?`).bind(iid).first();
+            if (!it) { await ack('找不到這一則'); return new Response('ok'); }
+            if (it.status !== 'pending') { await ack(`這則已經處理過了（${it.status === 'applied' ? '已寫入' : '不要'}・${it.decided_by || ''}）`); return new Response('ok'); }
+            const who = ccfWho(fq.from);
+            const now = nowTaipei();
+            let slug = it.job_slug, title = it.job_title, done = '';
+            if (act === 'pick') {
+              let opts = []; try { opts = JSON.parse(it.options_json || '[]'); } catch { opts = []; }
+              const o = opts[Number(pick)];
+              if (!o) { await ack('找不到這個選項'); return new Response('ok'); }
+              slug = o.slug; title = o.title;
+            }
+            if (act === 'drop') {
+              await env.DB.prepare(`UPDATE client_call_items SET status='dropped', decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(who, now, iid).run();
+              done = `❌ 不要（${who}）`;
+            } else if (slug && (it.kind === 'job' || act === 'pick')) {
+              await env.DB.prepare(`UPDATE client_call_items SET status='applied', job_slug=?, job_title=?, decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(slug, title, who, now, iid).run();
+              await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'job_card_feedback', ?, 'pending', ?)`)
+                .bind(uid(), JSON.stringify({ job_slug: slug, text: `【客戶電洽回饋｜${it.company_name}｜${String(it.call_at || '').slice(0, 16)}｜${it.caller || ''}】\n${it.text}`, actor: who, application_id: null }), now).run();
+              done = `✅ 已寫入「${title}」職缺卡（${who}）——AI 1～2 分鐘整理進去`;
+            } else {
+              await env.DB.prepare(`UPDATE client_call_items SET status='applied', decided_by=?, decided_at=? WHERE id=? AND status='pending'`).bind(who, now, iid).run();
+              done = `📝 已記在「${it.company_name}」的客戶電洽紀錄（${who}）`;
+            }
+            await ack(done.slice(0, 60));
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: chatId, message_id: fq.message.message_id, text: `${String(fq.message.text || '').slice(0, 3600)}\n\n${done}` }) }).catch(() => {});
+            return new Response('ok');
+          }
+          await ack();
+          const sess = await ncSession(env, chatId, userId);
+          if (!sess || !sess.data || !sess.data.transcript) { await ccfSend('這則逐字稿已經處理過或過期了，再貼一次就好。'); return new Response('ok'); }
+          if (data.startsWith('ccf_who:')) {
+            const caller = data.split(':')[1] === 'Phoebe' ? 'Phoebe' : 'Jacky';
+            const txt = sess.data.transcript;
+            const { results: cos } = await env.DB.prepare(
+              `SELECT c.id, c.display_name, c.aliases, (SELECT COUNT(*) FROM jobs j WHERE j.company_id=c.id AND COALESCE(j.status,'open')='open') n
+                 FROM client_companies c WHERE COALESCE(c.display_name,'')<>''`).all();
+            const short = (c) => String(c).replace(/(股份)?有限公司$/, '').replace(/^(台灣|臺灣)/, '');
+            const names = (c) => [c.display_name, ...String(c.aliases || '').split('\n')].map((x) => short(String(x || '').trim())).filter((k) => k.length >= 2);
+            const mentioned = (cos || []).filter((c) => names(c).some((k) => txt.includes(k)));
+            const active = (cos || []).filter((c) => c.n > 0).sort((a, b) => b.n - a.n);
+            const seen = new Set();
+            const options = [...mentioned, ...active].filter((c) => !seen.has(c.id) && seen.add(c.id)).slice(0, 8).map((c) => ({ id: c.id, name: c.display_name }));
+            await ncSetSession(env, chatId, userId, 'ccf_pick', { transcript: txt, caller, options });
+            await ccfSend(`${caller} 打的。是哪一家客戶？` + (mentioned.length ? '\n（逐字稿裡有提到的排最前面，其他是有開缺的客戶）' : '\n（下面是有開缺的客戶）'),
+              { inline_keyboard: [...options.map((c, i) => [{ text: c.name, callback_data: `ccf_co:${i}` }]), [{ text: '✏️ 都不是，我打字輸入', callback_data: 'ccf_type' }]] });
+            return new Response('ok');
+          }
+          if (data === 'ccf_type') {
+            await ncSetSession(env, chatId, userId, 'ccf_company', sess.data);
+            await ccfSend('請打客戶名稱（簡稱也可以）：');
+            return new Response('ok');
+          }
+          const co = (sess.data.options || [])[Number(data.split(':')[1])];
+          if (!co) { await ccfSend('找不到這個選項，再貼一次逐字稿試試。'); return new Response('ok'); }
+          await ccfSubmit(chatId, userId, co, sess.data);
+          return new Response('ok');
+        }
+      }
+
       // ── 電洽新增人選：TG bot 多輪對話（2026-09-01 加）──
       // 顧問電話洽談完，不用開網頁後台，直接在這個獨立 topic 走完整套：
       // /new 開始 → 貼逐字稿 → 問履歷（有就傳檔案）→ 選客戶按鈕 → 選職缺按鈕
