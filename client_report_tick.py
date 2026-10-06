@@ -57,6 +57,20 @@ def upload_pdf(app_id, company_id, pdf_bytes, filename):
     return r.get('file_id') if r.get('ok') else None
 
 
+def upload_anon_pdf(app_id, pdf_bytes, filename):
+    tok = D._admin_token()
+    if not tok:
+        return None
+    req = urllib.request.Request(
+        f'{WORKER_BASE}/admin/anon-report/attach',
+        data=json.dumps({'application_id': app_id, 'pdf_b64': base64.b64encode(pdf_bytes).decode(),
+                         'filename': filename}).encode(),
+        headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
+                 'user-agent': 'step1ne-client-report-tick/1.0'})
+    r = json.loads(urllib.request.urlopen(req, timeout=60).read())
+    return r.get('file_id') if r.get('ok') else None
+
+
 def process_one(req_row):
     app_id = req_row['application_id']
     company_id = req_row.get('company_id')
@@ -169,6 +183,13 @@ def process_one(req_row):
                 meta['client_display_for_job'] = cc[0]['display_name']
         except Exception:
             pass
+    anon_code = req_row.get('anon_code')
+    if anon_code:
+        # 2026-10-06 匿名履歷：一律匿名模式、標題寫代號、不帶任何公司名
+        meta['client_named'] = 0
+        meta['anon_label'] = f'人選代號：{anon_code}'
+        meta.pop('client_display_for_job', None)
+        data = anonymize_synth(data, name)
     use_v2 = bool(data.get('qa') or data.get('intro') or data.get('summary_row'))
     try:
         html = (deliver.build_client_html_v2(data, meta, show=show) if use_v2
@@ -187,6 +208,10 @@ def process_one(req_row):
         _job = re.sub(r'\s*[A-Za-z][A-Za-z &/().,-]*$', '', str(meta.get('job_title') or '')).strip() or str(meta.get('job_title') or '')
         _parts = [_clean(_job), _clean(display_name), _clean(meta.get('client_display_for_job') or ''), '德仁管理顧問公司']
         fn = '_'.join(x for x in _parts if x) + '.pdf'
+    if anon_code:
+        _clean = lambda x: re.sub(r'[\\/:*?"<>|\s]+', '_', str(x or '')).strip('_')
+        _job = re.sub(r'\s*[A-Za-z][A-Za-z &/().,-]*$', '', str(meta.get('job_title') or '')).strip()
+        fn = f"匿名人選推薦_{anon_code}{'_' + _clean(_job) if _job else ''}.pdf"
     with tempfile.TemporaryDirectory(prefix='client_report_') as tmp:
         path = os.path.join(tmp, fn)
         if not deliver.html_to_pdf(html, path):
@@ -197,8 +222,13 @@ def process_one(req_row):
         with open(path, 'rb') as fh:
             pdf_bytes = fh.read()
 
-    file_id = upload_pdf(app_id, company_id, pdf_bytes, fn) if company_id else None
-    D.tg_doc(pdf_bytes, fn, f'📄 {display_name}｜客戶版履歷（新版，可直接轉給用人企業）', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
+    if anon_code:
+        file_id = upload_anon_pdf(app_id, pdf_bytes, fn)
+        company_id = company_id or 'anon'
+        D.tg_doc(pdf_bytes, fn, f'📄 {fn}｜匿名履歷（{name}）——可附在開發信裡給還沒合作的公司', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
+    else:
+        file_id = upload_pdf(app_id, company_id, pdf_bytes, fn) if company_id else None
+        D.tg_doc(pdf_bytes, fn, f'📄 {display_name}｜客戶版履歷（新版，可直接轉給用人企業）', thread=CONFIRM_THREAD_ID, chat_id=CONFIRM_CHAT_ID)
 
     now_ok = 'error' if (company_id and not file_id) else 'done'
     err = "'PDF已產生但回填候選人卡片失敗，TG已收到檔案，可自行下載後手動附上'" if now_ok == 'error' else 'NULL'
@@ -211,6 +241,57 @@ CONFIRM_CHAT_ID = '-1004320100190'  # Step1ne AI 顧問室
 CONFIRM_THREAD_ID = '35'            # 客戶履歷人工確認 topic
 
 
+def _walk_replace(o, fn):
+    if isinstance(o, dict):
+        return {k: _walk_replace(v, fn) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_walk_replace(v, fn) for v in o]
+    if isinstance(o, str):
+        return fn(o)
+    return o
+
+
+def _name_variants(real_name):
+    out = set()
+    for part in re.split(r'[\s,，（）()]+', real_name or ''):
+        part = part.strip()
+        if len(part) >= 2:
+            out.add(part)
+    if real_name and len(real_name.strip()) >= 2:
+        out.add(real_name.strip())
+    return sorted(out, key=len, reverse=True)
+
+
+def anonymize_synth(synth, real_name):
+    """匿名履歷的程式端保險：真實姓名換成「人選」、期望薪資一律面議。公司名靠 AI 改寫＋草稿警示＋人工確認。"""
+    names = _name_variants(real_name)
+    def fix(t):
+        for n in names:
+            t = t.replace(n, '人選')
+        return t
+    synth = _walk_replace(synth, fix)
+    sr = synth.get('summary_row') or {}
+    if isinstance(sr, dict):
+        sr['expected_salary'] = '面議'
+        synth['summary_row'] = sr
+    for w in synth.get('work_history') or []:
+        if isinstance(w, dict):
+            w['salary'] = ''
+    for k in ('condition_acceptance',):
+        synth[k] = [x for x in (synth.get(k) or []) if not (isinstance(x, dict) and '薪' in str(x.get('topic', '')))]
+    return synth
+
+
+def anon_leaks(synth, real_name):
+    """草稿裡疑似沒匿名到的東西：真名、看起來像公司全名的字、Email／電話。"""
+    blob = json.dumps(synth, ensure_ascii=False)
+    hits = [n for n in _name_variants(real_name) if n in blob]
+    hits += re.findall(r'[\u4e00-\u9fffA-Za-z0-9]{2,20}(?:股份有限公司|有限公司|株式會社|Co\.,? ?Ltd\.?|Inc\.|Corporation)', blob)
+    hits += re.findall(r'[\w.+-]+@[\w-]+\.[\w.]+', blob)
+    hits += re.findall(r'(?:\+?886|0)9\d{2}[- ]?\d{3}[- ]?\d{3}', blob)
+    return list(dict.fromkeys(hits))
+
+
 def build_draft_text(name, synth):
     """把 synth（claude CLI 產出的 JSON）整理成一份人看得懂的純文字草稿，
     貼進 TG 讓 Jacky 確認用——跟給客戶看的PDF不是同一份東西，這份是給
@@ -218,6 +299,8 @@ def build_draft_text(name, synth):
     對不對，決定要不要放行」，不用照PDF版面排。
     """
     lines = [f'📋 {name} 客戶推薦履歷草稿（確認後回覆「做PDF」才會產出PDF）', '']
+    if synth.get('_anon_warn'):
+        lines += [synth['_anon_warn'], '']
     if synth.get('_worker_id'):
         lines.append(f'（由「{synth["_worker_id"]}」這台裝置處理）')
     if synth.get('one_liner'):
@@ -287,7 +370,7 @@ def promote_synthesized():
     狀態改回 pending；跑失敗（重試 3 次都不行）就直接標錯誤，不要讓請求卡死
     在 awaiting_synthesis 裡永遠沒人管。
     """
-    rows = D.d1("SELECT id, application_id, ai_job_id FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, ai_job_id, anon_code FROM client_report_requests "
                 "WHERE status='awaiting_synthesis' AND ai_job_id IS NOT NULL")
     for row in rows:
         job = D.d1(f"SELECT status, result_text, error, payload_json, worker_id FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
@@ -310,8 +393,13 @@ def promote_synthesized():
                 orig_payload = {}
             if orig_payload.get('salary_band'):
                 synth['salary_band'] = orig_payload['salary_band']
+            app_row0 = D.d1(f"SELECT name FROM applications WHERE id={D.q(row['application_id'])}")
+            real_name = (app_row0[0]['name'] if app_row0 else '') or ''
+            if row.get('anon_code'):
+                # 2026-10-06 匿名履歷：AI 漏寫名字也要再擋一次；期望薪資一律面議
+                synth = anonymize_synth(synth, real_name)
             call_summary = synth.get('call_summary_client_md')
-            if call_summary:
+            if call_summary and not row.get('anon_code'):
                 D.d1(f"UPDATE applications SET call_summary_client_md={D.q(call_summary)}, "
                      f"call_summary_client_at=datetime('now','+8 hours') WHERE id={D.q(row['application_id'])}")
             D.d1(f"UPDATE client_report_requests SET "
@@ -326,6 +414,11 @@ def promote_synthesized():
             # 2026-09-10 加：_worker_id只給草稿文字用，不存進synthetic_content_json
             # （那份是最終PDF的資料來源，處理裝置跟履歷內容無關，不要混進去）。
             draft_synth = dict(synth, _worker_id=j.get('worker_id'))
+            if row.get('anon_code'):
+                name = f"🔒 匿名版 {row['anon_code']}（{name}）"
+                leaks = anon_leaks(synth, real_name)
+                if leaks:
+                    draft_synth['_anon_warn'] = '⚠️ 可能還有沒匿名到的字：' + '、'.join(leaks[:8]) + '——請在下面回覆要改的地方'
             send_confirm_draft(row['id'], name, draft_synth)
         elif j['status'] == 'failed':
             D.d1(f"UPDATE client_report_requests SET status='error', "
@@ -340,7 +433,7 @@ def tick():
     # INSERT時直接給pending，沒有ai_job_id，promote_synthesized()不會碰到），
     # 這條沒有AI生成內容可審，維持原樣直接產PDF。'confirmed' 才是走過人工
     # 確認關卡、Jacky在TG按了「✅確認，產出PDF」的那批。
-    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json, status FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json, status, anon_code FROM client_report_requests "
                 "WHERE status IN ('pending','confirmed') ORDER BY requested_at ASC LIMIT 5")
     # 2026-09-17 加：跟 social_post_agent.py 同一個坑、同一套修法——原本抓到就直接
     # 處理，中間沒有「先搶下這筆」的手續。搬去第二台機器同時跑之後，兩台輪詢時間點

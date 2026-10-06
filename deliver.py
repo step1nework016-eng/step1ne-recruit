@@ -1517,6 +1517,8 @@ def is_anonymous(meta):
 
 
 def client_display_name(meta):
+    if meta.get('anon_label'):          # 2026-10-06 匿名履歷：標題直接寫「人選代號：A-01」
+        return meta['anon_label']
     return anon_name(meta.get('name')) if is_anonymous(meta) else (meta.get('name') or '候選人')
 
 
