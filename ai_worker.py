@@ -2432,10 +2432,27 @@ def _run_cand_bd(payload):
         def _hit(name, pool):
             n = name.replace('股份有限公司', '').replace('有限公司', '').strip()
             return any(n and (n in p or p.replace('股份有限公司', '').replace('有限公司', '').strip() in name) for p in pool if p)
+        # 2026-10-06：客戶比對改用 client_guard（含別名、英文名），104 上寫「美德向邦」也認得出是美德；
+        # 這位人選已經被哪家客戶刷掉的，那家直接不列（李佳龍、胡耀中被美德書審刷掉，名單卻又列美德）。
+        try:
+            sys.path.insert(0, os.path.join(HERE, 'jobintake'))
+            import client_guard as _CG
+            _cg_clients = _CG.load_clients(lambda sql: d1_http.query(sql)['results'])
+            _rej = d1_http.query(
+                "SELECT cc.display_name, cc.aliases FROM candidate_forwards cf JOIN cand_bd_runs r ON r.application_id=cf.application_id "
+                "JOIN client_companies cc ON cc.id=cf.company_id WHERE r.id='" + str(run_id).replace("'", '') + "' AND cf.client_rejected_at IS NOT NULL")['results']
+            _rej_v = [v for r in _rej for v in _CG.variants(r['display_name'], [a for a in str(r.get('aliases') or '').split('\n') if a.strip()])]
+        except Exception as e:
+            log(f'  ⚠️ 讀不到客戶名單（只用舊的全名比對）：{str(e)[:120]}')
+            _CG, _cg_clients, _rej_v = None, [], []
         saved = 0
         for t in targets:
             name = str(t['company']).strip()[:80]
-            existing = 'client' if _hit(name, clients) else ('bd' if _hit(name, bds) else None)
+            if _rej_v and any(v in name for v in _rej_v if len(v) >= 2):
+                log(f'  ⏭️ {name}：這位人選已被這家客戶刷掉，不列')
+                continue
+            _g = _CG.check(name, _cg_clients, strict=True) if _CG else None
+            existing = 'client' if (_g and _g.get('relation') == 'signed') or _hit(name, clients) else ('bd' if _hit(name, bds) else None)
             d1_http.query(
                 "INSERT INTO cand_bd_targets (id, run_id, company, angle, why, job_hint, existing, status, created_at, job_url) VALUES ("
                 f"{q(str(uuid.uuid4()))}, {q(run_id)}, {q(name)}, {q(str(t.get('angle') or '')[:20])}, "
