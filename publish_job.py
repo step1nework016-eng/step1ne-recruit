@@ -384,7 +384,9 @@ def main():
                                capture_output=True, text=True, timeout=120)
         if guard.returncode != 0:
             print('⛔ 客戶名守門員沒過，沒有部署：\n' + (guard.stdout or guard.stderr)[-800:])
-            return
+            # 2026-10-06 修：原本 return（結束碼 0），jd_regen_tick 以為成功、標成已上線，
+            # 實際上頁面沒推出去，也沒人收到通知。失敗一律回非 0。
+            sys.exit(2)
         subprocess.run(['gh', 'auth', 'switch', '-u', gh_user], capture_output=True)
         subprocess.run(['git', 'add', '-A'], cwd=SITE, check=True)
         subprocess.run(['git', 'commit', '-q', '-m',
@@ -393,6 +395,8 @@ def main():
         r = subprocess.run(['git', 'push', 'deploy', 'HEAD:main'], cwd=SITE,
                            capture_output=True, text=True)
         print('✅ 已部署' if r.returncode == 0 else f'❌ 部署失敗：{r.stderr[-300:]}')
+        if r.returncode != 0:
+            sys.exit(3)
     else:
         print(f'\n（尚未部署。確認沒問題後：cd ~/claude-projects/step1ne-stopgap-site && '
               f'gh auth switch -u {gh_user} && git add -A && git commit && git push deploy HEAD:main）')
