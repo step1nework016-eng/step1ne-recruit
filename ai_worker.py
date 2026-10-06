@@ -2825,7 +2825,10 @@ def tick():
         return 0
     rows = d1_http.query(
         "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
-        "ORDER BY CASE kind WHEN 'precall_card' THEN 0 ELSE 1 END, created_at LIMIT %d"
+        # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
+        # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
+        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep') THEN 0 "
+        "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d"
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
