@@ -5882,6 +5882,34 @@ export default {
         }
       }
 
+      // ── 面談前改談其他職缺「↩️ 取消改談」（2026-10-07 Jacky）──
+      // job_switch.py 自動改談後發到人選群組主題 7 的通知，附這顆按鈕。任何顧問都能按（不限 BD_APPROVERS）。
+      // 實際還原交給後台同一支 /admin/application/job-switch/cancel（人選卡片的按鈕也是這支），這裡只負責回覆＋改訊息。
+      {
+        const jq = update.callback_query;
+        const jd = jq ? String(jq.data || '') : '';
+        if (jq && jd.startsWith('jsw_cancel:')) {
+          const u = String((jq.from && jq.from.username) || '').toLowerCase();
+          const who = u === 'behe10' ? 'Phoebe' : ((u === 'jackyyuqi' || u === 'groupanonymousbot') ? 'Jacky' : ((jq.from && (jq.from.first_name || jq.from.username)) || '顧問'));
+          let j = {};
+          if (env.BACKOFFICE && env.ADMIN_TOKEN) {
+            const r = await env.BACKOFFICE.fetch('https://backoffice/admin/application/job-switch/cancel', {
+              method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}`, 'user-agent': 'step1ne-recruit' },
+              body: JSON.stringify({ switch_id: jd.slice('jsw_cancel:'.length), by: who, from: 'tg' }) }).catch(() => null);
+            j = r ? await r.json().catch(() => ({})) : {};
+          } else j = { ok: false, error: '系統設定缺少後台連線' };
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: jq.id, show_alert: !j.ok, text: j.ok ? `已取消改談，${j.name || '人選'} 回到原應徵職缺` : `沒有取消：${j.error || '後台沒有回應'}`.slice(0, 190) }) }).catch(() => {});
+          if (jq.message && (j.ok || j.already)) {
+            const line = j.ok ? `↩️ ${who} 取消改談（${nowTaipei().slice(5, 16)}），職缺回到〈${j.orig_job_title || '原應徵'}〉` : `（${j.error}）`;
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: jq.message.chat.id, message_id: jq.message.message_id,
+                text: `${String(jq.message.text || '').slice(0, 3700)}\n${line}` }) }).catch(() => {});
+          }
+          return new Response('ok');
+        }
+      }
+
       // ── 客戶電洽回饋（職缺對焦）：客戶群組「📞 客戶電洽回饋」主題（2026-10-06 Jacky）──
       // 跟客戶對焦職缺的一通電話常常講到好幾個缺。貼逐字稿 → 選誰打的、哪一家 → ai_worker（client_call_split）
       // 把客戶講的拆給每個職缺，一則一則貼回這裡；顧問按「✅ 寫入」才排 job_card_feedback 更新職缺卡

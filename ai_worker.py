@@ -1633,6 +1633,13 @@ def _wrap_precall_card(ai_data, payload):
 
 def process(job):
     kind = job['kind']
+    # 2026-10-07 面談前改談其他職缺／面談後判斷談的是哪個（整條在 job_switch.py 自己跑完）
+    if kind in ('job_switch_fit', 'job_switch_check'):
+        import job_switch
+        payload = json.loads(job.get('payload_json') or '{}')
+        if kind == 'job_switch_fit':
+            return job_switch.run_fit(payload, run_claude=run_claude)
+        return job_switch.run_check(payload, run_claude=run_claude)
     if kind not in HANDLERS:
         raise RuntimeError(f'未知的工作類型：{kind}')
     builder, want_json = HANDLERS[kind]
@@ -2982,6 +2989,12 @@ def tick():
         scan_reverse_match_jobs()
     except Exception as e:
         log(f'  ⚠️ 反向配對掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
+    # 2026-10-07 面談前改談其他職缺：新應徵判斷要不要改談、面談後判斷要不要改回（失敗不影響其他工作）
+    try:
+        import job_switch
+        job_switch.scan_all()
+    except Exception as e:
+        log(f'  ⚠️ 改談掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
     # 2026-10-05 Jacky：電洽準備卡要 10 分鐘內。原本一台一次只做一件、做完才撈下一件，
     # 一口氣排 5 張的話後面的要等前面全部寫完。改成同時最多 CONCURRENCY 件（各開一個
     # claude 程序），而且電洽準備卡（顧問在畫面前等）排最前面。
@@ -2999,7 +3012,7 @@ def tick():
         "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
         # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
         # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
-        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback') THEN 0 "
+        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d"
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
