@@ -290,7 +290,7 @@ def check_duplicate(j):
         return None
     row = D.d1(
         f"SELECT slug, status, client_name FROM jobs WHERE trim(title)={D.q(title)} "
-        f"AND status != 'closed' AND slug != {D.q(j['slug'])} LIMIT 1"
+        f"AND status NOT IN ('closed','social_only') AND slug != {D.q(j['slug'])} LIMIT 1"
     )
     return row[0] if row else None
 
@@ -330,6 +330,11 @@ def main():
 
     # --dry 只寫到 /tmp、不碰網站也不碰 D1，那不算「公開」，不擋。
     if not a.dry:
+        # 2026-10-07 未簽約客戶職缺（只發社群）絕對不准上官網——簽約後要先在後台「轉成正式職缺」
+        st = D.d1(f"SELECT status FROM jobs WHERE slug={D.q(j['slug'])}") or []
+        if st and st[0].get('status') == 'social_only':
+            sys.exit(f"⛔ {j['slug']} 是未簽約客戶職缺（只發社群），不能上官網。"
+                     f"簽約後請在後台職缺管理按「轉成正式職缺」，再走一般上架流程。")
         if check_slug_promoted(j) and not a.allow_pending_slug:
             sys.exit(f"⚠️ 這個職缺的網址還是暫存代號（{j['slug']}），未轉正不得公開。\n"
                      f"   正常流程會在 jd_regen_tick.py 發布前轉成語意 slug；"

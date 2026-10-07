@@ -390,6 +390,16 @@ def client_name_terms():
                     base = _core_name(v)
                     if len(base) >= 2:
                         terms.add(base)
+        # 2026-10-07 未簽約客戶職缺：開發中的公司不在 client_companies，
+        # 公司名＋顧問填的別名一律加進禁字（轉成正式職缺後也照樣擋，歷史貼文規則不變）
+        for r in d1("SELECT company, aliases FROM job_social_only") or []:
+            for v in [r.get('company')] + str(r.get('aliases') or '').split('\n'):
+                v = _norm(re.sub(r'[（(].*?[)）]', '', (v or '')).strip())
+                if len(v) >= 2:
+                    terms.add(v)
+                    base = _core_name(v)
+                    if len(base) >= 2:
+                        terms.add(base)
     except Exception as e:
         log(f'⚠️ 讀不到客戶名單，這次無法做客戶名稱稽核：{e}')
         return []
@@ -642,6 +652,18 @@ def format_job_requirement(job):
     add('上班時段', job.get('work_hours'))
     if not job.get('headcount'):
         lines.append('  ⚠️ 這個職缺沒有提供招募名額，貼文不准寫出任何人數／名額。')
+    if is_social_only(job):
+        # 2026-10-07 未簽約客戶職缺：沒有官網頁，內容只來自顧問在「新增未簽約職缺」填的欄位。
+        # 這幾欄是顧問專門為社群寫的，law5 已在後端擋過；照樣做 public_part 切內部段落＋最後整段遮客戶名。
+        add('工作內容', public_part(job.get('main_duties')))
+        add('條件', public_part(job.get('required_conditions')))
+        add('福利', public_part(job.get('benefits_detail')))
+        lines.append('\n【這是還沒公開上架的職缺，務必遵守】\n'
+                     '・這個職缺**沒有官網頁面、沒有應徵連結**：不准寫任何網址，不准叫人「點連結應徵」「到官網看」「線上投履歷」。\n'
+                     '・不准提到 AI 面談、阿財。\n'
+                     '・不准寫出公司名稱，也不要給足以猜出是哪家的線索（例：獨家產品名、門市地址）；用產業或職務性質描述。\n'
+                     '・結尾的聯絡方式（加 LINE 或私訊）系統會自動補上，你不用寫連結。')
+        return mask_client_names('\n'.join(lines))
     # ⚠️ 一定要先遮蔽再放進 prompt。這一段是整支腳本唯一會把客戶名稱帶進來的
     #    路徑——公開頁是 client_named=1、網站上本來就具名的，社群不行。
     page = strip_address_numbers(mask_client_names(public_page_text(job.get('slug') or '')))
@@ -1004,6 +1026,39 @@ def extract_post(raw):
     log('⚠️ 沒抓到 POST_START/POST_END 標記——模型沒有產出可發布的文案（常見原因：'
         '公式要求的素材不夠，模型改成回頭問人），不再拿整段回覆頂替，視為失敗。')
     return None
+
+
+# ── 2026-10-07 未簽約客戶職缺（jobs.status='social_only'）──────────────
+# 開發中、還沒簽約的公司，只拿來發社群吸引人選（開發籌碼）。Jacky 定案（選項 A）：
+# 貼文結尾＝「加 LINE 官方帳號或私訊顧問」，**不放應徵連結、不放 /go/ 職缺連結、不提阿財**。
+# 連結用發文顧問自己的 line_link（social_accounts.line_link，社群回覆那邊用的同一個），
+# 沒設就用品牌 LINE 官方帳號。
+SOCIAL_ONLY_LABEL = '🔒 未簽約客戶職缺'
+BRAND_LINE_OA = 'https://lin.ee/XcSWPzM'
+_URL_RE = re.compile(r'(https?://\S+|www\.\S+|step1ne\.com\S*)', re.I)
+
+
+def is_social_only(job):
+    return str((job or {}).get('status') or '') == 'social_only'
+
+
+def social_only_cta(account_id):
+    link = ''
+    if account_id:
+        acc = d1(f"SELECT line_link FROM social_accounts WHERE id={q(account_id)}")
+        link = ((acc or [{}])[0].get('line_link') or '').strip()
+    return ('\n\n👉 有興趣的話，加 LINE 跟我聊聊，或直接私訊我：\n' + (link or BRAND_LINE_OA))
+
+
+def social_only_finalize(post, account_id):
+    """拿掉模型自己寫的任何網址，結尾補上 LINE／私訊。"""
+    body = _URL_RE.sub('', post or '')
+    # 網址拿掉後留下「…LINE 官方帳號聯繫顧問：」「應徵連結：」這種空殼句，整行拿掉
+    body = '\n'.join(l for l in body.split('\n')
+                     if not re.search(r'(連結|LINE|line|應徵|官網|網址|點這裡|點擊).*[：:]\s*$', l))
+    body = re.sub(r'[ \t]+\n', '\n', body)
+    body = re.sub(r'\n{3,}', '\n\n', body).rstrip()
+    return body + social_only_cta(account_id)
 
 
 def go_link(account_id, job_slug=None, queue_id=None):
@@ -1697,8 +1752,13 @@ def process_job(queue_row, job, repost=False):
         # 自己在 Telegram 裡搜。
         # 2026-09-04 加：Threads觀察系統要比較「哪個公式表現好」，得先知道每篇
         # 職缺文是用哪套公式寫的（style_row 的 subtype，沒選公式就是預設寫法）。
-        post = post + line_community_link_suffix(account_id, job_slug=slug, queue_id=qid) \
-                    + job_raw_format_line_suffix(account_id, style_row, job_slug=slug, queue_id=qid)
+        social_only = is_social_only(job)
+        if social_only:
+            # 未簽約客戶職缺：不接 /go/、不接應徵連結，只留 LINE／私訊（2026-10-07 Jacky 選項 A）
+            post = social_only_finalize(post, account_id)
+        else:
+            post = post + line_community_link_suffix(account_id, job_slug=slug, queue_id=qid) \
+                        + job_raw_format_line_suffix(account_id, style_row, job_slug=slug, queue_id=qid)
         formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # 2026-09-21 補記 cta_type：顧問反映「CTA 成效不好、可能太過雷同」，
@@ -1707,7 +1767,7 @@ def process_job(queue_row, job, repost=False):
         # 寫作公式自帶的 CTA 規則。兩週後就能比出哪一種有效。
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_formula={q(formula_tag)}, content_length={q(length_tag)}, "
-           f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
+           f"cta_type={q('social_only' if social_only else _cta_kind(account_id, style_row))} WHERE id={qid}")
         taskboard('產出職缺文草稿',
                   f'{job.get("title") or job.get("slug")}｜公式 {formula_tag}｜{len(post)} 字',
                   'SUCCESS')
@@ -1758,7 +1818,9 @@ def process_job(queue_row, job, repost=False):
 
         msg_id = tg_with_buttons(
             f"📱 全民獵才貼文草稿\n"
-            f"帳號：{acct_label or '（未指定帳號）'}\n"
+            + (f"{SOCIAL_ONLY_LABEL}（只發社群：沒有官網頁、沒有應徵連結、不跑阿財；人選加 LINE／私訊找你）\n"
+               if social_only else '')
+            + f"帳號：{acct_label or '（未指定帳號）'}\n"
             f"職缺：{title}{'　（重新產出）' if repost else ''}\n"
             + (f"公式：{style_row['name']}\n" if style_row else '')
             + pay_block

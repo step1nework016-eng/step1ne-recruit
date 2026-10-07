@@ -284,6 +284,17 @@ async function clientNameTerms(env) {
         if (base.length >= 2) terms.add(base);
       }
     }
+    // 2026-10-07 未簽約客戶職缺：開發中的公司不在 client_companies，名字跟別名一樣不准出現在社群
+    const { results: so } = await env.DB.prepare(`SELECT company, aliases FROM job_social_only`).all().catch(() => ({ results: [] }));
+    for (const r of so || []) {
+      for (let v of [r.company, ...String(r.aliases || '').split('\n')]) {
+        v = String(v || '').trim();
+        if (v.length < 2) continue;
+        terms.add(v);
+        const base = v.replace(/(股份有限公司|有限公司|集團|公司|科技|國際開發)$/, '').trim();
+        if (base.length >= 2) terms.add(base);
+      }
+    }
   } catch { return []; }
   // 2026-10-05 修：自家招募把「Step1ne／德仁管理顧問」登記成客戶（co_step1ne），
   // 每則貼文結尾的 step1ne.com/go/ 連結都會命中 → 10/1 起 12 則社群貼文被誤擋。
@@ -4350,7 +4361,7 @@ async function handleSocAction(env, cq) {
         const row = await env.DB.prepare(
           `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, q.scheduled_at,
                   q.approved_at,
-                  COALESCE(j.title, q.job_slug) AS title,
+                  COALESCE(j.title, q.job_slug) AS title, j.status AS job_status,
                   COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
              FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
              LEFT JOIN social_accounts sa ON sa.id = q.account_id WHERE q.id = ?`
@@ -4431,7 +4442,8 @@ async function handleSocAction(env, cq) {
           // 2026-09-29 加：發文當下職缺已經關閉就不發（排程貼文可能排在好幾天後）。
           if (row.job_slug) {
             const jobNow = await env.DB.prepare(`SELECT status FROM jobs WHERE slug=?`).bind(row.job_slug).first();
-            if (jobNow && !['open', 'active', 'published'].includes(String(jobNow.status || 'open'))) {
+            // social_only＝未簽約客戶職缺：本來就只發社群，照發（2026-10-07）
+            if (jobNow && !['open', 'active', 'published', 'social_only'].includes(String(jobNow.status || 'open'))) {
               await env.DB.prepare(`UPDATE social_post_queue SET status='skipped' WHERE id=?`).bind(row.id).run();
               await answer(`🚫 這個職缺已經關閉（${jobNow.status}），不發這則。`, true);
               return;
@@ -4553,7 +4565,8 @@ async function handleSocAction(env, cq) {
               // 帶來的點擊會全部被算到新貼文頭上。總點擊數是準的，但各篇排名不準。
               const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
               // 2026-09-24（Jacky）：話題文不要帶連結，只有職缺文接應徵窗口
-              const body = row.topic_id ? row.draft : `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
+              // 2026-10-07：未簽約客戶職缺沒有職缺頁／應徵連結，草稿結尾已經是顧問 LINE 或私訊，不再接 /go/
+              const body = (row.topic_id || row.job_status === 'social_only') ? row.draft : `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
               const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
                 method: 'POST',
                 headers: {
@@ -4712,7 +4725,7 @@ async function handleSocAction(env, cq) {
             // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
             // 2026-09-24 改（Jacky）：話題文不要帶連結——不再自動加「應徵了解窗口」那則回覆。
             // 現在只剩 DR 這類開了 force_link_on_posts 的帳號，職缺文才會加。
-            if (!row.topic_id && row.force_link_on_posts) {
+            if (!row.topic_id && row.force_link_on_posts && row.job_status !== 'social_only') {
               // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
               // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
               // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。

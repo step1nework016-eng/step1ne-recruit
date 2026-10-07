@@ -201,6 +201,8 @@ def main():
     try:
         rows = d1("SELECT slug, title, client_name, client_named, jd_spec_json "
                   "FROM jobs WHERE jd_regen_pending = 1 "
+                  # 未簽約客戶職缺（只發社群）永遠不產官網頁（2026-10-07）
+                  "AND COALESCE(status,'') != 'social_only' "
                   "ORDER BY jd_updated_at ASC LIMIT 1")
         if not rows:
             return

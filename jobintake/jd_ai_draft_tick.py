@@ -314,7 +314,8 @@ def main():
         #    FACT_FIELDS），但輸出端的攔截需要拿實際值去比對 AI 的產出。
         cols = ', '.join(FACT_FIELDS + CONSULTANT_ONLY)
         rows = d1(f"SELECT slug, client_named, {cols} FROM jobs "
-                  f"WHERE jd_needs_ai_draft = 1 ORDER BY jd_updated_at ASC LIMIT 1")
+                  f"WHERE jd_needs_ai_draft = 1 AND COALESCE(status,'') != 'social_only' "   # 未簽約客戶職缺不產官網文案
+                  f"ORDER BY jd_updated_at ASC LIMIT 1")
         if not rows:
             return
         # 2026-09-10 加：多裝置協作保護鎖——本機的 LOCK 檔只防同一台重複跑，

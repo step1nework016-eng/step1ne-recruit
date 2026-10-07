@@ -93,6 +93,11 @@ TEMPORARY_EMPLOYMENT_HINTS = ('派遣', '約聘', '定期', '短期', '專案型
 # 稽核發現同一個概念全站有三種寫法（`status='open'` / `IN ('open','active')` /
 # `NOT IN ('closed','pending_review','client_draft')`）。以後只認這一份。
 MATCHABLE_STATUSES = ('open', 'active')
+# 2026-10-07 Jacky：未簽約客戶職缺（social_only，只發社群的開發籌碼）也要「從人才庫找誰適合」，
+# 但**只給顧問內部看**——不會出現在推薦給人選的清單（list_matchable_jobs 只認 MATCHABLE_STATUSES），
+# Email／LINE 邀請在後台 Worker 那邊一律擋（p3bBlockedReason／aiMatchEmailDraft）。
+REVERSE_MATCH_STATUSES = MATCHABLE_STATUSES + ('social_only',)
+SOCIAL_ONLY_STATUS = 'social_only'
 EXCLUDED_STATUSES = ('closed', 'draft', 'client_draft', 'pending_review')
 # 系統佔位職缺：'unspecified' 是「不確定，請顧問幫我評估」與電洽新增時掛的空殼，
 # status 是 open 但不是真的在招募。2026-10-01 做反向配對時查到它一直混在
@@ -277,7 +282,8 @@ def _salary_floor(snapshot, llm_out):
         return None
 
 
-def hard_safety_filter(recommendations, snapshot, llm_out, jobs_by_slug, existing_slugs=()):
+def hard_safety_filter(recommendations, snapshot, llm_out, jobs_by_slug, existing_slugs=(),
+                       allowed_statuses=MATCHABLE_STATUSES):
     """回傳 (kept, dropped)。dropped 每筆附原因，會寫進交付報告與稽核紀錄。
 
     擋掉的情況：
@@ -302,7 +308,7 @@ def hard_safety_filter(recommendations, snapshot, llm_out, jobs_by_slug, existin
 
         if not job:
             reason = 'job_not_in_matchable_list'
-        elif str(job.get('status') or 'open') not in MATCHABLE_STATUSES:
+        elif str(job.get('status') or 'open') not in allowed_statuses:
             reason = f"job_status_{job.get('status')}"
         elif slug == applied_slug:
             reason = 'same_as_applied_job'
@@ -755,7 +761,8 @@ def get_job(slug):
     if not rows:
         return None
     job = rows[0]
-    if slug in PLACEHOLDER_JOB_SLUGS or str(job.get('status') or 'open') not in MATCHABLE_STATUSES:
+    # 反向配對（職缺→人才庫）專用：未簽約客戶職缺也算，只給顧問看
+    if slug in PLACEHOLDER_JOB_SLUGS or str(job.get('status') or 'open') not in REVERSE_MATCH_STATUSES:
         return None
     return job
 
@@ -879,7 +886,11 @@ def notify_reverse_match(job, saved_items, pool_size, run_id=None):
     """新職缺 → 人才庫配對結果。一個職缺一則，每位人選一顆「我來聯繫」按鈕。只給顧問看，不碰人選。"""
     if not saved_items:
         return False
-    lines = [f"🔁 新職缺｜{job.get('title') or job.get('slug')}",
+    social_only = str(job.get('status') or '') == SOCIAL_ONLY_STATUS
+    lines = (["🔒 未簽約客戶職缺（只能內部看，先別讓人選知道公司）",
+              "　這家還在開發、沒簽約：可以先打給人選問意願，不要寄信／LINE 邀請，也不要講公司名。"]
+             if social_only else []) + [
+             f"🔁 新職缺｜{job.get('title') or job.get('slug')}",
              f"從人才庫 {pool_size} 位（有履歷的人選）找到 {len(saved_items)} 位可能適合：", '']
     kb = []
     for i, it in enumerate(saved_items, 1):

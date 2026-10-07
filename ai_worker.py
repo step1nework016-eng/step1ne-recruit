@@ -2254,7 +2254,8 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
         snap, report, row = snaps[m['application_id']]
         rec = dict(m, job_slug=job_slug, job_title=job.get('title'))
         existing = rs.existing_job_slugs_for_candidate(m['application_id'], email=row.get('email'))
-        kept, dropped = rs.hard_safety_filter([rec], snap, m, {job_slug: job}, existing)
+        kept, dropped = rs.hard_safety_filter([rec], snap, m, {job_slug: job}, existing,
+                                              allowed_statuses=rs.REVERSE_MATCH_STATUSES)
         for d in dropped:
             dropped_all.append({'name': snap.get('name'), 'reason': d['reason']})
         for k in kept:
@@ -2345,7 +2346,8 @@ def scan_reverse_match_jobs(force=False):
     if not force and now - _last_reverse_scan < REVERSE_SCAN_EVERY_SEC:
         return 0
     _last_reverse_scan = now
-    placeholders = ', '.join(q(s) for s in rs.MATCHABLE_STATUSES)
+    # 未簽約客戶職缺（social_only）也自動回頭找人才庫，只通知顧問（2026-10-07 Jacky）
+    placeholders = ', '.join(q(s) for s in rs.REVERSE_MATCH_STATUSES)
     rows = d1_http.query(
         'SELECT j.slug, j.title, j.closed_at, j.updated_at, '
         '       (SELECT MAX(created_at) FROM job_reverse_match_runs r WHERE r.job_slug = j.slug) AS last_run '

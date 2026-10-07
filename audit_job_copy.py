@@ -227,7 +227,7 @@ def audit(job):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     if '--all' in sys.argv:
-        jobs = d1("SELECT * FROM jobs WHERE COALESCE(status,'open') != 'closed'")
+        jobs = d1("SELECT * FROM jobs WHERE COALESCE(status,'open') NOT IN ('closed','social_only')")  # social_only 沒有官網頁
         log(f'要稽核的職缺：{len(jobs)} 個')
         for j in jobs:
             try:

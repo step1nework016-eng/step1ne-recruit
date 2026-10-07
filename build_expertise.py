@@ -301,7 +301,7 @@ def main():
         # 空殼題庫（questions_json 是空陣列）也要撈出來重產，理由同 build() 裡
         # 那段註解——只看「有沒有這一列」會讓產題失敗的職缺永遠卡住。
         jobs = d1("SELECT j.* FROM jobs j LEFT JOIN job_expertise e ON e.job_slug = j.slug "
-                  "WHERE COALESCE(j.status,'open') != 'closed' "
+                  "WHERE COALESCE(j.status,'open') NOT IN ('closed','social_only') "   # 未簽約客戶職缺不跑阿財
                   "  AND (e.job_slug IS NULL "
                   "       OR COALESCE(e.questions_json,'[]') IN ('[]','','null'))")
         log(f'還沒有題庫（或題庫是空的）的職缺：{len(jobs)} 個')

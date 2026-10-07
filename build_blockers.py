@@ -215,7 +215,7 @@ def main():
     force = '--force' in sys.argv
     if '--all' in sys.argv:
         jobs = d1("SELECT j.* FROM jobs j LEFT JOIN job_expertise e ON e.job_slug = j.slug "
-                  "WHERE COALESCE(j.status,'open') != 'closed' "
+                  "WHERE COALESCE(j.status,'open') NOT IN ('closed','social_only') "   # 未簽約客戶職缺不跑阿財
                   "AND (e.blockers_json IS NULL OR e.job_slug IS NULL)")
         log(f'還沒有到職障礙清單的職缺：{len(jobs)} 個')
         for job in jobs:
