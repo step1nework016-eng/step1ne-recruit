@@ -30,6 +30,7 @@ import json
 import time
 import uuid
 import argparse
+import re
 import subprocess
 import importlib.util
 
@@ -47,7 +48,7 @@ def log(m):
     print(f'[{time.strftime("%H:%M:%S")}] {m}', flush=True)
 
 
-def load_job(slug):
+def load_job(slug, ignore_off=False):
     rows = D.d1(
         f"SELECT slug, title, must_skills, main_duties, locations, salary_min, salary_max, "
         f"salary_unit, employment, required_conditions, education_level, years_min, "
@@ -56,7 +57,7 @@ def load_job(slug):
     # 2026-10-03：顧問在後台把這個職缺設成「不找」，就不找（job_sourcing_settings.mode='off'）
     try:
         m = D.d1(f"SELECT mode FROM job_sourcing_settings WHERE job_slug={D.q(slug)}")
-        if m and m[0].get('mode') == 'off':
+        if m and m[0].get('mode') == 'off' and not ignore_off:
             log(f'⛔ {slug} 在後台設成「外部找人選：不找」，跳過')
             return None
     except Exception:
@@ -241,7 +242,7 @@ def extract_json(text):
     return None
 
 
-def save_candidates(job_slug, candidates, dry):
+def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
     saved = 0
     # 2026-10-06：不能從客戶公司挖人（夜間找人把 Medtecs＝美德的副總排成美德職缺 A 級）。
     try:
@@ -304,7 +305,7 @@ def save_candidates(job_slug, candidates, dry):
             f"(id, created_at, source, source_url, name, headline, company, location, "
             f"email, linkedin_url, bio, raw_json, job_slug, score, grade, "
             f"recruitability_class, status, note) "
-            f"VALUES ({D.q(cid)}, datetime('now','+8 hours'), 'AI獵頭顧問專員', "
+            f"VALUES ({D.q(cid)}, datetime('now','+8 hours'), {D.q(source)}, "
             f"{D.q(src_url)}, {D.q(name)}, {D.q(c.get('headline'))}, {D.q(company)}, "
             f"{D.q(c.get('location'))}, {D.q(c.get('email'))}, {D.q(c.get('linkedin_url'))}, "
             f"{D.q(c.get('evidence'))}, {D.q(json.dumps(c, ensure_ascii=False))}, {D.q(job_slug)}, "
@@ -487,6 +488,303 @@ def push_tg_review_cards(dry):
         log(f'（TG 待判斷卡推送失敗，不影響找人結果：{e}）')
 
 
+# ── AI 挖角（--poach）─────────────────────────────────────────────
+# 2026-10-07 Jacky 交辦：原本 AI 自己上網找人，找到的人很散。改成顧問在後台
+# 每個職缺填「挖角公司（一行一家）」＋「目標職稱／職級」，AI 只找現在／最近
+# 在這些公司、這個層級的人，並幫每個人寫好兩段 LinkedIn 訊息（邀請連結的附註、
+# 對方接受後的第一則私訊），顧問自己複製貼上送出——系統絕不自動操作 LinkedIn。
+CONNECT_NOTE_MAX = 180
+# 對人選的訊息不能出現這些字（就服法第5條保護項目＋「客戶」這個詞；見 feedback_candidate_facing_copy_rules）
+PROTECTED_WORDS = ['客戶', '年齡', '幾歲', '歲以下', '歲以上', '年輕', '年紀', '性別', '男性', '女性',
+                   '已婚', '未婚', '婚姻', '婚育', '懷孕', '國籍', '宗教', '身心障礙', '血型', '星座']
+
+
+def load_poach_settings(slug):
+    try:
+        rows = D.d1(f"SELECT target_companies, target_titles FROM job_sourcing_settings WHERE job_slug={D.q(slug)}")
+    except Exception as e:  # 欄位還沒加好
+        log(f'⚠️ 讀不到挖角設定：{str(e)[:150]}')
+        return [], ''
+    if not rows:
+        return [], ''
+    comps = [x.strip(' \t-・•、,，') for x in str(rows[0].get('target_companies') or '').splitlines()]
+    comps = [x for x in comps if x]
+    return comps, str(rows[0].get('target_titles') or '').strip()
+
+
+def load_job_public(slug):
+    """訊息要用的對外資訊：雇主一般描述、是否保密、公司別名、對外薪資寫法。"""
+    rows = D.d1(f"SELECT client_name, client_intro, confidential_client, company_id, salary_min, salary_max, "
+                f"salary_unit, title FROM jobs WHERE slug={D.q(slug)}") or [{}]
+    j = rows[0]
+    names = [j.get('client_name') or '']
+    if j.get('company_id'):
+        cc = D.d1(f"SELECT display_name, aliases FROM client_companies WHERE id={D.q(j['company_id'])}") or []
+        if cc:
+            names.append(cc[0].get('display_name') or '')
+            names += str(cc[0].get('aliases') or '').splitlines()
+    return j, client_terms(names)
+
+
+def client_terms(names):
+    """客戶名的所有寫法（含括號內外、去掉『醫療／集團／股份有限公司』的字根、中文前兩字）。
+    寧可多擋：擋錯只是那則訊息重寫，漏擋就是把保密客戶講出去。"""
+    out = set()
+    raw = [n.strip() for n in names if n and n.strip()]
+    for n in list(raw):
+        m = re.match(r'^\s*(.+?)\s*[（(](.+?)[)）]\s*$', n)
+        if m:
+            raw += [m.group(1).strip(), m.group(2).strip()]
+    try:
+        sys.path.insert(0, os.path.join(HERE, 'jobintake'))
+        import client_guard as G
+        for n in raw:
+            out.update(G.variants(n))
+    except Exception:
+        out.update(raw)
+    for n in raw:
+        out.add(n)
+        stem = re.sub(r'(股份)?有限公司$|公司$|集團$|醫療$|科技$|企業$|國際$', '', n).strip()
+        if len(stem) >= 2:
+            out.add(stem)
+        cjk = re.match(r'^[一-鿿]{2,}', n)
+        if cjk:
+            out.add(cjk.group(0)[:2])
+    return sorted({t for t in out if len(t) >= 2}, key=len, reverse=True)
+
+
+def public_salary_text(j):
+    """只講官網職缺頁上寫的。jobs.salary_unit 有時填錯（美德寫 MONTH 但其實是年薪 250 萬），
+    所以金額 ≥ 30 萬一律當年薪。沒有下限就不提薪資。"""
+    lo = j.get('salary_min')
+    try:
+        lo = int(lo) if lo else 0
+    except (TypeError, ValueError):
+        lo = 0
+    if not lo:
+        return ''
+    if str(j.get('salary_unit') or '').upper() == 'YEAR' or lo >= 300000:
+        return f'年薪 {lo // 10000} 萬起'
+    return f'月薪 {lo // 1000 / 10:g} 萬起'
+
+
+def build_poach_prompt(job, companies, titles, pub, salary_text, ledger_text='', ledger_n=0, gate_text=''):
+    jd_text = '\n'.join(f'{k}: {v}' for k, v in job.items() if v not in (None, '') and k != 'client_name')
+    job_url = f"https://step1ne.com/jobs/{job['slug']}/"
+    employer = (pub.get('client_intro') or '').strip() or '一家正在擴編的集團'
+    comp_list = '\n'.join(f'- {c}' for c in companies)
+    ledger_block = ''
+    if ledger_n:
+        ledger_block = f"""
+【已知名單｜這個職缺後台已經有 {ledger_n} 位，全部不算新產出】
+撞到同一人（姓名、別名、公司、職稱、LinkedIn 網址任兩項對得上）就跳過，不要放進 candidates。
+{ledger_text}
+"""
+    gate_block = f'\n【職缺專屬閘門｜顧問拍板，必須照做】\n{gate_text}\n' if gate_text else ''
+    return f'''你是 Step1ne 獵頭公司的 AI Talent Intelligence & Sourcing Agent，這次是「指定公司挖角」任務。
+
+先讀這兩份規範的硬規則與評分方式（只讀規則，不要照裡面的五人校準流程走）：
+1. {SKILL_DIR}/SKILL.md
+2. {SKILL_DIR}/references/full-prompt-v3.4.md
+
+職缺（內部資料，只給你判斷用）：
+{jd_text}
+{gate_block}{ledger_block}
+【這次的搜尋範圍｜只能找這些公司的人】
+顧問指定的挖角公司（含它們列出的子公司、品牌、海外廠）：
+{comp_list}
+
+目標職稱／職級：{titles or '跟職缺同層級或高一層的主管'}
+
+做法：
+- **跳過 Archetype 五人校準，直接開始正式搜尋。**
+- 只收「現職或最近一份工作」在上面清單公司（含其子公司／品牌／海外據點）的人；
+  已經離開這些公司超過一份工作的不要收。
+- 職級要符合上面的目標職稱／職級；明顯低於（例如專員、組長）的不要收。
+- 優先用公開的 LinkedIn 個人頁（用搜尋引擎 site:linkedin.com/in 加公司名、職稱的中英文寫法），
+  也可用公司官網經營團隊頁、年報、新聞稿、產業媒體報導、演講名單。
+  找得到 LinkedIn 個人頁就一定要填 linkedin_url；真的找不到才只填 source_url。
+- 目標 10～20 位新的人。平均分散在不同公司，不要全擠在同一家。
+- 公司名的中英文都要搜（例如 聚陽／Makalot、寶成／Pou Chen、裕元／Yue Yuen）。
+
+硬性規則（不可違反，違反就等於這次任務失敗）：
+- 只用合法公開資訊搜尋，不登入任何帳號、不繞過驗證碼或付費牆、不使用外洩資料庫
+- 不得用任何帳號自動化操作 LinkedIn／任何平台，需要登入才看得到的內容一律不用
+- 不得用猜測方式產生 Email，查不到公開信箱就填 null
+- 不得依年齡、性別、婚姻、國籍、身心障礙、宗教等就業服務法第5條保護項目篩選、排序或排除候選人，
+  即使公開資料裡看得到這些資訊也不可以拿來當判斷依據
+- fit_score 只能依「工作經歷裡實際做過的事」打分；年資、職稱照原文寫，不准誇大
+
+【每個人都要寫兩段 LinkedIn 訊息｜顧問會自己複製貼上，系統不會自動送出】
+1. connect_note：送出「連結邀請」時附的短訊，繁體中文，**最多 180 個字（含標點）**。
+   要用他真實經歷裡的一個具體點開頭（例如他負責的事業部、做過的海外產線、帶過的品牌客戶），
+   說明我們是獵頭顧問、手上有一個跟他經歷相關的高階機會，邀請他加為聯絡人。不要放網址。
+2. followup_msg：對方接受邀請後的第一則私訊，繁體中文，約 150～300 字。
+   內容：簡短介紹職位（職稱、這個職位要做什麼、地點）、為什麼想到他（一句、扣他的經歷）、
+   邀請他這週或下週撥 10～15 分鐘電話聊聊，最後附上職缺頁 {job_url}
+   {f"可以提薪資，但只能照官網寫法：「{salary_text}」，不要自己加碼或編其他數字。" if salary_text else "不要提任何薪資數字。"}
+
+訊息的禁止事項（違反的訊息會被系統整段丟掉）：
+- **絕對不能出現雇主的公司名稱、品牌、簡稱或英文名**。雇主只能用這句一般描述來講：
+  「{employer}」（可以縮短改寫，但不能加回公司名、國家以外的可辨識細節）
+- 不能出現「客戶」這兩個字（改說「這家公司」「這個團隊」「我們合作的企業」）
+- 不能提年齡、性別、婚姻、國籍、宗教、身心障礙等任何個人屬性
+- 不能說資料是從哪裡找到的（不要寫「我在 LinkedIn 上看到你」以外的來源；也不要說「AI 幫我找到你」）
+- 署名用「Step1ne 獵頭顧問」即可，不要寫人名
+
+完成後，只輸出一個 JSON 物件（不要有其他文字說明、不要用 ```json 包起來、不要在 JSON 前後加任何字），格式：
+{{
+  "route": "POACH_TARGET_COMPANIES",
+  "archetype_locked": true,
+  "calibration_result": "SKIPPED_POACH_MODE",
+  "candidates": [
+    {{
+      "name": "姓名", "headline": "職稱或一行描述", "company": "目前或最近公司（要是清單裡的公司或其子公司）",
+      "location": "地點", "email": "查到的公開Email，查不到填null", "phone": "查到的公開電話，查不到填null",
+      "linkedin_url": "查得到就一定要填，查不到填null", "source_url": "找到這個人的來源網址",
+      "fit_score": 0到100的整數, "recruitability_class": "DIRECT_TARGET 或 CONTACT_AFTER_CONFIRMATION 或 ADJACENT_TARGET 或 REFERRAL_ONLY 或 LONG_TERM_POOL",
+      "evidence": "為什麼判斷這個人符合，附身分錨點（公司/職稱/負責事項/地點等至少兩項）",
+      "connect_note": "連結邀請附註，180字以內",
+      "followup_msg": "接受後的第一則私訊，含 {job_url}"
+    }}
+  ],
+  "run_summary": "這次搜尋了哪些公司、每家找到幾位、哪些公司找不到人、為什麼"
+}}'''
+
+
+def outreach_problems(c, terms):
+    probs = []
+    for k in ('connect_note', 'followup_msg'):
+        v = str(c.get(k) or '')
+        if not v.strip():
+            probs.append(f'{k} 是空的')
+            continue
+        low = v.lower()
+        for t in terms:
+            if t.lower() in low:
+                probs.append(f'{k} 出現雇主名稱「{t}」')
+                break
+        for w in PROTECTED_WORDS:
+            if w in v:
+                probs.append(f'{k} 出現不能寫的字「{w}」')
+                break
+    return probs
+
+
+def fix_outreach(c, job_url):
+    for k in ('connect_note', 'followup_msg'):
+        if isinstance(c.get(k), str):
+            c[k] = c[k].strip()
+    if c.get('connect_note') and len(c['connect_note']) > CONNECT_NOTE_MAX:
+        c['connect_note'] = c['connect_note'][:CONNECT_NOTE_MAX - 1].rstrip('，、, ') + '…'
+    fm = c.get('followup_msg')
+    if fm and job_url not in fm:
+        c['followup_msg'] = fm.rstrip() + f'\n\n職缺介紹：{job_url}'
+
+
+def guard_outreach(cands, terms, job, pub, salary_text):
+    """寫進資料庫之前最後一道：有公司名／保護項目字眼的訊息先請 AI 重寫一次，
+    還是不行就整段拿掉（人照樣存，顧問看得到「訊息被拿掉」的原因自己寫）。"""
+    job_url = f"https://step1ne.com/jobs/{job['slug']}/"
+    for c in cands:
+        fix_outreach(c, job_url)
+    bad = [c for c in cands if outreach_problems(c, terms)]
+    if bad:
+        log(f'⚠️ {len(bad)} 位的訊息沒過檢查，請 AI 重寫一次：' +
+            '；'.join(f"{c.get('name')}（{'、'.join(outreach_problems(c, terms))}）" for c in bad))
+        people = '\n'.join(
+            f"- name={c.get('name')}｜{c.get('headline') or ''}｜{c.get('company') or ''}｜佐證：{str(c.get('evidence') or '')[:300]}"
+            f"\n  問題：{'、'.join(outreach_problems(c, terms))}"
+            for c in bad)
+        employer = (pub.get('client_intro') or '').strip() or '一家正在擴編的集團'
+        prompt = f'''幫這幾位人選重寫兩段 LinkedIn 訊息（不要上網、不要用任何工具，直接寫）。
+職位：{job.get('title')}；職缺頁 {job_url}
+雇主只能這樣描述（不能寫公司名稱、品牌、簡稱、英文名）：「{employer}」
+{f"薪資只能寫：「{salary_text}」" if salary_text else "不要提薪資。"}
+規則：繁體中文；connect_note 最多 180 字、用他的真實經歷開頭、邀請加聯絡人、不放網址；
+followup_msg 150～300 字、介紹職位、邀請這週或下週通 10～15 分鐘電話、最後附職缺頁網址；
+不能出現「客戶」、年齡、性別、婚姻、國籍、宗教等字眼；署名「Step1ne 獵頭顧問」。
+絕對不能出現這些字：{'、'.join(terms)}
+
+{people}
+
+只輸出 JSON：{{"messages": [{{"name": "姓名", "connect_note": "...", "followup_msg": "..."}}]}}'''
+        ok, out = run_claude(prompt)
+        fixed = {}
+        if ok:
+            txt = out.strip()
+            dec = json.JSONDecoder()
+            i = txt.find('{')
+            while i >= 0:
+                try:
+                    obj, _ = dec.raw_decode(txt, i)
+                    if isinstance(obj, dict) and 'messages' in obj:
+                        fixed = {str(m.get('name') or '').strip(): m for m in obj.get('messages') or []}
+                        break
+                except Exception:
+                    pass
+                i = txt.find('{', i + 1)
+        for c in bad:
+            m = fixed.get(str(c.get('name') or '').strip())
+            if m:
+                c['connect_note'], c['followup_msg'] = m.get('connect_note'), m.get('followup_msg')
+                fix_outreach(c, job_url)
+            probs = outreach_problems(c, terms)
+            if probs:
+                c['connect_note'] = c['followup_msg'] = None
+                c['outreach_blocked'] = '訊息被系統拿掉（' + '、'.join(probs) + '），請顧問自己寫'
+                log(f"⛔ {c.get('name')}：重寫後還是不行，訊息拿掉（{'、'.join(probs)}）")
+            else:
+                log(f"✅ {c.get('name')}：訊息重寫後通過")
+    return cands
+
+
+def run_poach(a, job):
+    companies, titles = load_poach_settings(a.job)
+    if not companies:
+        sys.exit(f'❌ {a.job} 還沒設定挖角公司。請到顧問後台 → 職缺 →「AI 找的人」→ 挖角公司，一行填一家再按「儲存」。')
+    pub, terms = load_job_public(a.job)
+    salary_text = public_salary_text(pub)
+    log(f'開始挖角：{job["title"]}（{a.job}），{len(companies)} 家公司，目標職級：{titles or "（沒填）"}')
+    log(f'訊息禁用字（雇主名稱）：{"、".join(terms)}　對外薪資寫法：{salary_text or "不提"}')
+    pool = load_existing_pool(a.job)
+    ledger_text, ledger_n = format_ledger(pool)
+    if ledger_n:
+        log(f'已載入既有名單：{ledger_n} 位，本輪只算新的人')
+    prompt = build_poach_prompt(job, companies, titles, pub, salary_text, ledger_text, ledger_n, load_job_gate(a.job))
+    ok, out = run_claude(prompt)
+    run_dir = os.path.join(HERE, 'sourcing_runs')
+    os.makedirs(run_dir, exist_ok=True)
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    raw_path = os.path.join(run_dir, f'{a.job}_{stamp}_poach_raw.txt')
+    with open(raw_path, 'w', encoding='utf-8') as f:
+        f.write(out)
+    if not ok:
+        sys.exit(f'❌ claude -p 執行失敗（原始輸出在 {raw_path}）：{out[-1000:]}')
+    parsed = extract_json(out)
+    if not parsed:
+        sys.exit(f'❌ 沒有解析出有效 JSON。原始輸出已保留在：{raw_path}\n末段：\n{out[-1500:]}')
+    log(f"摘要：{parsed.get('run_summary')}")
+    candidates = parsed.get('candidates') or []
+    if not candidates:
+        log('這次沒有找到候選人')
+        return
+    candidates = guard_outreach(candidates, terms, job, pub, salary_text)
+    for c in candidates:
+        c['poach_targets'] = companies
+        c['poach_titles'] = titles
+    json_path = os.path.join(run_dir, f'{a.job}_{stamp}_poach.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(parsed, f, ensure_ascii=False, indent=2)
+    log(f'完整結果存到：{json_path}')
+    for i, c in enumerate(candidates, 1):
+        log(f"{i}. {c.get('name')}｜{c.get('headline')}｜{c.get('company')}｜LinkedIn：{c.get('linkedin_url')}")
+    saved = save_candidates(a.job, candidates, a.dry, source='AI挖角')
+    log(f'完成，共 {len(candidates)} 位候選人，新增 {saved} 位進池子' + ('（--dry 沒有真的寫入）' if a.dry else ''))
+    if saved:
+        push_tg_review_cards(a.dry)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--job', required=True, help='職缺 slug')
@@ -496,11 +794,17 @@ def main():
     ap.add_argument('--since', default=None, help='只處理這個時間之後加入池子的人，例如 "2026-08-26 16:00"')
     ap.add_argument('--limit', type=int, default=20, help='聯絡查找一次處理幾位')
     ap.add_argument('--learnings', default=None, help='上一輪的教訓文字（直接傳字串），避開同樣的 false-positive 來源')
+    ap.add_argument('--poach', action='store_true', help='挖角模式：只找後台設定的挖角公司，並幫每個人寫 LinkedIn 訊息')
     a = ap.parse_args()
 
-    job = load_job(a.job)
+    # 挖角是顧問特地按的，就算「外部找人選」設成不找也照跑（那個設定管的是夜間自動找人）
+    job = load_job(a.job, ignore_off=a.poach)
     if not job:
         sys.exit(f'找不到職缺：{a.job}')
+
+    if a.poach:
+        run_poach(a, job)
+        return
 
     if a.contact_only:
         targets = load_contact_targets(a.job, a.since, a.limit)

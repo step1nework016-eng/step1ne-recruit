@@ -36,12 +36,17 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
+import autoupdate  # noqa: E402
 
 LOCK_PATH = os.path.join(HERE, '.talent_sourcing.lock')
 TG_ENV_PATH = os.path.expanduser('~/.config/workflow-os/step1ne-tg.env')
 POLL_SEC = 30
 AGENT_TIMEOUT = 3000  # 略高於 talent_sourcing_agent.py 自己的 2400 秒，留緩衝
 WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
+# 2026-10-07：「AI 挖角」用新狀態 pending_poach（舊版 worker 只認 pending，不會誤當一般找人跑）。
+# 這台要認哪些狀態可以用環境變數指定，例如 Mac 備援只接挖角：TALENT_SOURCING_STATUSES=pending_poach
+STATUSES = [x.strip() for x in (os.environ.get('TALENT_SOURCING_STATUSES') or 'pending,pending_poach').split(',')
+            if x.strip() in ('pending', 'pending_poach')] or ['pending', 'pending_poach']
 
 
 def log(m):
@@ -102,8 +107,9 @@ def tg_send(chat_id, thread_id, text):
 
 
 def claim_one():
+    st = ','.join(q(x) for x in STATUSES)
     rows = d1_http.query(
-        "SELECT * FROM talent_sourcing_requests WHERE status='pending' "
+        f"SELECT * FROM talent_sourcing_requests WHERE status IN ({st}) "
         "ORDER BY created_at LIMIT 1")['results']
     if not rows:
         return None
@@ -111,7 +117,7 @@ def claim_one():
     claim = d1_http.query(
         f"UPDATE talent_sourcing_requests SET status='running', "
         f"started_at=datetime('now','+8 hours'), attempts=attempts+1, "
-        f"worker_id={q(WORKER_ID)} WHERE id={q(row['id'])} AND status='pending'")
+        f"worker_id={q(WORKER_ID)} WHERE id={q(row['id'])} AND status={q(row['status'])}")
     if not claim.get('meta', {}).get('changes'):
         return None
     return row
@@ -143,8 +149,12 @@ def process(row):
     who = row.get('requested_by') or '顧問'
     before = d1_http.query("SELECT datetime('now','+8 hours') t")['results'][0]['t']
 
-    log(f"開始跑：{who} 要求的「{title}」（{slug}）")
+    poach = row.get('status') == 'pending_poach'
+    kind = '挖角' if poach else '搜尋'
+    log(f"開始跑{kind}：{who} 要求的「{title}」（{slug}）")
     cmd = [sys.executable, os.path.join(HERE, 'talent_sourcing_agent.py'), '--job', slug]
+    if poach:
+        cmd.append('--poach')
     try:
         r = subprocess.run(cmd, cwd=HERE, timeout=AGENT_TIMEOUT,
                             capture_output=True, text=True)
@@ -154,7 +164,7 @@ def process(row):
             f"error='執行超過 {AGENT_TIMEOUT} 秒逾時', "
             f"done_at=datetime('now','+8 hours') WHERE id={q(row['id'])}")
         tg_send(row['chat_id'], row['thread_id'],
-                f"⚠️「{title}」的搜尋超過時間還沒跑完，先中止了。麻煩晚點再試一次，"
+                f"⚠️「{title}」的{kind}超過時間還沒跑完，先中止了。麻煩晚點再試一次，"
                 f"或直接跟 Jacky 反映。")
         return
 
@@ -165,15 +175,19 @@ def process(row):
             f"UPDATE talent_sourcing_requests SET status='failed', error={q(err)}, "
             f"candidates_saved={saved}, done_at=datetime('now','+8 hours') "
             f"WHERE id={q(row['id'])}")
+        # 挖角公司沒填這種「顧問要自己補」的錯，直接把原因講出來
+        why = next((ln for ln in (r.stderr or '').splitlines() if ln.startswith('❌')), '')
         tg_send(row['chat_id'], row['thread_id'],
-                f"❌「{title}」搜尋失敗了（exit code {r.returncode}），已經記錄下來，"
-                f"麻煩跟 Jacky 反映一下。")
+                f"❌「{title}」{kind}失敗了（exit code {r.returncode}），已經記錄下來"
+                + (f"：\n{why.lstrip('❌ ')}" if why else "，麻煩跟 Jacky 反映一下。"))
         log(f'  ❌ 失敗：{err[:150]}')
         return
 
     names = candidate_names_since(slug, before)
     lines = '\n'.join(f"・{n.get('name')}（{n.get('company') or '未知公司'}）" for n in names)
-    msg = f"✅「{title}」搜尋完成，新增 {saved} 位候選人進池子"
+    msg = (f"🎯 挖角完成「{title}」，新增 {saved} 位（每位都附 LinkedIn 邀請附註＋接受後私訊，"
+           f"到後台職缺「AI 找的人」點人名就能複製）" if poach
+           else f"✅「{title}」搜尋完成，新增 {saved} 位候選人進池子")
     if lines:
         msg += f"：\n{lines}"
     if saved > len(names):
@@ -208,12 +222,15 @@ def main():
         tick()
         return
 
-    log(f'常駐啟動，裝置：{WORKER_ID}，每 {POLL_SEC} 秒撈一次')
+    log(f'常駐啟動，裝置：{WORKER_ID}，認的狀態：{"、".join(STATUSES)}，每 {POLL_SEC} 秒撈一次')
+    last_update_check = 0
     while True:
         try:
             tick()
         except Exception as e:
             log(f'⚠️ tick 例外（不中斷常駐）：{str(e)[:200]}')
+        # 2026-10-07：原本這支沒有自動更新，WSL2 上一直跑舊版（tick 是同步的，跑到這裡代表手上沒工作，重啟安全）
+        last_update_check = autoupdate.maybe_self_update(last_update_check, log=log, name='talentsourcingtg')
         time.sleep(POLL_SEC)
 
 
