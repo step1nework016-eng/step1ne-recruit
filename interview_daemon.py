@@ -1806,10 +1806,10 @@ def build_prompt(ctx, skill_md):
         # 2026-10-07 Jacky：公司近期動態（每週自動查證更新，存在 client_companies.news_brief）。
         # 只拿來介紹公司、回答候選人「公司在做什麼」——不是評分依據，也不准講出公司名稱。
         try:
-            _nb = d1(f"SELECT c.news_brief FROM jobs j JOIN client_companies c ON c.id=j.company_id WHERE j.slug={q(job.get('slug') or '')}")
+            _nb = d1(f"SELECT TRIM(COALESCE(c.news_pinned,'') || char(10) || COALESCE(c.news_brief,'')) AS news_brief FROM jobs j JOIN client_companies c ON c.id=j.company_id WHERE j.slug={q(job.get('slug') or '')}")
             if _nb and _nb[0].get('news_brief'):
                 lines.append('  📰 公司近期動態（只當背景：可以用來介紹公司方向、回答候選人問題，或自然地問一句他有沒有相關經驗；'
-                             '❌ 不列入評分、不當淘汰理由、不講公司名稱、不要背誦新聞）：\n' + _nb[0]['news_brief'][:1200])
+                             '❌ 不列入評分、不當淘汰理由、不講公司名稱、不要背誦新聞）：\n' + _nb[0]['news_brief'][:2000])
         except Exception:
             pass
 

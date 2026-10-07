@@ -115,6 +115,13 @@ def main():
         print(brief or '  （查不到有來源的動態）', flush=True)
         if a.dry:
             continue
+        # news_pinned（顧問親自查證、釘選的條目）不會被這裡覆蓋；它的來源也保留在 news_sources 最前面
+        try:
+            old = json.loads((rows(f"SELECT news_sources FROM client_companies WHERE id={q(c['id'])}")[0].get('news_sources')) or '[]')
+            keep = [x for x in old if '年報（官網）' in str(x.get('title', ''))]
+            srcs = keep + [x for x in srcs if x.get('url') not in {k.get('url') for k in keep}]
+        except Exception:
+            pass
         d1_http.query(
             f"UPDATE client_companies SET news_brief={q(brief or None)}, news_sources={q(json.dumps(srcs, ensure_ascii=False))}, "
             f"news_updated_at=datetime('now','+8 hours') WHERE id={q(c['id'])}")
