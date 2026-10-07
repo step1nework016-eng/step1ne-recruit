@@ -49,7 +49,7 @@ NO_TOOLS = ['--disallowed-tools', 'Bash,Edit,Write,Read,WebFetch,WebSearch,Task'
 WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
 
 # 只判斷這個時間之後進來的應徵（上線前的舊應徵不回頭掃）
-LAUNCH_AT = os.environ.get('JOB_SWITCH_LAUNCH_AT', '2026-10-07 23:30:00')
+LAUNCH_AT = os.environ.get('JOB_SWITCH_LAUNCH_AT', '2026-10-07 21:45:00')
 DAILY_CAP = int(os.environ.get('JOB_SWITCH_DAILY_CAP', '5'))
 AUTO_ENABLED = os.environ.get('JOB_SWITCH_AUTO', '1') != '0'
 CAND_THREAD = 7            # 人選群組的通知主題
