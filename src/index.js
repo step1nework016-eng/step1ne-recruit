@@ -2958,6 +2958,10 @@ async function buildProgressMessages(env, applicationIds) {
 const LINE_ASK_NAME_TEXT =
   '請提供三項資料幫您核對身分並查詢面試進度：姓名、信箱、手機號碼。\n\n'
   + '一項一項來，麻煩先輸入您的姓名：';
+// 2026-10-07 Jacky：查進度改走圖文選單的 LIFF 表單，不再在聊天室一項一項問。
+// 打字觸發或舊狀態一律只回這個按鈕連結。
+const LINE_PROGRESS_LIFF_URL = 'https://liff.line.me/2011631457-WcDji8Bx';
+const LINE_PROGRESS_LIFF_TEXT = '查詢面試進度請點這裡（第一次會請您確認姓名、信箱、手機，之後就不用再填）：\n' + LINE_PROGRESS_LIFF_URL;
 const LINE_ASK_EMAIL_TEXT = '謝謝，接著請輸入您應徵時留的信箱：';
 const LINE_ASK_PHONE_TEXT = '好，最後請輸入您應徵時留的手機號碼：';
 const LINE_BAD_EMAIL_TEXT = '這個看起來不像信箱，麻煩再輸入一次：';
@@ -3397,10 +3401,9 @@ async function handleLineEvent(env, ev) {
       ? new Date(now.replace(' ', 'T')) - new Date(binding.updated_at.replace(' ', 'T'))
       : 0;
     if (staleFor > STALE_MS) {
-      await env.DB.prepare(`DELETE FROM line_bindings WHERE line_user_id = ?`).bind(userId).run();
-      // 砍掉之後當作「從沒查過」處理——如果這則剛好就是觸發字，
-      // 應該讓他乾淨重新開始一次，不是連這次也吃掉不回應。
-      binding = null;
+      // 2026-10-07 改：不刪（會連貼文來源歸因一起刪掉），改成退回「只記來源」的狀態，之後不再盤問
+      await env.DB.prepare(`UPDATE line_bindings SET state='pending_phone', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id = ?`).bind(now, userId).run();
+      binding = { ...binding, state: 'pending_phone' };
     }
   }
 
@@ -3409,11 +3412,7 @@ async function handleLineEvent(env, ev) {
   // Jacky 之後可能在 LINE Official Account Manager 設的其他自動回覆的地盤。
   if (!binding) {
     if (text !== LINE_PROGRESS_TRIGGER) return;
-    await env.DB.prepare(
-      `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at)
-       VALUES (?, 'ask_name', ?, ?)`
-    ).bind(userId, now, now).run();
-    return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
+    return lineReply(env, replyToken, LINE_PROGRESS_LIFF_TEXT);
   }
 
   if (binding.state === 'bound') {
@@ -3466,8 +3465,7 @@ async function handleLineEvent(env, ev) {
   // 對話節奏比較像真人客服，漏打一項也只要補那一項，不用整段重打。
   if (text === LINE_PROGRESS_TRIGGER) {
     // 已經在流程裡了，把「現在卡在哪一步」的提示再說一次，不用另外講「你已經問過了」
-    const resend = { ask_name: LINE_ASK_NAME_TEXT, ask_email: LINE_ASK_EMAIL_TEXT, ask_phone: LINE_ASK_PHONE_TEXT };
-    return lineReply(env, replyToken, resend[binding.state] || LINE_ASK_NAME_TEXT);
+    return lineReply(env, replyToken, LINE_PROGRESS_LIFF_TEXT);
   }
 
   if (binding.state === 'ask_name') {
@@ -3555,11 +3553,10 @@ async function handleLineEvent(env, ev) {
   // 沒有任何分支認得那個值，訊息就這樣被吃掉、候選人已讀不回——
   // Jacky 自己測試時就撞到。任何不認得的 state 一律當成「重新開始」，
   // 不要讓 LINE OA 對候選人沉默，那比走錯流程還糟。
-  await env.DB.prepare(
-    `UPDATE line_bindings SET state='ask_name', pending_name=NULL, pending_email=NULL, updated_at=?
-      WHERE line_user_id=?`
-  ).bind(now, userId).run();
-  return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
+  // ⚠️ 2026-10-07 改：社群貼文帶 [LC…] 進來的人會留一筆 state='pending_phone' 的來源紀錄，
+  // 原本落到這裡就被「重新開始」成 ask_name，之後他隨便傳一句（黃英誠：「已填表 後續貴公司再聯絡嗎」）
+  // 都被當成姓名開始盤問。查進度已改走 LIFF 表單，這裡一律不接手、不回話，讓顧問在 OA 後台回。
+  return;
 }
 
 // 待審核處置的共用邏輯：/admin/screen-decide（網頁後台）跟 /telegram/webhook
