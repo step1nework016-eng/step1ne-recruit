@@ -1803,6 +1803,15 @@ def build_prompt(ctx, skill_md):
         # 候選人自己問還是要誠實回答，不能為了促成應徵而迴避風險揭露。
         if job.get('talking_points'):
             lines.append(f'  💬 這個缺的推銷方式：{job["talking_points"]}')
+        # 2026-10-07 Jacky：公司近期動態（每週自動查證更新，存在 client_companies.news_brief）。
+        # 只拿來介紹公司、回答候選人「公司在做什麼」——不是評分依據，也不准講出公司名稱。
+        try:
+            _nb = d1(f"SELECT c.news_brief FROM jobs j JOIN client_companies c ON c.id=j.company_id WHERE j.slug={q(job.get('slug') or '')}")
+            if _nb and _nb[0].get('news_brief'):
+                lines.append('  📰 公司近期動態（只當背景：可以用來介紹公司方向、回答候選人問題，或自然地問一句他有沒有相關經驗；'
+                             '❌ 不列入評分、不當淘汰理由、不講公司名稱、不要背誦新聞）：\n' + _nb[0]['news_brief'][:1200])
+        except Exception:
+            pass
 
         # ── 薪資怎麼講 ──
         # 2026-08-07：阿財對王雁群說「這個職缺目前開的是 40K 起，您期望 60K，差了不少」，
