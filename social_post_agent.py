@@ -660,7 +660,7 @@ def format_job_requirement(job):
         add('福利', public_part(job.get('benefits_detail')))
         lines.append('\n【這是還沒公開上架的職缺，務必遵守】\n'
                      '・這個職缺**沒有官網頁面、沒有應徵連結**：不准寫任何網址，不准叫人「點連結應徵」「到官網看」「線上投履歷」。\n'
-                     '・不准提到 AI 面談、阿財。\n'
+                     '・不准提到 AI 面談、阿財、線上投履歷（就算你平常的寫法會提，這篇也不要）。\n'
                      '・不准寫出公司名稱，也不要給足以猜出是哪家的線索（例：獨家產品名、門市地址）；用產業或職務性質描述。\n'
                      '・結尾的聯絡方式（加 LINE 或私訊）系統會自動補上，你不用寫連結。')
         return mask_client_names('\n'.join(lines))
@@ -1053,9 +1053,12 @@ def social_only_cta(account_id):
 def social_only_finalize(post, account_id):
     """拿掉模型自己寫的任何網址，結尾補上 LINE／私訊。"""
     body = _URL_RE.sub('', post or '')
-    # 網址拿掉後留下「…LINE 官方帳號聯繫顧問：」「應徵連結：」這種空殼句，整行拿掉
+    # 網址拿掉後留下「…LINE 官方帳號聯繫顧問：」「應徵連結：」這種空殼句，整行拿掉；
+    # 顧問風格提示詞常寫死「找 AI 阿財聊聊」——這種缺阿財不面談，提到阿財／AI 面談／線上應徵的句子整行拿掉
+    # （2026-10-07 實測：Phoebe 的稿子寫出「可以找AI阿財聊聊」）
     body = '\n'.join(l for l in body.split('\n')
-                     if not re.search(r'(連結|LINE|line|應徵|官網|網址|點這裡|點擊).*[：:]\s*$', l))
+                     if not re.search(r'(連結|LINE|line|應徵|官網|網址|點這裡|點擊).*[：:]\s*$', l)
+                     and not re.search(r'阿財|AI\s*面談|AI\s*面試|線上應徵|投遞履歷|官網應徵', l))
     body = re.sub(r'[ \t]+\n', '\n', body)
     body = re.sub(r'\n{3,}', '\n\n', body).rstrip()
     return body + social_only_cta(account_id)
