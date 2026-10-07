@@ -89,6 +89,7 @@ ul.duties li{margin-bottom:10px;}
 .s1ne-mobile-menu a:last-child{border-bottom:none;}
 .h1-sub{display:block;font-size:0.62em;font-weight:600;color:#6b6e77;margin-top:6px;letter-spacing:0;}
 </style>
+<style>html.jv-wait body{opacity:0}</style><script>(function(d){d.classList.add("jv-wait");setTimeout(function(){d.classList.remove("jv-wait")},2500)})(document.documentElement)</script>
 </head>
 <body>
 
