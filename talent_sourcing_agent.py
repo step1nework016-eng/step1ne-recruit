@@ -224,7 +224,21 @@ def extract_json(text):
     try:
         return json.loads(text[start:end + 1])
     except Exception:
-        return None
+        pass
+    # 2026-10-07：金邊那輪 AI 找到 6 位，但 JSON 後面又寫了一段說明（含反引號、大括號），
+    # 「第一個 { 到最後一個 }」切出來不是合法 JSON，整批 0 筆。改成逐一嘗試每個 {，
+    # 取第一個能完整解析、而且帶 candidates 的物件。
+    dec = json.JSONDecoder()
+    i = text.find('{')
+    while i >= 0:
+        try:
+            obj, _ = dec.raw_decode(text, i)
+            if isinstance(obj, dict) and 'candidates' in obj:
+                return obj
+        except Exception:
+            pass
+        i = text.find('{', i + 1)
+    return None
 
 
 def save_candidates(job_slug, candidates, dry):
