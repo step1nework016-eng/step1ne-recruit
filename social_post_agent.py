@@ -1423,6 +1423,15 @@ def _anon_topic(application_id):
         if len(txt) < 150:
             return None
         material.append('履歷原文節錄（公司、學校、人名都不准寫出來）：\n' + txt[:2500])
+        # 沒有面談報告時，從履歷抓像公司／學校名稱的字串加進禁用清單
+        for m in re.finditer(r'([\u4e00-\u9fffA-Za-z0-9&．・]{2,20}?(?:股份有限公司|有限公司|集團|大學|科技大學|學院))', txt[:6000]):
+            n = re.sub(r'(股份有限公司|有限公司)$', '', m.group(1))
+            if len(n) >= 2:
+                forbid.add(n)
+        for m in re.finditer(r'\b([A-Z][A-Za-z0-9&.\- ]{1,40}?)\s*(?:Co\.,?\s*Ltd|Inc\.?|Corp(?:oration)?\.?|Limited|Group|University)\b', txt[:6000]):
+            n = m.group(1).strip()
+            if len(n) >= 3:
+                forbid.add(n)
     body = ('這篇是「匿名人選介紹」：用顧問的口吻，向企業主／HR 介紹「我手上有一位這樣的人才正在看新機會」，'
             '目的是讓有需要的企業私訊或加 LINE 來問。\n'
             '硬規則：\n'
@@ -1492,7 +1501,8 @@ def process_topic(queue_row, topic):
             return
 
         # 匿名人選文：人選姓名、待過的公司名稱一出現就重產，重產還是有就擋下不送審
-        _fb = lambda t: [w for w in (topic.get('_forbid') or []) if w and w in (t or '')]
+        _fb = lambda t: [w for w in (topic.get('_forbid') or []) if w and (
+            re.search(r'(?<![A-Za-z])' + re.escape(w) + r'(?![A-Za-z])', t or '') if re.fullmatch(r'[A-Za-z0-9 .&\-]+', w) else w in (t or ''))]
         leak = _fb(post)
         retry = 0
         while leak and retry < MAX_REGEN_RETRIES:
