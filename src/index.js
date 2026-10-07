@@ -633,7 +633,7 @@ async function guardCompany(env, company) {
 // 這是 Jacky 用自己的名義寄給企業窗口的商務信，對方要能直接回信，
 // 所以不掛「請勿直接回覆」那套系統頁尾，也不放求職者用的 LINE。
 // 檔案是切成 chunk 存的（D1 單筆有長度上限），要拼回來才能當附件。
-const PROFILE_FILE_ID = 'step1ne-profile-2026';   // 公司簡介 PDF，每封開發信都附
+const PROFILE_FILE_ID = '9974ebc7-a33f-4517-ab09-6d28f3050677';   // 公司簡介 PDF，每封開發信都附（2026-10-07 換成「STEP1NE_企業人才招募解決方案」6 頁精簡版；舊 8 頁版在 step1ne-profile-2026）
 
 // 32KB一段轉base64，避免直接String.fromCharCode(...bytes)在履歷這種
 // 幾MB大檔案上把call stack撐爆（spread太多參數）。
