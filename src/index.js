@@ -4076,6 +4076,162 @@ async function handleInboundLeadAction(env, cq) {
   }
 }
 
+// ── 2026-10-07 顧問助理（TG 顧問室🧑‍💼顧問助理 topic）的確認卡按鈕 ──
+// 🚨 顧問助理（Mac 上的 consultant_ops.py）只會建立 consultant_ops_actions(status=pending)＋貼確認卡；
+//    真正寄信給人選／寫進人選卡片，只有這裡會做，而且一定要真人按：
+//    BD_APPROVERS（Jacky、Phoebe）或提出的那位顧問本人（requested_tg_id）。
+//    寄出前再擋一次：禁用字（客戶、年齡性別婚育外貌國籍…）、保密客戶的公司名、內容跟確認卡上的不一樣。
+const COPS_BANNED = /客戶|年齡|\d+\s*歲|歲以[上下]|性別|男性|女性|男生|女生|已婚|未婚|懷孕|生育|小孩|外貌|身高|體重|國籍|宗教|政治/;
+async function copsGuardCandidateText(env, appId, text) {
+  const m = String(text || '').match(COPS_BANNED);
+  if (m) return `內容出現「${m[0]}」，候選人看得到的信不能有這類字`;
+  const r = await env.DB.prepare(
+    `SELECT j.confidential_client, j.client_name, c.display_name, c.aliases FROM applications a
+       LEFT JOIN jobs j ON j.slug=a.job_slug LEFT JOIN client_companies c ON c.id=j.company_id WHERE a.id=?`).bind(appId).first();
+  if (r && Number(r.confidential_client)) {
+    const names = [r.client_name, r.display_name, ...String(r.aliases || '').split(/[,，、;\n]/)];
+    for (const n0 of names) {
+      const n = String(n0 || '').trim();
+      for (const x of new Set([n, n.replace(/(股份有限公司|有限公司|集團|公司)$/, '')])) {
+        if (x.length >= 2 && String(text || '').includes(x)) return `保密客戶職缺，信裡出現公司名「${x}」`;
+      }
+    }
+  }
+  return null;
+}
+async function copsBo(env, path, body) {
+  const r = await env.BACKOFFICE.fetch('https://backoffice' + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    body: JSON.stringify(body || {}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok && d.ok === undefined) d.ok = false;
+  if (!r.ok && !d.error) d.error = `後台回 ${r.status}`;
+  return d;
+}
+async function copsBookCall(env, row, callAt, remindAt, note, by) {
+  const now = nowTaipei();
+  await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+    .bind(uid(), row.application_id, '電洽預約', `📞 已約好電話：${callAt}（${by}）${note ? '。' + String(note).slice(0, 300) : ''}`, now, by).run();
+  const rid = 'rem' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  await env.DB.prepare(`INSERT INTO consultant_reminders (id,application_id,candidate_name,call_at,remind_at,message,target_chat_id,
+      fallback_chat_id,fallback_thread_id,requested_by,requested_tg_id,source_action_id,status,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)`)
+    .bind(rid, row.application_id, row.candidate_name, callAt, remindAt, String(note || '').slice(0, 500), row.requested_tg_id,
+      row.chat_id, row.thread_id || null, row.requested_by, row.requested_tg_id, row.id, now).run();
+  return rid;
+}
+async function handleConsultantOpsAction(env, cq) {
+  const [action, id] = String(cq.data).split(':');
+  const tgApi = (m, b) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/${m}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).catch(() => {});
+  const ans = (t) => tgApi('answerCallbackQuery', { callback_query_id: cq.id, text: String(t).slice(0, 190), show_alert: true });
+  const label = (t) => cq.message && tgApi('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+    reply_markup: { inline_keyboard: [[{ text: String(t).slice(0, 60), callback_data: 'noop' }]] } });
+  const say = (t) => cq.message && tgApi('sendMessage', { chat_id: cq.message.chat.id,
+    ...(cq.message.message_thread_id ? { message_thread_id: cq.message.message_thread_id } : {}),
+    reply_to_message_id: cq.message.message_id, text: String(t).slice(0, 3900) });
+  const row = await env.DB.prepare(`SELECT * FROM consultant_ops_actions WHERE id=?`).bind(id || '').first();
+  if (!row) { await ans('找不到這張確認卡'); return; }
+  const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+  const presserId = String((cq.from && cq.from.id) || '');
+  const who = (cq.from && (cq.from.first_name || cq.from.username)) || '顧問';
+  if (!BD_APPROVERS.includes(uname) && !(row.requested_tg_id && presserId === String(row.requested_tg_id))) {
+    await ans(`⛔ 只有 Jacky、Phoebe 或提出的 ${row.requested_by || '顧問'} 本人可以按`); return;
+  }
+  if (row.status !== 'pending') { await ans(`這張已經處理過了（${row.status}${row.decided_by ? '，' + row.decided_by : ''}）`); return; }
+  const now = nowTaipei();
+  if (row.expires_at && String(row.expires_at) < now.slice(0, 16)) {
+    await env.DB.prepare(`UPDATE consultant_ops_actions SET status='expired' WHERE id=? AND status='pending'`).bind(id).run();
+    await ans('這張確認卡已過期，請請顧問助理重新產生'); await label('⌛ 已過期，沒有寄'); return;
+  }
+  if (!env.BACKOFFICE || !env.ADMIN_TOKEN) { await ans('系統設定缺少後台連線，請通知工程'); return; }
+  let p = {};
+  try { p = JSON.parse(row.params_json || '{}'); } catch { p = {}; }
+  const appPath = `/admin/applications/${encodeURIComponent(row.application_id)}`;
+
+  if (action === 'cop_no') {
+    const r = await env.DB.prepare(`UPDATE consultant_ops_actions SET status='cancelled', decided_by=?, decided_tg_id=?, decided_at=? WHERE id=? AND status='pending'`)
+      .bind(who, presserId, now, id).run();
+    await ans(r.meta && r.meta.changes ? '好，不做了' : '剛剛已經有人處理了');
+    await label(`✖ ${who} 取消，沒有寄出／寫入`);
+    return;
+  }
+  if (action === 'cop_test') {
+    if (row.kind !== 'decline_mail') { await ans('這種確認卡沒有測試信'); return; }
+    const d = await copsBo(env, `${appPath}/decline-mail`, { ...p, action: 'test' });
+    await ans(d.ok ? `🧪 測試信已寄到內部信箱 ${d.to}（人選沒有收到）` : `測試信沒寄出：${d.error}`);
+    return;
+  }
+  if (action !== 'cop_ok') { await ans('未知的操作'); return; }
+
+  // 先搶成 sending：TG 重送同一個按鈕、或兩個人同時按，只會執行一次
+  const claim = await env.DB.prepare(`UPDATE consultant_ops_actions SET status='sending', decided_by=?, decided_tg_id=?, decided_at=? WHERE id=? AND status='pending'`)
+    .bind(who, presserId, now, id).run();
+  if (!(claim.meta && claim.meta.changes)) { await ans('剛剛已經有人按了'); return; }
+  const finish = async (status, result, lbl, msg) => {
+    await env.DB.prepare(`UPDATE consultant_ops_actions SET status=?, result_json=? WHERE id=?`)
+      .bind(status, JSON.stringify(result || {}), id).run();
+    await label(lbl);
+    if (msg) await say(msg);
+  };
+  try {
+    const outbound = ['call_mail', 'call_confirm', 'decline_mail'].includes(row.kind);
+    if (outbound) {
+      const bad = await copsGuardCandidateText(env, row.application_id, `${row.preview_subject || ''}\n${row.preview_text || ''}`);
+      if (bad) { await ans(`⛔ 沒有寄：${bad}`); await finish('failed', { error: bad }, `⛔ 擋下：${bad}`); return; }
+    }
+    if (row.kind === 'call_mail' || row.kind === 'call_confirm') {
+      const ep = row.kind === 'call_mail' ? 'call-mail' : 'call-confirm';
+      const sendBody = Object.fromEntries(Object.entries(p).filter(([k]) => !k.startsWith('_')));
+      // 寄出前重產一次草稿，跟確認卡上的逐字比對；不一樣就不寄（例如中間有人改了人選資料）
+      const pv = await copsBo(env, `${appPath}/${ep}`, { ...sendBody, action: 'preview' });
+      if (!pv.ok || pv.text !== row.preview_text || pv.subject !== row.preview_subject) {
+        const why = !pv.ok ? (pv.error || '重產草稿失敗') : '內容跟確認卡上的不一樣了';
+        await ans(`⛔ 沒有寄：${why}，請重新產生`); await finish('stale', { error: why }, `⛔ 沒有寄：${why}`); return;
+      }
+      if (pv.blocked) { await ans(`⛔ 沒有寄：${pv.blocked}`); await finish('failed', { error: pv.blocked }, `⛔ 沒有寄：${pv.blocked}`); return; }
+      const d = await copsBo(env, `${appPath}/${ep}`, { ...sendBody, action: 'send' });
+      if (!d.ok) { await ans(`沒寄出：${d.error}`); await finish('failed', d, `❌ 沒寄出：${String(d.error || '').slice(0, 40)}`); return; }
+      let extra = '';
+      if (row.kind === 'call_confirm' && p._book_at) {
+        const before = Number(p._before) || 30;
+        const t = new Date(String(p._book_at).replace(' ', 'T') + ':00+08:00');
+        const rem = new Date(t.getTime() - before * 60e3 + 8 * 3600e3).toISOString().replace('T', ' ').slice(0, 16);
+        const rid = await copsBookCall(env, row, p._book_at, rem, p.extra || '', row.requested_by || who);
+        extra = `\n⏰ 已記到人選卡片（電洽預約 ${p._book_at}），${rem.slice(5)} 會提醒 ${row.requested_by || '你'}（${rid}）`;
+      }
+      await ans('📤 寄出去了');
+      await finish('done', d, `📤 ${who} 按了確認，已寄給 ${d.to || row.preview_to}`, `📤 ${row.candidate_name}：${row.kind === 'call_mail' ? '約電話信' : '確認電話時間的信'}已寄出（${who} 按的）${extra}`);
+      return;
+    }
+    if (row.kind === 'decline_mail') {
+      const d = await copsBo(env, `${appPath}/decline-mail`, { ...p, action: 'send' });
+      if (!d.ok) { await ans(`沒寄出：${d.error}`); await finish('failed', d, `❌ 沒寄出：${String(d.error || '').slice(0, 40)}`); return; }
+      await ans('📤 婉拒信寄出去了');
+      await finish('done', d, `📤 ${who} 按了確認，婉拒信已寄給 ${d.to}`, `📤 ${row.candidate_name}：婉拒信已寄出（${who} 按的），也記進人選卡片了`);
+      return;
+    }
+    if (row.kind === 'call_summary') {
+      const d = await copsBo(env, '/admin/application/call-summary', p);
+      if (!d.ok) { await ans(`沒寫進去：${d.error}`); await finish('failed', d, '❌ 沒寫進去'); return; }
+      await ans('寫進去了');
+      await finish('done', d, `✅ ${who} 確認，已寫進人選卡片`, `📝 ${row.candidate_name}：電洽逐字稿已寫進卡片（接在之前的後面，不覆蓋）。${d.message || 'AI 約 1–2 分鐘整理摘要'}`);
+      return;
+    }
+    if (row.kind === 'book_call') {
+      const rid = await copsBookCall(env, row, p.call_at, p.remind_at, p.note || '', row.requested_by || who);
+      await ans('記下了');
+      await finish('done', { reminder_id: rid }, `✅ ${who} 確認，已記下並排提醒`, `⏰ ${row.candidate_name}：電話 ${p.call_at} 已記到卡片，${String(p.remind_at).slice(5)} 會提醒 ${row.requested_by || '你'}（${rid}）`);
+      return;
+    }
+    await ans('不認得的動作'); await finish('failed', { error: 'unknown kind' }, '❌ 不認得的動作');
+  } catch (e) {
+    await ans('處理失敗，請到後台再試一次');
+    await finish('failed', { error: String(e && e.message || e) }, '❌ 處理失敗（沒有確定寄出，請到後台確認）');
+  }
+}
+
 async function handleReviewAction(env, cq) {
   const [action, idRaw] = String(cq.data).split(':');
   const id = Number(idRaw);
@@ -7457,6 +7613,11 @@ export default {
 
       if (cq && cq.data && String(cq.data).startsWith('il_take:')) {
         await handleInboundLeadAction(env, cq);
+        return new Response('ok');
+      }
+
+      if (cq && cq.data && String(cq.data).startsWith('cop_')) {
+        await handleConsultantOpsAction(env, cq);
         return new Response('ok');
       }
 
