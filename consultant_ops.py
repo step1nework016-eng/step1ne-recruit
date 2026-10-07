@@ -315,7 +315,25 @@ def cmd_today(a):
         print('（沒有排定的）')
     for t, s in items:
         print(f'・{str(t)[5:16]}　{s}')
-    print('\n註：只算有在系統裡登記的（顧問助理約的電話＋面試排程）。只寫在信裡、沒登記的時間不會出現在這裡。')
+    # 顧問在後台手寫的「電洽預約」備註（自由文字，時間要看內容）——顧問助理建的已經在上面了，不重複列
+    notes = rows("""SELECT n.content, n.created_at, a.name FROM candidate_notes n JOIN applications a ON a.id=n.application_id
+                      WHERE n.type='電洽預約' AND n.created_at >= ?
+                        AND NOT EXISTS (SELECT 1 FROM consultant_reminders r WHERE r.application_id=n.application_id
+                                         AND substr(n.content,1,40) LIKE '%' || r.call_at || '%')
+                      ORDER BY n.created_at DESC LIMIT 10""", [fmt(t0 - dt.timedelta(days=7))])
+    if notes:
+        print('\n最近 7 天手寫登記的電洽預約（時間請看內容，可能不在上面的範圍內）：')
+        for n in notes:
+            print(f'・{n["name"]}：{clip(n["content"], 90)}')
+    # 寄了「確認電話時間」信但沒登記的
+    cc = rows("""SELECT b.note, b.sent_at, a.name FROM call_booking_mails b JOIN applications a ON a.id=b.application_id
+                   WHERE b.status='sent' AND b.note LIKE '已約電話：%' AND b.sent_at >= ? ORDER BY b.sent_at DESC LIMIT 8""",
+              [fmt(t0 - dt.timedelta(days=3))])
+    if cc:
+        print('\n最近 3 天寄出的「確認電話時間」信：')
+        for n in cc:
+            print(f'・{n["name"]}：{clip(n["note"], 80)}（{str(n["sent_at"])[5:16]} 寄）')
+    print('\n註：有時間的清單只算系統裡登記的（顧問助理約的電話＋面試排程）；下面兩段是文字紀錄，時間請自己看。')
 
 
 # ── 建立待確認動作＋貼確認卡 ──
@@ -344,6 +362,8 @@ def create_action(kind, app, params, to, subject, text, card_text, buttons):
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
        [aid, kind, app['id'], app['name'], json.dumps(params, ensure_ascii=False), to, subject, text,
         w['name'], w['tg_id'], w['username'], w['chat'], w['thread'] or None, fmt(now), fmt(now + dt.timedelta(hours=EXPIRE_H))])
+    if os.environ.get('COPS_TEST') == '1':   # 工程測試用：卡片標明，避免有人誤按
+        card_text = '【測試・請勿按確認，等一下會自動取消】\n' + card_text
     kb = {'inline_keyboard': [[{'text': lb, 'callback_data': f'{cb}:{aid}'} for lb, cb in buttons]]}
     body = {'chat_id': w['chat'], 'text': card_text[:4000], 'reply_markup': kb, 'disable_web_page_preview': True}
     if w['thread']:
