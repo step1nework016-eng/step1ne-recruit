@@ -619,7 +619,7 @@ def _tg_buttons(text, keyboard, thread=None, chat=None):
     ⚠️ 空的按鈕列 Telegram 會直接回錯、整則訊息消失，所以沒按鈕就走 _tg。
     """
     if not keyboard or not any(keyboard):
-        return _tg(text, thread=thread)
+        return _tg(text, thread=thread, chat=chat)
     import json as _json
     import os
     import urllib.parse
@@ -678,34 +678,29 @@ THREAD_DECIDE = 2855
 
 
 def notify_consultant(snapshot, kept, dropped_count=0):
-    """P3-A 的通知：只推給顧問，**絕對不推給候選人**。
-
-    規格明訂這一輪 AI 只做建議，候選人端零接觸。訊息裡要讓顧問一眼看到
-    「憑什麼推薦」跟「還要確認什麼」，而不是只有一個職缺名稱。
-    """
+    """新人選（應徵或面談完）→ 開著的職缺配對結果。只推給顧問，絕不推給候選人。"""
     if not kept:
         return False
-    name = (snapshot or {}).get('name') or '（未命名）'
-    applied = (snapshot or {}).get('applied_job_title') or (snapshot or {}).get('applied_job_slug') or '—'
-    lines = [f'🤖 阿財找到可能更適合的職缺', '', f'候選人：{name}', f'原應徵：{applied}', '']
-    label = {'MATCH_CANDIDATE': '很可能適合', 'POSSIBLE_MATCH': '可能適合',
-             'INSUFFICIENT_DATA': '資料不足', 'NOT_MATCH': '不適合'}
+    snapshot = snapshot or {}
+    name = snapshot.get('name') or '（未命名）'
+    applied = snapshot.get('applied_job_title') or snapshot.get('applied_job_slug') or '—'
+    app_id = snapshot.get('application_id')
+    contact, owner = _contact_bits(app_id)
+    tag = '（只看過履歷，還沒跟阿財面談）' if snapshot.get('resume_only') else '（已跟阿財面談）'
+    lines = [f'🆕 新人選｜{name}{tag}', f'原應徵：{applied}', f'☎ {contact}｜負責：{owner}', '',
+             f'AI 從開著的職缺找到 {len(kept[:3])} 個可能適合的：', '']
     for rec in kept[:3]:
-        lines.append(f"▸ {rec.get('job_title') or rec.get('job_slug')}（{label.get(rec.get('match_status'), '')}）")
-        for r in (rec.get('reasons') or [])[:3]:
-            lines.append(f'　• {r}')
-        for m in (rec.get('missing_information') or [])[:2]:
-            lines.append(f'　待確認：{m}')
+        lines.append(f"▸ {rec.get('job_title') or rec.get('job_slug')}｜適配度 {_fit_label(rec)}")
+        for r in (rec.get('reasons') or [])[:2]:
+            lines.append(f'　✓ {r}')
+        for m in (rec.get('missing_information') or [])[:1]:
+            lines.append(f'　？要確認：{m}')
         lines.append('')
-    lines.append('這只是 AI 的建議，還沒有通知候選人、也沒有改動任何狀態。')
-    # ⚠️ 2026-09-18：這個功能的畫面只存在新版顧問後台，而新版目前只在測試網址
-    # （正式站 step1ne.com/consultant/ 是另一個帳號的舊版 Worker，這台機器沒有那把
-    # token，也還沒切換）。這裡直接附上可以點的網址，不然顧問收到通知會找不到在哪看。
-    # 2026-10-01：V3 已在 9/29 切到正式站，網址換成 step1ne.com/consultant/。
-    lines.append('')
-    lines.append('👉 打開人選卡片 →「電洽準備」→「AI 職缺推薦」分頁：')
-    lines.append('https://step1ne.com/consultant/candidates/')
-    return _tg('\n'.join(lines), THREAD_DECIDE)
+    lines += ['只是 AI 建議，還沒通知人選、也沒改任何狀態。',
+              '👉 人選卡片 →「電洽準備」→「AI 職缺推薦」：https://step1ne.com/consultant/candidates/']
+    kb = [[{'text': f'🙋 我來聯繫 {name[:10]}', 'callback_data': f'am_claimapp:{app_id}'}]] if app_id else []
+    chat, thread = _ai_match_route()
+    return _tg_buttons('\n'.join(lines), kb, thread=thread, chat=chat)
 
 
 def save_followup(application_id, due_at, reason, evidence, source, uid_fn):
@@ -777,18 +772,21 @@ def list_talent_pool(job_slug, days=REVERSE_POOL_DAYS):
       - 最近 30 天沒有對 AI 邀請按過「這次不用」
     同一個 email 多筆應徵只留最新那筆。
     """
+    # 2026-10-07 Jacky：人才庫要涵蓋「有編號的人選＋應徵過其他職缺的」，不只跟阿財面談完的。
+    # 沒有阿財報告、但有履歷（上傳檔或貼的履歷文字）的人也進來，AI 只看履歷判斷（快照標 resume_only）。
     rows = d1_http.query(
         'SELECT a.id AS application_id, a.name, a.email, a.owner, a.job_slug, '
-        '       r.id AS report_id, r.created_at AS report_at '
+        '       r.id AS report_id, COALESCE(r.created_at, a.created_at) AS report_at '
         '  FROM applications a '
-        '  JOIN reports r ON r.id = (SELECT r2.id FROM reports r2 WHERE r2.application_id = a.id '
+        '  LEFT JOIN reports r ON r.id = (SELECT r2.id FROM reports r2 WHERE r2.application_id = a.id '
         '                             ORDER BY r2.created_at DESC LIMIT 1) '
-        " WHERE a.interview_state = 'done' "
+        " WHERE (a.interview_state = 'done' OR r.id IS NOT NULL "
+        "        OR COALESCE(a.resume_file_id,'') <> '' OR COALESCE(a.resume_url_text,'') <> '') "
         '   AND a.superseded_by IS NULL '
         "   AND COALESCE(a.status,'') NOT IN ('duplicate','rejected','declined','closed') "
         "   AND COALESCE(a.screen_decision,'') != 'declined' "
         "   AND COALESCE(a.manual_stage,'') NOT IN ('offer','onboard') "
-        f"   AND r.created_at >= datetime('now','+8 hours','-{int(days)} days') "
+        f"   AND COALESCE(r.created_at, a.created_at) >= datetime('now','+8 hours','-{int(days)} days') "
         f'   AND a.job_slug != {_q(job_slug)} '
         '   AND NOT EXISTS (SELECT 1 FROM applications a2 '
         f'                   WHERE lower(a2.email) = lower(a.email) AND a2.job_slug = {_q(job_slug)}) '
@@ -797,7 +795,7 @@ def list_talent_pool(job_slug, days=REVERSE_POOL_DAYS):
         '   AND NOT EXISTS (SELECT 1 FROM candidate_job_recommendations c2 '
         "                   WHERE c2.application_id = a.id AND c2.outreach_status = 'candidate_declined' "
         f"                     AND c2.candidate_responded_at >= datetime('now','+8 hours','-{REVERSE_DECLINE_COOLDOWN_DAYS} days')) "
-        ' ORDER BY r.created_at DESC'
+        ' ORDER BY COALESCE(r.created_at, a.created_at) DESC'
     )['results'] or []
     seen, out = set(), []
     for r in rows:
@@ -831,20 +829,73 @@ def client_name_tokens(client_name):
     return sorted((t for t in toks if t not in generic and len(t) >= 2), key=len, reverse=True)
 
 
+
+# ── 2026-10-07 AI 配對通知改版：專用主題＋適配度＋聯絡方式＋「我來聯繫」按鈕 ──
+def _ai_match_route():
+    try:
+        r = d1_http.query("SELECT chat_id, thread_id FROM tg_routes WHERE key='ai_match'")['results']
+        if r and r[0].get('chat_id') and r[0].get('thread_id'):
+            return str(r[0]['chat_id']), int(r[0]['thread_id'])
+    except Exception:
+        pass
+    return None, THREAD_DECIDE
+
+
+def _fit_label(rec):
+    st, cf = rec.get('match_status'), rec.get('confidence')
+    if st == 'MATCH_CANDIDATE' and cf == 'high':
+        return '🟢 高'
+    if (st == 'MATCH_CANDIDATE' and cf == 'medium') or (st == 'POSSIBLE_MATCH' and cf == 'high'):
+        return '🟡 中'
+    return '⚪ 低'
+
+
+def _contact_bits(application_id):
+    try:
+        r = d1_http.query(f"SELECT phone, email, owner FROM applications WHERE id={_q(application_id)}")['results']
+    except Exception:
+        r = []
+    if not r:
+        return '', ''
+    a = r[0]
+    em = a.get('email') or ''
+    if em.endswith('@no-email.step1ne.local'):
+        em = ''
+    contact = '／'.join(x for x in (a.get('phone') or '', em) if x) or '（沒有聯絡方式）'
+    return contact, (a.get('owner') or '未指派')
+
+
+def _rec_ids(application_id, job_slug):
+    try:
+        r = d1_http.query(
+            "SELECT id FROM candidate_job_recommendations "
+            f"WHERE application_id={_q(application_id)} AND recommended_job_slug={_q(job_slug)} "
+            "ORDER BY created_at DESC LIMIT 1")['results']
+        return r[0]['id'] if r else None
+    except Exception:
+        return None
+
 def notify_reverse_match(job, saved_items, pool_size, run_id=None):
-    """一個職缺只發一則 TG 摘要，不是一位人選一則。只給顧問看，候選人端零接觸。"""
+    """新職缺 → 人才庫配對結果。一個職缺一則，每位人選一顆「我來聯繫」按鈕。只給顧問看，不碰人選。"""
     if not saved_items:
         return False
-    label = {'MATCH_CANDIDATE': '很可能適合', 'POSSIBLE_MATCH': '可能適合'}
-    lines = [f"🔁 新職缺從人才庫找到 {len(saved_items)} 位可能適合的人",
-             f"職缺：{job.get('title') or job.get('slug')}",
-             f'（人才庫比對了 {pool_size} 位最近 {REVERSE_POOL_DAYS} 天內面談過的人）', '']
-    for it in saved_items:
-        lines.append(f"▸ {it.get('name') or '（未命名）'}（{label.get(it.get('match_status'), '')}）")
-        r = (it.get('reasons') or [''])[0]
-        if r:
-            lines.append(f'　• {r}')
-    lines += ['', '這只是 AI 的建議，還沒有聯絡任何人。',
-              '👉 到顧問後台「人選 → AI 配對」決定要不要邀請：',
+    lines = [f"🔁 新職缺｜{job.get('title') or job.get('slug')}",
+             f"從人才庫 {pool_size} 位（有履歷的人選）找到 {len(saved_items)} 位可能適合：", '']
+    kb = []
+    for i, it in enumerate(saved_items, 1):
+        contact, owner = _contact_bits(it.get('application_id'))
+        tag = '（只看過履歷，還沒跟阿財面談）' if (it.get('_resume_only')) else ''
+        lines.append(f"{i}. {it.get('name') or '（未命名）'}｜適配度 {_fit_label(it)}{tag}")
+        for r in (it.get('reasons') or [])[:2]:
+            lines.append(f'　✓ {r}')
+        for m in (it.get('missing_information') or [])[:1]:
+            lines.append(f'　？要確認：{m}')
+        lines.append(f'　☎ {contact}｜負責：{owner}')
+        lines.append('')
+        rid = _rec_ids(it.get('application_id'), job.get('slug'))
+        if rid:
+            kb.append([{'text': f"🙋 我來聯繫 {str(it.get('name') or '')[:10]}", 'callback_data': f'am_claim:{rid}'}])
+    lines += ['只是 AI 建議，還沒聯絡任何人。詳細在後台「人選 → AI 配對」：',
               'https://step1ne.com/consultant/candidates/?tab=aimatch']
-    return _tg('\n'.join(lines), THREAD_DECIDE)
+    chat, thread = _ai_match_route()
+    return _tg_buttons('\n'.join(lines), kb, thread=thread, chat=chat)

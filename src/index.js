@@ -5637,6 +5637,41 @@ export default {
         }
       }
 
+      // ── AI 配對「🙋 我來聯繫」（2026-10-07 Jacky）──
+      // 新職缺配人才庫／新人選配職缺的通知，每位人選一顆按鈕；誰按了就記 claimed_by，訊息後面補一行，其他顧問就知道有人接了。
+      {
+        const aq = update.callback_query;
+        const ad = aq ? String(aq.data || '') : '';
+        if (aq && /^am_claim(app)?:/.test(ad)) {
+          const u = String((aq.from && aq.from.username) || '').toLowerCase();
+          const who = u === 'behe10' ? 'Phoebe' : ((u === 'jackyyuqi' || u === 'groupanonymousbot') ? 'Jacky' : ((aq.from && aq.from.first_name) || '顧問'));
+          const now = nowTaipei();
+          let label = '', already = null;
+          if (ad.startsWith('am_claim:')) {
+            const rid = ad.slice('am_claim:'.length);
+            const r = await env.DB.prepare(`SELECT c.claimed_by, a.name FROM candidate_job_recommendations c LEFT JOIN applications a ON a.id=c.application_id WHERE c.id=?`).bind(rid).first();
+            if (r && r.claimed_by) already = r.claimed_by;
+            else await env.DB.prepare(`UPDATE candidate_job_recommendations SET claimed_by=?, claimed_at=? WHERE id=? AND claimed_by IS NULL`).bind(who, now, rid).run();
+            label = (r && r.name) || '這位人選';
+          } else {
+            const aid = ad.slice('am_claimapp:'.length);
+            const r = await env.DB.prepare(`SELECT a.name, (SELECT claimed_by FROM candidate_job_recommendations c WHERE c.application_id=a.id AND c.claimed_by IS NOT NULL LIMIT 1) cb FROM applications a WHERE a.id=?`).bind(aid).first();
+            if (r && r.cb) already = r.cb;
+            else await env.DB.prepare(`UPDATE candidate_job_recommendations SET claimed_by=?, claimed_at=? WHERE application_id=? AND claimed_by IS NULL AND created_at >= datetime('now','+8 hours','-14 days')`).bind(who, now, aid).run();
+            label = (r && r.name) || '這位人選';
+          }
+          await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: aq.id, text: already ? `${label} 已經由 ${already} 接手了` : `已記錄：${label} 由你聯繫` }) }).catch(() => {});
+          if (!already && aq.message) {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: aq.message.chat.id, message_id: aq.message.message_id,
+                text: `${String(aq.message.text || '').slice(0, 3800)}\n🙋 ${label} → ${who} 接手聯繫（${now.slice(5, 16)}）`,
+                reply_markup: aq.message.reply_markup }) }).catch(() => {});
+          }
+          return new Response('ok');
+        }
+      }
+
       // ── 客戶電洽回饋（職缺對焦）：客戶群組「📞 客戶電洽回饋」主題（2026-10-06 Jacky）──
       // 跟客戶對焦職缺的一通電話常常講到好幾個缺。貼逐字稿 → 選誰打的、哪一家 → ai_worker（client_call_split）
       // 把客戶講的拆給每個職缺，一則一則貼回這裡；顧問按「✅ 寫入」才排 job_card_feedback 更新職缺卡

@@ -1088,6 +1088,7 @@ def prompt_post_interview_rematch(p):
 - match_status 判準：
   · MATCH_CANDIDATE＝有具體證據支持他能勝任，且沒有已知的硬阻礙
   · POSSIBLE_MATCH＝方向吻合但還有重要的未知數（把未知數寫進 missing_information）
+  （人選快照有 resume_only＝還沒跟阿財面談、只有 resume_excerpt 履歷節錄：只能照履歷判斷，confidence 最高 medium，動機／薪資／到職時間都寫進 missing_information）
   · INSUFFICIENT_DATA＝資料不足以判斷（**資料不夠就選這個，不要用猜的往上寫**）
   · NOT_MATCH＝明顯不適合（通常就不該出現在推薦清單裡）
 - evidence 一定要是履歷或逐字稿裡**真的出現過的字句**。找不到可以引用的原句，就代表這個理由不成立，把理由拿掉。
@@ -1915,10 +1916,11 @@ def _run_rematch(payload):
     """
     app_id = payload.get('application_id')
     snapshot, report = rs.build_candidate_snapshot(app_id)
-    if not snapshot:
-        return json.dumps({'skipped': 'application_not_found'}, ensure_ascii=False)
-    if not report:
-        return json.dumps({'skipped': 'no_report_yet'}, ensure_ascii=False)
+    if not snapshot or not report:
+        # 2026-10-07：新應徵、還沒跟阿財面談的人，用履歷先配一次（之後面談完會再配一次）
+        snapshot, report = _resume_only_snapshot(app_id)
+        if not snapshot:
+            return json.dumps({'skipped': 'no_report_or_resume'}, ensure_ascii=False)
 
     jobs = rs.list_matchable_jobs(exclude_slug=snapshot.get('applied_job_slug'))
     if not jobs:
@@ -2024,6 +2026,22 @@ def scan_rematch_candidates(limit=None):
         + allow_sql + after_sql
         + f' ORDER BY r.created_at DESC LIMIT {int(limit)}'
     )['results'] or []
+    # 2026-10-07 Jacky：「有新人選應徵紀錄也會幫我配對」——還沒跟阿財面談、但有履歷的新應徵，
+    # 進來 2 小時後（給阿財先面談的時間）還沒報告，就先用履歷配一次。7 天內、每人只排一次。
+    if len(rows) < limit:
+        rows += d1_http.query(
+            "SELECT a.id AS application_id, NULL AS report_id, a.name FROM applications a "
+            " WHERE a.superseded_by IS NULL "
+            "   AND COALESCE(a.status,'') NOT IN ('duplicate','rejected','declined','closed') "
+            "   AND (COALESCE(a.resume_file_id,'') <> '' OR COALESCE(a.resume_url_text,'') <> '') "
+            "   AND a.created_at >= datetime('now','+8 hours','-7 days') "
+            "   AND a.created_at <= datetime('now','+8 hours','-2 hours') "
+            "   AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.application_id = a.id) "
+            "   AND NOT EXISTS (SELECT 1 FROM candidate_job_recommendations c WHERE c.application_id = a.id "
+            "                   AND COALESCE(c.match_source,'') <> 'reverse_job_open') "
+            "   AND NOT EXISTS (SELECT 1 FROM ai_jobs aj WHERE aj.kind='post_interview_rematch' "
+            "                   AND aj.payload_json LIKE '%' || a.id || '%') "
+            + allow_sql + f" ORDER BY a.created_at DESC LIMIT {int(limit - len(rows))}")['results'] or []
     queued = 0
     for row in rows:
         payload = {'application_id': row['application_id'], 'report_id': row['report_id'],
@@ -2055,6 +2073,26 @@ REVERSE_SCAN_EVERY_SEC = 600
 _last_reverse_scan = 0.0
 
 
+def _resume_only_snapshot(application_id):
+    """沒有阿財報告的人選：用履歷文字（files.text_content 或貼的履歷）組快照，標 resume_only。"""
+    rows = d1_http.query(
+        "SELECT a.id, a.name, a.job_slug, a.job_title, a.expected_salary, a.available_date, a.location_ok, "
+        "a.resume_url_text, f.text_content FROM applications a LEFT JOIN files f ON f.id = a.resume_file_id "
+        f"WHERE a.id={q(application_id)}")['results']
+    if not rows:
+        return None, None
+    a = rows[0]
+    text = (a.get('text_content') or a.get('resume_url_text') or '').strip()
+    if len(text) < 150:
+        return None, None
+    snap = {'application_id': a['id'], 'name': a.get('name'), 'applied_job_slug': a.get('job_slug'),
+            'applied_job_title': a.get('job_title'), 'resume_only': True,
+            'form': {'expected_salary': a.get('expected_salary'), 'available_date': a.get('available_date'),
+                     'location_ok': a.get('location_ok')},
+            'interview': {}, 'resume_excerpt': text[:2500]}
+    return snap, {'id': None, 'content_json': '{}'}
+
+
 def _compact_snapshot(snap):
     """給 AI 看的人選摘要。完整快照一位約 4 千字、人才庫 40 幾位就破 18 萬字，
     所以只留判斷「適不適合另一個職缺」用得到的欄位。安全閥用的是完整快照，不受影響。"""
@@ -2083,6 +2121,7 @@ def _compact_snapshot(snap):
         'skills': [f"{e.get('skill') or e.get('topic')}（{e.get('skill_level') or '?'}/5）"
                    for e in (iv.get('expertise_findings') or []) if isinstance(e, dict)][:6],
         'career_directions': [d.get('direction') for d in (snap.get('career_directions') or []) if isinstance(d, dict)][:4],
+        **({'resume_only': True, 'resume_excerpt': cut(snap.get('resume_excerpt'), 1500)} if snap.get('resume_only') else {}),
     }
 
 
@@ -2110,6 +2149,8 @@ def prompt_reverse_match(p):
 - 只能從下面人才庫挑，application_id 完全照抄，不准虛構。
 - 🚫 先看「他想去哪裡」，再看「他會什麼」。他的離職原因／想轉的方向如果正好是要離開這一類工作，就不要挑他。
 - 人選資料裡的 career_directions 是阿財面談後整理的「適合的職務方向」，可以當參考，但不是唯一依據。
+- 標了 resume_only 的人**還沒跟阿財面談過**，只有 resume_excerpt（履歷原文節錄）。只能照履歷寫得出來的判斷，confidence 最高 medium；
+  動機、期望薪資、到職時間一律寫進 missing_information，不要猜。
 - reasons／blockers 是寫給顧問看的評估，照實寫。
 - candidate_why 是**唯一會原封不動出現在發給人選本人的 LINE／Email 裡**的一句話（「為什麼想到您：」後面接這句），所以：
   · 對著他本人說，從他做過的事、會的東西講起，15～60 字，例如「您用 AutoCAD 畫過廠房配置圖，跟這個職位每天要做的事很接近」
@@ -2124,7 +2165,7 @@ def prompt_reverse_match(p):
 【職缺】
 {job_text}
 
-【人才庫（{len(pool)} 位，最近 {rs.REVERSE_POOL_DAYS} 天內面談過的人）】
+【人才庫（{len(pool)} 位：最近 {rs.REVERSE_POOL_DAYS} 天內面談過、或有履歷的人）】
 {json.dumps(pool, ensure_ascii=False)}
 """
 
@@ -2187,7 +2228,10 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
     for row in pool_rows:
         snap, report = rs.build_candidate_snapshot(row['application_id'])
         if not snap or not report:
-            continue
+            # 沒跟阿財面談過、只有履歷的人（2026-10-07 擴大人才庫）：用履歷全文做一份簡單快照
+            snap, report = _resume_only_snapshot(row['application_id'])
+            if not snap:
+                continue
         try:
             rj = json.loads(report.get('content_json') or '{}')
             snap['career_directions'] = rj.get('career_directions') or []
@@ -2241,7 +2285,7 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
             snap, {job_slug: job_for_ai}, MODEL, lambda: str(uuid.uuid4()),
             match_source='reverse_job_open', reverse_run_id=run_id, limit=1)
         if n:
-            saved_items.append(dict(k, name=snap.get('name')))
+            saved_items.append(dict(k, name=snap.get('name'), _resume_only=bool(snap.get('resume_only'))))
     result['saved'] = len(saved_items)
     result['notified'] = bool(saved_items) and rs.notify_reverse_match(job, saved_items, len(snaps), run_id)
     log(f"  🔁 反向配對「{job.get('title')}」：人才庫 {len(snaps)} 位，AI 挑 {len(data['matches'])} 位，"
