@@ -1796,6 +1796,30 @@ function normalizePhone(raw) {
   return d;
 }
 
+// ── 2026-10-07 LINE 兩種 ID 自動對應 ─────────────────────────────
+// LIFF（查進度表單）拿到的 userId 跟官方帳號（Messaging API）認得的不是同一組，
+// 用 LIFF 那組推播會被 LINE 拒絕（杜偉銘、楊政翰都中過：面談邀約、通知全沒送到）。
+// 這裡用「暱稱完全一樣、而且只有一個人對得上」把官方帳號那組 ID 自動補成另一筆綁定。
+// 對不上或有兩個以上同名就不猜，留給下一則訊息或顧問手動處理。
+async function lineBotProfile(env, uid) {
+  if (!env.LINE_CHANNEL_ACCESS_TOKEN || !uid) return null;
+  try {
+    const r = await fetch(`https://api.line.me/v2/bot/profile/${encodeURIComponent(uid)}`, {
+      headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` }, signal: AbortSignal.timeout(5000) });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+}
+async function addOaTwinBinding(env, src, oaUid, how) {
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO line_bindings (line_user_id, state, phone, email, application_ids, bound_at, display_name, picture_url,
+       profile_synced_at, source, created_at, updated_at)
+     VALUES (?, 'bound', ?, ?, ?, ?, ?, ?, ?, 'auto_oa_twin', ?, ?)`
+  ).bind(oaUid, src.phone || null, src.email || null, src.application_ids || '[]', nowTaipei(), src.display_name || null,
+         src.picture_url || null, nowTaipei(), nowTaipei(), nowTaipei()).run();
+  await notify(env, `🔗 LINE 自動對應：${src.display_name || ''} 的查進度表單 ID 推不到，已自動補上官方帳號那組 ID（${how}），之後通知送得到`,
+    { message_thread_id: THREAD.system }).catch(() => {});
+}
+
 function safeJsonArray(s) {
   try {
     const v = JSON.parse(s || '[]');
@@ -5489,6 +5513,26 @@ export default {
             ).bind(ev.source.userId, (ev.message && ev.message.type) || null,
                    String((ev.message && ev.message.text) || '').slice(0, 500), nowTaipei()).run();
           } catch { /* 記不到就算了，不能擋到回覆 */ }
+        }
+        // 2026-10-07：先綁查進度表單、後來才傳訊息／加好友的人，在這裡補對應
+        if (ev && (ev.type === 'message' || ev.type === 'follow') && ev.source && ev.source.userId) {
+          try {
+            const uid = ev.source.userId;
+            const known = await env.DB.prepare(`SELECT 1 FROM line_bindings WHERE line_user_id=?`).bind(uid).first();
+            if (!known) {
+              const { results: liff } = await env.DB.prepare(
+                `SELECT b.* FROM line_bindings b WHERE b.source='liff_progress' AND b.state='bound'
+                   AND b.created_at > datetime('now','+8 hours','-30 days') AND b.display_name IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM line_bindings t WHERE t.application_ids=b.application_ids AND t.line_user_id<>b.line_user_id)`).all();
+              if ((liff || []).length) {
+                const pf = await lineBotProfile(env, uid);
+                const same = pf ? (liff || []).filter((b) => b.display_name === pf.displayName) : [];
+                if (same.length === 1 && !(await lineBotProfile(env, same[0].line_user_id))) {
+                  await addOaTwinBinding(env, same[0], uid, '對方傳訊息給官方帳號時比對暱稱');
+                }
+              }
+            }
+          } catch { /* 對應失敗不能擋到回覆 */ }
         }
         try {
           await handleLineEvent(env, ev);
