@@ -1382,6 +1382,61 @@ def generate_draft_topic(topic, style_row, account_id=None):
     return raw, strip_address_numbers(post) if post else None
 
 
+def _anon_topic(application_id):
+    """2026-10-07 匿名人選文：把一位人選整理成「給企業看的匿名介紹」素材，套用話題文同一條產稿／稽核／TG 審核流程。
+    公式之後由 Jacky／Phoebe 提供（style_prompts）；沒選公式時用這裡的基本規則。"""
+    rows = d1(f"SELECT a.id, a.name, a.job_title, a.resume_url_text, f.text_content FROM applications a "
+              f"LEFT JOIN files f ON f.id=a.resume_file_id WHERE a.id={q(application_id)}")
+    if not rows:
+        return None
+    a = rows[0]
+    rep = d1(f"SELECT content_json FROM reports WHERE application_id={q(application_id)} ORDER BY created_at DESC LIMIT 1")
+    rj = {}
+    try:
+        rj = json.loads(rep[0]['content_json'] or '{}') if rep else {}
+    except Exception:
+        rj = {}
+    forbid = set()
+    for part in re.split(r'[\s,，（）()]+', a.get('name') or ''):
+        if len(part) >= 2:
+            forbid.add(part)
+    material = []
+    for k, label in (('one_liner', '一句話'), ('top_selling_point', '最大亮點'), ('summary', '面談摘要')):
+        if rj.get(k):
+            material.append(f'{label}：{str(rj[k])[:400]}')
+    wh = rj.get('work_history') or []
+    if isinstance(wh, list) and wh:
+        lines = []
+        for w in wh[:6]:
+            if isinstance(w, dict):
+                emp = str(w.get('employer') or w.get('company') or '')
+                for t in re.split(r'[｜|（）()\s]+', emp):
+                    if len(t) >= 2:
+                        forbid.add(t)
+                lines.append(f"- {w.get('role') or ''}｜{w.get('duration') or ''}｜{str(w.get('note') or '')[:120]}")
+        material.append('工作經歷（公司名稱不准寫出來）：\n' + '\n'.join(lines))
+    for k, label in (('expertise_findings', '專業'), ('career_directions', '適合的職務方向')):
+        if rj.get(k):
+            material.append(f'{label}：{json.dumps(rj[k], ensure_ascii=False)[:600]}')
+    if not rj:
+        txt = (a.get('text_content') or a.get('resume_url_text') or '').strip()
+        if len(txt) < 150:
+            return None
+        material.append('履歷原文節錄（公司、學校、人名都不准寫出來）：\n' + txt[:2500])
+    body = ('這篇是「匿名人選介紹」：用顧問的口吻，向企業主／HR 介紹「我手上有一位這樣的人才正在看新機會」，'
+            '目的是讓有需要的企業私訊或加 LINE 來問。\n'
+            '硬規則：\n'
+            '1. 不准出現人選姓名、任何公司名稱（現職與過去都不行）、學校名稱、可以認出是誰的細節（特定專案名、獎項、職稱全名＋公司組合）。\n'
+            '   公司一律改寫成產業描述，例如「某上市半導體設備廠」「外商醫材公司」。\n'
+            '2. 不寫年齡、性別、婚育、外貌、國籍、薪資數字。\n'
+            '3. 重點寫：年資與專長、做過的具體成果（不帶公司名）、適合什麼樣的職位或企業。\n'
+            '4. 結尾邀請「有在找這類人才的企業」私訊或加 LINE 聊，不要寫成求職廣告、不要對人選喊話。\n'
+            '5. 只用下面素材裡真的有的事，不准誇大或補不存在的成就。\n\n'
+            '【人選素材（只給你看）】\n' + '\n'.join(material))
+    return {'id': None, 'name': '', 'body': body, 'category': 'anon',
+            '_forbid': sorted(forbid, key=len, reverse=True), '_label': f"匿名人選｜{a.get('job_title') or ''}"}
+
+
 def process_topic(queue_row, topic):
     """跟 process_job() 對齊的話題類型版本——沒有職缺欄位可以填，草稿產出、
     客戶名稱稽核、Telegram 審核通知、tg_message_id 回寫整套流程一致，只差
@@ -1436,6 +1491,26 @@ def process_topic(queue_row, topic):
             )
             return
 
+        # 匿名人選文：人選姓名、待過的公司名稱一出現就重產，重產還是有就擋下不送審
+        _fb = lambda t: [w for w in (topic.get('_forbid') or []) if w and w in (t or '')]
+        leak = _fb(post)
+        retry = 0
+        while leak and retry < MAX_REGEN_RETRIES:
+            retry += 1
+            log(f'⚠️ 匿名人選文出現可辨識字眼 {leak}，自動重產第 {retry} 次')
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
+            if post2:
+                raw, post, leak = raw2, post2, _fb(post2)
+        if leak:
+            d1(f"UPDATE social_post_queue SET draft={q(post)}, status='blocked' WHERE id={qid}")
+            tg_with_buttons(
+                f'🚫 匿名人選文出現可以認出人選的字（{"、".join(leak)}），重產 {retry} 次仍未過，擋下來沒有送審。\n\n{post}',
+                [{'text': '🔄 再產一次', 'callback_data': f'soc_regen:{qid}'},
+                 {'text': '❌ 不發這篇', 'callback_data': f'soc_skip:{qid}'}],
+                TG_THREAD_SOCIAL,
+            )
+            return
+
         law5 = audit_law5(post)
         retry = 0
         while law5 and retry < MAX_REGEN_RETRIES:
@@ -1462,7 +1537,7 @@ def process_topic(queue_row, topic):
         # 屬於哪種角度（category：ai＝AI阿財信任建立／general＝一般互動），
         # 沒有這個標記，儀表板的分類比較就永遠是空的。
         post = post + line_community_link_suffix(account_id, queue_id=qid)
-        mission_tag = {'ai': 'trust_building', 'general': 'engagement'}.get(topic.get('category'), 'general')
+        mission_tag = {'ai': 'trust_building', 'general': 'engagement', 'anon': 'talent_spotlight'}.get(topic.get('category'), 'general')
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # cta_type 同上（見 _cta_kind 的說明）。話題文走的是
         # line_community_link_suffix，一樣吃 cta_template。
@@ -1486,9 +1561,9 @@ def process_topic(queue_row, topic):
                     log(f'⚠️ 帳號「{acct_label}」沒有設定 tg_thread_id，'
                         f'這則通知會送到共用主題 {TG_THREAD_SOCIAL}')
         msg_id = tg_with_buttons(
-            f"📱 全民獵才貼文草稿（💬 話題）\n"
+            f"📱 全民獵才貼文草稿（{'🙈 匿名人選' if topic.get('category') == 'anon' else '💬 話題'}）\n"
             f"帳號：{acct_label or '（未指定帳號）'}\n"
-            f"話題：{title}\n"
+            f"{'人選' if topic.get('category') == 'anon' else '話題'}：{topic.get('_label') or title}\n"
             + (f"風格：{style_row['name']}\n" if style_row else '')
             + f"\n── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n"
@@ -1882,6 +1957,14 @@ def tick():
         # 2026-09-03 加：話題類型的排隊紀錄靠 topic_id 分辨。job_slug 這時候
         # 存的是「💬 描述文字」，只給列表顯示跟 /go/ 點擊歸因用，不是真職缺
         # slug，不能拿去查 jobs 表（查了一定落空，之前就是這樣被完全略過）。
+        if qrow.get('anon_application_id'):
+            topic = _anon_topic(qrow['anon_application_id'])
+            if not topic:
+                log(f'⚠️ 排隊紀錄 {qrow["id"]} 的匿名人選找不到資料，跳過')
+                d1(f"UPDATE social_post_queue SET status='needs_material' WHERE id={qrow['id']}")
+                continue
+            tasks.append((process_topic, qrow, topic))
+            continue
         if qrow.get('topic_id'):
             tid = qrow['topic_id']
             if tid not in topics_cache:
