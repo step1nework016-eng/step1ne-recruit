@@ -211,8 +211,14 @@ def update_list(j):
     # 舊版預設是 track="dispatch" cat="service"，結果 2026-09-03 後台上架的
     # 六筆正職工程職缺全部被歸到「派遣・客服行政」的篩選條件底下——
     # 留空只是不出現在產業篩選裡（「全部」還是看得到），套錯值是把人導到錯的分類。
-    card = (f'<a class="job" href="/jobs/{j["slug"]}/" data-track="{j.get("track","")}" '
-            f'data-cat="{j.get("cat","")}"> '
+    # 2026-10-08：改 JD 重新產生時，規格裡沒有 track／cat，原本會把列表卡的分類清空
+    # （美德供應鏈主管因此從「中高階職缺」「營運・供應鏈」篩選裡消失）。沒給就沿用舊卡上的值。
+    import re as _re
+    _old = _re.search(r'<a class="job" href="/jobs/' + _re.escape(j["slug"]) + r'/" data-track="([^"]*)" data-cat="([^"]*)"', s)
+    _track = j.get("track") or (_old.group(1) if _old else "")
+    _cat = j.get("cat") or (_old.group(2) if _old else "")
+    card = (f'<a class="job" href="/jobs/{j["slug"]}/" data-track="{_track}" '
+            f'data-cat="{_cat}"> '
             f'<div class="job-industry">{j.get("industry","")}</div> '
             f'<h2 class="job-title">{j["title"]}</h2> '
             f'<div class="job-meta">{"".join(f"<span>{t}</span>" for t in card_meta(j))}</div> '
