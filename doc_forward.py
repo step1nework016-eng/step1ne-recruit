@@ -43,6 +43,62 @@ sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
 from weekday_check import weekday_errors  # noqa: E402
 
+
+# ── 2026-10-08 加：轉給客戶前先檢查人事資料表有沒有填完整 ──
+# 起因：丁以岡回傳的 GAHR04 工作經歷只寫到 2021（漏了現職），16:33 被原封不動轉給美德，
+# 信上還寫「填寫完成」。Jacky：不完整就先停下來發 TG 問，不要直接轉出。
+# 只檢查「看得出是人事資料表」的檔案（有「工作經歷」字樣）；圖片讀不到字，一律先停下來給人看。
+def att_text(fn, data):
+    import io
+    low = fn.lower()
+    try:
+        if low.endswith('.docx'):
+            import docx
+            d = docx.Document(io.BytesIO(data))
+            lines = [p.text for p in d.paragraphs]
+            for t in d.tables:
+                for row in t.rows:
+                    cells = []
+                    for c in row.cells:
+                        x = c.text.strip()
+                        if x and x not in cells:
+                            cells.append(x)
+                    lines.append(' | '.join(cells))
+            return '\n'.join(lines), len(d.inline_shapes)
+        if low.endswith('.pdf'):
+            import pymupdf
+            d = pymupdf.open(stream=data, filetype='pdf')
+            return ''.join(pg.get_text() for pg in d), sum(len(pg.get_images()) for pg in d)
+    except Exception as e:
+        return None, f'讀不到內容（{e.__class__.__name__}）'
+    return None, '圖片或其他格式，程式讀不到字'
+
+
+def form_problems(atts):
+    """回傳問題清單；空的＝看起來完整（或不是人事資料表，不檢查）。"""
+    probs = []
+    this_year = datetime.date.today().year
+    for fn, _ct, data in atts:
+        text, imgs = att_text(fn, data)
+        if text is None:
+            probs.append(f'{fn}：{imgs}，請人工確認')
+            continue
+        if '工作經歷' not in text:
+            continue
+        work = text.split('工作經歷', 1)[1].split('家庭狀況', 1)[0]
+        years = [int(y) for y in re.findall(r'(?<!\d)(19[89]\d|20[0-4]\d)(?!\d)', work)]
+        current = re.search(r'至今|迄今|在職中|現職|[Pp]resent', work)
+        if years and not current and max(years) < this_year - 1:
+            probs.append(f'{fn}：工作經歷只寫到 {max(years)} 年，之後（含目前工作）沒寫')
+        m = re.search(r'希望待遇(.*?)(教育程度|$)', text, re.S)
+        if m:
+            rest = re.sub(r'依公司規定|月薪|[⬜□☐_＿|\s:：$＄]', '', m.group(1))
+            if not re.search(r'\d|✓|☑|■|面議|依', rest):
+                probs.append(f'{fn}：希望待遇沒填')
+        if imgs == 0:
+            probs.append(f'{fn}：沒有大頭照')
+    return probs
+
 IMAP_HOST, SMTP_HOST = 'imap.secureserver.net', 'smtpout.secureserver.net'
 JACKY_TG = '8365775688'
 ATT_OK = re.compile(r'\.(docx?|pdf|jpe?g|png|heic)$', re.I)
@@ -220,7 +276,7 @@ def forward(r, atts):
 
 def cmd_tick(args):
     ensure()
-    rows = d1_http.query("SELECT * FROM candidate_doc_requests WHERE status='waiting'")['results']
+    rows = d1_http.query("SELECT * FROM candidate_doc_requests WHERE status IN ('waiting','held')")['results']
     if not rows:
         return
     seen = {r['message_id'] for r in d1_http.query("SELECT message_id FROM candidate_doc_seen")['results']}
@@ -235,6 +291,8 @@ def cmd_tick(args):
         msgs = []
         for u, p in boxes:
             msgs += scan(u, p, r['candidate_email'], since)
+        if r['id'] == getattr(args, 'force_id', None):
+            msgs.reverse()   # 放行時用人選最新的那一封
         for mid, m, atts in msgs:
             if mid in seen:
                 continue
@@ -245,6 +303,12 @@ def cmd_tick(args):
             if not ok:
                 tg(f"📩 {r['candidate_name']} 回信了，但沒有附 Word／PDF／圖片檔，沒轉寄。\n主旨：{subj}\n請到信箱看內容。")
                 continue
+            probs = [] if r['id'] == getattr(args, 'force_id', None) else form_problems(ok)
+            if probs:
+                d1_http.query(f"UPDATE candidate_doc_requests SET status='held', note={q('；'.join(probs)[:900])} WHERE id={q(r['id'])}")
+                tg(f"✋ {r['candidate_name']} 回傳了資料表，但看起來沒填完整，先不轉給 {r['client_to']}：\n・" + '\n・'.join(probs) +
+                   "\n\n人選補好再回信會自動重新檢查；要照現在這份直接轉，跟 Claude 說「放行 " + r['candidate_name'] + "」。")
+                continue
             forward(r, ok)
             d1_http.query(f"UPDATE candidate_doc_requests SET status='forwarded', forwarded_at={q(now())} WHERE id={q(r['id'])}")
             names = '、'.join(a[0] for a in ok)
@@ -252,6 +316,16 @@ def cmd_tick(args):
             warn = f"\n⚠️ 客戶要 {need} 份，這次只有 {len(ok)} 個檔案，確認一下有沒有漏。" if need and len(ok) < need else ''
             tg(f"✅ {r['candidate_name']} 的面試資料表已用 jackychen@ 轉給 {r['client_to']}（副本 official@）\n附件：{names}{warn}")
             break
+
+
+def cmd_release(args):
+    """被擋下（held）的資料表：清掉已讀紀錄、用 force 重跑一次，照人選最後一封有附件的信直接轉。"""
+    r = d1_http.query(f"SELECT * FROM candidate_doc_requests WHERE application_id={q(args.app)} AND status='held'")['results']
+    if not r:
+        sys.exit('這位人選沒有被擋下的資料表')
+    d1_http.query(f"DELETE FROM candidate_doc_seen WHERE request_id={q(r[0]['id'])}")
+    args.force_id = r[0]['id']
+    cmd_tick(args)
 
 
 def cmd_list(args):
@@ -264,6 +338,8 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('tick')
+    rl = sub.add_parser('release', help='被擋下的資料表照現在這份直接轉')
+    rl.add_argument('--app', required=True)
     sub.add_parser('list')
     for name in ('add', 'send-forms'):
         s = sub.add_parser(name)
@@ -275,4 +351,4 @@ if __name__ == '__main__':
         s.add_argument('--note', default=None)
         s.add_argument('--only', action='append', default=[], help='只寄標題含這個關鍵字的表單，可重複')
     a = ap.parse_args()
-    {'tick': cmd_tick, 'list': cmd_list, 'add': cmd_add, 'send-forms': cmd_send_forms}[a.cmd](a)
+    {'tick': cmd_tick, 'list': cmd_list, 'add': cmd_add, 'send-forms': cmd_send_forms, 'release': cmd_release}[a.cmd](a)
