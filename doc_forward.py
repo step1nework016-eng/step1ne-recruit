@@ -41,6 +41,7 @@ from email.header import decode_header, make_header
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
+from weekday_check import weekday_errors  # noqa: E402
 
 IMAP_HOST, SMTP_HOST = 'imap.secureserver.net', 'smtpout.secureserver.net'
 JACKY_TG = '8365775688'
@@ -127,21 +128,29 @@ def cmd_send_forms(args):
     if not a.get('email') or '@no-email' in a['email']:
         sys.exit('人選沒有 Email')
     files = d1_http.query(f"SELECT title, file_id FROM client_files WHERE company_id={q(a['company_id'])} ORDER BY created_at")['results']
+    # 2026-10-08：客戶卡片也會放內部文件（客戶回覆的問題集、JD），原本這裡會全部夾給人選。
+    # 一定要用 --only 指定要寄哪幾份（標題關鍵字），沒指定就不寄。
+    if not args.only:
+        sys.exit('請用 --only 指定要寄的表單（標題關鍵字，例如 --only GAHR04），避免把內部文件寄給人選')
+    files = [f for f in files if any(k in (f['title'] or '') for k in args.only)]
     if not files:
-        sys.exit('這家客戶沒有「客戶指定表單」')
+        sys.exit('找不到符合 --only 的表單')
     tok = envf('~/.config/workflow-os/recruit.env')['RECRUIT_ADMIN_TOKEN']
     msg = email.message.EmailMessage()
     msg['From'] = 'Jacky Chen <official@step1ne.com>'
     msg['To'] = a['email']
-    msg['Subject'] = f"{a['display_name'] or ''} 面試前資料表｜請填寫後回傳"
+    msg['Subject'] = "人事資料表｜請填寫後回傳"
     msg['Date'] = email.utils.formatdate(localtime=True)
     msg['Message-ID'] = email.utils.make_msgid(domain='step1ne.com')
     days = args.days
     due = (datetime.date.today() + datetime.timedelta(days=max(1, days - 1))).strftime('%m/%d')
     body = (f"{a['name']} 您好，\n\n{(args.note + chr(10) + chr(10)) if args.note else ''}"
-            f"面試前，客戶請您先填寫附件資料表（{'、'.join(f['title'] for f in files)}），"
-            f"填好後直接回覆這封信、夾上檔案即可（拍照或掃描也可以），麻煩於 {due} 前回傳，我們會轉交給客戶。\n\n"
+            f"企業請您先填寫附件資料表（{'、'.join(f['title'] for f in files)}），"
+            f"填好後直接回覆這封信、夾上檔案即可（拍照或掃描也可以），麻煩於 {due} 前回傳，我們會轉交給企業。\n\n"
             "有任何問題隨時跟我說，謝謝！\n\nJacky\nStep1ne｜德仁管理顧問有限公司\n")
+    wd_err = weekday_errors(body + '\n' + str(msg['Subject'] or ''))
+    if wd_err:
+        sys.exit('星期寫錯，沒有寄出：' + '；'.join(wd_err))
     msg.set_content(body)
     for f in files:
         req = urllib.request.Request(f"https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/{f['file_id']}",
@@ -264,5 +273,6 @@ if __name__ == '__main__':
         s.add_argument('--to', default=None)
         s.add_argument('--days', type=int, default=7)
         s.add_argument('--note', default=None)
+        s.add_argument('--only', action='append', default=[], help='只寄標題含這個關鍵字的表單，可重複')
     a = ap.parse_args()
     {'tick': cmd_tick, 'list': cmd_list, 'add': cmd_add, 'send-forms': cmd_send_forms}[a.cmd](a)

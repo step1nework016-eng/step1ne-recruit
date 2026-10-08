@@ -28,6 +28,8 @@ from email.message import EmailMessage
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', '_tools'))
 import d1_rw  # noqa: E402
+sys.path.insert(0, HERE)
+from weekday_check import weekday_errors  # noqa: E402
 
 SMTP_HOST = 'smtpout.secureserver.net'
 
@@ -70,6 +72,14 @@ def main():
         for m in rows:
             if dry:
                 print(f"[dry] {m['kind']} → {m['to_email']}｜{m['subject']}")
+                continue
+            # 日期跟星期對不上就不寄（2026-10-08 寄出「10/9（四）」，其實是星期五）
+            wd_err = weekday_errors((m.get('subject') or '') + '\n' + (m.get('text') or ''))
+            if wd_err:
+                d1_rw.q("UPDATE mail_outbox SET status='blocked', error=? WHERE id=? AND status='pending'",
+                        ['星期寫錯，已擋下：' + '；'.join(wd_err)[:250], m['id']])
+                _tg(f"⛔ 信沒寄出（星期寫錯）：{m['to_email']}｜{m['subject']}\n" + '\n'.join(wd_err))
+                print(f"⛔ {m['to_email']}：{wd_err}")
                 continue
             # 搶這封（Mac 跟後台補寄同時看到同一封時，只會有一邊寄）
             claim = d1_rw.q("UPDATE mail_outbox SET status='sending', via='godaddy', attempts=COALESCE(attempts,0)+1 "
