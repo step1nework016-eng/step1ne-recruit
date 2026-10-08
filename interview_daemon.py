@@ -454,11 +454,91 @@ def law5_hits(text):
     return [w for w in LAW5_WORDS if w in t]
 
 
+# ── 2026-10-08：阿財每一次 AI 呼叫的真實用量 ──
+# Jacky 要把阿財改成走 API 之前，先量清楚「一場面談實際花多少 token、每輪多慢」。
+# 舊作法（上面的 _sum_session_usage）事後去猜是哪個 session 檔，查證後有三個問題：
+#   1. 併發時會撿錯檔（常安民 prewarm/plan、齊浩先 talk/plan 數字一模一樣）
+#   2. 同一則回覆在檔案裡會寫成好幾行，每行都帶同一份 usage，加總會重複算
+#   3. 漏記：楊政翰 50 則訊息只記到 22 次 talk
+# 改成讓 claude CLI 直接回報（--output-format json）：每次呼叫自己帶 usage、
+# 照 API 牌價算的金額、總耗時、模型實際耗時，不用再猜。
+# 外殼拆不開（格式意外）就照原樣把輸出當文字，阿財行為跟以前完全一樣。
+_CALL_META = threading.local()
+
+
+def _cli_unwrap(r, prompt, t_start=None):
+    """r 是 subprocess.run 的結果。把 JSON 外殼拆掉，r.stdout 換回模型原本的文字；
+    用量累加到這條執行緒的 _CALL_META.meta（重試的那幾次也算進去，那是真的有花的）。"""
+    try:
+        env = json.loads(r.stdout)
+    except Exception:
+        return r
+    if not isinstance(env, dict) or 'result' not in env:
+        return r
+    r.stdout = env.get('result') or ''
+    try:
+        us = env.get('usage') or {}
+        m = getattr(_CALL_META, 'meta', None) or {
+            'model': None, 'input_tokens': 0, 'output_tokens': 0,
+            'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0,
+            'cost_usd': 0.0, 'duration_ms': 0, 'api_ms': 0, 'wall_ms': 0, 'calls': 0,
+            'prompt_chars': len(prompt or ''), 'output_chars': 0}
+        m['model'] = m['model'] or next(iter(env.get('modelUsage') or {}), None)
+        for k in ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'):
+            m[k] += int(us.get(k) or 0)
+        m['cost_usd'] += float(env.get('total_cost_usd') or 0)
+        m['duration_ms'] += int(env.get('duration_ms') or 0)
+        m['api_ms'] += int(env.get('duration_api_ms') or 0)
+        m['calls'] += 1
+        if t_start:
+            m['wall_ms'] += int((time.time() - t_start) * 1000)   # 含 CLI 開機時間＝候選人實際等的
+        m['output_chars'] = len(r.stdout)
+        _CALL_META.meta = m
+    except Exception:
+        pass
+    return r
+
+
+_TOKEN_COLS_READY = False
+
+
+def _ensure_token_cols():
+    global _TOKEN_COLS_READY
+    if _TOKEN_COLS_READY:
+        return
+    for col, typ in (('cost_usd', 'REAL'), ('duration_ms', 'INTEGER'), ('api_ms', 'INTEGER'),
+                     ('calls', 'INTEGER'), ('wall_ms', 'INTEGER'), ('prompt_chars', 'INTEGER'), ('output_chars', 'INTEGER'),
+                     ('host', 'TEXT'), ('source', 'TEXT')):
+        try:
+            d1(f"ALTER TABLE token_usage ADD COLUMN {col} {typ}")
+        except Exception:
+            pass   # 已經有這個欄位
+    _TOKEN_COLS_READY = True
+
+
 def log_token_usage(app_id, call_type, prompt, before_files):
     """在對應的 claude -p subprocess.run() 呼叫「之後」呼叫，
     before_files 是呼叫「之前」的 _snapshot_session_files()。
     這支不准往外丟例外——記錄是加值功能，不是面談流程的一部分。"""
+    meta = getattr(_CALL_META, 'meta', None)
+    _CALL_META.meta = None
     if not app_id:
+        return
+    if meta:
+        try:
+            _ensure_token_cols()
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            d1(f"INSERT INTO token_usage "
+               f"(application_id, call_type, model, input_tokens, output_tokens, "
+               f"cache_creation_input_tokens, cache_read_input_tokens, created_at, "
+               f"cost_usd, duration_ms, api_ms, wall_ms, calls, prompt_chars, output_chars, host, source) VALUES "
+               f"({q(app_id)}, {q(call_type)}, {q(meta['model'])}, "
+               f"{meta['input_tokens']}, {meta['output_tokens']}, "
+               f"{meta['cache_creation_input_tokens']}, {meta['cache_read_input_tokens']}, {q(now)}, "
+               f"{meta['cost_usd']:.6f}, {meta['duration_ms']}, {meta['api_ms']}, {meta.get('wall_ms') or 0}, {meta['calls']}, "
+               f"{meta['prompt_chars']}, {meta['output_chars']}, {q(INTERVIEW_HOST)}, 'cli_json')")
+        except Exception as e:
+            log(f'（token 用量沒記成，不影響面談：{e}）')
         return
     try:
         after_files = set(os.listdir(CLAUDE_PROJECTS_DIR))
@@ -2164,9 +2244,10 @@ def run_claude(prompt):
         try:
             r = subprocess.run(
                 [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
-                 *NO_TOOLS, '--output-format', 'text'],
+                 *NO_TOOLS, '--output-format', 'json'],
                 input=sanitize(prompt),
                 capture_output=True, text=True, env=env_with_cf(), timeout=budget)
+            _cli_unwrap(r, prompt, t1)
         except subprocess.TimeoutExpired as e:
             last_err = e
             log(f'⏱️ claude 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
@@ -3184,14 +3265,16 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         + '\n\n【初篩報告全文】\n' + report
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
     _before_files = _snapshot_session_files()
+    _t_cli = time.time()
     try:
         # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
         r = subprocess.run([CLAUDE_BIN, '-p', '--model', REPORT_MODEL,
                             # NO_TOOLS 是安全與成本設定（見檔頭說明），不要拿掉
-                            *NO_TOOLS, '--output-format', 'text'],
+                            *NO_TOOLS, '--output-format', 'json'],
                            input=sanitize(prompt),
                            capture_output=True, text=True, env=env_with_cf(),
                            timeout=REPORT_TIMEOUT)
+        _cli_unwrap(r, prompt, _t_cli)
         log_token_usage(app_id, 'report_json', prompt, _before_files)
         obj = _extract_json(r.stdout)
         if obj is None:
@@ -3352,12 +3435,14 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
            if abandoned else '')
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     _before_files = _snapshot_session_files()
+    _t_cli = time.time()
     try:
         # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206），改用 stdin。
         r = subprocess.run([CLAUDE_BIN, '-p', '--model', REPORT_MODEL,
-                            *NO_TOOLS, '--output-format', 'text'],
+                            *NO_TOOLS, '--output-format', 'json'],
                            input=sanitize(prompt),
                            capture_output=True, text=True, env=env_with_cf(), timeout=REPORT_TIMEOUT)
+        _cli_unwrap(r, prompt, _t_cli)
         report = r.stdout.strip() or '（報告產生失敗，請看逐字稿）'
         # 模型常把整份報告包在程式碼區塊裡，推到 Telegram 會多出兩行反引號
         if report.startswith('```'):
@@ -3782,6 +3867,7 @@ def handle(app):
                 '就業服務法第 5 條禁止以性別、年齡、婚姻、生育、國籍、身心障礙、'
                 '宗教、容貌等條件對求職者為差別待遇——**不要問、不要提、也不要轉述'
                 '用人單位的這類偏好**。請重寫這一輪，改問跟工作本身有關的事。')
+            log_token_usage(app_id, 'talk_retry', talk_prompt, _snapshot_session_files())
             r2 = [m for m in (retry.get('messages') or []) if str(m).strip()][:3]
             if r2 and not any(law5_hits(m) for m in r2):
                 msgs, result = r2, retry
