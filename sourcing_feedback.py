@@ -38,11 +38,9 @@ MIN_SAMPLES = 5          # 同一個職缺累積幾筆才值得分析
 API = 'https://step1ne-recruit-api.aiagentg888.workers.dev'
 TG_THREAD_SOURCED = 3477
 
-_BAN = ('Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
-        'AskUserQuestion,TodoWrite,BashOutput,KillShell,Skill,'
-        'Agent,Artifact,Monitor,CronCreate,CronDelete,CronList')
-NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
-            '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']
+# 2026-10-08 資安：改用共用的 ai_lockdown.NO_TOOLS（--tools '' ＋完整禁用清單，雙保險）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ai_lockdown import NO_TOOLS  # noqa: E402
 
 # 這幾個原因不代表策略有問題——人家已經有工作、沒意願，是正常耗損。
 # 不排除的話，一個熱門職缺會因為「大家都有工作」被判定成要改搜尋詞，越調越偏。

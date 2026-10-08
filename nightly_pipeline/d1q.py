@@ -7,6 +7,7 @@
   python3 d1q.py insert <表名> '<JSON 物件或陣列>'   # 新增一筆或多筆
   python3 d1q.py insert-ignore <表名> '<JSON>'     # 同上，但主鍵重複就略過（bd_company_profiles 用）
   python3 d1q.py cols <表名>                      # 看欄位名
+  python3 d1q.py conds <職缺代號>                  # 這個職缺的必要條件編號清單（找人逐條對照用）
   JSON 很長或有引號時：用 '-' 從標準輸入讀（heredoc），或 '@檔案路徑'
 
 規則（寫死在程式裡，不靠提示詞自律）：
@@ -77,6 +78,59 @@ def _cols(table):
     return [r['name'] for r in rows]
 
 
+GRADE_KEYS = ('must_check', 'function_match', 'industry_required', 'industry_match', 'grade_reason', 'profile_url')
+NO_PROFILE_LOG = os.path.join(os.path.dirname(HERE), 'sourcing_runs', 'no_profile_leads.jsonl')
+
+
+def _sourced_gate(rows):
+    """關卡一：沒有個人頁（只有新聞／公告／公司官網／名錄）→ 不寫入，記到本機線索檔。
+    關卡二：用 AI 附的逐條對照（must_check 等欄位，這些不是資料表欄位，寫入前拿掉）算等第上限；
+    沒附逐條對照的最高 C。A 仍然要 verify_status='verified' 才留得住（10/6 規則）。"""
+    import sourcing_quality as Q  # noqa: E402（上層資料夾，已在 sys.path）
+    jobs, kept = {}, []
+    for r in rows:
+        if not isinstance(r, dict):
+            kept.append(r)
+            continue
+        if not Q.place_profile_links(r):
+            print(f"🚫 不寫入人選 {r.get('name')}：沒有個人頁（只有 {str(r.get('source_url') or '無網址')[:70]}）——只記成線索")
+            try:
+                os.makedirs(os.path.dirname(NO_PROFILE_LOG), exist_ok=True)
+                with open(NO_PROFILE_LOG, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({'at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                        'job_slug': r.get('job_slug'), 'source': r.get('source'), 'name': r.get('name'),
+                                        'company': r.get('company'), 'headline': r.get('headline'),
+                                        'source_url': r.get('source_url'), 'why': r.get('note')}, ensure_ascii=False) + '\n')
+            except OSError:
+                pass
+            continue
+        slug = r.get('job_slug') or ''
+        if slug not in jobs:
+            jobs[slug] = (_post('SELECT * FROM jobs WHERE slug=?', [slug]).get('results') or [{}])[0]
+        job = jobs[slug]
+        conds = Q.job_conditions(job)
+        g, score, reason, det = Q.enforce_grade(r, conds, verified=(r.get('verify_status') == 'verified'))
+        if r.get('grade') and r.get('grade') != g:
+            print(f"↘︎ {r.get('name')}：AI 評 {r.get('grade')}，逐條對照後 {g}（{'；'.join(det['why']) or '—'}）")
+        old_note = str(r.get('note') or '')
+        contact = (re.search(r'聯絡方式來源[:：][^｜\n]*', old_note) or [None])[0] if old_note else None
+        r['note'] = Q.grade_note(r, g, det, tag=contact or '')
+        r['grade'], r['score'] = g, score
+        extra = {k: r.get(k) for k in GRADE_KEYS if k in r}
+        extra.update({'grade_jd_fp': Q.job_fingerprint(job), 'grade_rule': 'must-check-v1', 'grade_detail': det,
+                      'ai_note': old_note})
+        try:
+            base = json.loads(r['raw_json']) if isinstance(r.get('raw_json'), str) else (r.get('raw_json') or {})
+        except ValueError:
+            base = {'raw': r.get('raw_json')}
+        base.update(extra)
+        r['raw_json'] = base
+        for k in GRADE_KEYS:
+            r.pop(k, None)
+        kept.append(r)
+    return kept
+
+
 def cmd_insert(table, payload, ignore=False):
     if table not in ALLOWED_TABLES:
         raise SystemExit(f'❌ 夜間工作只能新增到：{", ".join(sorted(ALLOWED_TABLES))}')
@@ -132,12 +186,11 @@ def cmd_insert(table, payload, ignore=False):
             print('（這批人選全部是客戶公司的人，沒有寫入任何一筆）')
             return
     if table == 'sourced_candidates':
-        # 2026-10-06：還沒人看過完整履歷，最高 B（A 只給已核對的，核對走外掛／上傳 PDF／Cake 自動核對）
-        for r in rows:
-            if isinstance(r, dict) and r.get('grade') == 'A' and r.get('verify_status') != 'verified':
-                r['grade'] = 'B'
-                if isinstance(r.get('score'), (int, float)) and r['score'] > 79:
-                    r['score'] = 79
+        # 2026-10-08（Jacky 核准）：兩道關卡，規則在 step1ne-recruit/sourcing_quality.py，白天找人也用同一份
+        rows = _sourced_gate(rows)
+        if not rows:
+            print('（這批人選都沒有個人頁，沒有寫入任何一筆）')
+            return
     cols = set(_cols(table))
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     done = 0
@@ -172,6 +225,13 @@ def main(argv):
     op = argv[1]
     if op == 'q':
         cmd_q(argv[2])
+    elif op == 'conds':
+        # 夜間找人逐條對照用：跟寫入時程式用的是同一份編號（sourcing_quality.job_conditions）
+        import sourcing_quality as Q  # noqa: E402
+        job = (_post('SELECT * FROM jobs WHERE slug=?', [argv[2]]).get('results') or [None])[0]
+        if not job:
+            raise SystemExit(f'❌ 找不到職缺 {argv[2]}')
+        print(Q.conditions_prompt(Q.job_conditions(job)))
     elif op == 'cols':
         print(json.dumps(_cols(argv[2]), ensure_ascii=False))
     elif op in ('insert', 'insert-ignore') and len(argv) >= 4:

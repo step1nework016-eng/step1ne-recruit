@@ -42,6 +42,23 @@ TIMEOUT_SEC = 2400        # 真的在搜網路，給足時間（40 分鐘）
 spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview_daemon.py'))
 D = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(D)
+sys.path.insert(0, HERE)
+import sourcing_quality as Q  # noqa: E402  10/8：個人頁關卡＋逐條對照評等（三支找人程式共用）
+from ai_lockdown import NO_TOOLS, web_only  # noqa: E402  10/8 資安：背景 AI 統一上鎖
+
+
+def skill_docs(*names):
+    """2026-10-08 資安：AI 只開 WebSearch／WebFetch，不能再自己 Read 技能包檔案，
+    所以把要讀的規範全文直接放進提示詞（內容一樣，只是換成我們讀好交給它）。"""
+    out = []
+    for n in names:
+        path = os.path.join(SKILL_DIR, n)
+        try:
+            with open(path, encoding='utf-8') as f:
+                out.append(f'===== {n} =====\n{f.read().strip()}')
+        except OSError as e:
+            out.append(f'===== {n} =====\n（讀不到：{e}）')
+    return '\n\n'.join(out)
 
 
 def log(m):
@@ -52,7 +69,8 @@ def load_job(slug, ignore_off=False):
     rows = D.d1(
         f"SELECT slug, title, must_skills, main_duties, locations, salary_min, salary_max, "
         f"salary_unit, employment, required_conditions, education_level, years_min, "
-        f"nice_to_have_skills, seniority, client_name FROM jobs WHERE slug={D.q(slug)}"
+        f"nice_to_have_skills, seniority, client_name, preferred_background, language_requirement "
+        f"FROM jobs WHERE slug={D.q(slug)}"
     )
     # 2026-10-03：顧問在後台把這個職缺設成「不找」，就不找（job_sourcing_settings.mode='off'）
     try:
@@ -107,6 +125,24 @@ def format_ledger(rows):
     return ('\n'.join(lines), len(rows))
 
 
+PROFILE_RULE = '''【只收有個人頁的人（2026-10-08 Jacky 核准，程式會再擋一次）】
+每一位至少要有一個「打開就看得到本人經歷」的個人頁，填進 linkedin_url／profile_url：
+LinkedIn 個人頁（linkedin.com/in/…）、Cake 公開履歷（cake.me/me/…、cake.me/resumes/…）、GitHub 個人頁（github.com/帳號）、
+104 個人檔案（pda.104.com.tw/profile/…）、Behance／Dribbble 個人作品集、Wantedly 個人檔案（wantedly.com/id/…）、ORCID、Google Scholar 個人頁。
+只在新聞、公告、股東會／年報、公司官網團隊頁、企業名錄（ZoomInfo、TheOrg、商會會員頁）看到名字的人，
+先用「姓名＋公司」去找他的個人頁；找不到就**不要放進 candidates**，改放進 leads_no_profile（只當找人線索，不進人才池）。'''
+
+
+def grading_block(job):
+    conds = Q.job_conditions(job)
+    return f'''
+【這個職缺的必要條件（逐條編號，評等時每一條都要對照）】
+{Q.conditions_prompt(conds)}
+
+{Q.GRADE_RULES}
+'''
+
+
 def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_n=0, gate_text=''):
     jd_text = '\n'.join(f'{k}: {v}' for k, v in job.items() if v not in (None, ''))
     learnings_block = ''
@@ -127,8 +163,11 @@ def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_
   username、時間線）就記 CROSS_SOURCE_DUPLICATE 並跳過，不要重建、不要寫進 candidates 陣列。
 - 同名但錨點不足，記 UNVERIFIED_SAME_NAME，也不要寫進 candidates。
 - 只有 NEW_UNIQUE_RAW_LEAD（確定不在下面這份名單裡的新身分）才可以放進 candidates 陣列。
-- 這份名單同時是「已驗證有效的人才畫像樣本」：新找的人應該跟他們同一層級（在職個人貢獻者），
-  但必須是不同的人。請優先往這些人的同事、同專案、同公司其他成員、相鄰公司擴張。
+- 這份名單可以當「去哪裡找」的線索：拆解其中 B 級以上的人「做過什麼工作」（產業×工作內容×工具×專案），
+  反推還有哪些公司會養出同樣經歷的人，再去那些公司找**做同一種工作**的人。
+- ⚠️ 不能反過來用公司推能力（2026-10-08 修）：同事、同公司其他成員、同專案名單上的人，
+  不會因為跟名單上的人同公司就算符合——每個人都要各自拿出經歷證據、逐條對照必要條件。
+  （實際發生過：后里 BIM 職缺收進同一家工程顧問公司的「都市計畫規劃師」、客戶成功經理職缺收進同公司的業務開發，全被排成 B。）
 
 {ledger_text}
 """
@@ -146,24 +185,26 @@ def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_
     else:
         scope = (
             "先完成 Archetype Lock 跟五人校準；校準通過（4/5 以上）才繼續正式批量搜尋，"
-            "目標找 10-20 位新候選人，並對其中判定為 Qualified 的人選做公開聯絡資料查找。"
+            "最多找 20 位新候選人（寧缺勿濫：必要條件對不上的不要為了湊數放進來，少交沒關係），"
+            "並對其中判定為 Qualified 的人選做公開聯絡資料查找。"
             "如果校準沒通過（ROUTE_CALIBRATION_FAILED），就不要往下做正式搜尋，"
             "candidates 陣列留空，在 run_summary 說明失敗原因。"
         )
     return f'''你是 Step1ne 獵頭公司的 AI Talent Intelligence & Sourcing Agent。
 
-先完整讀取這幾個檔案，這是你這次任務唯一的作業規範，不可以跳過或憑印象執行：
-1. {SKILL_DIR}/SKILL.md
-2. {SKILL_DIR}/references/full-prompt-v3.4.md
-3. {SKILL_DIR}/references/job-strategy-router.md
-4. {SKILL_DIR}/references/job-route-calibration-v1.md
-5. {SKILL_DIR}/references/daily-agent-loop-v1.md（增量規則：去重、Candidate Memory Ledger、只有 NEW_UNIQUE_RAW_LEAD 才算產出）
+下面是這次任務唯一的作業規範全文（SKILL.md、full-prompt-v3.4、job-strategy-router、job-route-calibration-v1、
+daily-agent-loop-v1＝增量規則：去重、Candidate Memory Ledger、只有 NEW_UNIQUE_RAW_LEAD 才算產出），先完整讀過，不可以跳過或憑印象執行。
+你這次只有 WebSearch／WebFetch 兩個工具；規範裡提到要「讀檔／寫檔」的地方都已經替你處理好，不用找檔案。
+
+{skill_docs('SKILL.md', 'references/full-prompt-v3.4.md', 'references/job-strategy-router.md', 'references/job-route-calibration-v1.md', 'references/daily-agent-loop-v1.md')}
 
 讀完後，針對以下這個真實職缺執行流程：
 
 {jd_text}
-{gate_block}{ledger_block}{learnings_block}
+{grading_block(job)}{gate_block}{ledger_block}{learnings_block}
 {scope}
+
+{PROFILE_RULE}
 
 硬性規則（不可違反，違反就等於這次任務失敗）：
 - 只用合法公開資訊搜尋，不登入任何帳號、不繞過驗證碼或付費牆、不使用外洩資料庫
@@ -177,7 +218,9 @@ fit_score 打分規則（2026-10-06 加：Jacky 抓到「培訓工程設計工�
 Cake 履歷其實是景觀設計＋藝術協會＋便利商店主題店鋪設計，AutoCAD 只出現在技能清單，被誇大成「4 年畫工程設計圖」）：
 - 只能用「工作經歷／專案經歷」裡**實際做過的事**當依據；技能清單、自評、證照只能加分，不能單獨撐起 60 分以上
 - 職缺的核心任務（例如看得懂土木／建築／機電／水電工程圖）要在經歷裡找到對應的具體工作，找不到就不准給 70 分以上
-- 最近一份工作跟職缺領域無關（例如藝術、行銷、教育推廣），最高 60 分（C/B 邊緣），evidence 要寫出最近一份做什麼
+- 最近一份工作跟職缺領域無關（例如藝術、行銷、教育推廣），最高 C（59 分），evidence 要寫出最近一份做什麼
+- 技能包 full-prompt-v3.4.md 第六步的加權配分（技能30／產業20…）**不再用來決定等第**：等第照上面的【評等規則】逐條對照決定，
+  fit_score 只是同一等第內的排序（A 80+、B 60–79、C 40–59、D 39 以下）
 - recruitability_class 是 REFERRAL_ONLY 或 LONG_TERM_POOL 的，fit_score 最高 59
 - 找不到本人聯絡方式沒關係，顧問可以打公司總機請轉：phone 填公司總機並寫明「公司總機」，evidence 寫要請轉的部門與職稱
 - 年資、做過的事要照履歷原文寫，不准誇大或改寫成更接近職缺的說法；evidence 必須引用經歷裡的公司＋職稱＋做的事
@@ -191,21 +234,27 @@ Cake 履歷其實是景觀設計＋藝術協會＋便利商店主題店鋪設計
     {{
       "name": "姓名", "headline": "職稱或一行描述", "company": "目前或最近公司",
       "location": "地點", "email": "查到的公開Email，查不到填null", "phone": "查到的公開電話，查不到填null",
-      "linkedin_url": "查得到就填，查不到填null", "source_url": "找到這個人的來源網址",
+      "linkedin_url": "查得到就填，查不到填null", "profile_url": "LinkedIn 以外的個人頁（Cake／GitHub／104 個人檔案…），沒有填null",
+      "source_url": "找到這個人的來源網址",
       "fit_score": 0到100的整數, "recruitability_class": "DIRECT_TARGET 或 CONTACT_AFTER_CONFIRMATION 或 ADJACENT_TARGET 或 REFERRAL_ONLY 或 LONG_TERM_POOL",
-      "evidence": "為什麼判斷這個人符合這個職缺，附身分錨點（公司/專案/技能/地點等至少兩項）"
+      "evidence": "為什麼判斷這個人符合這個職缺，附身分錨點（公司/專案/技能/地點等至少兩項）",
+      {Q.GRADE_JSON_SPEC}
     }}
   ],
+  "leads_no_profile": [{{"name": "姓名", "company": "公司", "headline": "職稱", "source_url": "看到他的網址", "why": "為什麼可能適合（一句）"}}],
   "run_summary": "這次搜尋過程的簡短摘要：用了哪些來源、找到幾位、停在哪裡、為什麼"
 }}'''
 
 
-def run_claude(prompt):
+def run_claude(prompt, web=True):
+    """2026-10-08 資安：原本 bypassPermissions 又不禁任何工具（讀寫檔、跑指令都可以），
+    而它讀的是外部網頁內容（可被提示注入）。改成：找人／查聯絡只開 WebSearch＋WebFetch，
+    重寫訊息這種純文字任務一個工具都不給。"""
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)
     env.pop('CLAUDE_CODE_ENTRYPOINT', None)
     cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text',
-           '--permission-mode', 'bypassPermissions', '--setting-sources', '',
+           *(web_only() if web else NO_TOOLS),
            '--session-id', str(uuid.uuid4())]
     r = subprocess.run(cmd + [prompt], capture_output=True, text=True,
                         timeout=TIMEOUT_SEC, env=env)
@@ -242,8 +291,30 @@ def extract_json(text):
     return None
 
 
-def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
+NO_PROFILE_LOG = os.path.join(HERE, 'sourcing_runs', 'no_profile_leads.jsonl')
+
+
+def record_no_profile(job_slug, people, source):
+    """沒有個人頁的人不進人才池（10/8 Jacky 核准）。資料庫裡沒有放「人的線索」的表
+    （company_leads 是開發客戶用的公司線索，不能混），所以只記在本機檔案，留給之後擴張找人用。"""
+    if not people:
+        return
+    os.makedirs(os.path.dirname(NO_PROFILE_LOG), exist_ok=True)
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    with open(NO_PROFILE_LOG, 'a', encoding='utf-8') as f:
+        for p in people:
+            f.write(json.dumps({'at': stamp, 'job_slug': job_slug, 'source': source,
+                                'name': p.get('name'), 'company': p.get('company'), 'headline': p.get('headline'),
+                                'source_url': p.get('source_url'), 'why': p.get('why') or p.get('evidence')},
+                               ensure_ascii=False) + '\n')
+
+
+def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員', job=None, leads=None):
     saved = 0
+    job = job or (D.d1(f"SELECT * FROM jobs WHERE slug={D.q(job_slug)}") or [{}])[0]
+    conds = Q.job_conditions(job)
+    fp = Q.job_fingerprint(job)
+    no_profile = list(leads or [])
     # 2026-10-06：不能從客戶公司挖人（夜間找人把 Medtecs＝美德的副總排成美德職缺 A 級）。
     try:
         sys.path.insert(0, os.path.join(HERE, 'jobintake'))
@@ -271,8 +342,20 @@ def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
         if dup:
             log(f'⏭️  {name}（{company}）：已經在池子裡，跳過')
             continue
+        # 2026-10-08 關卡一：沒有個人頁（只有新聞／公告／公司官網／名錄）不收成人選
+        profs = Q.place_profile_links(c)
+        if not profs:
+            log(f'🚫 {name}（{company}）：沒有個人頁（只有 {str(c.get("source_url") or "無網址")[:60]}），不進人才池，記成線索')
+            no_profile.append(c)
+            continue
+        # 2026-10-08 關卡二：逐條對照必要條件決定等第上限（取代加權總分 60 分就 B）
+        grade, fit, reason, det = Q.enforce_grade(c, conds, verified=False)
+        if c.get('recruitability_class') in ('REFERRAL_ONLY', 'LONG_TERM_POOL') and grade in 'AB':
+            grade, fit = 'C', min(fit, 59)
+            reason = f'{reason}；只能引薦／長期觀察'
+            det['why'].append('只能引薦／長期觀察')
         if dry:
-            log(f"（--dry 不寫入）會新增：{name}　{company}　{c.get('recruitability_class')}")
+            log(f"（--dry 不寫入）會新增：{name}　{company}　{grade} {fit}　{reason[:120]}")
             saved += 1
             continue
         cid = str(uuid.uuid4())
@@ -288,14 +371,12 @@ def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
         # 規範第六步明訂 Fit Score / Recruitability Class / Contactability 三者分開，
         # 現在 grade 只放等第、招募分類寫進 recruitability_class 欄。
         # 等第門檻同 full-prompt-v3.4.md：A 80-100、B 60-79、C 40-59、D 39 以下。
-        fit = int(c.get('fit_score') or 0)
-        # 2026-10-06：只能引薦／長期觀察、或完全沒有本人聯絡管道的，程式再擋一次最高 C（林沛宏被排成 B）
-        # 沒有個人聯絡方式不扣分——Jacky：可以打公司總機請轉（10/6）。只擋「只能引薦／長期觀察」。
-        if c.get('recruitability_class') in ('REFERRAL_ONLY', 'LONG_TERM_POOL'):
-            fit = min(fit, 59)
-        # 2026-10-06：還沒人看過完整履歷，最高 B（A 只給已核對的）
-        fit = min(fit, 79)
-        grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
+        # 等第在上面 Q.enforce_grade 決定：只能引薦／長期觀察最高 C（10/6 林沛宏）、
+        # 沒人核對過完整履歷最高 B（10/6），沒有個人聯絡方式不扣分（10/6 Jacky：可打總機請轉）。
+        c['grade_jd_fp'] = fp
+        c['grade_rule'] = 'must-check-v1'
+        c['grade_detail'] = det
+        note = Q.grade_note(c, grade, det, tag=note or '')
         src_url = (c.get('source_url') or '').strip() or None
         if src_url and '#' not in src_url:
             src_url = f'{src_url}#{name}'
@@ -303,11 +384,12 @@ def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
           D.d1(
             f"INSERT INTO sourced_candidates "
             f"(id, created_at, source, source_url, name, headline, company, location, "
-            f"email, linkedin_url, bio, raw_json, job_slug, score, grade, "
+            f"email, linkedin_url, github_url, other_links, bio, raw_json, job_slug, score, grade, "
             f"recruitability_class, status, note) "
             f"VALUES ({D.q(cid)}, datetime('now','+8 hours'), {D.q(source)}, "
             f"{D.q(src_url)}, {D.q(name)}, {D.q(c.get('headline'))}, {D.q(company)}, "
             f"{D.q(c.get('location'))}, {D.q(c.get('email'))}, {D.q(c.get('linkedin_url'))}, "
+            f"{D.q(c.get('github_url'))}, {D.q(c.get('other_links'))}, "
             f"{D.q(c.get('evidence'))}, {D.q(json.dumps(c, ensure_ascii=False))}, {D.q(job_slug)}, "
             f"{fit}, {D.q(grade)}, {D.q(c.get('recruitability_class'))}, 'new', {D.q(note)})"
         )
@@ -315,7 +397,11 @@ def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員'):
             log(f'⚠️  {name}（{company}）寫入失敗，跳過不影響其他人：{str(e)[:160]}')
             continue
         saved += 1
-        log(f'✅ {name}（{company}）→ {c.get("recruitability_class")}')
+        log(f'✅ {name}（{company}）→ {grade} {fit}｜{c.get("recruitability_class")}｜{reason[:100]}')
+    if no_profile:
+        log(f'沒有個人頁、不進人才池的線索 {len(no_profile)} 位' + ('（--dry 不記錄）' if dry else f'，記在 {NO_PROFILE_LOG}'))
+        if not dry:
+            record_no_profile(job_slug, no_profile, source)
     return saved
 
 
@@ -352,10 +438,10 @@ def build_contact_prompt(job, targets):
     return f'''你是 Step1ne 獵頭公司的 AI Talent Intelligence & Sourcing Agent。
 這次**不要搜尋新人選**，只做既有候選人的公開聯絡資料查找。
 
-先完整讀取這幾份規範，這是你這次任務唯一的作業依據：
-1. {SKILL_DIR}/SKILL.md
-2. {SKILL_DIR}/references/email-ready-layer-v1.md（本次主規範：Email-first contact waterfall 與 routing）
-3. {SKILL_DIR}/references/full-prompt-v3.4.md
+以下是這次任務唯一的作業依據（email-ready-layer-v1 是本次主規範：Email-first contact waterfall 與 routing）。
+你這次只有 WebSearch／WebFetch 兩個工具：
+
+{skill_docs('SKILL.md', 'references/email-ready-layer-v1.md', 'references/full-prompt-v3.4.md')}
 
 職缺脈絡（只用來判斷這個人值不值得繼續深查，不要重新評 Fit）：
 {job.get('title')}／{job.get('locations')}／月薪 {job.get('salary_min')}-{job.get('salary_max')}
@@ -583,13 +669,14 @@ def build_poach_prompt(job, companies, titles, pub, salary_text, ledger_text='',
     gate_block = f'\n【職缺專屬閘門｜顧問拍板，必須照做】\n{gate_text}\n' if gate_text else ''
     return f'''你是 Step1ne 獵頭公司的 AI Talent Intelligence & Sourcing Agent，這次是「指定公司挖角」任務。
 
-先讀這兩份規範的硬規則與評分方式（只讀規則，不要照裡面的五人校準流程走）：
-1. {SKILL_DIR}/SKILL.md
-2. {SKILL_DIR}/references/full-prompt-v3.4.md
+下面兩份規範只看硬規則（不要照裡面的五人校準流程走；評等照下面的【評等規則】，不用它的加權配分）。
+你這次只有 WebSearch／WebFetch 兩個工具：
+
+{skill_docs('SKILL.md', 'references/full-prompt-v3.4.md')}
 
 職缺（內部資料，只給你判斷用）：
 {jd_text}
-{gate_block}{ledger_block}
+{grading_block(job)}{gate_block}{ledger_block}
 【這次的搜尋範圍｜只能找這些公司的人】
 顧問指定的挖角公司（含它們列出的子公司、品牌、海外廠）：
 {comp_list}
@@ -604,7 +691,10 @@ def build_poach_prompt(job, companies, titles, pub, salary_text, ledger_text='',
 - 優先用公開的 LinkedIn 個人頁（用搜尋引擎 site:linkedin.com/in 加公司名、職稱的中英文寫法），
   也可用公司官網經營團隊頁、年報、新聞稿、產業媒體報導、演講名單。
   找得到 LinkedIn 個人頁就一定要填 linkedin_url；真的找不到才只填 source_url。
-- 目標 10～20 位新的人。平均分散在不同公司，不要全擠在同一家。
+- 最多 20 位新的人，平均分散在不同公司，不要全擠在同一家。
+- 「在指定公司、職級對」只代表值得看，不代表符合：每個人一樣要逐條對照必要條件，對不上的最高 C。
+
+{PROFILE_RULE}
 - 公司名的中英文都要搜（例如 聚陽／Makalot、寶成／Pou Chen、裕元／Yue Yuen）。
 
 硬性規則（不可違反，違反就等於這次任務失敗）：
@@ -641,13 +731,16 @@ def build_poach_prompt(job, companies, titles, pub, salary_text, ledger_text='',
     {{
       "name": "姓名", "headline": "職稱或一行描述", "company": "目前或最近公司（要是清單裡的公司或其子公司）",
       "location": "地點", "email": "查到的公開Email，查不到填null", "phone": "查到的公開電話，查不到填null",
-      "linkedin_url": "查得到就一定要填，查不到填null", "source_url": "找到這個人的來源網址",
+      "linkedin_url": "查得到就一定要填，查不到填null", "profile_url": "LinkedIn 以外的個人頁，沒有填null",
+      "source_url": "找到這個人的來源網址",
       "fit_score": 0到100的整數, "recruitability_class": "DIRECT_TARGET 或 CONTACT_AFTER_CONFIRMATION 或 ADJACENT_TARGET 或 REFERRAL_ONLY 或 LONG_TERM_POOL",
       "evidence": "為什麼判斷這個人符合，附身分錨點（公司/職稱/負責事項/地點等至少兩項）",
+      {Q.GRADE_JSON_SPEC},
       "connect_note": "連結邀請附註，180字以內",
       "followup_msg": "接受後的第一則私訊，含 {job_url}"
     }}
   ],
+  "leads_no_profile": [{{"name": "姓名", "company": "公司", "headline": "職稱", "source_url": "看到他的網址", "why": "一句"}}],
   "run_summary": "這次搜尋了哪些公司、每家找到幾位、哪些公司找不到人、為什麼"
 }}'''
 
@@ -709,7 +802,7 @@ followup_msg 150～300 字、介紹職位、邀請這週或下週通 10～15 分
 {people}
 
 只輸出 JSON：{{"messages": [{{"name": "姓名", "connect_note": "...", "followup_msg": "..."}}]}}'''
-        ok, out = run_claude(prompt)
+        ok, out = run_claude(prompt, web=False)
         fixed = {}
         if ok:
             txt = out.strip()
@@ -768,6 +861,8 @@ def run_poach(a, job):
     candidates = parsed.get('candidates') or []
     if not candidates:
         log('這次沒有找到候選人')
+        if parsed.get('leads_no_profile') and not a.dry:
+            record_no_profile(a.job, parsed['leads_no_profile'], 'AI挖角')
         return
     candidates = guard_outreach(candidates, terms, job, pub, salary_text)
     for c in candidates:
@@ -779,7 +874,7 @@ def run_poach(a, job):
     log(f'完整結果存到：{json_path}')
     for i, c in enumerate(candidates, 1):
         log(f"{i}. {c.get('name')}｜{c.get('headline')}｜{c.get('company')}｜LinkedIn：{c.get('linkedin_url')}")
-    saved = save_candidates(a.job, candidates, a.dry, source='AI挖角')
+    saved = save_candidates(a.job, candidates, a.dry, source='AI挖角', leads=parsed.get('leads_no_profile'))
     log(f'完成，共 {len(candidates)} 位候選人，新增 {saved} 位進池子' + ('（--dry 沒有真的寫入）' if a.dry else ''))
     if saved:
         push_tg_review_cards(a.dry)
@@ -878,6 +973,8 @@ def main():
     candidates = parsed.get('candidates') or []
     if not candidates:
         log('這次沒有找到候選人（可能校準沒過，或正式搜尋沒有結果）')
+        if parsed.get('leads_no_profile') and not a.dry:
+            record_no_profile(a.job, parsed['leads_no_profile'], 'AI獵頭顧問專員')
         return
 
     log('── 候選人明細（給顧問核對用）──')
@@ -887,7 +984,7 @@ def main():
         log(f"   佐證：{c.get('evidence')}")
         log(f"   Email：{c.get('email')}　電話：{c.get('phone')}　LinkedIn：{c.get('linkedin_url')}")
 
-    saved = save_candidates(a.job, candidates, a.dry)
+    saved = save_candidates(a.job, candidates, a.dry, leads=parsed.get('leads_no_profile'))
     log(f'完成，共 {len(candidates)} 位候選人，新增 {saved} 位進池子' + ('（--dry 沒有真的寫入）' if a.dry else ''))
     if saved:
         push_tg_review_cards(a.dry)

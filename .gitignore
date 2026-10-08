@@ -13,3 +13,7 @@ __pycache__/
 # 排程每天會寫這些 log，被追蹤的話 WSL2 的自動更新（git pull）會被「本機有修改」擋下。
 logs/
 jobintake/work/**/*.log
+
+# 2026-10-08：沒有個人頁的人選線索（個資，留本機不進版控）
+sourcing_runs/no_profile_leads.jsonl
+sourcing_runs/regrade_*.json
