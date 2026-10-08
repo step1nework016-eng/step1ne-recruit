@@ -1,0 +1,309 @@
+diff --git a/candidate_questions_digest.py b/candidate_questions_digest.py
+index eb961aa..c02e852 100644
+--- a/candidate_questions_digest.py
++++ b/candidate_questions_digest.py
+@@ -46,6 +46,7 @@ def fetch(days):
+     for r in rows:
+         by_app.setdefault(r['application_id'], []).append(r)
+     for msgs in by_app.values():
++        msgs = [x for x in msgs if not __import__('interview_markers').is_transition(x.get('content'))]   # E17：等待過渡語不算阿財的回答
+         for i, m in enumerate(msgs):
+             c = (m.get('content') or '').strip()
+             if m['role'] != 'candidate' or c.startswith('（') or not Q_PAT.search(c):
+diff --git a/export_pdf.py b/export_pdf.py
+index ce0a3ab..da8280f 100644
+--- a/export_pdf.py
++++ b/export_pdf.py
+@@ -129,7 +129,8 @@ def main():
+                 f"WHERE application_id = {D.q(app['id'])} ORDER BY created_at DESC LIMIT 1")
+     msgs = D.d1(f"SELECT role, content, created_at FROM messages "
+                 f"WHERE application_id = {D.q(app['id'])} ORDER BY id ASC")
+-    msgs = [m for m in msgs if m['content'] != '（候選人已進入面談室）']
++    msgs = [m for m in msgs if m['content'] != '（候選人已進入面談室）'
++            and not __import__('interview_markers').is_transition(m['content'])]
+ 
+     out = a.out or os.path.expanduser(
+         f"~/Desktop/AI初篩報告_{app['name']}_{(app['interview_ended_at'] or '')[:10] or 'undated'}.pdf")
+diff --git a/interview_daemon.py b/interview_daemon.py
+index aab141a..74a665d 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -17,6 +17,8 @@ import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urlli
+ import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
+ import autoupdate                    # 自動更新（見 autoupdate.py 檔頭）
+ import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
++import interview_markers as MK   # E17：等待過渡語的標記，認得出來才排除得掉
++_NOT_T = MK.sql_not_transition('m.content')   # SQL 片段：這則不是過渡語（給別名 m 的查詢用）
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ # Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
+@@ -950,7 +952,7 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
+         if u != (r.get('resume_url') or ''):
+             meta['portfolio_urls'].append(u)
+ 
+-    n = d1(f"SELECT COUNT(*) AS n FROM messages WHERE application_id = {q(app_id)}")
++    n = d1(f"SELECT COUNT(*) AS n FROM messages m WHERE m.application_id = {q(app_id)} AND {_NOT_T}")
+     meta['system_record'] = {
+         '面談時間': f"{r.get('interview_started_at') or '—'} – {r.get('interview_ended_at') or '（尚未關閉）'}",
+         '訊息數': f"{(n[0]['n'] if n else '—')} 則",
+@@ -1102,13 +1104,15 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
+ 
+ def active_sessions():
+     """所有進行中的面談，附上最後一則的角色與時間。"""
+-    return d1("""
++    # E17：等待過渡語（程式自動送的「收到，我整理一下…」）不算一則訊息——
++    # 不排除的話，送了之後「最後一則」變成 assistant，阿財會以為人選已被回、永遠不再回他。
++    return d1(f"""
+         SELECT a.id, a.name, a.job_slug, a.interview_started_at,
+-               (SELECT m.role FROM messages m WHERE m.application_id = a.id
++               (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) AS last_role,
+-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
++               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) AS last_at,
+-               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
++               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id AND {_NOT_T}) AS n,
+                a.start_notified_at, a.job_title
+           FROM applications a
+          WHERE a.interview_state = 'active'
+@@ -1189,17 +1193,17 @@ def post_wrap_questions():
+     """面談已收尾，但候選人事後又問了東西、還沒有人回。"""
+     return d1(f"""
+         SELECT a.id, a.name, a.job_slug, a.interview_started_at,
+-               (SELECT m.role FROM messages m WHERE m.application_id = a.id
++               (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) AS last_role,
+-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
++               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) AS last_at,
+-               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
++               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id AND {_NOT_T}) AS n,
+                a.start_notified_at, a.job_title
+           FROM applications a
+          WHERE a.interview_state IN ('done', 'paused')
+-           AND (SELECT m.role FROM messages m WHERE m.application_id = a.id
++           AND (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) = 'candidate'
+-           AND (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
++           AND (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1)
+                >= datetime('now', '+8 hours', '-{POST_WRAP_REPLY_DAYS} days')
+     """) or []
+@@ -1524,7 +1528,8 @@ def context_for(app_id):
+     except Exception as e:
+         log(f'重讀職缺面談語言失敗（沿用快取）：{str(e)[:80]}')
+     ctx['conversation'] = d1(f"SELECT role, content, created_at FROM messages "
+-                             f"WHERE application_id = {q(app_id)} ORDER BY id ASC LIMIT 200")
++                             f"WHERE application_id = {q(app_id)} AND {MK.sql_not_transition('content')} "
++                             f"ORDER BY id ASC LIMIT 200")
+     return ctx
+ 
+ 
+@@ -2306,7 +2311,7 @@ def answer_timing(app_id):
+     ⚠️ 只呈現事實，不下判斷。有人切出去是查自己的舊資料，那是認真不是作弊。
+     """
+     msgs = d1(f"SELECT role, content, created_at FROM messages "
+-              f"WHERE application_id={q(app_id)} ORDER BY id ASC")
++              f"WHERE application_id={q(app_id)} AND {MK.sql_not_transition('content')} ORDER BY id ASC")
+     snaps = d1(f"SELECT seq, at, away_count, away_seconds, paste_count, paste_chars "
+                f"FROM turn_signals WHERE application_id={q(app_id)} ORDER BY seq ASC")
+     if not msgs:
+@@ -3383,7 +3388,8 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
+         d1(f"UPDATE applications SET interview_state='paused', "
+            f"status='interviewed' WHERE id={q(app_id)}")
+ 
+-    conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} ORDER BY id ASC")
++    conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} "
++              f"AND {MK.sql_not_transition('content')} ORDER BY id ASC")
+     transcript = '\n'.join(
+         f'{"阿財" if m["role"] == "assistant" else "候選人"}：{m["content"]}'
+         for m in conv if m['content'] != '（候選人已進入面談室）')
+@@ -3803,10 +3809,57 @@ def _resumed_after_idle_wrap(app_id):
+     return any(m.get('role') == 'candidate' and m['id'] > last_idle for m in rows)
+ 
+ 
++# ── 等待過渡語（E17-1，2026-10-08）────────────────────────────
++# 人選講完話超過 TRANSITION_AFTER_SEC 秒阿財還沒回，由**程式**（不是 LLM）送一句固定的話，
++# 讓他知道有人在處理，不用乾等、也不用傳「你還好？」（那會讓阿財多算一輪甚至重問，見 10/6 楊政翰）。
++#
++# 守衛全部放在同一句 SQL（interview_markers.sql_send_transition）：最後一則是人選講的、不是進房標記、
++# 這一輪還沒送過。所以主力機＋備援機同時撞到同一場、或正式回覆剛好同時寫入，都只會多一次「沒寫入」，
++# 不會變成兩句、也不會出現在正式回覆「之後」。close() 只是少打一次 D1，不是正確性的來源。
++# 這句存進 messages（人選的畫面靠它、也是法律證據），但所有「誰在等」「給 LLM 的歷史」「報告」都已排除它。
++TRANSITION_AFTER_SEC = 40       # 要調的話只改這個常數；<=0 代表關閉
++TRANSITION_MIN_DELAY_SEC = 0.5  # 人選其實已經等超過 40 秒了（搶鎖、輪詢耗時）也至少等這麼久再送，避免跟正式回覆擠在同一瞬間
++
++
++class _Transition:
++    def __init__(self, app_id, name, waited=0):
++        self.app_id, self.name = app_id, name
++        self._closed = False
++        self._timer = None
++        # 人選已經等的時間要扣掉（輪詢、搶鎖也要時間），不是從 handle() 開始才重新算 40 秒
++        self._delay = max(TRANSITION_MIN_DELAY_SEC, TRANSITION_AFTER_SEC - (waited or 0))
++
++    def start(self):
++        if TRANSITION_AFTER_SEC <= 0:
++            return
++        self._timer = threading.Timer(self._delay, self._fire)
++        self._timer.daemon = True
++        self._timer.start()
++
++    def _fire(self):
++        if self._closed:
++            return
++        try:
++            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
++            d1(MK.sql_send_transition(q(self.app_id), q(now)))
++            log(f'⏳ {self.name}：等超過 {TRANSITION_AFTER_SEC} 秒，已嘗試送等待過渡語'
++                f'（最後一則不是人選講的、或這輪送過，SQL 守衛會自己擋掉）')
++        except Exception as e:
++            log(f'⚠️ {self.name}：送等待過渡語失敗（不影響正式回覆）：{str(e)[:120]}')
++
++    def close(self):
++        self._closed = True
++        t = self._timer
++        if t is not None:
++            t.cancel()
++
++
+ def handle(app):
+     app_id, name = app['id'], app['name']
+     rate_limited = False
+     _mark_host(app_id, name)
++    _trans = _Transition(app_id, name, _waited_sec(app))
++    _trans.start()
+     try:
+         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
+         ctx = context_for(app_id)
+@@ -3853,6 +3906,7 @@ def handle(app):
+             return
+         _stale_discards.pop(app_id, None)
+ 
++        _trans.close()      # 正式回覆已經算好、要寫入了，不要再送過渡語
+         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+         if not msgs:
+             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
+@@ -3910,7 +3964,7 @@ def handle(app):
+             # 這時再塞「系統出了點狀況」只會讓他收到矛盾的訊息。已回過就只記 log，不插訊息、不發 TG。
+             try:
+                 _last = d1(f"SELECT role FROM messages WHERE application_id={q(app_id)} "
+-                           f"ORDER BY id DESC LIMIT 1")
++                           f"AND {MK.sql_not_transition('content')} ORDER BY id DESC LIMIT 1")
+                 if _last and _last[0].get('role') == 'assistant':
+                     # 總指揮 2026-10-02 調整：不插道歉訊息，但 TG 還是講一聲（改成「不用接手」的告知），
+                     # 不然這輪如果是在回完之後的步驟（收尾、產報告）失敗，會完全沒人知道。
+@@ -3931,6 +3985,7 @@ def handle(app):
+             tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
+                THREAD_DECIDE)
+     finally:
++        _trans.close()
+         # 額度打滿：不釋放鎖，改成延長鎖到 RATE_LIMIT_RETRY_SEC 之後才能再搶——
+         # 節流用，不要每 8 秒就打一次注定失敗的 claude。一般錯誤照舊立刻放鎖。
+         if rate_limited:
+@@ -4169,9 +4224,9 @@ def do_prewarm(app):
+ 
+ def paused_sessions():
+     """已經產過報告、但房間還留著的場次。"""
+-    return d1("""
++    return d1(f"""
+         SELECT a.id, a.name, a.job_slug, a.hold_until,
+-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
++               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
+                  ORDER BY m.id DESC LIMIT 1) AS last_at
+           FROM applications a
+          WHERE a.interview_state = 'paused'
+diff --git a/interview_markers.py b/interview_markers.py
+new file mode 100644
+index 0000000..fae458c
+--- /dev/null
++++ b/interview_markers.py
+@@ -0,0 +1,60 @@
++"""阿財對話紀錄裡的「系統過渡語」標記（E17 第 1 件，2026-10-08）。
++
++為什麼有這支小模組：
++人選講完話、阿財超過 N 秒還沒回，由**程式**（不是 LLM）送一句固定的話，
++讓人選知道有人在處理，不用乾等（也不用傳「你還好？」，那會讓阿財多算一輪、甚至重問）。
++
++這句話必須存進 messages（人選的畫面靠 messages 顯示，而且這張表是法律證據），
++但 messages 沒有「類型」欄位、也不能改正式資料庫的結構，所以用「內容完全相同」來認它。
++認得出來之後，所有「判斷誰在等誰」「餵給 LLM 的對話歷史」「報告」都要把它排除：
++
++  ・pending()／stale()／post_wrap／close_paused 用的「最後一則」——不排除的話，
++    送了過渡語之後最後一則變成 assistant，阿財會以為人選已經被回了，**永遠不再回他**。
++  ・給 LLM 的對話歷史、報告逐字稿、報告的訊息數——不排除的話阿財會以為自己講過話。
++  ・出錯時寫道歉訊息前的「最後一則是不是 assistant」檢查。
++
++只改文字要同步改這裡的 TRANSITION_TEXTS；舊文字要留著（歷史紀錄裡已經存在的那句還是要認得）。
++"""
++
++ENTRY_MARKER = '（候選人已進入面談室）'
++
++TRANSITION_TEXTS = (
++    '收到，我整理一下您剛剛說的，稍等我一下。',
++)
++
++
++def is_transition(text):
++    return (text or '').strip() in TRANSITION_TEXTS
++
++
++def _sql_str(s):
++    return "'" + str(s).replace("'", "''") + "'"
++
++
++def sql_not_transition(col='content'):
++    """SQL 片段：這一欄不是過渡語。例：f"... WHERE application_id=... AND {sql_not_transition('m.content')}"。"""
++    return f"{col} NOT IN (" + ", ".join(_sql_str(t) for t in TRANSITION_TEXTS) + ")"
++
++
++def sql_send_transition(app_id_sql, now_sql, text=None):
++    """一句 INSERT ... SELECT ... WHERE：把「該不該送」的判斷和寫入放在**同一個原子操作**裡，
++    兩個程序（主力機＋備援機）同時撞到同一場，也只會有一個寫得進去。
++
++    只有同時成立才會寫入：
++      1. 這場最後一則訊息是人選講的（不是已經被回了、也不是別的過渡語）
++      2. 最後一則不是「進入面談室」的標記（那時他還沒講過話，「您剛剛說的」不通）
++      3. 上一則真正的 assistant 訊息之後，還沒有送過這句（每一輪最多一次）
++    app_id_sql / now_sql 是呼叫端已經加過引號的 SQL 字串（daemon 的 q()）。
++    """
++    txt = _sql_str(text or TRANSITION_TEXTS[0])
++    entry = _sql_str(ENTRY_MARKER)
++    real_asst = sql_not_transition('content')
++    return (
++        "INSERT INTO messages (application_id, role, content, created_at) "
++        f"SELECT {app_id_sql}, 'assistant', {txt}, {now_sql} "
++        f"WHERE (SELECT role FROM messages WHERE application_id = {app_id_sql} ORDER BY id DESC LIMIT 1) = 'candidate' "
++        f"AND (SELECT content FROM messages WHERE application_id = {app_id_sql} ORDER BY id DESC LIMIT 1) != {entry} "
++        f"AND NOT EXISTS (SELECT 1 FROM messages WHERE application_id = {app_id_sql} AND content = {txt} "
++        f"AND id > COALESCE((SELECT MAX(id) FROM messages WHERE application_id = {app_id_sql} "
++        f"AND role = 'assistant' AND {real_asst}), 0))"
++    )
+diff --git a/job_switch.py b/job_switch.py
+index 8e68fb4..53c2724 100644
+--- a/job_switch.py
++++ b/job_switch.py
+@@ -540,7 +540,8 @@ def run_check(payload, run_claude=None, dry_run=False, transcript_override=None)
+     else:
+         conv = rows(f"SELECT role, content FROM messages WHERE application_id={q(sw['application_id'])} ORDER BY id ASC")
+         transcript = '\n'.join(f'{"阿財" if m["role"] == "assistant" else "求職者"}：{m["content"]}'
+-                               for m in conv if m.get('content') != '（候選人已進入面談室）')
++                               for m in conv if m.get('content') != '（候選人已進入面談室）'
++                               and not __import__('interview_markers').is_transition(m.get('content')))
+     result = decide_discussed(transcript, sw['orig_job_title'], sw['target_job_title'], run_claude)
+     if dry_run:
+         return result
+diff --git a/verification_engine.py b/verification_engine.py
+index 3631af1..b9bea34 100644
+--- a/verification_engine.py
++++ b/verification_engine.py
+@@ -345,7 +345,8 @@ def verify_interview_accuracy(application_id, verifier_run_id='cli-manual'):
+     job_slug = app.get('job_slug')
+ 
+     messages = d1(f"SELECT role, content, created_at FROM messages "
+-                  f"WHERE application_id={q(application_id)} AND role='assistant' ORDER BY id")
++                  f"WHERE application_id={q(application_id)} AND role='assistant' "
++                  f"AND {__import__('interview_markers').sql_not_transition('content')} ORDER BY id")
+     if not messages:
+         vid = log_verification('interview_accuracy', application_id, verifier_run_id,
+                                'INSUFFICIENT_EVIDENCE',

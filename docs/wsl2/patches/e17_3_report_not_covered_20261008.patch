@@ -1,0 +1,183 @@
+diff --git a/deliver.py b/deliver.py
+index caf3e99..57405ae 100644
+--- a/deliver.py
++++ b/deliver.py
+@@ -1174,6 +1174,13 @@ def build_consultant_html(data, meta):
+                         f'（原本標為「建議客戶面試追問」——規格要求送出前自己先補齊，'
+                         f'不要列給客戶）</span></li>' for x in sug)
+ 
++    # E17-3：這次沒問到的地方——**只進顧問版**（規格同 consultant_followups：整段不進客戶版）
++    notcovered = ''.join(
++        f'<li><b>{e(r.get("kind"))}</b>　{e(r.get("item"))}'
++        + (f'<br><span style="color:var(--ink3);font-size:12.5px">{e(r.get("note"))}</span>'
++           if r.get('note') else '') + '</li>'
++        for r in (data.get('not_covered') or []) if isinstance(r, dict) and r.get('item'))
++
+     resume = meta.get('resume') or {}
+     files = []
+     if resume.get('kind') == 'file':
+@@ -1234,6 +1241,7 @@ def build_consultant_html(data, meta):
+         'SPEC': spec_html,
+         'SPEC_NOTE': '',
+         'FOLLOWUPS': fups,
++        'NOTCOVERED': notcovered,
+         'SYSREC': sysrec,
+     }, {
+         'values': bool(data.get('values')),
+@@ -1248,6 +1256,7 @@ def build_consultant_html(data, meta):
+         'forclient': bool(reasons or risks_html),
+         'spectrum': bool(spec_rows),
+         'followups': bool(fups),
++        'notcovered': bool(notcovered),
+     })
+ 
+ 
+diff --git a/interview_daemon.py b/interview_daemon.py
+index d51cb22..5b29315 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -2566,6 +2566,7 @@ REPORT_JSON_SPEC = r'''
+     "trait_one_liner": "把特質與風格四軸的整體結論濃縮成一句話，講清楚這個人適合怎樣的工作方式、跟這個職缺搭不搭"
+   },
+   "consultant_followups": ["顧問還要自己追問的事，有幾件寫幾件"],
++  "not_covered": [{"kind": "沒問到｜含糊沒追到｜無法判斷", "item": "項目重點", "note": "一句話；含糊的要附他的原話"}],
+   "career_directions": [
+     {"direction": "適合的職務方向（職務類型，不是公司名）",
+      "why": "為什麼適合，一兩句，要講到他做過的事或講過的話",
+@@ -2680,6 +2681,8 @@ REPORT_JSON_RULES = (
+     '    evidence 寫具體根據（幾年、做過什麼、哪張證照、他的原話），conclusion 一句話給結論＋建議。\n'
+     '18. `career_directions`（2026-10-01 加）：照報告「適合的職務方向」那一段搬，2～4 筆。\n'
+     '    報告沒有那一段就給空陣列，不要自己編。不准出現年齡、性別、婚育、國籍相關的理由。\n'
++    '19. `not_covered`（E17-3）：照報告「這次沒問到的地方」那一段搬，一條一筆；kind 只能是 沒問到／含糊沒追到／無法判斷。\n'
++    '    那一段寫「無」或根本沒有，就給空陣列，不要自己編。這欄只給顧問版。\n'
+ )
+ 
+ _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
+@@ -3263,6 +3266,11 @@ def _normalize_report_json(obj, name='', job=None):
+     out['route'] = {'code': route[0], 'label': route[1], 'reason': route[2]}
+ 
+     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
++    # E17-3：這次沒問到的地方（只進顧問版；客戶版是白名單組版，不會讀這一欄）
++    out['not_covered'] = [
++        {'kind': s(x.get('kind')) if s(x.get('kind')) in ('沒問到', '含糊沒追到', '無法判斷') else '沒問到',
++         'item': s(x.get('item')), 'note': s(x.get('note'))}
++        for x in arr(obj.get('not_covered')) if isinstance(x, dict) and s(x.get('item'))][:12]
+     # 2026-10-01：適合的職務方向（白名單函式，沒接這裡就會被整個丟掉）
+     out['career_directions'] = [
+         {'direction': s(x.get('direction')), 'why': s(x.get('why')), 'evidence': s(x.get('evidence')),
+@@ -3392,29 +3400,39 @@ CAREER_DIRECTIONS_UNSPECIFIED = (
+     '「## 適合的職務方向」是這份報告最重要的一段，請寫完整。')
+ 
+ 
+-def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
+-    """面談結束：產報告、寫回 D1、通知顧問。
+-
+-    abandoned=True 代表候選人中途離開，沒有正式收尾。
+-    報告照樣要產——談到一半的內容也是資訊，而且顧問要知道他是在哪一題走的。
+-
+-    close=False 代表**只產報告、不關房間**（狀態存成 paused）。
+-    ⚠️ 2026-08-10 加：原本候選人離開 15 分鐘就直接關房，顧問還在忙、
+-    根本來不及看到通知，等他要處理時房間已經關了，候選人回來只看到
+-    「面談已結束」。報告要早點給顧問（那是他判斷的依據），
+-    但房間要留著給候選人回來——這是兩件事，不該綁在一起。
+-    """
+-    clear_static_cache(app_id)  # 面談結束，這場的快取沒用了，清掉避免常駐程序記憶體一直長
+-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+-    if close:
+-        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}', "
+-           f"status='interviewed' WHERE id={q(app_id)}")
++def _not_covered_block(ctx):
++    """E17-3：顧問版報告多一段「這次沒問到的地方」的指示＋素材（題目計畫或職缺必要條件）。"""
++    plan = ctx.get('plan') or {}
++    qs = [x for x in (plan.get('questions') or []) if isinstance(x, dict) and x.get('q')]
++    if qs:
++        src = ('\n\n【這場事先擬好的題目計畫（給「該問沒問」比對用，不是逐字稿）】\n'
++               + '\n'.join(f"{i}. {x['q']}（想確認：{x.get('why') or '—'}）" for i, x in enumerate(qs, 1)))
+     else:
+-        # paused：房間還開著，候選人用原連結回來就能接續（Worker 的 /chat/send
+-        # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
+-        d1(f"UPDATE applications SET interview_state='paused', "
+-           f"status='interviewed' WHERE id={q(app_id)}")
+-
++        src = ('\n\n（這場沒有事先擬好的題目計畫——改拿【職缺硬條件】的必要條件逐條對照：'
++               '履歷與逐字稿都找不到證據的條件，列為「沒問到」。）')
++    return src + NOT_COVERED_MD_RULE
++
++
++NOT_COVERED_MD_RULE = (
++    '\n\n📋 另外加一段「## 這次沒問到的地方」（**只給顧問看，客戶版不會出現**）。'
++    '位置：放在「## 適合的職務方向」之後、「建議」欄之前。'
++    '⚠️ 多這一段**不可以**讓你省略任何原本就要有的段落——尤其是「職缺匹配總結」「其他推薦職缺」「適合的職務方向」，'
++    '它們照原本的規定一樣都要寫完整。\n'
++    '把上面的題目計畫（或職缺必要條件）每一項對照逐字稿，**一條一行**列出兩種情形——\n'
++    '  ① `[沒問到]` 這場根本沒談到的項目。\n'
++    '  ② `[含糊沒追到]` 問了，但人選答得含糊（沒有數字、日期、做法、規模、結果），而且阿財沒有追問到位的項目；'
++    '請引用他那句原話。\n'
++    '格式：`[沒問到] 項目重點——一句話` ／ `[含糊沒追到] 項目重點——他說「原話」，缺什麼`。\n'
++    '規則：已經問清楚的不要列；有幾條寫幾條，沒有任何缺口就整段寫「無」；'
++    '真的判斷不出來才寫 `[無法判斷] 原因`，不要硬湊；不要在這一段評價人選，只寫事實，'
++    '讓顧問電洽時知道要補問什麼。\n'
++    '判斷標準是「還有多少與錄用有關的資訊沒拿到」，不是答案長不長——很長但沒有具體事實的答案算含糊，'
++    '很短但事實都齊的算清楚。')
++
++
++def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered=True):
++    """組顧問版初篩報告的 prompt（E17-3 從 finish() 原封不動抽出來，才能對同一場做改前／改後比較）。
++    with_not_covered=False 就是改動前的 prompt。"""
+     conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} "
+               f"AND {MK.sql_not_transition('content')} ORDER BY id ASC")
+     transcript = '\n'.join(
+@@ -3466,7 +3484,35 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
+            '推測是關掉視窗離開。請在報告開頭註明「面談未完成（候選人中途離開）」，'
+            '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
+            if abandoned else '')
++        + (_not_covered_block(ctx) if with_not_covered else '')
+         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
++    return prompt
++
++
++def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
++    """面談結束：產報告、寫回 D1、通知顧問。
++
++    abandoned=True 代表候選人中途離開，沒有正式收尾。
++    報告照樣要產——談到一半的內容也是資訊，而且顧問要知道他是在哪一題走的。
++
++    close=False 代表**只產報告、不關房間**（狀態存成 paused）。
++    ⚠️ 2026-08-10 加：原本候選人離開 15 分鐘就直接關房，顧問還在忙、
++    根本來不及看到通知，等他要處理時房間已經關了，候選人回來只看到
++    「面談已結束」。報告要早點給顧問（那是他判斷的依據），
++    但房間要留著給候選人回來——這是兩件事，不該綁在一起。
++    """
++    clear_static_cache(app_id)  # 面談結束，這場的快取沒用了，清掉避免常駐程序記憶體一直長
++    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
++    if close:
++        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}', "
++           f"status='interviewed' WHERE id={q(app_id)}")
++    else:
++        # paused：房間還開著，候選人用原連結回來就能接續（Worker 的 /chat/send
++        # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
++        d1(f"UPDATE applications SET interview_state='paused', "
++           f"status='interviewed' WHERE id={q(app_id)}")
++
++    prompt = build_report_prompt(app_id, ctx, job_slug, abandoned)
+     _before_files = _snapshot_session_files()
+     _t_cli = time.time()
+     try:
+diff --git a/reporttpl/consultant.html b/reporttpl/consultant.html
+index 17e0d3d..580af11 100644
+--- a/reporttpl/consultant.html
++++ b/reporttpl/consultant.html
+@@ -263,6 +263,13 @@ details dt{color:var(--ink3)} details dd{margin:0;color:var(--ink2)}
+ </div>
+ <!--@ENDIF:followups@-->
+ 
++<!--@IF:notcovered@-->
++<div class="card">
++  <h2>⑨‑2 這次沒問到的地方（電洽補問用，不進客戶版）</h2>
++  <ol>{{NOTCOVERED}}</ol>
++</div>
++<!--@ENDIF:notcovered@-->
++
+ <div class="card">
+   <h2>⑩ 你的處置</h2>
+   <p class="note" style="margin:0">請至顧問後台操作：https://step1ne.com/consultant/reports/</p>

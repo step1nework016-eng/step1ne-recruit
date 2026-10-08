@@ -1,0 +1,225 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index 74a665d..d51cb22 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -163,6 +163,24 @@ _plan_busy = set()
+ _plan_cooldown = {}     # application_id -> 冷卻到的 time.time()
+ PLAN_COOLDOWN_SEC = 1800
+ MAX_PLAN_PARALLEL = 2
++# E17-2：失敗後不要固定等 30 分鐘。沈蓓芬 10/8：開場後計畫連失敗 3 次，進入 30 分鐘冷卻，
++# 之後她隔一小時回來，這整段都走「現場想」的慢路（約 40～60 秒一輪 vs 有計畫的 8～9 秒）。
++# 改成越失敗間隔越長：1→2→5→10 分鐘；累計 PLAN_MAX_ATTEMPTS 次才退回原本的 30 分鐘，並在 log 標一次。
++PLAN_RETRY_BACKOFF = (60, 120, 300, 600)
++PLAN_MAX_ATTEMPTS = 8
++_plan_fails = {}        # application_id -> 累計失敗次數（記憶體；重啟清掉）
++
++
++def _plan_mark_failed(app_id, name=''):
++    n = _plan_fails.get(app_id, 0) + 1
++    _plan_fails[app_id] = n
++    if n >= PLAN_MAX_ATTEMPTS:
++        delay = PLAN_COOLDOWN_SEC
++        if n == PLAN_MAX_ATTEMPTS:
++            log(f'⚠️ {name or app_id} 的題目計畫累計失敗 {n} 次，之後改每 {PLAN_COOLDOWN_SEC // 60} 分鐘才試一次')
++    else:
++        delay = PLAN_RETRY_BACKOFF[min(n - 1, len(PLAN_RETRY_BACKOFF) - 1)]
++    _plan_cooldown[app_id] = time.time() + delay
+ 
+ 
+ def _plan_cooling(app_id):
+@@ -2214,7 +2232,14 @@ def sanitize(t):
+ FIRST_TRY_TIMEOUT = 120
+ 
+ 
+-def run_claude(prompt):
++# E17-2（2026-10-08）：背景準備（擬計畫、預熱開場白）沒有人在等，不必跟面談回覆用同一把尺。
++# 量測（interview.log，成功的擬計畫呼叫 10 筆）：中位數 108 秒、p90 120 秒，第 1 次就成功 8/10；
++# 同一份 log 擬計畫失敗 39 次對成功 18 次——第一次只給 120 秒，幾乎站在懸崖邊上。
++BG_FIRST_TRY_SEC = 210
++BG_TOTAL_SEC = 330
++
++
++def run_claude(prompt, first_try=None, total=None):
+     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
+     # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
+     # 它會自己讀 stdin，macOS/Linux 行為不變）。
+@@ -2240,11 +2265,13 @@ def run_claude(prompt):
+     # 另外每次成功都記一行耗時與第幾次嘗試，之後再慢可以直接從 log 判斷。
+     last_err = None
+     t0 = time.time()
++    _first = first_try or FIRST_TRY_TIMEOUT
++    _total = total or CLAUDE_TIMEOUT
+     for attempt in range(3):
+-        remaining = CLAUDE_TIMEOUT - (time.time() - t0)
++        remaining = _total - (time.time() - t0)
+         if attempt > 0 and remaining < 30:
+             break
+-        budget = min(FIRST_TRY_TIMEOUT, remaining) if attempt == 0 else remaining
++        budget = min(_first, remaining) if attempt == 0 else remaining
+         t1 = time.time()
+         try:
+             r = subprocess.run(
+@@ -4053,13 +4080,27 @@ PLAN_PROMPT = (
+ )
+ 
+ 
++# E17-2：預約時間（status='scheduled'、remind_at 在未來）在 PLAN_SCHEDULED_LEAD_HOURS 小時內、
++# 而且已經交卷（或中高階免測驗）的人選，不等他點進面談室就先準備。
++# 條件刻意跟原本 'ready' 那一支一模一樣（交卷或免測驗才算），所以素材跟他進房時完全相同，
++# 「提早擬的計畫看不到測驗結果」這個風險不存在。還沒交卷的人選一律不做（見 E17 回報：沒把握不傷品質就不做）。
++PLAN_SCHEDULED_LEAD_HOURS = 24
++
++
++def _scheduled_window_sql(col='a.remind_at'):
++    now = datetime.datetime.now()
++    lo = now.strftime('%Y-%m-%d %H:%M:%S')
++    hi = (now + datetime.timedelta(hours=PLAN_SCHEDULED_LEAD_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
++    return f"({col} IS NOT NULL AND {col} > {q(lo)} AND {col} <= {q(hi)})"
++
++
+ def plan_candidates():
+     """還沒擬題目計畫的人。條件跟開場白預熱一樣——中高階免測驗、其他人要先交卷。
+ 
+     ⚠️ 也撈「已經在面談中但還沒有計畫」的：計畫功能上線前就已經進房間的人，
+        以及預熱那輪剛好失敗的人，都要補上，不然他們整場都走慢的那條路。
+     """
+-    return d1("""
++    return d1(f"""
+         SELECT a.id, a.name, a.job_slug FROM applications a
+          LEFT JOIN jobs j ON j.slug = a.job_slug
+          WHERE a.interview_plan_json IS NULL
+@@ -4068,6 +4109,11 @@ def plan_candidates():
+               AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+               AND (COALESCE(j.seniority, 'mid') = 'senior'
+                    OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
++             OR (a.status = 'scheduled'
++              AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
++              AND {_scheduled_window_sql()}
++              AND (COALESCE(j.seniority, 'mid') = 'senior'
++                   OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
+              OR a.interview_state = 'active'
+            )
+          ORDER BY (a.interview_state = 'active') DESC, a.created_at DESC LIMIT 5
+@@ -4087,22 +4133,24 @@ def do_plan(app):
+         # 只把最後的任務換掉——素材蒐集的邏輯只維護一份，不要另外抄一套。
+         material = build_prompt(ctx, '（面談規範這裡不需要，你只是在擬題目）')
+         _before = _snapshot_session_files()
+-        result = run_claude(material + '\n\n─────────────\n' + PLAN_PROMPT)
++        result = run_claude(material + '\n\n─────────────\n' + PLAN_PROMPT,
++                            first_try=BG_FIRST_TRY_SEC, total=BG_TOTAL_SEC)
+         log_token_usage(app_id, 'plan', material, _before)
+         qs = [x for x in (result.get('questions') or []) if isinstance(x, dict) and x.get('q')]
+         if not qs:
+             log(f'⚠️ {name}：題目計畫產出是空的，這場照舊走現場生成')
+-            _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
++            _plan_mark_failed(app_id, name)
+             return
+         plan = {'questions': qs[:12],
+                 'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
+         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+         d1(f"UPDATE applications SET interview_plan_json={q(json.dumps(plan, ensure_ascii=False))}, "
+            f"interview_plan_at={q(now)} WHERE id={q(app_id)} AND interview_plan_json IS NULL")
++        _plan_fails.pop(app_id, None)
+         log(f'{name}：題目計畫已擬好（{len(plan["questions"])} 題、預測 {len(plan["faq"])} 個提問）')
+     except Exception as e:
+         log(f'⚠️ {name}（{app_id}）擬題目計畫失敗（不影響面談）：{e}')
+-        _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
++        _plan_mark_failed(app_id, name)
+     finally:
+         # 不 release_lock、不動 _busy：擬計畫現在不佔那兩樣（見檔案上方 _plan_busy 的說明）
+         with _lock:
+@@ -4175,6 +4223,61 @@ def talk_skill(ctx):
+     return skill('talk', ctx.get('job'))
+ 
+ 
++# E17-2：準備好的東西會過期。職缺或顧問的面談前交代（pre_interview_note）在計畫／開場白擬好之後
++# 又被改了，就作廢重擬。真實案例：10/8 陳鵬仁、蔡依庭——交代 17:29 改過，計畫（15:21／16:24）
++# 沒有跟著作廢，開場白是 Mac 手動清掉的。提早準備會把「擬好」到「進房」的空檔拉長，這個檢查就更重要。
++#
++# 規則：只動還沒進房間的人；用「擬好的時間」做比較再更新（compare-and-set），
++# 不會把剛重擬好的新版又刪掉；同一個人最多作廢 STALE_PREP_MAX 次，避免職缺被連續改動時一直重擬。
++STALE_PREP_MAX = 3
++STALE_PREP_CHECK_SEC = 60
++_stale_prep_count = {}
++_stale_prep_checked_at = 0.0
++
++
++def invalidate_stale_prepared():
++    global _stale_prep_checked_at
++    if time.time() - _stale_prep_checked_at < STALE_PREP_CHECK_SEC:
++        return
++    _stale_prep_checked_at = time.time()
++    rows = d1("""
++        SELECT a.id, a.name, a.interview_plan_at, a.prewarmed_at,
++               a.pre_interview_note_at, j.updated_at AS job_updated_at, e.edited_at AS expertise_edited_at
++          FROM applications a
++          LEFT JOIN jobs j ON j.slug = a.job_slug
++          LEFT JOIN job_expertise e ON e.job_slug = a.job_slug
++         WHERE a.status IN ('ready', 'scheduled')
++           AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
++           AND (a.interview_plan_json IS NOT NULL OR a.prewarmed_opening IS NOT NULL)
++    """) or []
++    for r in rows:
++        changed = max([x for x in (r.get('pre_interview_note_at'), r.get('job_updated_at'),
++                                   r.get('expertise_edited_at')) if x] or [''])
++        if not changed:
++            continue
++        app_id, name = r['id'], r['name']
++        if _stale_prep_count.get(app_id, 0) >= STALE_PREP_MAX:
++            continue
++        done = []
++        if r.get('interview_plan_at') and changed > r['interview_plan_at']:
++            d1(f"UPDATE applications SET interview_plan_json=NULL, interview_plan_at=NULL "
++               f"WHERE id={q(app_id)} AND interview_plan_at={q(r['interview_plan_at'])} "
++               f"AND (interview_state IS NULL OR interview_state='not_started')")
++            _plan_cooldown.pop(app_id, None)
++            _plan_fails.pop(app_id, None)
++            done.append('題目計畫')
++        if r.get('prewarmed_at') and changed > r['prewarmed_at']:
++            d1(f"UPDATE applications SET prewarmed_opening=NULL, prewarmed_at=NULL "
++               f"WHERE id={q(app_id)} AND prewarmed_at={q(r['prewarmed_at'])} "
++               f"AND (interview_state IS NULL OR interview_state='not_started')")
++            done.append('開場白')
++        if done:
++            _stale_prep_count[app_id] = _stale_prep_count.get(app_id, 0) + 1
++            clear_static_cache(app_id)
++            log(f'♻️ {name}：職缺或面談前交代在擬好之後改過（{changed}），{"、".join(done)}已作廢，會重擬'
++                f'（第 {_stale_prep_count[app_id]}/{STALE_PREP_MAX} 次）')
++
++
+ def prewarm_candidates():
+     """核准後、還沒點進面談室的候選人：趁空檔先幫他們把開場白生成好存起來，
+     候選人真的點進來時就能秒收到第一句，不用等 daemon 下一輪輪詢＋現場生成。
+@@ -4182,10 +4285,10 @@ def prewarm_candidates():
+     條件跟 Worker 的 needAssessment 閘門一致（中高階免測驗、其他人要先交卷），
+     否則會浪費一次 token 去預熱一個候選人根本還進不了房間的開場白。
+     """
+-    return d1("""
++    return d1(f"""
+         SELECT a.id, a.name, a.job_slug FROM applications a
+          LEFT JOIN jobs j ON j.slug = a.job_slug
+-         WHERE a.status = 'ready'
++         WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}))
+            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+            AND a.prewarmed_opening IS NULL
+            AND (COALESCE(j.seniority, 'mid') = 'senior'
+@@ -4205,7 +4308,7 @@ def do_prewarm(app):
+         ctx = context_for(app_id)
+         talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
+         _before_files = _snapshot_session_files()
+-        result = run_claude(talk_prompt)
++        result = run_claude(talk_prompt, first_try=BG_FIRST_TRY_SEC, total=BG_TOTAL_SEC)
+         log_token_usage(app_id, 'prewarm', talk_prompt, _before_files)
+ 
+         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+@@ -4351,6 +4454,10 @@ def tick():
+ 
+     # 預熱排在最後——優先權最低，只在真人面談都排開了、還有空的 slot
+     # 才會被下面的迴圈撿去跑，絕對不跟真正在等阿財回話的候選人搶名額。
++    try:
++        invalidate_stale_prepared()
++    except Exception as e:
++        log(f'檢查計畫／開場白是否過期失敗（不影響面談）：{str(e)[:120]}')
+     try:
+         prewarm_rows = prewarm_candidates()
+     except Exception as e:
