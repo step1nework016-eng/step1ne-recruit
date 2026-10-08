@@ -54,10 +54,11 @@ MODEL = 'claude-sonnet-5'
 TIMEOUT = 480
 POLL_SEC = 20
 MAX_ATTEMPTS = 3
-NO_TOOLS = ['--disallowed-tools', 'Bash,Edit,Write,Read,WebFetch,WebSearch,Task']
+# 2026-10-08 資安：原本的禁用清單漏了 Glob／Grep，實測讀得到檔案 → 改用 ai_lockdown 統一上鎖
+from ai_lockdown import NO_TOOLS as _LOCK
+NO_TOOLS = list(_LOCK)
 # 2026-10-06：Mac 重開當第二台後實測一句「回 OK」要 2 分鐘——每次都把這台的 MCP 外掛、使用者設定（全域 CLAUDE.md 等）
 # 整套載入。這支只要純文字回覆，不需要那些；關掉後同一句 5.5 秒。WSL2 沒裝那麼多外掛，不影響。
-NO_TOOLS += ['--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']
 # 2026-09-10 加：多裝置分擔工作之後，Jacky問「怎麼知道這筆是哪台裝置處理的」——
 # 原本完全沒記錄。用主機名稱當識別（可用 STEP1NE_WORKER_NAME 環境變數覆蓋，
 # 給每台裝置取好記的名字，不設就用系統主機名稱，不用額外設定也能區分）。

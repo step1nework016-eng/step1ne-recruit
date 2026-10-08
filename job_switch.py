@@ -44,8 +44,7 @@ import d1_http  # noqa: E402
 
 MODEL = 'claude-sonnet-5'
 CLAUDE_BIN = shutil.which('claude') or 'claude'
-NO_TOOLS = ['--disallowed-tools', 'Bash,Edit,Write,Read,WebFetch,WebSearch,Task',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']
+from ai_lockdown import NO_TOOLS  # 2026-10-08 資安：原清單漏 Glob／Grep，改統一上鎖
 WORKER_ID = os.environ.get('STEP1NE_WORKER_NAME') or socket.gethostname()
 
 # 只判斷這個時間之後進來的應徵（上線前的舊應徵不回頭掃）

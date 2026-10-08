@@ -67,9 +67,10 @@ def build_prompt(c, jobs):
 def run_claude(prompt):
     env = dict(os.environ)
     env.pop('CLAUDE_CODE_ENTRYPOINT', None)
-    cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text',
-           '--permission-mode', 'bypassPermissions', '--setting-sources', '',
-           '--allowedTools', 'WebSearch,WebFetch', '--session-id', str(uuid.uuid4()), prompt]
+    # 2026-10-08 資安：原本 bypassPermissions 又沒禁任何工具＝網頁內容裡藏的指令可以叫它跑 Bash。改成只留上網兩個工具
+    from ai_lockdown import web_only
+    cmd = ['claude', '-p', '--model', MODEL, '--output-format', 'text', *web_only(),
+           '--session-id', str(uuid.uuid4()), prompt]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_SEC, env=env)
     return r.returncode == 0, (r.stdout or r.stderr or '')
 

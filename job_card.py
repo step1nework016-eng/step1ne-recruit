@@ -96,13 +96,15 @@ def sanitize(t):
     return ''.join(c for c in str(t) if c in '\n\t' or ord(c) >= 32)
 
 
-def run_claude_json(prompt, extra_args=None):
+def run_claude_json(prompt, extra_args=None, cwd=None):
     env = dict(os.environ)
     env.pop('CLAUDECODE', None)
     args = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text']
-    args += extra_args or ['--disallowed-tools', 'Bash,Edit,Write,WebFetch,WebSearch,Task']
+    # 2026-10-08 資安：原本只禁 Bash/Edit/Write…，Read/Glob/Grep 都開著 → 改統一上鎖
+    from ai_lockdown import NO_TOOLS as _LOCK
+    args += extra_args or list(_LOCK)
     r = subprocess.run(args, input=sanitize(prompt), capture_output=True, text=True,
-                       env=env, timeout=TIMEOUT, cwd=HERE)
+                       env=env, timeout=TIMEOUT, cwd=cwd or HERE)
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
     out = r.stdout.strip()
@@ -545,14 +547,19 @@ def import_feedback(job_slug, raw_text=None, image_path=None, actor=None, event_
         # 截圖走的是「只開放 Read 工具讀這一張圖」的受限模式——不是整台機器開放，
         # --add-dir 只讓它看得到這張圖所在的暫存目錄，讀完這次呼叫就結束，
         # 不會留在背景、也碰不到其他檔案。
-        img_dir = os.path.dirname(os.path.abspath(image_path))
+        # 2026-10-08 資安：圖先複製到一個只放這張圖的暫存資料夾，AI 的工作資料夾也設在那裡——
+        # 實測 AI 在「工作資料夾」裡不用授權就能讀檔，原本工作資料夾是程式碼目錄
+        import tempfile, shutil as _sh
+        img_dir = tempfile.mkdtemp(prefix='jobcard_img_')
+        image_path = _sh.copy(image_path, img_dir)
         prompt = FEEDBACK_PROMPT.format(
             term_fix=TERM_FIX, prior=prior,
             raw=f'（顧問貼的是一張截圖，路徑：{image_path}，請先讀圖再照上面規則整理）')
         out = run_claude_json(prompt, extra_args=[
-            '--allowed-tools', 'Read', '--add-dir', img_dir,
-            '--disallowed-tools', 'Bash,Edit,Write,WebFetch,WebSearch,Task',
-            '--permission-mode', 'bypassPermissions'])
+            # 2026-10-08 資安：原本 Read 不限路徑＋bypassPermissions＝整台讀得到；改成只准讀這張圖的資料夾（同 parse_resumes OCR 的做法）
+            '--allowedTools', f'Read({img_dir}/**)', '--add-dir', img_dir,
+            '--disallowed-tools', __import__('ai_lockdown').BAN.replace('Read,', ''),
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', ''], cwd=img_dir)
     else:
         prompt = FEEDBACK_PROMPT.format(term_fix=TERM_FIX, prior=prior, raw=raw_text)
         out = run_claude_json(prompt)
