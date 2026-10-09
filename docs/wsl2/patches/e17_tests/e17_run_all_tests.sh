@@ -6,7 +6,7 @@ T=$ROOT/docs/wsl2/patches/e17_tests
 cd "$ROOT"
 E="env -i HOME=/home/jack TZ=Asia/Taipei LANG=C.UTF-8 PATH=/home/jack/.nvm/versions/node/v22.22.0/bin:/home/jack/.local/bin:/usr/local/bin:/usr/bin:/bin /usr/bin/python3"
 rc=0
-for t in $T/e17_test_p1.py $T/e17_test_p1_prompt_eq.py $T/e17_test_p2.py $T/e17_test_p3.py $T/e17_test_p3b.py $T/e17b_test.py $ROOT/tests/acai_watch_test.py; do
+for t in $T/e17_test_p1.py $T/e17_test_p1_prompt_eq.py $T/e17_test_p2.py $T/e17_test_p3.py $T/e17_test_p3b.py $T/e17b_test.py $ROOT/tests/acai_watch_test.py $T/e17c_test.py; do
   echo "################ $(basename $t)"
   $E $t 2>&1 | tail -${1:-14}
   r=${PIPESTATUS[0]}; echo "exit=$r"; [ "$r" != 0 ] && rc=1

@@ -1,0 +1,220 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index c3a88c3..c52344f 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -1407,29 +1407,22 @@ def job_understanding(job, blockers, expertise, job_card_summary):
+     }
+ 
+ 
+-def _fetch_static(app_id):
+-    r = subprocess.run([sys.executable, 'fetch_application.py', app_id],
+-                       cwd=HERE, capture_output=True, text=True,
+-                       env=env_with_cf(), timeout=200)
+-    if r.returncode != 0:
+-        raise RuntimeError(f'fetch_application 失敗：{(r.stderr or r.stdout)[-200:]}')
+-    static = json.loads(r.stdout[r.stdout.index('{'):])
+-
+-    # 初篩已經算過分、也生好「該問哪幾題」了——阿財不用自己重想一遍。
+-    # 2026-08-05 加：在此之前初篩與面談是兩條互不相干的線，
+-    # 初篩辛苦生出來的追問沒有人用，等於白做。
++def _fetch_assessment(app_id):
++    """測驗結果（沒有就回 None）。E17c：從 _fetch_static 抽出來，讓「交卷前就擬計畫」之後能補撈。"""
+     asr = d1(f"SELECT b5_o, b5_c, b5_e, b5_a, b5_n, grit, grit_interest, grit_effort, "
+              f"quality_flag FROM assessments WHERE application_id = {q(app_id)} "
+              f"ORDER BY id DESC LIMIT 1")
+-    if asr:
+-        static['assessment'] = asr[0]
++    return asr[0] if asr else None
++
+ 
++def _fetch_screening(app_id):
++    """初篩結果（沒有就回 None）。同上，從 _fetch_static 原封抽出。"""
+     sc = d1(f"SELECT score, summary, risks, questions, hard_fail FROM screenings "
+             f"WHERE application_id = {q(app_id)} ORDER BY id DESC LIMIT 1")
+     if sc:
+         x = sc[0]
+         try:
+-            static['screening'] = {
++            return {
+                 'score': x.get('score'),
+                 'summary': x.get('summary'),
+                 'risks': json.loads(x.get('risks') or '[]'),
+@@ -1437,7 +1430,64 @@ def _fetch_static(app_id):
+                 'hard_fail': x.get('hard_fail') or '',
+             }
+         except Exception:
+-            pass
++            return None
++    return None
++
++
++# E17c：提早擬題目計畫（交卷前）時，快取住的 static 沒有測驗結果、通常也還沒有初篩。
++# 如果不補，這個人進房後整場阿財都讀不到這兩段（快取一直到 finish() 才清）。
++# 補撈規則：只補「快取裡沒有」的那一段；每場最多每 LATE_RECHECK_SEC 秒查一次（初篩可能永遠不會出現，不能每輪都查）。
++LATE_RECHECK_SEC = 30
++_late_checked = {}
++
++
++def _late_refresh(app_id, static):
++    need_a, need_s = 'assessment' not in static, 'screening' not in static
++    if not (need_a or need_s):
++        return static
++    now = time.time()
++    if now - _late_checked.get(app_id, 0) < LATE_RECHECK_SEC:
++        return static
++    _late_checked[app_id] = now
++    new = dict(static)
++    try:
++        if need_a:
++            a = _fetch_assessment(app_id)
++            if a:
++                new['assessment'] = a
++        if need_s:
++            s = _fetch_screening(app_id)
++            if s:
++                new['screening'] = s
++    except Exception as e:
++        log(f'補撈測驗／初篩失敗（沿用快取）：{str(e)[:80]}')
++        return static
++    if len(new) != len(static):
++        with _static_lock:
++            _STATIC_CACHE[app_id] = new
++        got = [n for n, k in (('測驗結果', 'assessment'), ('初篩結果', 'screening')) if k in new and k not in static]
++        log(f'🔄 {app_id[:8]}：快取補上了後來才出現的{"、".join(got)}')
++        return new
++    return static
++
++
++def _fetch_static(app_id):
++    r = subprocess.run([sys.executable, 'fetch_application.py', app_id],
++                       cwd=HERE, capture_output=True, text=True,
++                       env=env_with_cf(), timeout=200)
++    if r.returncode != 0:
++        raise RuntimeError(f'fetch_application 失敗：{(r.stderr or r.stdout)[-200:]}')
++    static = json.loads(r.stdout[r.stdout.index('{'):])
++
++    # 初篩已經算過分、也生好「該問哪幾題」了——阿財不用自己重想一遍。
++    # 2026-08-05 加：在此之前初篩與面談是兩條互不相干的線，
++    # 初篩辛苦生出來的追問沒有人用，等於白做。
++    _a = _fetch_assessment(app_id)
++    if _a:
++        static['assessment'] = _a
++    _s = _fetch_screening(app_id)
++    if _s:
++        static['screening'] = _s
+ 
+     # 2026-08-26 加（Jacky 交辦：讓阿財有「記性」）：這位候選人如果之前用過
+     # 阿福的履歷健檢，阿財應該要知道，就像真人顧問記得「這個人之前聊過」一樣，
+@@ -1512,6 +1562,7 @@ def _fetch_static(app_id):
+ def clear_static_cache(app_id):
+     with _static_lock:
+         _STATIC_CACHE.pop(app_id, None)
++    _late_checked.pop(app_id, None)
+ 
+ 
+ def context_for(app_id):
+@@ -1522,6 +1573,9 @@ def context_for(app_id):
+         static = _fetch_static(app_id)
+         with _static_lock:
+             _STATIC_CACHE[app_id] = static
++        _late_checked[app_id] = time.time()      # E17c：剛撈的就是最新的，30 秒後才第一次補撈
++    else:
++        static = _late_refresh(app_id, static)   # E17c
+ 
+     ctx = dict(static)  # 淺拷貝，不要讓下面塞 conversation 汙染到快取本體
+     # 事先擬好的題目計畫（do_plan 產的）。讀不到就是沒有，走原本「現場想」那條路。
+@@ -4134,6 +4188,13 @@ PLAN_PROMPT = (
+ # 條件刻意跟原本 'ready' 那一支一模一樣（交卷或免測驗才算），所以素材跟他進房時完全相同，
+ # 「提早擬的計畫看不到測驗結果」這個風險不存在。還沒交卷的人選一律不做（見 E17 回報：沒把握不傷品質就不做）。
+ PLAN_SCHEDULED_LEAD_HOURS = 24
++# E17c：投遞後就先擬題目計畫（不等交卷、不等 ready）。實測（9/25 起 18 場）：計畫進房前就擬好的只有 8 場，10 場擬在進房「之後」；
++# 6 場交卷後 3 分鐘內就進房（計畫要 ~100 秒以上）；還有人 ready 通知從沒發（走 pending_assessment）、等了 15 小時才進房，
++# 計畫卻是進房後 2.5 分鐘才擬（金玉霜）——因為原本只有 status='ready'／'scheduled' 才會擬。
++# 關掉：環境變數 ACAI_PLAN_EARLY=0（或這個常數改 False）。
++PLAN_EARLY = os.environ.get('ACAI_PLAN_EARLY', '1') != '0'
++PLAN_EARLY_WINDOW_HOURS = 72     # 只擬最近 72 小時內投遞的（實際最長交卷→進房等了約 47 小時）
++PLAN_REDO_ON_SCREENING = os.environ.get('ACAI_PLAN_REDO_ON_SCREENING', '1') != '0'   # 初篩晚於計畫、人還沒進房 → 重擬一次
+ 
+ 
+ def _scheduled_window_sql(col='a.remind_at'):
+@@ -4149,12 +4210,22 @@ def plan_candidates():
+     ⚠️ 也撈「已經在面談中但還沒有計畫」的：計畫功能上線前就已經進房間的人，
+        以及預熱那輪剛好失敗的人，都要補上，不然他們整場都走慢的那條路。
+     """
++    early_sql = '0'
++    if PLAN_EARLY:
++        # E17c：投遞後（status='pending_assessment'，還沒進房）就先擬，不等交卷也不等 ready。履歷要抓得到文字
++        # （上傳檔，或連結履歷已解析），不然素材缺最重要的一塊；只看最近 PLAN_EARLY_WINDOW_HOURS 小時內投遞的，
++        # 放了好幾天沒動靜的人不浪費額度。
++        since = (datetime.datetime.now() - datetime.timedelta(hours=PLAN_EARLY_WINDOW_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
++        early_sql = (f"(a.status = 'pending_assessment' AND (a.interview_state IS NULL OR a.interview_state = 'not_started') "
++                     f"AND a.created_at > {q(since)} "
++                     f"AND (a.resume_file_id IS NOT NULL OR a.resume_url_parsed_at IS NOT NULL))")
+     return d1(f"""
+-        SELECT a.id, a.name, a.job_slug FROM applications a
++        SELECT a.id, a.name, a.job_slug, ({early_sql}) AS early FROM applications a
+          LEFT JOIN jobs j ON j.slug = a.job_slug
+          WHERE a.interview_plan_json IS NULL
+            AND (
+-             (a.status = 'ready'
++             {early_sql}
++             OR (a.status = 'ready'
+               AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+               AND (COALESCE(j.seniority, 'mid') = 'senior'
+                    OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
+@@ -4291,31 +4362,37 @@ def invalidate_stale_prepared():
+     _stale_prep_checked_at = time.time()
+     rows = d1("""
+         SELECT a.id, a.name, a.interview_plan_at, a.prewarmed_at,
+-               a.pre_interview_note_at, j.updated_at AS job_updated_at, e.edited_at AS expertise_edited_at
++               a.pre_interview_note_at, j.updated_at AS job_updated_at, e.edited_at AS expertise_edited_at,
++               (SELECT MAX(s.created_at) FROM screenings s WHERE s.application_id = a.id) AS screening_at
+           FROM applications a
+           LEFT JOIN jobs j ON j.slug = a.job_slug
+           LEFT JOIN job_expertise e ON e.job_slug = a.job_slug
+-         WHERE a.status IN ('ready', 'scheduled')
++         WHERE a.status IN ('ready', 'scheduled', 'pending_assessment')
+            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+            AND (a.interview_plan_json IS NOT NULL OR a.prewarmed_opening IS NOT NULL)
+     """) or []
+     for r in rows:
+         changed = max([x for x in (r.get('pre_interview_note_at'), r.get('job_updated_at'),
+                                    r.get('expertise_edited_at')) if x] or [''])
+-        if not changed:
++        # E17c：初篩在計畫「之後」才出現（提早擬的計畫沒看過初篩）→ 只要人還沒進房，計畫也重擬一次。
++        # 回放 4 位：初篩事先想好的追問被計畫覆蓋的比例，有初篩 46%、沒初篩 34%。只影響計畫，不動開場白。
++        plan_changed = changed
++        if PLAN_REDO_ON_SCREENING and r.get('screening_at'):
++            plan_changed = max(changed, r['screening_at'])
++        if not plan_changed:
+             continue
+         app_id, name = r['id'], r['name']
+         if _stale_prep_count.get(app_id, 0) >= STALE_PREP_MAX:
+             continue
+         done = []
+-        if r.get('interview_plan_at') and changed > r['interview_plan_at']:
++        if r.get('interview_plan_at') and plan_changed > r['interview_plan_at']:
+             d1(f"UPDATE applications SET interview_plan_json=NULL, interview_plan_at=NULL "
+                f"WHERE id={q(app_id)} AND interview_plan_at={q(r['interview_plan_at'])} "
+                f"AND (interview_state IS NULL OR interview_state='not_started')")
+             _plan_cooldown.pop(app_id, None)
+             _plan_fails.pop(app_id, None)
+             done.append('題目計畫')
+-        if r.get('prewarmed_at') and changed > r['prewarmed_at']:
++        if r.get('prewarmed_at') and changed and changed > r['prewarmed_at']:
+             d1(f"UPDATE applications SET prewarmed_opening=NULL, prewarmed_at=NULL "
+                f"WHERE id={q(app_id)} AND prewarmed_at={q(r['prewarmed_at'])} "
+                f"AND (interview_state IS NULL OR interview_state='not_started')")
+@@ -4521,6 +4598,12 @@ def tick():
+         log(f'查詢待擬題目計畫名單失敗：{e}')
+         plan_rows = []
+     plan_rows = [a for a in plan_rows if not _plan_cooling(a['id'])]
++    # E17c：提早擬（交卷前）的優先權最低——有任何一場面談正在處理回覆時不擬，免得跟真人在等的回覆搶 claude 資源
++    # （阿財 10/6、10/9 都有 claude 呼叫卡住的紀錄，不能再多一個競爭者）。
++    with _lock:
++        _live_busy = bool(_busy)
++    if _live_busy:
++        plan_rows = [a for a in plan_rows if not a.get('early')]
+ 
+     # 收尾之後才問的問題。優先權排在強制收尾之後、一般回話之前——
+     # 這些人已經等了一段時間（沒有人在盯著這個房間），不該再排到最後。

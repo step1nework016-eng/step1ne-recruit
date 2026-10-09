@@ -41,3 +41,13 @@
 - **驗證**：`with_not_covered=False` 的 prompt 與改動前真正的 `finish()` 送給 claude 的 prompt 逐字相同（7 場）；差異法（有無 `not_covered`）客戶版輸出逐字相同（7 場真實報告）；7 場真實面談改前／改後回放；`report_to_json` 真實轉換測試。
 - **變差的地方（要知道）**：第一版規則（新段落放「建議之前」）讓 5 場裡 4 場漏掉原本必須有的段落（改前基準 2/5），所以改了位置規則（現在的版本）；重跑後 2/5，與基準相同，但樣本只有 5 場。「其他推薦職缺」現況就會漏，不是這個 patch 造成的。
 - **沒處理**：`consultant_call_report.py` 電洽後合併重寫會把舊 `content_md` 帶進去，新段落可能變成過時內容。
+
+---
+
+# E17c（2026-10-09）：交卷前就擬題目計畫 —— `e17c_plan_early_20261009.patch`，**未上線，待 Mac 審**
+
+基準：origin/main（E17b 上線後）；套用：`git apply docs/wsl2/patches/e17c_plan_early_20261009.patch`（只改 `interview_daemon.py`）。完整說明、回放比較、品質風險見 `docs/wsl2/回報/E17c_*.md`。
+- 投遞後（`pending_assessment`、72 小時內、還沒進房、履歷抓得到文字）就擬題目計畫；有面談在處理回覆時不跑（`ACAI_PLAN_EARLY=0` 可關）。
+- 提早擬的計畫會把「缺測驗／初篩」的資料快取住 → 新增 `_late_refresh` 補撈（每場每 30 秒最多一次、只補缺的）。
+- 初篩晚於計畫、人還沒進房 → 計畫重擬一次（`ACAI_PLAN_REDO_ON_SCREENING=0` 可關）。
+- 測試 `e17_tests/e17c_test.py`（**需先套 E17c patch**，沒套會失敗）；回放腳本 `e17c_plan_ab.py`／`e17c_cmp.py`。`e17_run_all_tests.sh` 已含 e17c_test。

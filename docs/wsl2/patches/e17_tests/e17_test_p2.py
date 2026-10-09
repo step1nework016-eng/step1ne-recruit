@@ -19,10 +19,12 @@ DB = sqlite3.connect(':memory:')
 DB.row_factory = sqlite3.Row
 for ddl in (
     "CREATE TABLE applications (id TEXT PRIMARY KEY, name TEXT, job_slug TEXT, status TEXT, interview_state TEXT, remind_at TEXT,"
-    " created_at TEXT, interview_plan_json TEXT, interview_plan_at TEXT, prewarmed_opening TEXT, prewarmed_at TEXT, pre_interview_note_at TEXT)",
+    " created_at TEXT, interview_plan_json TEXT, interview_plan_at TEXT, prewarmed_opening TEXT, prewarmed_at TEXT, pre_interview_note_at TEXT,"
+    " resume_file_id TEXT, resume_url_parsed_at TEXT)",     # E17c：plan_candidates 的提早擬名單會看這兩欄
     "CREATE TABLE jobs (slug TEXT, seniority TEXT, updated_at TEXT)",
     "CREATE TABLE job_expertise (job_slug TEXT, edited_at TEXT)",
     "CREATE TABLE assessments (application_id TEXT)",
+    "CREATE TABLE screenings (application_id TEXT, created_at TEXT)",      # E17c：作廢檢查會看初篩時間
 ):
     DB.execute(ddl)
 def sdb(sql, *a, **k):
