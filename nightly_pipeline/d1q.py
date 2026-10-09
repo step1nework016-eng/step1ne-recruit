@@ -37,6 +37,28 @@ READ_OK = re.compile(r'^\s*(SELECT|WITH|PRAGMA\s+table_info)\b', re.I)
 WRITE_WORDS = re.compile(r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|ATTACH|DETACH|VACUUM)\b', re.I)
 
 
+# E19（2026-10-09）：夜間找人一天三次，要知道每一輪讀寫了多少列。D1Q_STATS_FILE 有設才記，沒設完全不動作。
+# 每個 d1q 行程結束時 append 一行（累計這個行程的 rows_read／rows_written）；run_nightly.sh 依 D1Q_RUN_ID 加總。
+_STATS = {'calls': 0, 'rows_read': 0, 'rows_written': 0}
+
+
+def _flush_stats():
+    path = os.environ.get('D1Q_STATS_FILE')
+    if not path or not _STATS['calls']:
+        return
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'ts': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'run': os.environ.get('D1Q_RUN_ID', ''),
+                                'cmd': sys.argv[1] if len(sys.argv) > 1 else '', **_STATS}, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
+import atexit  # noqa: E402
+atexit.register(_flush_stats)
+
+
 def _post(sql, params=None, timeout=60):
     tok, acc = D._cfg()
     if not (tok and acc):
@@ -56,7 +78,12 @@ def _post(sql, params=None, timeout=60):
         raise SystemExit(f'❌ D1 HTTP {e.code}: {e.read()[:300]!r}')
     if not res.get('success'):
         raise SystemExit(f'❌ D1 錯誤：{json.dumps(res.get("errors"), ensure_ascii=False)[:300]}')
-    return (res.get('result') or [{}])[0]
+    out = (res.get('result') or [{}])[0]
+    m = out.get('meta') or {}
+    _STATS['calls'] += 1
+    _STATS['rows_read'] += int(m.get('rows_read') or 0)
+    _STATS['rows_written'] += int(m.get('rows_written') or 0)
+    return out
 
 
 def _strip_strings(sql):

@@ -4,6 +4,8 @@
 # 用法：
 #   run_nightly.sh bd        [--limit 30]      # 每晚新增最多 N 家潛在客戶（預設 30）
 #   run_nightly.sh sourcing  [--per-job 10]    # 每個職缺最多新增 N 位人選（預設 10）
+#   run_nightly.sh sourcing --priority-only    # E19（2026-10-09）：只做後台設成「優先」的職缺，依「最久沒做」排序，一輪做不完下一輪接著做
+#   環境變數 NIGHTLY_WAIT_IDLE_MIN=N：開跑前若有面談進行中，最多等 N 分鐘（每分鐘看一次）再開始；預設 0＝不等
 #   加 --dry-run：只印出這次會用的提示詞與指令，不呼叫 claude（本機檢查用）
 #
 # 由 systemd timer 觸發（見 systemd/）。同一種工作同時只會跑一個（鎖檔）。
@@ -19,10 +21,12 @@ shift || true
 LIMIT=30
 PER_JOB=10
 DRY=0
+PRIORITY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --limit)   LIMIT="${2:?--limit 要接數字}"; shift 2 ;;
     --per-job) PER_JOB="${2:?--per-job 要接數字}"; shift 2 ;;
+    --priority-only) PRIORITY_ONLY=1; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "看不懂的參數：$1" >&2; exit 2 ;;
   esac
@@ -53,11 +57,63 @@ else
 fi
 TODAY="$(date '+%Y-%m-%d')"
 BATCH_ID="nightly-${KIND}-$(date '+%Y%m%d')"
+# 一天跑三輪時，批次代號要分得開（用量統計、資料庫裡的批次標記都靠它）
+[ "$PRIORITY_ONLY" = 1 ] && BATCH_ID="${BATCH_ID}-$(date '+%H%M')"
+ROTATION_FILE="$HOME/aijob-automation/state/sourcing_rotation.tsv"
+mkdir -p "$(dirname "$ROTATION_FILE")"
+
+# E19：priority-only 模式的提示詞段落——程式先把「最久沒做的優先職缺」排好給 claude，照順序做
+build_priority_note() {
+  python3 - "$PIPE_DIR" "$ROTATION_FILE" <<'PY'
+import json, os, subprocess, sys
+pipe, rot = sys.argv[1], sys.argv[2]
+sql = ("SELECT j.slug, j.title, COALESCE(j.company_id, j.client_name, '') AS client, "
+       "(SELECT MAX(s.created_at) FROM sourced_candidates s WHERE s.job_slug=j.slug AND s.source='AI夜間找人') AS last_sourced "
+       "FROM jobs j JOIN job_sourcing_settings ss ON ss.job_slug=j.slug "
+       "WHERE j.status='open' AND j.slug <> 'unspecified' AND ss.mode='priority'")
+r = subprocess.run(['python3', os.path.join(pipe, 'd1q.py'), 'q', sql], capture_output=True, text=True)
+try:
+    jobs = json.loads(r.stdout)
+except ValueError:
+    jobs = []
+last = {}
+try:
+    for line in open(rot, encoding='utf-8'):
+        p = line.strip().rsplit(' ', 1)          # 「2026-10-09 09:30:00 職缺代號」：最後一個空白前是時間、後面是代號
+        if len(p) == 2 and p[1]:
+            last[p[1]] = max(last.get(p[1], ''), p[0])
+except FileNotFoundError:
+    pass
+for j in jobs:
+    j['last'] = max(last.get(j['slug'], ''), j.get('last_sourced') or '')
+jobs.sort(key=lambda j: (j['last'] != '', j['last'], j['client'], j['slug']))   # 從沒做過的最前面，其次是最久沒做的
+print('## ⚠️ 本輪模式：只做「優先」職缺（E19，Jacky 2026-10-08）')
+print('- **這一輪只找後台設成「優先」（mode=priority）的職缺**。一般職缺（沒設定／auto）一律不做，「不找」（off）更不做。不要自己擴充名單。')
+print('- **第一步「挑今晚要找的職缺」不用再查**——下面這份清單程式已經排好了（最久沒做的在最前面），照順序一個一個做；')
+print('  第二步以後的規則（讀顧問回饋、逐條對照、去重、寫入格式）照舊。')
+print('- 一輪做不完沒關係：時間或搜尋次數用完就停，下一輪會從「最久沒做」的接著做。**不要為了做完而放寬品質或硬湊人選。**')
+print('- **每個職缺做完（不管新增幾位、甚至 0 位）就跑這一行**，讓下一輪知道輪到誰：')
+print("  `echo \"$(date '+%F %T') 職缺代號\" >> " + rot + '`    （把「職缺代號」換成這個職缺的 slug）')
+print('')
+if jobs:
+    print('今天的順序（共 %d 個優先職缺）：' % len(jobs))
+    for i, j in enumerate(jobs, 1):
+        print('%d. `%s`｜%s｜客戶 %s｜上次做：%s' % (i, j['slug'], j['title'], j['client'] or '—', j['last'] or '從沒做過'))
+else:
+    print('（程式查不到優先職缺清單——請自己查：mode=priority 且 status=open 的職缺，依 sourced_candidates 最近一筆時間由舊到新排序。）')
+PY
+}
 
 # 提示詞：把 {{…}} 換成這次的值
 PROMPT="$(sed -e "s|{{LIMIT}}|$LIMIT|g" -e "s|{{PER_JOB}}|$PER_JOB|g" -e "s|{{TODAY}}|$TODAY|g" \
               -e "s|{{BATCH_ID}}|$BATCH_ID|g" -e "s|{{PIPE_DIR}}|$PIPE_DIR|g" -e "s|{{REPO_DIR}}|$REPO_DIR|g" \
               "$PROMPT_FILE")" || { echo "讀不到提示詞 $PROMPT_FILE" >&2; exit 1; }
+PRIORITY_NOTE=""
+if [ "$PRIORITY_ONLY" = 1 ] && [ "$KIND" = sourcing ]; then PRIORITY_NOTE="$(build_priority_note)"; fi
+NOTE_FILE="$(mktemp)"; printf '%s\n' "$PRIORITY_NOTE" > "$NOTE_FILE"
+# 不用 bash 的 ${//} 取代：bash 5.2 起取代字串裡的 & 會被當成「比對到的文字」，職缺名稱有 & 就會壞掉
+PROMPT="$(printf '%s\n' "$PROMPT" | sed -e '/{{PRIORITY_NOTE}}/{' -e "r $NOTE_FILE" -e 'd' -e '}')"
+rm -f "$NOTE_FILE"
 
 CMD=("$CLAUDE_BIN" -p "$PROMPT"
      --model "$MODEL"
@@ -67,7 +123,7 @@ CMD=("$CLAUDE_BIN" -p "$PROMPT"
      --output-format text)
 
 if [ "$DRY" = 1 ]; then
-  echo "=== 種類：$KIND　批次：$BATCH_ID　上限：bd=$LIMIT 家／sourcing=$PER_JOB 位每職缺　逾時：${MAX_SECS}s"
+  echo "=== 種類：$KIND　批次：$BATCH_ID　上限：bd=$LIMIT 家／sourcing=$PER_JOB 位每職缺　逾時：${MAX_SECS}s　只做優先職缺：$PRIORITY_ONLY"
   echo "=== 指令：${CMD[0]} -p <提示詞 ${#PROMPT} 字> ${CMD[*]:3}"
   echo "=== 提示詞前 40 行："
   printf '%s\n' "$PROMPT" | head -40
@@ -115,6 +171,18 @@ browser_pids() {
 }
 BEFORE="$(browser_pids)"
 
+# E19：開跑前若有面談進行中，先等一等（找人會同時開 claude 和瀏覽器，跟面談搶資源）。預設不等；等滿了照跑。
+WAIT_MIN="${NIGHTLY_WAIT_IDLE_MIN:-0}"
+if [ "$KIND" = sourcing ] && [ "$WAIT_MIN" -gt 0 ] 2>/dev/null; then
+  for i in $(seq 1 "$WAIT_MIN"); do
+    N="$(python3 "$PIPE_DIR/d1q.py" q "SELECT COUNT(*) AS n FROM applications WHERE interview_state='active'" 2>/dev/null \
+         | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["n"])' 2>/dev/null || echo 0)"
+    [ "${N:-0}" = "0" ] && break
+    echo "[$(date '+%F %T')] ⏳ 有 $N 場面談進行中，等 60 秒再開始（$i/$WAIT_MIN）"; sleep 60
+  done
+fi
+export D1Q_STATS_FILE="$LOG_DIR/d1_usage.jsonl" D1Q_RUN_ID="$BATCH_ID"
+
 echo
 echo "════════ [$(date '+%F %T')] 開始 $KIND　批次 $BATCH_ID　模型 $MODEL ════════"
 START=$(date +%s)
@@ -141,6 +209,22 @@ else
   echo "✅ 沒有留下瀏覽器"
 fi
 
-printf '{"ts":"%s","kind":"%s","batch":"%s","exit":%d,"secs":%d,"leftover_browsers":%d}\n' \
-  "$(date '+%F %T')" "$KIND" "$BATCH_ID" "$CODE" "$SECS" "$LEFT" >>"$RUNS"
+# E19：這一輪讀寫了多少 D1 列（只算 d1q 這支工具；常駐程式的輪詢不在內）
+read -r D1_CALLS D1_READ D1_WRITE < <(python3 - "$LOG_DIR/d1_usage.jsonl" "$BATCH_ID" <<'PY'
+import json, sys
+c = r = w = 0
+try:
+    for line in open(sys.argv[1], encoding='utf-8'):
+        try: d = json.loads(line)
+        except ValueError: continue
+        if d.get('run') == sys.argv[2]:
+            c += d.get('calls', 0); r += d.get('rows_read', 0); w += d.get('rows_written', 0)
+except OSError:
+    pass
+print(c, r, w)
+PY
+)
+echo "📊 這一輪 d1q 的 D1 用量：${D1_CALLS:-0} 次查詢，讀 ${D1_READ:-0} 列、寫 ${D1_WRITE:-0} 列"
+printf '{"ts":"%s","kind":"%s","batch":"%s","exit":%d,"secs":%d,"leftover_browsers":%d,"d1_calls":%d,"d1_rows_read":%d,"d1_rows_written":%d}\n' \
+  "$(date '+%F %T')" "$KIND" "$BATCH_ID" "$CODE" "$SECS" "$LEFT" "${D1_CALLS:-0}" "${D1_READ:-0}" "${D1_WRITE:-0}" >>"$RUNS"
 exit "$CODE"
