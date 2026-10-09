@@ -1,0 +1,10 @@
+[Unit]
+Description=資安週五白話週報（排程）
+
+[Timer]
+OnCalendar=Fri *-*-* 17:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

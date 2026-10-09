@@ -1,0 +1,13 @@
+[Unit]
+Description=資安藍隊週二修補草案（無工具、只產文字、開關預設關）
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jack/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:/home/jack/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/jack/claude-projects/工作流程技能包/step1ne-recruit/sec_blue.py
+StandardOutput=append:%h/aijob-automation/logs/secblue.log
+StandardError=append:%h/aijob-automation/logs/secblue.log
+TimeoutStartSec=1200

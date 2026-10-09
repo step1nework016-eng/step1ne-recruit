@@ -1,0 +1,10 @@
+[Unit]
+Description=資安紅隊週一自我稽核（這台 WSL2，只讀）（排程）
+
+[Timer]
+OnCalendar=Mon *-*-* 09:30:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

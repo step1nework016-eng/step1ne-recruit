@@ -1,0 +1,10 @@
+[Unit]
+Description=資安藍隊週二修補草案（無工具、只產文字、開關預設關）（排程）
+
+[Timer]
+OnCalendar=Tue *-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
