@@ -139,6 +139,16 @@ def prompt_call_summary_client(p):
 
 
 def prompt_call_notes_summary(p):
+    ctx = (p.get('context') or '').strip()
+    ctx_block = f"""
+⚠️ 這段電訪筆記多半是 iPhone 通話語音轉文字，錯字很多，常見例子：頂薪／頂芯→鼎新、T-top→TIPTOP、
+上週（指公司時）→商周、Labe→Laravel、科學／垮爾→Cursor／Claude、Honter→Hunter、蹦錶→BOM 表。
+整理前**先對照下面的人選履歷與職缺資料，把公司名、系統名、職稱、地名校正成履歷或職缺裡的正確寫法**；
+對照不到、沒把握的就保留原文，不要猜。校正只是為了讀懂，摘要裡不用標註哪裡改過。
+
+【背景資料（只用來校正專有名詞與理解，不要把背景資料裡有、但電話沒講的事寫進摘要）】
+{ctx}
+""" if ctx else ''
     return f"""你是獵頭顧問的助理。把下面這段電訪筆記整理成六個標題各一段（每段 2-3 行以內）：
 
 重點狀況
@@ -149,7 +159,7 @@ def prompt_call_notes_summary(p):
 顧問可再確認／可主動告知客戶的部分
 
 {TERM_FIX}
-
+{ctx_block}
 規則：不要新增筆記裡沒提到的資訊，沒提到的欄位就寫「未提及」。
 用繁體中文，直接輸出，不要開場白。
 
