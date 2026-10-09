@@ -1,0 +1,12 @@
+[Unit]
+Description=Step1ne 阿財面談備援通知（E20）：開始／太久沒回／結束，只私訊 Jacky
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jack/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/jack/claude-projects/工作流程技能包/step1ne-recruit/acai_watch.py
+StandardOutput=append:%h/aijob-automation/logs/acai_watch.log
+StandardError=append:%h/aijob-automation/logs/acai_watch.log
+TimeoutStartSec=90

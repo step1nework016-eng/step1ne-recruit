@@ -1,0 +1,10 @@
+[Unit]
+Description=Step1ne 阿財面談備援通知，每 2 分鐘
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
