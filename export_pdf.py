@@ -129,7 +129,8 @@ def main():
                 f"WHERE application_id = {D.q(app['id'])} ORDER BY created_at DESC LIMIT 1")
     msgs = D.d1(f"SELECT role, content, created_at FROM messages "
                 f"WHERE application_id = {D.q(app['id'])} ORDER BY id ASC")
-    msgs = [m for m in msgs if m['content'] != '（候選人已進入面談室）']
+    msgs = [m for m in msgs if m['content'] != '（候選人已進入面談室）'
+            and not __import__('interview_markers').is_transition(m['content'])]
 
     out = a.out or os.path.expanduser(
         f"~/Desktop/AI初篩報告_{app['name']}_{(app['interview_ended_at'] or '')[:10] or 'undated'}.pdf")

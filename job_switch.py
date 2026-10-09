@@ -540,7 +540,8 @@ def run_check(payload, run_claude=None, dry_run=False, transcript_override=None)
     else:
         conv = rows(f"SELECT role, content FROM messages WHERE application_id={q(sw['application_id'])} ORDER BY id ASC")
         transcript = '\n'.join(f'{"阿財" if m["role"] == "assistant" else "求職者"}：{m["content"]}'
-                               for m in conv if m.get('content') != '（候選人已進入面談室）')
+                               for m in conv if m.get('content') != '（候選人已進入面談室）'
+                               and not __import__('interview_markers').is_transition(m.get('content')))
     result = decide_discussed(transcript, sw['orig_job_title'], sw['target_job_title'], run_claude)
     if dry_run:
         return result

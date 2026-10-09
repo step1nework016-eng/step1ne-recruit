@@ -17,6 +17,8 @@ import json, os, subprocess, sys, threading, time, datetime, urllib.parse, urlli
 import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
 import autoupdate                    # 自動更新（見 autoupdate.py 檔頭）
 import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
+import interview_markers as MK   # E17：等待過渡語的標記，認得出來才排除得掉
+_NOT_T = MK.sql_not_transition('m.content')   # SQL 片段：這則不是過渡語（給別名 m 的查詢用）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
@@ -161,6 +163,24 @@ _plan_busy = set()
 _plan_cooldown = {}     # application_id -> 冷卻到的 time.time()
 PLAN_COOLDOWN_SEC = 1800
 MAX_PLAN_PARALLEL = 2
+# E17-2：失敗後不要固定等 30 分鐘。沈蓓芬 10/8：開場後計畫連失敗 3 次，進入 30 分鐘冷卻，
+# 之後她隔一小時回來，這整段都走「現場想」的慢路（約 40～60 秒一輪 vs 有計畫的 8～9 秒）。
+# 改成越失敗間隔越長：1→2→5→10 分鐘；累計 PLAN_MAX_ATTEMPTS 次才退回原本的 30 分鐘，並在 log 標一次。
+PLAN_RETRY_BACKOFF = (60, 120, 300, 600)
+PLAN_MAX_ATTEMPTS = 8
+_plan_fails = {}        # application_id -> 累計失敗次數（記憶體；重啟清掉）
+
+
+def _plan_mark_failed(app_id, name=''):
+    n = _plan_fails.get(app_id, 0) + 1
+    _plan_fails[app_id] = n
+    if n >= PLAN_MAX_ATTEMPTS:
+        delay = PLAN_COOLDOWN_SEC
+        if n == PLAN_MAX_ATTEMPTS:
+            log(f'⚠️ {name or app_id} 的題目計畫累計失敗 {n} 次，之後改每 {PLAN_COOLDOWN_SEC // 60} 分鐘才試一次')
+    else:
+        delay = PLAN_RETRY_BACKOFF[min(n - 1, len(PLAN_RETRY_BACKOFF) - 1)]
+    _plan_cooldown[app_id] = time.time() + delay
 
 
 def _plan_cooling(app_id):
@@ -950,7 +970,7 @@ def _delivery_meta(app_id, name, job_slug, abandoned):
         if u != (r.get('resume_url') or ''):
             meta['portfolio_urls'].append(u)
 
-    n = d1(f"SELECT COUNT(*) AS n FROM messages WHERE application_id = {q(app_id)}")
+    n = d1(f"SELECT COUNT(*) AS n FROM messages m WHERE m.application_id = {q(app_id)} AND {_NOT_T}")
     meta['system_record'] = {
         '面談時間': f"{r.get('interview_started_at') or '—'} – {r.get('interview_ended_at') or '（尚未關閉）'}",
         '訊息數': f"{(n[0]['n'] if n else '—')} 則",
@@ -1102,13 +1122,15 @@ def deliver_after_interview(app_id, name, job_slug, report_json, abandoned):
 
 def active_sessions():
     """所有進行中的面談，附上最後一則的角色與時間。"""
-    return d1("""
+    # E17：等待過渡語（程式自動送的「收到，我整理一下…」）不算一則訊息——
+    # 不排除的話，送了之後「最後一則」變成 assistant，阿財會以為人選已被回、永遠不再回他。
+    return d1(f"""
         SELECT a.id, a.name, a.job_slug, a.interview_started_at,
-               (SELECT m.role FROM messages m WHERE m.application_id = a.id
+               (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) AS last_role,
-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) AS last_at,
-               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
+               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id AND {_NOT_T}) AS n,
                a.start_notified_at, a.job_title
           FROM applications a
          WHERE a.interview_state = 'active'
@@ -1189,17 +1211,17 @@ def post_wrap_questions():
     """面談已收尾，但候選人事後又問了東西、還沒有人回。"""
     return d1(f"""
         SELECT a.id, a.name, a.job_slug, a.interview_started_at,
-               (SELECT m.role FROM messages m WHERE m.application_id = a.id
+               (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) AS last_role,
-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) AS last_at,
-               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id) AS n,
+               (SELECT COUNT(*) FROM messages m WHERE m.application_id = a.id AND {_NOT_T}) AS n,
                a.start_notified_at, a.job_title
           FROM applications a
          WHERE a.interview_state IN ('done', 'paused')
-           AND (SELECT m.role FROM messages m WHERE m.application_id = a.id
+           AND (SELECT m.role FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) = 'candidate'
-           AND (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+           AND (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1)
                >= datetime('now', '+8 hours', '-{POST_WRAP_REPLY_DAYS} days')
     """) or []
@@ -1524,7 +1546,8 @@ def context_for(app_id):
     except Exception as e:
         log(f'重讀職缺面談語言失敗（沿用快取）：{str(e)[:80]}')
     ctx['conversation'] = d1(f"SELECT role, content, created_at FROM messages "
-                             f"WHERE application_id = {q(app_id)} ORDER BY id ASC LIMIT 200")
+                             f"WHERE application_id = {q(app_id)} AND {MK.sql_not_transition('content')} "
+                             f"ORDER BY id ASC LIMIT 200")
     return ctx
 
 
@@ -2209,7 +2232,14 @@ def sanitize(t):
 FIRST_TRY_TIMEOUT = 120
 
 
-def run_claude(prompt):
+# E17-2（2026-10-08）：背景準備（擬計畫、預熱開場白）沒有人在等，不必跟面談回覆用同一把尺。
+# 量測（interview.log，成功的擬計畫呼叫 10 筆）：中位數 108 秒、p90 120 秒，第 1 次就成功 8/10；
+# 同一份 log 擬計畫失敗 39 次對成功 18 次——第一次只給 120 秒，幾乎站在懸崖邊上。
+BG_FIRST_TRY_SEC = 210
+BG_TOTAL_SEC = 330
+
+
+def run_claude(prompt, first_try=None, total=None):
     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
     # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
     # 它會自己讀 stdin，macOS/Linux 行為不變）。
@@ -2235,11 +2265,13 @@ def run_claude(prompt):
     # 另外每次成功都記一行耗時與第幾次嘗試，之後再慢可以直接從 log 判斷。
     last_err = None
     t0 = time.time()
+    _first = first_try or FIRST_TRY_TIMEOUT
+    _total = total or CLAUDE_TIMEOUT
     for attempt in range(3):
-        remaining = CLAUDE_TIMEOUT - (time.time() - t0)
+        remaining = _total - (time.time() - t0)
         if attempt > 0 and remaining < 30:
             break
-        budget = min(FIRST_TRY_TIMEOUT, remaining) if attempt == 0 else remaining
+        budget = min(_first, remaining) if attempt == 0 else remaining
         t1 = time.time()
         try:
             r = subprocess.run(
@@ -2306,7 +2338,7 @@ def answer_timing(app_id):
     ⚠️ 只呈現事實，不下判斷。有人切出去是查自己的舊資料，那是認真不是作弊。
     """
     msgs = d1(f"SELECT role, content, created_at FROM messages "
-              f"WHERE application_id={q(app_id)} ORDER BY id ASC")
+              f"WHERE application_id={q(app_id)} AND {MK.sql_not_transition('content')} ORDER BY id ASC")
     snaps = d1(f"SELECT seq, at, away_count, away_seconds, paste_count, paste_chars "
                f"FROM turn_signals WHERE application_id={q(app_id)} ORDER BY seq ASC")
     if not msgs:
@@ -2534,6 +2566,7 @@ REPORT_JSON_SPEC = r'''
     "trait_one_liner": "把特質與風格四軸的整體結論濃縮成一句話，講清楚這個人適合怎樣的工作方式、跟這個職缺搭不搭"
   },
   "consultant_followups": ["顧問還要自己追問的事，有幾件寫幾件"],
+  "not_covered": [{"kind": "沒問到｜含糊沒追到｜無法判斷", "item": "項目重點", "note": "一句話；含糊的要附他的原話"}],
   "career_directions": [
     {"direction": "適合的職務方向（職務類型，不是公司名）",
      "why": "為什麼適合，一兩句，要講到他做過的事或講過的話",
@@ -2648,6 +2681,8 @@ REPORT_JSON_RULES = (
     '    evidence 寫具體根據（幾年、做過什麼、哪張證照、他的原話），conclusion 一句話給結論＋建議。\n'
     '18. `career_directions`（2026-10-01 加）：照報告「適合的職務方向」那一段搬，2～4 筆。\n'
     '    報告沒有那一段就給空陣列，不要自己編。不准出現年齡、性別、婚育、國籍相關的理由。\n'
+    '19. `not_covered`（E17-3）：照報告「這次沒問到的地方」那一段搬，一條一筆；kind 只能是 沒問到／含糊沒追到／無法判斷。\n'
+    '    那一段寫「無」或根本沒有，就給空陣列，不要自己編。這欄只給顧問版。\n'
 )
 
 _VERDICTS = ('值得轉給顧問', '資訊不足建議補問', '硬條件不符', '待顧問判斷')
@@ -3231,6 +3266,11 @@ def _normalize_report_json(obj, name='', job=None):
     out['route'] = {'code': route[0], 'label': route[1], 'reason': route[2]}
 
     out['consultant_followups'] = [s(x) for x in arr(obj.get('consultant_followups')) if s(x)]
+    # E17-3：這次沒問到的地方（只進顧問版；客戶版是白名單組版，不會讀這一欄）
+    out['not_covered'] = [
+        {'kind': s(x.get('kind')) if s(x.get('kind')) in ('沒問到', '含糊沒追到', '無法判斷') else '沒問到',
+         'item': s(x.get('item')), 'note': s(x.get('note'))}
+        for x in arr(obj.get('not_covered')) if isinstance(x, dict) and s(x.get('item'))][:12]
     # 2026-10-01：適合的職務方向（白名單函式，沒接這裡就會被整個丟掉）
     out['career_directions'] = [
         {'direction': s(x.get('direction')), 'why': s(x.get('why')), 'evidence': s(x.get('evidence')),
@@ -3360,30 +3400,41 @@ CAREER_DIRECTIONS_UNSPECIFIED = (
     '「## 適合的職務方向」是這份報告最重要的一段，請寫完整。')
 
 
-def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
-    """面談結束：產報告、寫回 D1、通知顧問。
-
-    abandoned=True 代表候選人中途離開，沒有正式收尾。
-    報告照樣要產——談到一半的內容也是資訊，而且顧問要知道他是在哪一題走的。
-
-    close=False 代表**只產報告、不關房間**（狀態存成 paused）。
-    ⚠️ 2026-08-10 加：原本候選人離開 15 分鐘就直接關房，顧問還在忙、
-    根本來不及看到通知，等他要處理時房間已經關了，候選人回來只看到
-    「面談已結束」。報告要早點給顧問（那是他判斷的依據），
-    但房間要留著給候選人回來——這是兩件事，不該綁在一起。
-    """
-    clear_static_cache(app_id)  # 面談結束，這場的快取沒用了，清掉避免常駐程序記憶體一直長
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    if close:
-        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}', "
-           f"status='interviewed' WHERE id={q(app_id)}")
+def _not_covered_block(ctx):
+    """E17-3：顧問版報告多一段「這次沒問到的地方」的指示＋素材（題目計畫或職缺必要條件）。"""
+    plan = ctx.get('plan') or {}
+    qs = [x for x in (plan.get('questions') or []) if isinstance(x, dict) and x.get('q')]
+    if qs:
+        src = ('\n\n【這場事先擬好的題目計畫（給「該問沒問」比對用，不是逐字稿）】\n'
+               + '\n'.join(f"{i}. {x['q']}（想確認：{x.get('why') or '—'}）" for i, x in enumerate(qs, 1)))
     else:
-        # paused：房間還開著，候選人用原連結回來就能接續（Worker 的 /chat/send
-        # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
-        d1(f"UPDATE applications SET interview_state='paused', "
-           f"status='interviewed' WHERE id={q(app_id)}")
+        src = ('\n\n（這場沒有事先擬好的題目計畫——改拿【職缺硬條件】的必要條件逐條對照：'
+               '履歷與逐字稿都找不到證據的條件，列為「沒問到」。）')
+    return src + NOT_COVERED_MD_RULE
 
-    conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} ORDER BY id ASC")
+
+NOT_COVERED_MD_RULE = (
+    '\n\n📋 另外加一段「## 這次沒問到的地方」（**只給顧問看，客戶版不會出現**）。'
+    '位置：放在「## 適合的職務方向」之後、「建議」欄之前。'
+    '⚠️ 多這一段**不可以**讓你省略任何原本就要有的段落——尤其是「職缺匹配總結」「其他推薦職缺」「適合的職務方向」，'
+    '它們照原本的規定一樣都要寫完整。\n'
+    '把上面的題目計畫（或職缺必要條件）每一項對照逐字稿，**一條一行**列出兩種情形——\n'
+    '  ① `[沒問到]` 這場根本沒談到的項目。\n'
+    '  ② `[含糊沒追到]` 問了，但人選答得含糊（沒有數字、日期、做法、規模、結果），而且阿財沒有追問到位的項目；'
+    '請引用他那句原話。\n'
+    '格式：`[沒問到] 項目重點——一句話` ／ `[含糊沒追到] 項目重點——他說「原話」，缺什麼`。\n'
+    '規則：已經問清楚的不要列；有幾條寫幾條，沒有任何缺口就整段寫「無」；'
+    '真的判斷不出來才寫 `[無法判斷] 原因`，不要硬湊；不要在這一段評價人選，只寫事實，'
+    '讓顧問電洽時知道要補問什麼。\n'
+    '判斷標準是「還有多少與錄用有關的資訊沒拿到」，不是答案長不長——很長但沒有具體事實的答案算含糊，'
+    '很短但事實都齊的算清楚。')
+
+
+def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered=True):
+    """組顧問版初篩報告的 prompt（E17-3 從 finish() 原封不動抽出來，才能對同一場做改前／改後比較）。
+    with_not_covered=False 就是改動前的 prompt。"""
+    conv = d1(f"SELECT role, content FROM messages WHERE application_id={q(app_id)} "
+              f"AND {MK.sql_not_transition('content')} ORDER BY id ASC")
     transcript = '\n'.join(
         f'{"阿財" if m["role"] == "assistant" else "候選人"}：{m["content"]}'
         for m in conv if m['content'] != '（候選人已進入面談室）')
@@ -3433,7 +3484,35 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
            '推測是關掉視窗離開。請在報告開頭註明「面談未完成（候選人中途離開）」，'
            '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
            if abandoned else '')
+        + (_not_covered_block(ctx) if with_not_covered else '')
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
+    return prompt
+
+
+def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
+    """面談結束：產報告、寫回 D1、通知顧問。
+
+    abandoned=True 代表候選人中途離開，沒有正式收尾。
+    報告照樣要產——談到一半的內容也是資訊，而且顧問要知道他是在哪一題走的。
+
+    close=False 代表**只產報告、不關房間**（狀態存成 paused）。
+    ⚠️ 2026-08-10 加：原本候選人離開 15 分鐘就直接關房，顧問還在忙、
+    根本來不及看到通知，等他要處理時房間已經關了，候選人回來只看到
+    「面談已結束」。報告要早點給顧問（那是他判斷的依據），
+    但房間要留著給候選人回來——這是兩件事，不該綁在一起。
+    """
+    clear_static_cache(app_id)  # 面談結束，這場的快取沒用了，清掉避免常駐程序記憶體一直長
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if close:
+        d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}', "
+           f"status='interviewed' WHERE id={q(app_id)}")
+    else:
+        # paused：房間還開著，候選人用原連結回來就能接續（Worker 的 /chat/send
+        # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
+        d1(f"UPDATE applications SET interview_state='paused', "
+           f"status='interviewed' WHERE id={q(app_id)}")
+
+    prompt = build_report_prompt(app_id, ctx, job_slug, abandoned)
     _before_files = _snapshot_session_files()
     _t_cli = time.time()
     try:
@@ -3803,10 +3882,60 @@ def _resumed_after_idle_wrap(app_id):
     return any(m.get('role') == 'candidate' and m['id'] > last_idle for m in rows)
 
 
+# ── 等待過渡語（E17-1，2026-10-08）────────────────────────────
+# 人選講完話超過 TRANSITION_AFTER_SEC 秒阿財還沒回，由**程式**（不是 LLM）送一句固定的話，
+# 讓他知道有人在處理，不用乾等、也不用傳「你還好？」（那會讓阿財多算一輪甚至重問，見 10/6 楊政翰）。
+#
+# 守衛全部放在同一句 SQL（interview_markers.sql_send_transition）：最後一則是人選講的、不是進房標記、
+# 這一輪還沒送過。所以主力機＋備援機同時撞到同一場、或正式回覆剛好同時寫入，都只會多一次「沒寫入」，
+# 不會變成兩句、也不會出現在正式回覆「之後」。close() 只是少打一次 D1，不是正確性的來源。
+# 這句存進 messages（人選的畫面靠它、也是法律證據），但所有「誰在等」「給 LLM 的歷史」「報告」都已排除它。
+TRANSITION_AFTER_SEC = 60       # 要調的話只改這個常數；<=0 代表關閉（E17b：Mac 審核 40→60，40 秒平均每場 3.2 次太機械）
+TRANSITION_MIN_DELAY_SEC = 0.5  # 人選其實已經等超過 60 秒了（搶鎖、輪詢耗時）也至少等這麼久再送，避免跟正式回覆擠在同一瞬間
+
+
+class _Transition:
+    def __init__(self, app_id, name, waited=0):
+        self.app_id, self.name = app_id, name
+        self._closed = False
+        self._timer = None
+        # 人選已經等的時間要扣掉（輪詢、搶鎖也要時間），不是從 handle() 開始才重新算 40 秒
+        self._delay = max(TRANSITION_MIN_DELAY_SEC, TRANSITION_AFTER_SEC - (waited or 0))
+
+    def start(self):
+        if TRANSITION_AFTER_SEC <= 0:
+            return
+        self._timer = threading.Timer(self._delay, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _fire(self):
+        if self._closed:
+            return
+        try:
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            last = d1(f"SELECT content FROM messages WHERE application_id = {q(self.app_id)} "
+                      f"AND NOT ({MK.sql_not_transition('content')}) ORDER BY id DESC LIMIT 1")
+            text = MK.pick_transition(last[0]['content'] if last else None)   # 三句輪替，同一場不連續兩次同一句
+            d1(MK.sql_send_transition(q(self.app_id), q(now), text))
+            log(f'⏳ {self.name}：等超過 {TRANSITION_AFTER_SEC} 秒，已嘗試送等待過渡語'
+                f'（最後一則不是人選講的、或這輪送過，SQL 守衛會自己擋掉）')
+        except Exception as e:
+            log(f'⚠️ {self.name}：送等待過渡語失敗（不影響正式回覆）：{str(e)[:120]}')
+
+    def close(self):
+        self._closed = True
+        t = self._timer
+        if t is not None:
+            t.cancel()
+
+
 def handle(app):
     app_id, name = app['id'], app['name']
     rate_limited = False
     _mark_host(app_id, name)
+    _trans = _Transition(app_id, name, _waited_sec(app))
+    _trans.start()
     try:
         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
         ctx = context_for(app_id)
@@ -3853,6 +3982,7 @@ def handle(app):
             return
         _stale_discards.pop(app_id, None)
 
+        _trans.close()      # 正式回覆已經算好、要寫入了，不要再送過渡語
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
         if not msgs:
             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
@@ -3910,7 +4040,7 @@ def handle(app):
             # 這時再塞「系統出了點狀況」只會讓他收到矛盾的訊息。已回過就只記 log，不插訊息、不發 TG。
             try:
                 _last = d1(f"SELECT role FROM messages WHERE application_id={q(app_id)} "
-                           f"ORDER BY id DESC LIMIT 1")
+                           f"AND {MK.sql_not_transition('content')} ORDER BY id DESC LIMIT 1")
                 if _last and _last[0].get('role') == 'assistant':
                     # 總指揮 2026-10-02 調整：不插道歉訊息，但 TG 還是講一聲（改成「不用接手」的告知），
                     # 不然這輪如果是在回完之後的步驟（收尾、產報告）失敗，會完全沒人知道。
@@ -3931,6 +4061,7 @@ def handle(app):
             tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
                THREAD_DECIDE)
     finally:
+        _trans.close()
         # 額度打滿：不釋放鎖，改成延長鎖到 RATE_LIMIT_RETRY_SEC 之後才能再搶——
         # 節流用，不要每 8 秒就打一次注定失敗的 claude。一般錯誤照舊立刻放鎖。
         if rate_limited:
@@ -3998,19 +4129,38 @@ PLAN_PROMPT = (
 )
 
 
+# E17-2：預約時間（status='scheduled'、remind_at 在未來）在 PLAN_SCHEDULED_LEAD_HOURS 小時內、
+# 而且已經交卷（或中高階免測驗）的人選，不等他點進面談室就先準備。
+# 條件刻意跟原本 'ready' 那一支一模一樣（交卷或免測驗才算），所以素材跟他進房時完全相同，
+# 「提早擬的計畫看不到測驗結果」這個風險不存在。還沒交卷的人選一律不做（見 E17 回報：沒把握不傷品質就不做）。
+PLAN_SCHEDULED_LEAD_HOURS = 24
+
+
+def _scheduled_window_sql(col='a.remind_at'):
+    now = datetime.datetime.now()
+    lo = now.strftime('%Y-%m-%d %H:%M:%S')
+    hi = (now + datetime.timedelta(hours=PLAN_SCHEDULED_LEAD_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
+    return f"({col} IS NOT NULL AND {col} > {q(lo)} AND {col} <= {q(hi)})"
+
+
 def plan_candidates():
     """還沒擬題目計畫的人。條件跟開場白預熱一樣——中高階免測驗、其他人要先交卷。
 
     ⚠️ 也撈「已經在面談中但還沒有計畫」的：計畫功能上線前就已經進房間的人，
        以及預熱那輪剛好失敗的人，都要補上，不然他們整場都走慢的那條路。
     """
-    return d1("""
+    return d1(f"""
         SELECT a.id, a.name, a.job_slug FROM applications a
          LEFT JOIN jobs j ON j.slug = a.job_slug
          WHERE a.interview_plan_json IS NULL
            AND (
              (a.status = 'ready'
               AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+              AND (COALESCE(j.seniority, 'mid') = 'senior'
+                   OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
+             OR (a.status = 'scheduled'
+              AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+              AND {_scheduled_window_sql()}
               AND (COALESCE(j.seniority, 'mid') = 'senior'
                    OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
              OR a.interview_state = 'active'
@@ -4032,22 +4182,24 @@ def do_plan(app):
         # 只把最後的任務換掉——素材蒐集的邏輯只維護一份，不要另外抄一套。
         material = build_prompt(ctx, '（面談規範這裡不需要，你只是在擬題目）')
         _before = _snapshot_session_files()
-        result = run_claude(material + '\n\n─────────────\n' + PLAN_PROMPT)
+        result = run_claude(material + '\n\n─────────────\n' + PLAN_PROMPT,
+                            first_try=BG_FIRST_TRY_SEC, total=BG_TOTAL_SEC)
         log_token_usage(app_id, 'plan', material, _before)
         qs = [x for x in (result.get('questions') or []) if isinstance(x, dict) and x.get('q')]
         if not qs:
             log(f'⚠️ {name}：題目計畫產出是空的，這場照舊走現場生成')
-            _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
+            _plan_mark_failed(app_id, name)
             return
         plan = {'questions': qs[:12],
                 'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         d1(f"UPDATE applications SET interview_plan_json={q(json.dumps(plan, ensure_ascii=False))}, "
            f"interview_plan_at={q(now)} WHERE id={q(app_id)} AND interview_plan_json IS NULL")
+        _plan_fails.pop(app_id, None)
         log(f'{name}：題目計畫已擬好（{len(plan["questions"])} 題、預測 {len(plan["faq"])} 個提問）')
     except Exception as e:
         log(f'⚠️ {name}（{app_id}）擬題目計畫失敗（不影響面談）：{e}')
-        _plan_cooldown[app_id] = time.time() + PLAN_COOLDOWN_SEC
+        _plan_mark_failed(app_id, name)
     finally:
         # 不 release_lock、不動 _busy：擬計畫現在不佔那兩樣（見檔案上方 _plan_busy 的說明）
         with _lock:
@@ -4120,6 +4272,61 @@ def talk_skill(ctx):
     return skill('talk', ctx.get('job'))
 
 
+# E17-2：準備好的東西會過期。職缺或顧問的面談前交代（pre_interview_note）在計畫／開場白擬好之後
+# 又被改了，就作廢重擬。真實案例：10/8 陳鵬仁、蔡依庭——交代 17:29 改過，計畫（15:21／16:24）
+# 沒有跟著作廢，開場白是 Mac 手動清掉的。提早準備會把「擬好」到「進房」的空檔拉長，這個檢查就更重要。
+#
+# 規則：只動還沒進房間的人；用「擬好的時間」做比較再更新（compare-and-set），
+# 不會把剛重擬好的新版又刪掉；同一個人最多作廢 STALE_PREP_MAX 次，避免職缺被連續改動時一直重擬。
+STALE_PREP_MAX = 3
+STALE_PREP_CHECK_SEC = 60
+_stale_prep_count = {}
+_stale_prep_checked_at = 0.0
+
+
+def invalidate_stale_prepared():
+    global _stale_prep_checked_at
+    if time.time() - _stale_prep_checked_at < STALE_PREP_CHECK_SEC:
+        return
+    _stale_prep_checked_at = time.time()
+    rows = d1("""
+        SELECT a.id, a.name, a.interview_plan_at, a.prewarmed_at,
+               a.pre_interview_note_at, j.updated_at AS job_updated_at, e.edited_at AS expertise_edited_at
+          FROM applications a
+          LEFT JOIN jobs j ON j.slug = a.job_slug
+          LEFT JOIN job_expertise e ON e.job_slug = a.job_slug
+         WHERE a.status IN ('ready', 'scheduled')
+           AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+           AND (a.interview_plan_json IS NOT NULL OR a.prewarmed_opening IS NOT NULL)
+    """) or []
+    for r in rows:
+        changed = max([x for x in (r.get('pre_interview_note_at'), r.get('job_updated_at'),
+                                   r.get('expertise_edited_at')) if x] or [''])
+        if not changed:
+            continue
+        app_id, name = r['id'], r['name']
+        if _stale_prep_count.get(app_id, 0) >= STALE_PREP_MAX:
+            continue
+        done = []
+        if r.get('interview_plan_at') and changed > r['interview_plan_at']:
+            d1(f"UPDATE applications SET interview_plan_json=NULL, interview_plan_at=NULL "
+               f"WHERE id={q(app_id)} AND interview_plan_at={q(r['interview_plan_at'])} "
+               f"AND (interview_state IS NULL OR interview_state='not_started')")
+            _plan_cooldown.pop(app_id, None)
+            _plan_fails.pop(app_id, None)
+            done.append('題目計畫')
+        if r.get('prewarmed_at') and changed > r['prewarmed_at']:
+            d1(f"UPDATE applications SET prewarmed_opening=NULL, prewarmed_at=NULL "
+               f"WHERE id={q(app_id)} AND prewarmed_at={q(r['prewarmed_at'])} "
+               f"AND (interview_state IS NULL OR interview_state='not_started')")
+            done.append('開場白')
+        if done:
+            _stale_prep_count[app_id] = _stale_prep_count.get(app_id, 0) + 1
+            clear_static_cache(app_id)
+            log(f'♻️ {name}：職缺或面談前交代在擬好之後改過（{changed}），{"、".join(done)}已作廢，會重擬'
+                f'（第 {_stale_prep_count[app_id]}/{STALE_PREP_MAX} 次）')
+
+
 def prewarm_candidates():
     """核准後、還沒點進面談室的候選人：趁空檔先幫他們把開場白生成好存起來，
     候選人真的點進來時就能秒收到第一句，不用等 daemon 下一輪輪詢＋現場生成。
@@ -4127,10 +4334,10 @@ def prewarm_candidates():
     條件跟 Worker 的 needAssessment 閘門一致（中高階免測驗、其他人要先交卷），
     否則會浪費一次 token 去預熱一個候選人根本還進不了房間的開場白。
     """
-    return d1("""
+    return d1(f"""
         SELECT a.id, a.name, a.job_slug FROM applications a
          LEFT JOIN jobs j ON j.slug = a.job_slug
-         WHERE a.status = 'ready'
+         WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}))
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND a.prewarmed_opening IS NULL
            AND (COALESCE(j.seniority, 'mid') = 'senior'
@@ -4150,7 +4357,7 @@ def do_prewarm(app):
         ctx = context_for(app_id)
         talk_prompt = build_prompt(ctx, skill('talk', ctx.get('job')))
         _before_files = _snapshot_session_files()
-        result = run_claude(talk_prompt)
+        result = run_claude(talk_prompt, first_try=BG_FIRST_TRY_SEC, total=BG_TOTAL_SEC)
         log_token_usage(app_id, 'prewarm', talk_prompt, _before_files)
 
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
@@ -4169,9 +4376,9 @@ def do_prewarm(app):
 
 def paused_sessions():
     """已經產過報告、但房間還留著的場次。"""
-    return d1("""
+    return d1(f"""
         SELECT a.id, a.name, a.job_slug, a.hold_until,
-               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id
+               (SELECT m.created_at FROM messages m WHERE m.application_id = a.id AND {_NOT_T}
                  ORDER BY m.id DESC LIMIT 1) AS last_at
           FROM applications a
          WHERE a.interview_state = 'paused'
@@ -4296,6 +4503,10 @@ def tick():
 
     # 預熱排在最後——優先權最低，只在真人面談都排開了、還有空的 slot
     # 才會被下面的迴圈撿去跑，絕對不跟真正在等阿財回話的候選人搶名額。
+    try:
+        invalidate_stale_prepared()
+    except Exception as e:
+        log(f'檢查計畫／開場白是否過期失敗（不影響面談）：{str(e)[:120]}')
     try:
         prewarm_rows = prewarm_candidates()
     except Exception as e:

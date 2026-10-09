@@ -345,7 +345,8 @@ def verify_interview_accuracy(application_id, verifier_run_id='cli-manual'):
     job_slug = app.get('job_slug')
 
     messages = d1(f"SELECT role, content, created_at FROM messages "
-                  f"WHERE application_id={q(application_id)} AND role='assistant' ORDER BY id")
+                  f"WHERE application_id={q(application_id)} AND role='assistant' "
+                  f"AND {__import__('interview_markers').sql_not_transition('content')} ORDER BY id")
     if not messages:
         vid = log_verification('interview_accuracy', application_id, verifier_run_id,
                                'INSUFFICIENT_EVIDENCE',

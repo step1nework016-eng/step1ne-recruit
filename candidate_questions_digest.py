@@ -46,6 +46,7 @@ def fetch(days):
     for r in rows:
         by_app.setdefault(r['application_id'], []).append(r)
     for msgs in by_app.values():
+        msgs = [x for x in msgs if not __import__('interview_markers').is_transition(x.get('content'))]   # E17：等待過渡語不算阿財的回答
         for i, m in enumerate(msgs):
             c = (m.get('content') or '').strip()
             if m['role'] != 'candidate' or c.startswith('（') or not Q_PAT.search(c):

@@ -1174,6 +1174,13 @@ def build_consultant_html(data, meta):
                         f'（原本標為「建議客戶面試追問」——規格要求送出前自己先補齊，'
                         f'不要列給客戶）</span></li>' for x in sug)
 
+    # E17-3：這次沒問到的地方——**只進顧問版**（規格同 consultant_followups：整段不進客戶版）
+    notcovered = ''.join(
+        f'<li><b>{e(r.get("kind"))}</b>　{e(r.get("item"))}'
+        + (f'<br><span style="color:var(--ink3);font-size:12.5px">{e(r.get("note"))}</span>'
+           if r.get('note') else '') + '</li>'
+        for r in (data.get('not_covered') or []) if isinstance(r, dict) and r.get('item'))
+
     resume = meta.get('resume') or {}
     files = []
     if resume.get('kind') == 'file':
@@ -1234,6 +1241,7 @@ def build_consultant_html(data, meta):
         'SPEC': spec_html,
         'SPEC_NOTE': '',
         'FOLLOWUPS': fups,
+        'NOTCOVERED': notcovered,
         'SYSREC': sysrec,
     }, {
         'values': bool(data.get('values')),
@@ -1248,6 +1256,7 @@ def build_consultant_html(data, meta):
         'forclient': bool(reasons or risks_html),
         'spectrum': bool(spec_rows),
         'followups': bool(fups),
+        'notcovered': bool(notcovered),
     })
 
 

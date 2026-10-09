@@ -89,10 +89,13 @@ check('鎖還有效不清', calls == [])
 
 # 5 過渡語不算正式回覆（若 interview_markers 存在）
 if W.MK:
-    t = W.MK.TRANSITION_TEXTS[0]
-    ms5 = [msg('candidate', '請問', M(0)), msg('assistant', t, M(1))]
-    acts, _ = W.decide(M(5), [app(id='D1')], {'D1': ms5}, {}, FIX_OK)
-    check('過渡語不算回覆，仍然警報', kinds(acts) == ['slow'])
+    for k, t in enumerate(W.MK.TRANSITION_TEXTS):
+        ms5 = [msg('candidate', '請問', M(0)), msg('assistant', t, M(1))]
+        acts, _ = W.decide(M(5), [app(id=f'D{k}')], {f'D{k}': ms5}, {}, FIX_OK)
+        check(f'過渡語第 {k + 1} 句不算回覆，仍然警報', 'slow' in kinds(acts))
+    ms5 = [msg('candidate', '請問', M(0)), msg('assistant', W.MK.TRANSITION_TEXTS[0], M(1)), msg('assistant', '好的，薪資範圍是…', M(2))]
+    acts, _ = W.decide(M(5), [app(id='D9')], {'D9': ms5}, {}, FIX_OK)
+    check('過渡語後正式回覆到了就不警報', 'slow' not in kinds(acts))
 else:
     print('SKIP 過渡語（interview_markers 尚未上線；邏輯已用 is_transition 預留）')
 

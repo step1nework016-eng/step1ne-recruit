@@ -48,6 +48,25 @@ def find_prior_ai_report(app_id):
     return None
 
 
+def strip_not_covered(md):
+    """E17b（Mac 審核 2026-10-09）：阿財報告的「這次沒問到的地方」整段拿掉再帶進電洽合併。
+    電洽已經把缺口問過了，留著那段會變成過時資訊。段落範圍：該標題那一行起，到下一個同級或更高級標題之前（或文末）。"""
+    import re
+    lines = (md or '').split('\n')
+    out, skip, level = [], False, 0
+    for ln in lines:
+        m = re.match(r'^(#{1,6})\s*(.*)$', ln)
+        if m:
+            if skip and len(m.group(1)) <= level:
+                skip = False
+            if not skip and '這次沒問到的地方' in m.group(2):
+                skip, level = True, len(m.group(1))
+                continue
+        if not skip:
+            out.append(ln)
+    return '\n'.join(out)
+
+
 def build(app_id, notes, by):
     rows = D.d1(f"SELECT id, name, job_slug, interview_state FROM applications WHERE id={D.q(app_id)}")
     if not rows:
@@ -69,7 +88,7 @@ def build(app_id, notes, by):
     prior_block = (
         '\n\n【這個人選先前跟阿財面談產生的原始報告——這次電訪內容要跟這份對照、'
         '互相補充，不是重新寫一份，兩邊都提到的地方以更晚、更明確的說法為準】\n'
-        + prior['content_md']
+        + strip_not_covered(prior['content_md'])
         if prior else '')
 
     merge_instruction = (
@@ -77,6 +96,7 @@ def build(app_id, notes, by):
         '第二次接觸，顧問又親自電訪一次。請把兩次接觸的資訊合併成一份新報告：\n'
         '  - 阿財面談問到的、電訪沒再問的，繼續保留在新報告裡，不要因為這次沒問到就刪掉。\n'
         '  - 電訪這次新問到、阿財面談沒問到的，補進去。\n'
+        '  - 先前報告的「這次沒問到的地方」那一段已經移除（電訪已經問過了），新報告**不要**有這一段、也不要重建。\n'
         '  - 兩邊都問到但答案不一樣的（例如期望待遇改了），以電訪這次（比較新）為準，'
         '並註明「（電訪更新：原本 XXX，現在 XXX）」，不要默默改掉沒講。\n'
         '  - 報告開頭除了「資料來源：顧問電訪」，再加一行「本報告整合阿財面談'
