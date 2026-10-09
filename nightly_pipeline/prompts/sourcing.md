@@ -72,6 +72,15 @@ python3 d1q.py q "SELECT s.headline, s.company, s.skills, s.fit, s.note, s.rejec
 python3 d1q.py q "SELECT c.result, c.fit, c.note, s.headline, s.company FROM sourced_call_logs c
   JOIN sourced_candidates s ON s.id=c.sourced_id WHERE c.job_slug='職缺代號' ORDER BY c.created_at DESC LIMIT 40"
 ```
+```bash
+python3 d1q.py q "SELECT f.verdict, f.reasons, f.note, COALESCE(s.headline, a.job_title) AS headline, s.company
+  FROM pick_feedback f
+  LEFT JOIN sourced_candidates s ON f.kind='sourced' AND s.id=f.ref_id
+  LEFT JOIN candidate_job_recommendations r ON f.kind='rec' AND r.id=f.ref_id
+  LEFT JOIN applications a ON a.id=r.application_id
+  WHERE f.job_slug='職缺代號' ORDER BY f.updated_at DESC LIMIT 40"
+```
+- 上面這張是**顧問在滑卡頁按的「AI 找得準嗎？」**（2026-10-09 加）：`good`＝準、`bad`＝不準，`reasons`／`note` 是原因。**這是顧問直接告訴你哪裡找歪了，權重最高**——例如很多 `bad` 寫「產業不對」，今晚就要換產業關鍵字；`good` 的那幾位是標準答案，照他們的背景多找。
 - 被標 `unfit` 的是哪一類人（什麼背景、什麼職稱、什麼公司），今晚**避開這一類**。
 - 被標 `fit` 的是哪一類人，今晚**多找這一類**。
 - 還沒有任何評分，就照職缺條件找。

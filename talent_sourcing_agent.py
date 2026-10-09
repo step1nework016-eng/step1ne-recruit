@@ -143,6 +143,30 @@ def grading_block(job):
 '''
 
 
+def load_pick_feedback(job_slug):
+    """2026-10-09 Jacky：顧問在滑卡頁按的「AI 找得準嗎？」＋原因，整理成白話給這輪找人參考。"""
+    try:
+        rows = D.d1(
+            "SELECT f.verdict, f.reasons, f.note, COALESCE(s.headline, a.job_title) AS headline, s.company "
+            "FROM pick_feedback f "
+            "LEFT JOIN sourced_candidates s ON f.kind='sourced' AND s.id=f.ref_id "
+            "LEFT JOIN candidate_job_recommendations r ON f.kind='rec' AND r.id=f.ref_id "
+            "LEFT JOIN applications a ON a.id=r.application_id "
+            f"WHERE f.job_slug='{job_slug.replace(chr(39), chr(39)*2)}' ORDER BY f.updated_at DESC LIMIT 40") or []
+    except Exception:
+        return ''
+    if not rows:
+        return ''
+    lines = []
+    for r in rows:
+        tag = '👍準' if r.get('verdict') == 'good' else '👎不準'
+        who = '／'.join(x for x in (r.get('headline'), r.get('company')) if x) or '（無職稱資料）'
+        why = '、'.join(x for x in (r.get('reasons'), r.get('note')) if x)
+        lines.append(f'- {tag}｜{who}' + (f'｜原因：{why}' if why else ''))
+    return ('顧問在滑卡頁對上一批人選的回饋（權重最高；👎 的那類今天避開，👍 的那類是標準答案、照著多找）：\n'
+            + '\n'.join(lines))
+
+
 def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_n=0, gate_text=''):
     jd_text = '\n'.join(f'{k}: {v}' for k, v in job.items() if v not in (None, ''))
     learnings_block = ''
@@ -934,7 +958,11 @@ def main():
     gate_text = load_job_gate(a.job)
     if gate_text:
         log(f'已載入職缺專屬閘門：job_gates/{a.job}.md（{len(gate_text)} 字）')
-    prompt = build_prompt(job, a.sample_only, a.learnings, ledger_text, ledger_n, gate_text)
+    fb_text = load_pick_feedback(a.job)
+    if fb_text:
+        log(f'已載入滑卡頁顧問回饋：{fb_text.count(chr(10))} 筆')
+    learnings = '\n\n'.join(x for x in (a.learnings, fb_text) if x) or None
+    prompt = build_prompt(job, a.sample_only, learnings, ledger_text, ledger_n, gate_text)
 
     ok, out = run_claude(prompt)
     if not ok:
