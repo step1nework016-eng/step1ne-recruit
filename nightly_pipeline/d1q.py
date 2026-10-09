@@ -109,12 +109,67 @@ GRADE_KEYS = ('must_check', 'function_match', 'industry_required', 'industry_mat
 NO_PROFILE_LOG = os.path.join(os.path.dirname(HERE), 'sourcing_runs', 'no_profile_leads.jsonl')
 
 
+def _claimed_grade(r):
+    """AI 自己評的等第（沒給 grade 就看分數），跟 sourcing_quality.enforce_grade 的算法一致。"""
+    g = str(r.get('grade') or '').strip().upper()[:1]
+    if g and g in 'ABCD':
+        return g
+    try:
+        s = int(float(r.get('fit_score') if r.get('fit_score') is not None else r.get('score') or 0))
+    except (TypeError, ValueError):
+        s = 0
+    return 'A' if s >= 80 else 'B' if s >= 60 else 'C' if s >= 40 else 'D'
+
+
+def _must_check_problems(r, conds):
+    """E19（2026-10-09，Jacky 核准）：AI 自評 A／B 的人，must_check 要把職缺的每一條必要條件編號都填滿、
+    status 只能是 met／unmet／unknown。缺編號或 status 亂寫，過去是靜默降成 C（10/9 培訓工程設計工程師就是漏填一條，
+    兩位被降級，模型自己都不知道）——改成直接報錯，讓它補齊再寫。
+    自評 C／D 的不查（本來就不該花時間寫進來）；職缺沒有必要條件（conds 空）也不查。沒問題回 None。"""
+    if not conds or _claimed_grade(r) not in ('A', 'B'):
+        return None
+    checks = r.get('must_check')
+    have = {}
+    if isinstance(checks, list):
+        for x in checks:
+            try:
+                have[int(x.get('no'))] = str(x.get('status') or '').strip().lower()
+            except (TypeError, ValueError, AttributeError):
+                continue
+    missing = [c for c in conds if c['no'] not in have]
+    bad_status = [(c, have[c['no']]) for c in conds if c['no'] in have and have[c['no']] not in ('met', 'unmet', 'unknown')]
+    if not missing and not bad_status:
+        return None
+    return {'missing': missing, 'bad_status': bad_status, 'no_list': not isinstance(checks, list)}
+
+
+def _must_check_error(bad_rows):
+    lines = ['❌ 這次沒有寫入任何一筆：自評 A／B 的人選，must_check 沒有把職缺的必要條件逐條填完。',
+             '   （缺編號不會再被靜默降級——請補齊後把同一筆重新 insert 一次。）']
+    slugs = []
+    for name, slug, pr in bad_rows:
+        slugs.append(slug)
+        lines.append(f'• 人選「{name}」（職缺 {slug}）：')
+        if pr['no_list']:
+            lines.append('    完全沒有附 must_check（要是 [{"no":編號,"status":"met|unmet|unknown","evidence":"…"}, …]）。')
+        if pr['missing']:
+            lines.append('    缺這幾條的編號：' + '、'.join(str(c['no']) for c in pr['missing']))
+            for c in pr['missing']:
+                lines.append(f"      {c['no']}. {c['text'][:80]}" + ('（只能電話確認，公開資料看不到就填 unknown）' if c['kind'] == 'phone' else ''))
+        for c, st in pr['bad_status']:
+            lines.append(f"    編號 {c['no']} 的 status 寫成「{st or '空白'}」，只能是 met／unmet／unknown")
+    lines.append('→ 完整編號清單：' + '；'.join(f'python3 d1q.py conds {s}' for s in sorted(set(slugs))) +
+                 '。公開資料看不到的條件填 unknown（沒寫到不是 unmet），**不要省略任何一條**。')
+    return '\n'.join(lines)
+
+
 def _sourced_gate(rows):
     """關卡一：沒有個人頁（只有新聞／公告／公司官網／名錄）→ 不寫入，記到本機線索檔。
     關卡二：用 AI 附的逐條對照（must_check 等欄位，這些不是資料表欄位，寫入前拿掉）算等第上限；
-    沒附逐條對照的最高 C。A 仍然要 verify_status='verified' 才留得住（10/6 規則）。"""
+    沒附逐條對照的最高 C。A 仍然要 verify_status='verified' 才留得住（10/6 規則）。
+    關卡二之前（10/9 加）：自評 A／B 的人 must_check 缺條件編號或 status 不合法 → 整批報錯、不寫入（見 _must_check_problems）。"""
     import sourcing_quality as Q  # noqa: E402（上層資料夾，已在 sys.path）
-    jobs, kept = {}, []
+    jobs, kept, bad_rows = {}, [], []
     for r in rows:
         if not isinstance(r, dict):
             kept.append(r)
@@ -136,6 +191,10 @@ def _sourced_gate(rows):
             jobs[slug] = (_post('SELECT * FROM jobs WHERE slug=?', [slug]).get('results') or [{}])[0]
         job = jobs[slug]
         conds = Q.job_conditions(job)
+        pr = _must_check_problems(r, conds)
+        if pr:
+            bad_rows.append((r.get('name') or '（沒名字）', slug, pr))
+            continue
         g, score, reason, det = Q.enforce_grade(r, conds, verified=(r.get('verify_status') == 'verified'))
         if r.get('grade') and r.get('grade') != g:
             print(f"↘︎ {r.get('name')}：AI 評 {r.get('grade')}，逐條對照後 {g}（{'；'.join(det['why']) or '—'}）")
@@ -155,6 +214,9 @@ def _sourced_gate(rows):
         for k in GRADE_KEYS:
             r.pop(k, None)
         kept.append(r)
+    if bad_rows:
+        # 整批都不寫（一次報完所有問題，避免寫一半）；模型補齊後重新 insert
+        raise SystemExit(_must_check_error(bad_rows))
     return kept
 
 

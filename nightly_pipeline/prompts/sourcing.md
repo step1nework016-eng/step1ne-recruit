@@ -163,7 +163,8 @@ python3 d1q.py q "SELECT id, job_slug FROM sourced_candidates WHERE (linkedin_ur
 }
 ```
 - `must_check` 每一條必要條件都要有一筆（`no` 用 `d1q.py conds` 的編號），`status` 只能是 met／unmet／unknown。
-  **沒附 `must_check` 的，程式一律當 C**。`grade_reason`、`must_check`、`function_match`、`industry_*` 不是資料表欄位，程式會收進 raw_json。
+  **自評 A／B 的人，`must_check` 缺任何一條編號（或 `status` 不是 met／unmet／unknown），程式會直接報錯、整筆不寫入並列出缺的編號**——
+  不會再靜默降級；請照錯誤訊息補齊（公開資料看不到的填 unknown，不要省略），再把同一筆重新 insert 一次。自評 C／D 的不用逐條（本來就不必寫進來）。`grade_reason`、`must_check`、`function_match`、`industry_*` 不是資料表欄位，程式會收進 raw_json。
 - `note` 照這個格式：`符合原因：（對上職缺哪幾點；junior／entry 職缺寫意願和接觸過什麼）｜聯絡方式來源：（在哪一頁看到的）`。
   寫入時程式會改寫成「符合原因／幾級依據／聯絡方式來源」，你照填就好。
 
