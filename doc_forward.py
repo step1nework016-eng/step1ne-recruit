@@ -64,7 +64,10 @@ def att_text(fn, data):
                         if x and x not in cells:
                             cells.append(x)
                     lines.append(' | '.join(cells))
-            return '\n'.join(lines), len(d.inline_shapes)
+            # 2026-10-09 修：照片常用「浮動圖片」(wp:anchor) 放，inline_shapes 數不到（杜偉銘的照片被誤判成沒有）。
+            # 改成數文件裡實際引用的圖片檔。
+            n_img = sum(1 for r in d.part.rels.values() if 'image' in r.reltype)
+            return '\n'.join(lines), n_img
         if low.endswith('.pdf'):
             import pymupdf
             d = pymupdf.open(stream=data, filetype='pdf')
