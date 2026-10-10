@@ -1,0 +1,350 @@
+diff --git a/cjk_punct.py b/cjk_punct.py
+new file mode 100644
+index 0000000..7b924dc
+--- /dev/null
++++ b/cjk_punct.py
+@@ -0,0 +1,64 @@
++"""中文句子裡的半形標點 → 全形（E24，2026-10-10）。
++
++為什麼：Jacky 測試場（林小安）阿財 48 則裡有 42 則是半形 `, ? : ;`（「好,了解,這部分您還沒有實際參與過。」），
++對外很不專業。查到的原因：那個職缺的專業題庫（job_expertise）本身就是半形標點，題目計畫照抄、阿財再照抄計畫的題目。
++其他職缺的題庫、計畫都是全形，所以其他場次幾乎沒事。模型會被素材的標點風格帶著走，所以「寫出去之前由程式確定性清洗」才是根治，
++prompt 提醒只是輔助。
++
++規則（只動「中文字旁邊」的半形，其餘一律不碰）：
++  ・目標：`,` `?` `:` `;` `!` → `，` `？` `：` `；` `！`
++  ・條件：該標點「前一個字是中日韓字」，或「後一個字（跳過一個空白）是中日韓字」。
++  ・不動：網址（https://、?x=1）、數字（10:30、3.5、1,000、45K）、整句英文（A, B）、程式碼樣式。
++  ・半形標點後面緊接一個空白、再接中文字時，一併拿掉那個空白（「好, 了解」→「好，了解」）。
++"""
++import re
++
++_CJK = r'㐀-䶿一-鿿豈-﫿'
++_MAP = {',': '，', '?': '？', ':': '：', ';': '；', '!': '！'}
++# 前一個字是中日韓字（含常見的結尾符號「」』）》〉】」之後接的情形）
++_AFTER_CJK = re.compile(r'(?<=[' + _CJK + r'」』）》〉】])([,?:;!])( ?)')
++# 後一個字（可隔一個空白）是中日韓字，而前一個字不是中日韓字（例：「OK,好的」「45K,可談」）
++_BEFORE_CJK = re.compile(r'(?<![' + _CJK + r'」』）》〉】])([,?:;!]) ?(?=[' + _CJK + r'])')
++# 網址：整段保護起來不動
++_URL = re.compile(r'https?://[^\s㐀-鿿，。！？、；：」』）》]+', re.I)
++
++
++def fix_cjk_punct(text):
++    if not isinstance(text, str) or not text:
++        return text
++    holes = []
++
++    def stash(m):
++        holes.append(m.group(0))
++        return '\x00%d\x00' % (len(holes) - 1)
++    t = _URL.sub(stash, text)
++
++    def sub_after(m):
++        # 後面是「空白＋非中文」就保留原本的空白（例：「好嗎? OK」→「好嗎？ OK」），後面是中文才拿掉空白
++        nxt = t_ref[0][m.end():m.end() + 1]
++        keep = m.group(2) if not (m.group(2) and re.match('[' + _CJK + ']', nxt or '')) else ''
++        return _MAP[m.group(1)] + keep
++    t_ref = [t]
++    t = _AFTER_CJK.sub(sub_after, t)
++    t = _BEFORE_CJK.sub(lambda m: _MAP[m.group(1)], t)
++    return re.sub('\x00(\\d+)\x00', lambda m: holes[int(m.group(1))], t)
++
++
++def deep_fix(obj):
++    """遞迴處理 dict／list／字串（題庫、題目計畫這種 JSON 結構用）。"""
++    if isinstance(obj, str):
++        return fix_cjk_punct(obj)
++    if isinstance(obj, list):
++        return [deep_fix(x) for x in obj]
++    if isinstance(obj, dict):
++        return {k: deep_fix(v) for k, v in obj.items()}
++    return obj
++
++
++def count_halfwidth(text):
++    """中文旁邊還有幾個半形標點（驗證用）。"""
++    return len(re.findall(r'(?<=[' + _CJK + r'])[,?:;!]|[,?:;!](?=[' + _CJK + r'])', fix_url_free(text or '')))
++
++
++def fix_url_free(text):
++    return _URL.sub('', text)
+diff --git a/interview_daemon.py b/interview_daemon.py
+index 50724fc..d132e5c 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -18,6 +18,7 @@ import base64, mimetypes, uuid, re   # 推報告 PDF 與履歷附件用
+ import autoupdate                    # 自動更新（見 autoupdate.py 檔頭）
+ import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
+ import interview_markers as MK   # E17：等待過渡語的標記，認得出來才排除得掉
++import cjk_punct as CP           # E24：中文旁邊的半形標點 → 全形（寫出去前的確定性清洗）
+ _NOT_T = MK.sql_not_transition('m.content')   # SQL 片段：這則不是過渡語（給別名 m 的查詢用）
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+@@ -669,6 +670,16 @@ def _trad(text):
+         return text
+ 
+ 
++def _clean_out(text):
++    """寫給候選人的話的最後一道清洗：繁體（_trad）＋中文旁邊的半形標點換全形（E24）。
++    所有 `INSERT INTO messages ... 'assistant'` 都走這支；清洗失敗就原文照送，不能讓面談卡住。"""
++    t = _trad(text)
++    try:
++        return CP.fix_cjk_punct(t)
++    except Exception:
++        return t
++
++
+ def save_report(app_id, content_md, content_json):
+     """把初篩報告寫進 D1——2026-08-13 改走 Worker 的 /admin/report-ingest，
+     不再用 wrangler d1 execute（連 --file= 都躲不過 D1 本身的單值大小上限，
+@@ -1334,6 +1345,10 @@ def fetch_job_understanding_sources(job_slug):
+             except Exception:
+                 pass
+             out['blockers'] = json.loads(ex[0].get('blockers_json') or '[]')
++            # E24：題庫本身可能是半形標點（headhunter-consultant 就是），模型會照抄進題目計畫、再抄進對候選人說的話。
++            # 讀進來就先清成全形，源頭乾淨（見 cjk_punct.py）。
++            out['expertise'] = CP.deep_fix(out['expertise'])
++            out['blockers'] = CP.deep_fix(out['blockers'])
+     except Exception as e:
+         log(f'⚠️ 專業題庫載入失敗（{job_slug}，不影響面談，只是少了專業段）：{e}')
+     try:
+@@ -1568,7 +1583,7 @@ SCHEMA_HINT = """
+ """
+ 
+ 
+-SKILL_PATH = os.path.expanduser(
++SKILL_PATH = os.environ.get('INTERVIEW_SKILL_PATH') or os.path.expanduser(     # E24：環境變數可覆蓋（模擬測試新版 SKILL 用）
+     '~/claude-projects/工作流程技能包/recruiting-workflow/interview-conductor/SKILL.md')
+ 
+ 
+@@ -2194,7 +2209,7 @@ def build_prompt(ctx, skill_md):
+         lines.append('\n─────────  這場的題目計畫（面談開始前就擬好的）  ─────────')
+         lines.append('  下面每一題都附了「他答得含糊時要追問什麼」。')
+         for i, x in enumerate(qs, 1):
+-            lines.append(f'   {i}. {x.get("q")}')
++            lines.append(f'   {i}. {x.get("q")}' + ('　🔎驗證履歷數字：追問他怎麼做到、自己負責哪一段、數字怎麼算' if x.get('verify') else ''))
+             if x.get('why'):
+                 lines.append(f'      想確認：{x["why"]}')
+             if x.get('followup'):
+@@ -2208,7 +2223,9 @@ def build_prompt(ctx, skill_md):
+                 lines.append(f'   ・Q：{x.get("q")}')
+                 lines.append(f'     A：{x.get("a")}')
+         lines.append('\n  ⚠️ **這一輪你不用自己想新題目。** 只做兩件事：')
+-        lines.append('   ① 針對他剛剛講的回一句（一句就好，不要總結、不要評價）')
++        lines.append('   ① 要不要先回應他：**不是每一輪都要**。只有需要確認你聽懂、或要轉場時才回一小句（大約三四輪一次）；'
++                     '其他輪直接接追問或下一題。回應時**不要複述他剛說的內容，不要說「我記下來了」「這段我們記錄下來」**，'
++                     '不要總結、不要評價；句型要變（例：「嗯嗯，」「懂了，」「原來是這樣，」「OK，」或直接問）。')
+         lines.append('   ② 接著問——他上一題答得含糊就用附的追問；'
+                      '答得夠具體就問下一個還沒問過的題目')
+         lines.append('  計畫是**建議不是腳本**：他自己講到計畫外的重點、'
+@@ -3691,7 +3708,7 @@ def wrap_up(app):
+             f'隨時回來都可以接著談，不用重頭開始。',
+             '想直接跟真人顧問聊也沒問題，透過下方的 LINE 告訴我們就可以。謝謝您今天撥出時間 🙏',
+         ]
+-        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in bye)
++        vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in bye)
+         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+         finish(app_id, name, app['job_slug'], context_for(app_id),
+                abandoned=True, close=False)   # 只產報告，房間留著
+@@ -3718,7 +3735,7 @@ def timeout_close(app):
+             '不好意思，我們今天的面談時間到了，先在這裡跟您告一段落。',
+             '目前談到的內容我都會整理給顧問，不管有沒有下一步都會通知您，謝謝您今天撥空 🙏',
+         ]
+-        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in bye)
++        vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in bye)
+         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+         finish(app_id, name, app['job_slug'], context_for(app_id),
+                abandoned=True, close=False)   # 只產報告，房間留著
+@@ -3871,7 +3888,7 @@ TIMEOUT_BYE_PREFIX = '不好意思，我們今天的面談時間到了'
+ 
+ def _resumed_after_idle_wrap(app_id):
+     rows = d1(f"SELECT id, role, content FROM messages WHERE application_id={q(app_id)} ORDER BY id ASC") or []
+-    idle_pre, timeout_pre = _trad(IDLE_BYE_PREFIX), _trad(TIMEOUT_BYE_PREFIX)
++    idle_pre, timeout_pre = _clean_out(IDLE_BYE_PREFIX), _clean_out(TIMEOUT_BYE_PREFIX)
+     last_idle = last_timeout = None
+     for m in rows:
+         if m.get('role') != 'assistant':
+@@ -3951,6 +3968,7 @@ def handle(app):
+         n = len(ctx.get('conversation') or [])
+         _notify_cross_job_interest(app, ctx)
+         talk_prompt = build_prompt(ctx, talk_skill(ctx))
++        talk_prompt += _pace_hints(ctx)      # E24：起手式重複／問題預算（程式數出來的提示）
+         # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
+         # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
+         #
+@@ -3993,6 +4011,7 @@ def handle(app):
+ 
+         _trans.close()      # 正式回覆已經算好、要寫入了，不要再送過渡語
+         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
++        msgs = _merge_fragments(msgs)      # E24：單獨一則「嗯，」併進下一則
+         if not msgs:
+             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
+ 
+@@ -4020,7 +4039,7 @@ def handle(app):
+                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
+ 
+         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+-        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in msgs)
++        vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in msgs)
+         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+         snap_signals(app_id, now)
+         log(f'{name}：回了 {len(msgs)} 則')
+@@ -4115,7 +4134,8 @@ PLAN_PROMPT = (
+     '你是資深獵頭顧問，正在替一場「即將開始」的文字面談擬題目計畫。\n'
+     '這份計畫會給 AI 面談助理阿財在對談當下照著走——他不會再自己想題目，\n'
+     '所以這裡要一次擬好。\n\n'
+-    '【擬 8–12 題，照該問的順序排】\n'
++    '【擬 8–10 題（中高階職缺可到 12 題），照該問的順序排】\n'
++    '（SKILL 規定基層／派遣／正職代招約 9～10 題；10/10 測試場問了約 20 題、多為表面題。**寧可少題、每題挖深。**）\n'
+     '每一題都要附一個「他答得含糊時的追問」。\n'
+     '規則：\n'
+     '1. **不要問履歷或應徵表單上已經寫清楚的事**。那等於浪費一題。\n'
+@@ -4128,12 +4148,18 @@ PLAN_PROMPT = (
+     '3. 專業題庫裡的題目要用進去，但用你自己的話問，不要照稿念。\n'
+     '3-1. 有【做事風格】段落的話，每個面向都要排一題進去（意思不變、口語化），排在專業題之後。\n'
+     '4. 一題只問一件事。兩個問題塞同一則，人選只會答其中一個。\n'
+-    '5. 不准出現年齡、性別、婚育、國籍、外貌相關的題目（就業服務法第 5 條）。\n\n'
++    '5. 不准出現年齡、性別、婚育、國籍、外貌相關的題目（就業服務法第 5 條）。\n'
++    '6. **履歷上的量化成果要驗證**（E24）：履歷寫了具體數字的成果（人數、比例、金額、件數、百分比），'
++    '挑最關鍵的 1–2 個，各排一題追問「怎麼做到的、你自己負責哪一段、這個數字怎麼算」，並在該題加 "verify":true。'
++    '不要整份履歷逐條驗證，也不要把履歷已寫清楚的事當成新題。\n'
++    '7. **薪資期待的題目要問到依據**：表單期望明顯高於職缺範圍或同職級常見水準時，那一題的 followup 要追問依據'
++    '（怎麼算的、有參考什麼、前期沒有成交或沒有獎金時怎麼看）。**不要在題目裡編獎金或薪資數字。**\n'
++    '8. 全部用全形標點（，。？：；！），不要用半形的 , ? : ; !（網址與數字除外）；題庫如果是半形也要改成全形再寫。\n\n'
+     '【另外預測 5–8 個「這位候選人很可能會問」的問題，並寫好答案】\n'
+     '答案只能根據下面提供的職缺資料，**不知道就寫「這題要轉給顧問」**——\n'
+     '寧可轉人工，也不要當場編一個薪資或福利的答案出去。\n\n'
+     '只輸出這個 JSON，不要有其他文字：\n'
+-    '{"questions":[{"q":"要問的題目原句","why":"想確認什麼","followup":"他含糊時追問這句"}],\n'
++    '{"questions":[{"q":"要問的題目原句","why":"想確認什麼","followup":"他含糊時追問這句","verify":false}],\n'
+     ' "faq":[{"q":"他可能會問的問題","a":"回答；不確定就填「這題要轉給顧問」"}]}'
+ )
+ 
+@@ -4199,8 +4225,9 @@ def do_plan(app):
+             log(f'⚠️ {name}：題目計畫產出是空的，這場照舊走現場生成')
+             _plan_mark_failed(app_id, name)
+             return
+-        plan = {'questions': qs[:12],
++        plan = {'questions': qs[:_plan_cap(ctx)],
+                 'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
++        plan = CP.deep_fix(plan)      # E24：題目計畫裡的半形標點也清掉（阿財會照抄計畫的題目原句）
+         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+         d1(f"UPDATE applications SET interview_plan_json={q(json.dumps(plan, ensure_ascii=False))}, "
+            f"interview_plan_at={q(now)} WHERE id={q(app_id)} AND interview_plan_json IS NULL")
+@@ -4250,13 +4277,89 @@ TALK_LITE = """你是「阿財」，德仁管理顧問的 AI 面談助理，正
+ ・不要評價他的答案對不對（「這個答案不錯」這種都不行）——你不是這個領域的專家，
+   專業對錯留給顧問跟用人主管判斷。
+   也不要用「聽起來算具體」「處理得算快」「這不算扣分項」「這個判斷邏輯不錯」這種講評接話——
+-  回應時只要簡短複述你聽到的重點或直接接下一題，評估留給報告。
++  評估留給報告。
++・**不要每一輪都複述他剛說的話**（E24：10/10 測試場「好,了解,……這個我記下來了。」出現近 20 次，像機器人）。
++  只有要確認你聽懂、或要轉場時才回一小句（大約三四輪一次）；其他輪直接接追問或下一題。
++  **禁用**「我記下來了」「這段我們記錄下來」「先記下來」「先記著」這類句子，也不要連兩輪用同樣的起手式（「好，了解，」）。
++  句型要變化：「嗯嗯，」「懂了，」「原來是這樣，」「OK，」或乾脆不回應、直接問。
++  **回應和問題寫在同一則訊息裡**（「嗯嗯，那你當時是怎麼處理的？」），不要把「嗯，」單獨發成一則。
++  也不要用「這很正常」「這樣很好」這種安慰／評價式的話接。
++・**該追問的不要放過**：他口頭提出的薪資／獎金期待，如果明顯高於職缺的範圍、或跟他的資歷落差很大
++  （例：沒有相關經驗卻說「底薪 40K、每季獎金超過 10 萬」），不能只說「記下來了」——客氣地追問依據
++  （怎麼算出來的、有參考什麼、前幾個月沒有成交時怎麼看），並在回給顧問的 note 寫「期待落差」。**不要自己編獎金或薪資數字。**
++  履歷上的量化成果（人數、比例、金額、件數）至少挑一個追問「怎麼做到、你自己負責哪一段」。
++・**標點一律用全形**（，。？：；！），不要用半形的 , ? : ; !（網址和數字除外）。
+ ・稱呼：一律用全名＋「您」，或直接說「您」。**不要自己加「先生／小姐」**——名字看不出性別，猜錯很失禮。
+ ・不要主動說出用人單位的公司名稱。
+ ・**對候選人絕對不要說「客戶」兩個字**（包括「客戶名稱」「客戶端」「客戶那邊」）——那是我們內部的講法，候選人聽起來像在被賣。一律改說「用人公司」「這間公司」「用人主管」。
+ 
+ 【這一輪】
+-一次最多兩則訊息：第一則回應他剛講的，第二則問下一題。"""
++一次最多兩則訊息：需要回應時第一則簡短回應（見上面「不要每一輪都複述」），第二則問下一題；不需要回應就只發一則問題。"""
++
++
++_FRAGMENT = re.compile(r'^[\s嗯懂了解好的對喔哦OKok原來是這樣啊欸…~、，,。.！!]{1,10}$')
++
++
++def _merge_fragments(msgs):
++    """E24 模擬面談：新規則讓模型有時把『嗯，』單獨發成一則，候選人看到會很怪（像打到一半）。
++    第一則如果只有一個語助詞／極短附和，就併進第二則（同一則訊息裡先附和、再問）。"""
++    if len(msgs) >= 2 and _FRAGMENT.match(str(msgs[0]).strip()):
++        return [str(msgs[0]).strip() + str(msgs[1]).strip()] + list(msgs[2:])
++    return msgs
++
++
++def _plan_cap(ctx):
++    """題目計畫最多幾題：基層／派遣／正職代招 10 題（SKILL 規定約 9～10 題），中高階 12 題。"""
++    sen = ((ctx or {}).get('job') or {}).get('seniority')
++    return 12 if sen == 'senior' else 10
++
++
++# E24：每一輪附在提示詞後面的「節奏提示」——全部由程式數出來，不靠模型自己記。
++#  ① 最近用過的起手式（10/10 測試場「好，了解，」出現近 20 次）
++#  ② 問題預算（10/10 測試場問了約 20 題，SKILL 規定基層約 9～10 題；寧可少題挖深）
++QUESTION_MARK = re.compile(r'[？?]')
++PACE_BASE_QUESTIONS = 10          # 非中高階：計畫題數上限
++PACE_FOLLOWUP_ALLOWANCE = 4       # 再加幾則追問
++OPENING_REPEAT_MIN = 2            # 同一個起手式用過幾次就提醒
++
++
++def _opening_of(text):
++    t = re.sub(r'^[\s　]+', '', str(text or ''))
++    m = re.split(r'[，,。.！!？?、\n]', t, maxsplit=1)[0]
++    return m[:8]
++
++
++def _pace_hints(ctx):
++    conv = ctx.get('conversation') or []
++    asst = [m for m in conv if m.get('role') == 'assistant']
++    if len(asst) < 3:
++        return ''
++    out = []
++    # ① 起手式
++    recent = [_opening_of(m.get('content')) for m in asst[-8:]]
++    cnt = {}
++    for o in recent:
++        if o:
++            cnt[o] = cnt.get(o, 0) + 1
++    rep = sorted([(o, n) for o, n in cnt.items() if n >= OPENING_REPEAT_MIN], key=lambda x: -x[1])
++    if rep:
++        out.append('【最近的起手式重複了（程式數的）】你最近幾則的開頭用過：'
++                   + '、'.join(f'「{o}」×{n}' for o, n in rep[:4])
++                   + '。**這一輪不要再用這些起手式**，也不要說「我記下來了」；直接接追問，或換一種（「嗯嗯，」「懂了，」「原來是這樣，」「OK，」）。')
++    # ② 問題預算（中高階不設上限）
++    job = ctx.get('job') or {}
++    if job.get('seniority') != 'senior':
++        plan_n = len((ctx.get('plan') or {}).get('questions') or []) or PACE_BASE_QUESTIONS
++        budget = min(plan_n, PACE_BASE_QUESTIONS) + PACE_FOLLOWUP_ALLOWANCE
++        asked = sum(1 for m in asst if QUESTION_MARK.search(str(m.get('content') or '')))
++        if asked >= budget:
++            out.append(f'【問題預算用完了（程式數的）】到目前你已經發出 {asked} 則問題，預算約 {budget} 則（計畫題＋少量追問）。'
++                       '**這一輪不要再開新題目**：只有「期望薪資、離職動機、必要條件缺口、履歷量化數字」這幾項還沒問到才補問一個，'
++                       '否則直接進收尾（說明接下來的流程、問他還有沒有想問的）。寧可少題、每題挖深。')
++        elif asked >= budget - 3:
++            out.append(f'【問題預算快到了（程式數的）】到目前已發出 {asked} 則問題，預算約 {budget} 則。'
++                       '剩下的只補最關鍵還沒問到的 1–2 件（期望薪資依據、必要條件缺口、履歷量化數字），之後準備收尾。')
++    return ('\n\n' + '\n'.join(out)) if out else ''
+ 
+ 
+ def talk_skill(ctx):
+@@ -4377,7 +4480,8 @@ def do_prewarm(app):
+         result = run_claude(talk_prompt, first_try=BG_FIRST_TRY_SEC, total=BG_TOTAL_SEC)
+         log_token_usage(app_id, 'prewarm', talk_prompt, _before_files)
+ 
+-        msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
++        # E24：預熱的開場白是 Worker 進房時直接貼給候選人的，Worker 不會清標點，所以存進去之前就要清好
++        msgs = [_clean_out(m) for m in (result.get('messages') or []) if str(m).strip()][:3]
+         if msgs:
+             now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+             # E23b：人已經進房了才算好 → 不存（handle 早就自己現場生成了，存了也沒用）
+@@ -4420,12 +4524,12 @@ def _post_prewarmed_opening(app_id, name):
+         return False
+     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+     meta = d1_raw(f"INSERT INTO messages (application_id, role, content, created_at) "
+-                  f"SELECT {q(app_id)}, 'assistant', {q(_trad(msgs[0]))}, {q(now)} "
++                  f"SELECT {q(app_id)}, 'assistant', {q(_clean_out(msgs[0]))}, {q(now)} "
+                   f"WHERE NOT EXISTS (SELECT 1 FROM messages WHERE application_id = {q(app_id)} AND role = 'assistant')").get('meta', {})
+     if not meta.get('changes'):
+         return False
+     if len(msgs) > 1:
+-        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in msgs[1:])
++        vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in msgs[1:])
+         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+     snap_signals(app_id, now)
+     log(f'⚡ {name}：進房時預熱的開場白剛好算好，直接貼上（{len(msgs)} 則），不重新生成')

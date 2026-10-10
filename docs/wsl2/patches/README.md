@@ -51,3 +51,12 @@
 - 提早擬的計畫會把「缺測驗／初篩」的資料快取住 → 新增 `_late_refresh` 補撈（每場每 30 秒最多一次、只補缺的）。
 - 初篩晚於計畫、人還沒進房 → 計畫重擬一次（`ACAI_PLAN_REDO_ON_SCREENING=0` 可關）。
 - 測試 `e17_tests/e17c_test.py`（**需先套 E17c patch**，沒套會失敗）；回放腳本 `e17c_plan_ab.py`／`e17c_cmp.py`。`e17_run_all_tests.sh` 已含 e17c_test。
+
+---
+
+# E24（2026-10-10）：阿財測試面談四個問題 —— `e24_daemon_20261010.patch`＋`e24_skill_20261010.patch`，**未上線，待 Mac 審**
+
+完整原因、修法、模擬結果、品質風險見 `docs/wsl2/回報/E24_*.md`。
+- `e24_daemon_20261010.patch`：`git apply` 在 step1ne-recruit（含新檔 `cjk_punct.py`）。半形標點確定性清洗、起手式／問題預算由程式數、題目計畫 ≤10 題＋verify、必追問規則。
+- `e24_skill_20261010.patch`：在 **recruiting-workflow** repo 套用（`interview-conductor/SKILL.md`）；套用後立刻影響所有面談，先確認沒有面談進行中。
+- 測試（在 repo 根目錄跑、需先套 daemon patch）：`python3 docs/wsl2/patches/e17_tests/e24_test.py`、`.../cjk_punct_test.py`；模擬面談 `e24_sim.py <label> <worktree> <輸出資料夾>`（`INTERVIEW_SKILL_PATH` 可指向新版 SKILL）。
