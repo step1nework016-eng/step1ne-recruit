@@ -4323,8 +4323,15 @@ PACE_FOLLOWUP_ALLOWANCE = 4       # 再加幾則追問
 OPENING_REPEAT_MIN = 2            # 同一個起手式用過幾次就提醒
 
 
+# E24b：轉場句（「那我們換個方向／換個主題／換個角度」）有各種前綴與接續，原本逐字比對抓不到連用 3 次
+_TRANSITION_RE = re.compile(r'換(?:個|一個|一下)?(?:方向|主題|話題|角度|題目)|(?:接下來|再來|下一(?:個|題)).{0,3}(?:聊|談|問)')
+
+
 def _opening_of(text):
     t = re.sub(r'^[\s　]+', '', str(text or ''))
+    first = re.split(r'[。.！!？?\n]', t, maxsplit=1)[0]
+    if _TRANSITION_RE.search(first[:16]):
+        return '換個方向'          # 同一類轉場句併成一個鍵
     m = re.split(r'[，,。.！!？?、\n]', t, maxsplit=1)[0]
     return m[:8]
 
