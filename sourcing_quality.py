@@ -156,6 +156,15 @@ def place_profile_links(c):
 
 PHONE_ONLY = re.compile(r'接受|配合|願意|外派|派駐|駐點|輪班|夜班|大夜|加班|出差|到班|通勤|住宿|簽證|在留|良民|刑事紀錄|'
                         r'保密|NDA|到職|報到|長期海外|常駐|搬遷|移居|假日|排班|健康檢查|體檢')
+# 2026-10-10 Jacky「找人選都沒在找」：其實有找到（例：台玻／友達會計部經理十幾年），卻因為下面這類
+# 「LinkedIn 本來就不會寫、一通電話就問得到」的條件找不到證據而被壓成 C、進不了滑卡。
+# 歸成電話確認：學歷科系、證照資格、特定軟體／系統品牌、「熟悉…法規／系統操作」這種抽象描述、人格特質。
+# ⚠️ 職能、產業、年資、職級這些「看經歷就該判斷得出來」的仍然要證據，不放寬。
+PHONE_SOFT = re.compile(r'學歷|大學|碩士|博士|專科|高中|科系|相關科系|畢業|'
+                        r'證照|證書|執照|資格|高考|會計師|CPA|CMA|PMP|'
+                        r'鼎新|T100|TIPTOP|Workflow|SAP|Oracle|NetSuite|正航|文中|凌越|ERP\s*系統|系統操作|'
+                        r'熟悉.{0,12}(法規|法令|規定|系統|操作|流程)|'
+                        r'責任心|細心|耐心|抗壓|積極|主動|溝通|親和|穩定度|配合度|學習')
 COND_FIELDS = ('required_conditions', 'must_skills', 'language_requirement')
 JOB_FP_FIELDS = ('title', 'main_duties', 'required_conditions', 'must_skills', 'nice_to_have_skills',
                  'preferred_background', 'language_requirement', 'locations', 'seniority', 'years_min', 'education_level')
@@ -184,11 +193,11 @@ def job_conditions(job):
     for t, src in items:
         is_lang = src == 'lang'
         key = re.sub(r'\s+', '', t)
-        if key in seen or re.search(r'非必要|不限|加分|尤佳|為佳|優先|不需要|不要求', t):
+        if key in seen or re.search(r'非必要|不限|不拘|加分|尤佳|為佳|優先|不需要|不要求', t) or re.fullmatch(r'[無皆可/／\s]*', t):
             continue   # 加分項不是必要條件
         seen.add(key)
         # 語言程度公開資料多半看不出來、顧問電話一講就知道 → 歸「電話確認」，不因為 unknown 就降到 C
-        kind = 'phone' if (is_lang or (src != 'core' and PHONE_ONLY.search(t))) else 'evidence'
+        kind = 'phone' if (is_lang or (src != 'core' and (PHONE_ONLY.search(t) or PHONE_SOFT.search(t)))) else 'evidence'
         out.append({'no': len(out) + 1, 'text': t[:200], 'kind': kind, 'src': src})
     return out
 
@@ -211,6 +220,10 @@ GRADE_RULES = """【評等規則｜2026-10-08 起，取代舊的加權總分；�
 - 每一條的 status：
   met＝經歷裡有對得上的事實。經歷本身的情境就能證明的也算（例：在成衣廠當財會主管＝具製造業廠務經驗；
        2008 年起當會計主管到現在＝10 年以上財會經驗；在營造廠做 Revit 建模＝BIM 建模經驗）。
+       **職稱＋公司＋任職期間本身就是證據**（2026-10-10 加）：LinkedIn 常擋住工作內容，只看得到職稱和年份——
+       「2009 起任友達光電會計部經理」就足以證明：15 年以上年資、會計主管職、上市公司會計作業（財報、結帳、帳務）；
+       「上市公司會計處經理暨代理發言人」就足以證明上市櫃申報與公告經驗。**不要因為沒有逐條工作內容描述就判 unknown**，
+       該職稱「本來就一定會做的核心工作」算 met；只有該職稱不一定會做的（例如成本會計之於一般會計、特定 ERP 品牌）才算 unknown。
   unmet＝有證據顯示「不符合」（例：年資明確不到、做的是別的工作、明確寫不接受外派）。
   unknown＝公開資料沒寫到。**沒寫到不是 unmet**。
 - 用「職缺必要條件」逐條比對，不是用職稱比對：職稱相近但必要條件拿不出證據的，最高 C。
