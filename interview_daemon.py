@@ -4331,8 +4331,9 @@ def prewarm_candidates():
     """核准後、還沒點進面談室的候選人：趁空檔先幫他們把開場白生成好存起來，
     候選人真的點進來時就能秒收到第一句，不用等 daemon 下一輪輪詢＋現場生成。
 
-    條件跟 Worker 的 needAssessment 閘門一致（中高階免測驗、其他人要先交卷），
-    否則會浪費一次 token 去預熱一個候選人根本還進不了房間的開場白。
+    2026-10-10 改：不再等測驗交卷才預熱。原本「交卷後才預熱」，但交卷後候選人立刻進房間，
+    預熱根本來不及（Jacky 測試：進房後約 1.5 分鐘才看到第一句，畫面一直轉圈）。
+    改成送出應徵就預熱，趁 5～7 分鐘測驗時間先備好；代價是沒交卷的人也會花一次 token，Jacky 選擇「一進去就能面談」。
     """
     return d1(f"""
         SELECT a.id, a.name, a.job_slug FROM applications a
@@ -4340,8 +4341,6 @@ def prewarm_candidates():
          WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}))
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND a.prewarmed_opening IS NULL
-           AND (COALESCE(j.seniority, 'mid') = 'senior'
-                OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id))
          ORDER BY a.created_at DESC LIMIT 5
     """)
 
