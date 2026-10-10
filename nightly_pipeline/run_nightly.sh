@@ -5,6 +5,9 @@
 #   run_nightly.sh bd        [--limit 30]      # 每晚新增最多 N 家潛在客戶（預設 30）
 #   run_nightly.sh sourcing  [--per-job 10]    # 每個職缺最多新增 N 位人選（預設 10）
 #   run_nightly.sh sourcing --priority-only    # E19（2026-10-09）：只做後台設成「優先」的職缺，依「最久沒做」排序，一輪做不完下一輪接著做
+#     E22（2026-10-10）：--priority-only 現在是「一個職缺一場 AI 對話、最多同時 2 場」，邏輯在 sourcing_parallel.sh；
+#     有面談進行中就不開新場、截止＝下一輪（sourcing／bd）開始前 30 分、每職缺找名單搜尋 20 次、連兩輪 0 筆換搜尋方向、
+#     結尾印漏斗並寫 ~/aijob-automation/logs/sourcing_funnel.jsonl。NIGHTLY_ONE_JOB_PER_SESSION=0 退回舊做法（一場做全部）。
 #   環境變數 NIGHTLY_WAIT_IDLE_MIN=N：開跑前若有面談進行中，最多等 N 分鐘（每分鐘看一次）再開始；預設 0＝不等
 #   加 --dry-run：只印出這次會用的提示詞與指令，不呼叫 claude（本機檢查用）
 #
@@ -59,6 +62,10 @@ TODAY="$(date '+%Y-%m-%d')"
 BATCH_ID="nightly-${KIND}-$(date '+%Y%m%d')"
 # 一天跑三輪時，批次代號要分得開（用量統計、資料庫裡的批次標記都靠它）
 [ "$PRIORITY_ONLY" = 1 ] && BATCH_ID="${BATCH_ID}-$(date '+%H%M')"
+# E22（2026-10-10）：優先職缺一輪改成「一個職缺一場 AI 對話、最多同時 2 場」（見 sourcing_parallel.sh）。
+# NIGHTLY_ONE_JOB_PER_SESSION=0 可退回原本「一場對話做全部」的做法。
+PER_JOB_SESSIONS=0
+if [ "$KIND" = sourcing ] && [ "$PRIORITY_ONLY" = 1 ] && [ "${NIGHTLY_ONE_JOB_PER_SESSION:-1}" = 1 ]; then PER_JOB_SESSIONS=1; fi
 ROTATION_FILE="$HOME/aijob-automation/state/sourcing_rotation.tsv"
 mkdir -p "$(dirname "$ROTATION_FILE")"
 
@@ -105,15 +112,23 @@ PY
 }
 
 # 提示詞：把 {{…}} 換成這次的值
+export NIGHTLY_SEARCH_LIMIT="${NIGHTLY_SEARCH_LIMIT:-20}"      # E22：每職缺「找名單」搜尋上限 12 → 20
 PROMPT="$(sed -e "s|{{LIMIT}}|$LIMIT|g" -e "s|{{PER_JOB}}|$PER_JOB|g" -e "s|{{TODAY}}|$TODAY|g" \
+              -e "s|{{SEARCH_LIMIT}}|$NIGHTLY_SEARCH_LIMIT|g" \
               -e "s|{{BATCH_ID}}|$BATCH_ID|g" -e "s|{{PIPE_DIR}}|$PIPE_DIR|g" -e "s|{{REPO_DIR}}|$REPO_DIR|g" \
               "$PROMPT_FILE")" || { echo "讀不到提示詞 $PROMPT_FILE" >&2; exit 1; }
-PRIORITY_NOTE=""
-if [ "$PRIORITY_ONLY" = 1 ] && [ "$KIND" = sourcing ]; then PRIORITY_NOTE="$(build_priority_note)"; fi
-NOTE_FILE="$(mktemp)"; printf '%s\n' "$PRIORITY_NOTE" > "$NOTE_FILE"
-# 不用 bash 的 ${//} 取代：bash 5.2 起取代字串裡的 & 會被當成「比對到的文字」，職缺名稱有 & 就會壞掉
-PROMPT="$(printf '%s\n' "$PROMPT" | sed -e '/{{PRIORITY_NOTE}}/{' -e "r $NOTE_FILE" -e 'd' -e '}')"
-rm -f "$NOTE_FILE"
+PROMPT_BASE="$PROMPT"      # E22：一職缺一場時，每個職缺各自把 {{PRIORITY_NOTE}} 換成自己的段落（見 sourcing_parallel.sh）
+if [ "$PER_JOB_SESSIONS" = 1 ]; then
+  # shellcheck source=sourcing_parallel.sh
+  . "$PIPE_DIR/sourcing_parallel.sh"
+else
+  PRIORITY_NOTE=""
+  if [ "$PRIORITY_ONLY" = 1 ] && [ "$KIND" = sourcing ]; then PRIORITY_NOTE="$(build_priority_note)"; fi
+  NOTE_FILE="$(mktemp)"; printf '%s\n' "$PRIORITY_NOTE" > "$NOTE_FILE"
+  # 不用 bash 的 ${//} 取代：bash 5.2 起取代字串裡的 & 會被當成「比對到的文字」，職缺名稱有 & 就會壞掉
+  PROMPT="$(printf '%s\n' "$PROMPT" | sed -e '/{{PRIORITY_NOTE}}/{' -e "r $NOTE_FILE" -e 'd' -e '}')"
+  rm -f "$NOTE_FILE"
+fi
 
 CMD=("$CLAUDE_BIN" -p "$PROMPT"
      --model "$MODEL"
@@ -123,11 +138,18 @@ CMD=("$CLAUDE_BIN" -p "$PROMPT"
      --output-format text)
 
 if [ "$DRY" = 1 ]; then
-  echo "=== 種類：$KIND　批次：$BATCH_ID　上限：bd=$LIMIT 家／sourcing=$PER_JOB 位每職缺　逾時：${MAX_SECS}s　只做優先職缺：$PRIORITY_ONLY"
-  echo "=== 指令：${CMD[0]} -p <提示詞 ${#PROMPT} 字> ${CMD[*]:3}"
-  echo "=== 提示詞前 40 行："
-  printf '%s\n' "$PROMPT" | head -40
-  grep -o '{{[A-Z_]*}}' <<<"$PROMPT" && { echo "❌ 還有沒換掉的 {{…}}" >&2; exit 1; }
+  echo "=== 種類：$KIND　批次：$BATCH_ID　上限：bd=$LIMIT 家／sourcing=$PER_JOB 位每職缺　逾時：${MAX_SECS}s　只做優先職缺：$PRIORITY_ONLY　一職缺一場：$PER_JOB_SESSIONS"
+  if [ "$PER_JOB_SESSIONS" = 1 ]; then
+    psj_dry_run
+    # 基底提示詞裡只允許剩下 {{PRIORITY_NOTE}}（每個職缺各自換）
+    LEFT_MARK="$(grep -o '{{[A-Z_]*}}' <<<"$PROMPT_BASE" | grep -v '{{PRIORITY_NOTE}}' || true)"
+    [ -n "$LEFT_MARK" ] && { echo "❌ 還有沒換掉的 $LEFT_MARK" >&2; exit 1; }
+  else
+    echo "=== 指令：${CMD[0]} -p <提示詞 ${#PROMPT} 字> ${CMD[*]:3}"
+    echo "=== 提示詞前 40 行："
+    printf '%s\n' "$PROMPT" | head -40
+    grep -o '{{[A-Z_]*}}' <<<"$PROMPT" && { echo "❌ 還有沒換掉的 {{…}}" >&2; exit 1; }
+  fi
   echo "=== dry-run 結束（沒有呼叫 claude）"
   exit 0
 fi
@@ -186,12 +208,17 @@ export D1Q_STATS_FILE="$LOG_DIR/d1_usage.jsonl" D1Q_RUN_ID="$BATCH_ID"
 echo
 echo "════════ [$(date '+%F %T')] 開始 $KIND　批次 $BATCH_ID　模型 $MODEL ════════"
 START=$(date +%s)
-if command -v timeout >/dev/null 2>&1; then
+if [ "$PER_JOB_SESSIONS" = 1 ]; then
+  export D1Q_FUNNEL_FILE="$LOG_DIR/d1_funnel.jsonl"      # d1q 每次寫入閘門的結果（每職缺漏斗的「程式數」）
+  run_sourcing_per_job
+  CODE=$?
+elif command -v timeout >/dev/null 2>&1; then
   timeout --kill-after=60 "$MAX_SECS" "${CMD[@]}"
+  CODE=$?
 else
   "${CMD[@]}"
+  CODE=$?
 fi
-CODE=$?
 SECS=$(( $(date +%s) - START ))
 echo "──────── [$(date '+%F %T')] claude 結束 exit=$CODE　花了 ${SECS}s"
 

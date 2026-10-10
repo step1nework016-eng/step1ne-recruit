@@ -59,6 +59,22 @@ import atexit  # noqa: E402
 atexit.register(_flush_stats)
 
 
+def _funnel(slug, outcome, name=None):
+    """E22（2026-10-10）：每位人選過寫入閘門的結果，一行一筆。D1Q_FUNNEL_FILE 有設才記，沒設完全不動作。
+    outcome：no_page（沒個人頁）／client_blocked（現職是客戶公司）／must_check_rejected（A／B 缺條件編號被擋）／
+    written_ab（寫入且最後是 A／B）／written_cd（寫入但最後是 C／D）。run_nightly.sh 依 D1Q_RUN_ID＋職缺彙整成每輪漏斗。"""
+    path = os.environ.get('D1Q_FUNNEL_FILE')
+    if not path:
+        return
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'ts': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'run': os.environ.get('D1Q_RUN_ID', ''), 'job_slug': slug or '',
+                                'outcome': outcome, 'name': name}, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
 def _post(sql, params=None, timeout=60):
     tok, acc = D._cfg()
     if not (tok and acc):
@@ -175,6 +191,7 @@ def _sourced_gate(rows):
             kept.append(r)
             continue
         if not Q.place_profile_links(r):
+            _funnel(r.get('job_slug'), 'no_page', r.get('name'))
             print(f"🚫 不寫入人選 {r.get('name')}：沒有個人頁（只有 {str(r.get('source_url') or '無網址')[:70]}）——只記成線索")
             try:
                 os.makedirs(os.path.dirname(NO_PROFILE_LOG), exist_ok=True)
@@ -193,6 +210,7 @@ def _sourced_gate(rows):
         conds = Q.job_conditions(job)
         pr = _must_check_problems(r, conds)
         if pr:
+            _funnel(slug, 'must_check_rejected', r.get('name'))
             bad_rows.append((r.get('name') or '（沒名字）', slug, pr))
             continue
         g, score, reason, det = Q.enforce_grade(r, conds, verified=(r.get('verify_status') == 'verified'))
@@ -267,6 +285,7 @@ def cmd_insert(table, payload, ignore=False):
                     hit = h
                     break
             if hit:
+                _funnel(r.get('job_slug'), 'client_blocked', r.get('name'))
                 print(f"⛔ 不寫入人選 {r.get('name')}：現職對到客戶名單「{hit['matched']}」——不能從客戶公司挖人")
                 continue
             kept.append(row)
@@ -303,6 +322,8 @@ def cmd_insert(table, payload, ignore=False):
         sql = f'{verb} INTO {table} ({", ".join(keys)}) VALUES ({", ".join("?" for _ in keys)})'
         meta = _post(sql, [row[k] for k in keys]).get('meta') or {}
         done += int(meta.get('changes') or 0)
+        if table == 'sourced_candidates' and int(meta.get('changes') or 0) > 0:
+            _funnel(row.get('job_slug'), 'written_ab' if row.get('grade') in ('A', 'B') else 'written_cd', row.get('name'))
         print(json.dumps({'table': table, 'id': row.get('id') or row.get('company'),
                           'changes': meta.get('changes')}, ensure_ascii=False))
     print(f'✅ {table} 新增 {done} 筆')
