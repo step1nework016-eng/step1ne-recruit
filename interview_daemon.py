@@ -163,6 +163,12 @@ _plan_busy = set()
 _plan_cooldown = {}     # application_id -> 冷卻到的 time.time()
 PLAN_COOLDOWN_SEC = 1800
 MAX_PLAN_PARALLEL = 2
+# E23b（2026-10-10）：開場白預熱在 pending_assessment（填完表開始測驗）就開始，預熱走自己的名額、不擋住面談。
+# 關掉：環境變數 ACAI_PREWARM_EARLY=0。
+PREWARM_EARLY = os.environ.get('ACAI_PREWARM_EARLY', '1') != '0'
+PREWARM_EARLY_WINDOW_HOURS = 3        # 只預熱最近 3 小時內建立的（放著沒做測驗的人不浪費 token）
+MAX_PREWARM_PARALLEL = 2
+_prewarm_busy = set()
 # E17-2：失敗後不要固定等 30 分鐘。沈蓓芬 10/8：開場後計畫連失敗 3 次，進入 30 分鐘冷卻，
 # 之後她隔一小時回來，這整段都走「現場想」的慢路（約 40～60 秒一輪 vs 有計畫的 8～9 秒）。
 # 改成越失敗間隔越長：1→2→5→10 分鐘；累計 PLAN_MAX_ATTEMPTS 次才退回原本的 30 分鐘，並在 log 標一次。
@@ -3937,6 +3943,9 @@ def handle(app):
     _trans = _Transition(app_id, name, _waited_sec(app))
     _trans.start()
     try:
+        # E23b：進房那一刻預熱還沒算好、後來才算好 → 直接貼預熱的開場白，不用再等 AI 現場生成 35～45 秒
+        if _post_prewarmed_opening(app_id, name):
+            return
         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
@@ -4295,7 +4304,7 @@ def invalidate_stale_prepared():
           FROM applications a
           LEFT JOIN jobs j ON j.slug = a.job_slug
           LEFT JOIN job_expertise e ON e.job_slug = a.job_slug
-         WHERE a.status IN ('ready', 'scheduled')
+         WHERE a.status IN ('ready', 'scheduled', 'pending_assessment')
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND (a.interview_plan_json IS NOT NULL OR a.prewarmed_opening IS NOT NULL)
     """) or []
@@ -4335,10 +4344,19 @@ def prewarm_candidates():
     預熱根本來不及（Jacky 測試：進房後約 1.5 分鐘才看到第一句，畫面一直轉圈）。
     改成送出應徵就預熱，趁 5～7 分鐘測驗時間先備好；代價是沒交卷的人也會花一次 token，Jacky 選擇「一進去就能面談」。
     """
+    # E23b（2026-10-10）：上面那次「拿掉交卷條件」其實沒有用——這條流程是「填表按開始 → /apply 立刻建立應徵（status=pending_assessment）
+    # → 做 5～7 分鐘測驗 → 交卷那一秒才變 ready」。實測林小安：18:51:23 建立、18:53:56 交卷、ready_notified_at 18:53:57。
+    # 所以 status='ready' 還是等到交卷才成立。要真的「趁測驗時間備好」，必須在 pending_assessment 就開始。
+    # 條件：最近 PREWARM_EARLY_WINDOW_HOURS 小時內建立、履歷抓得到文字（上傳檔，或連結履歷已解析）、還沒進房。
+    early_sql = '0'
+    if PREWARM_EARLY:
+        since = (datetime.datetime.now() - datetime.timedelta(hours=PREWARM_EARLY_WINDOW_HOURS)).strftime('%Y-%m-%d %H:%M:%S')
+        early_sql = (f"(a.status = 'pending_assessment' AND a.created_at > {q(since)} "
+                     f"AND (a.resume_file_id IS NOT NULL OR a.resume_url_parsed_at IS NOT NULL))")
     return d1(f"""
         SELECT a.id, a.name, a.job_slug FROM applications a
          LEFT JOIN jobs j ON j.slug = a.job_slug
-         WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}))
+         WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}) OR {early_sql})
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND a.prewarmed_opening IS NULL
          ORDER BY a.created_at DESC LIMIT 5
@@ -4362,15 +4380,56 @@ def do_prewarm(app):
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
         if msgs:
             now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            d1(f"UPDATE applications SET prewarmed_opening={q(json.dumps(msgs, ensure_ascii=False))}, "
-               f"prewarmed_at={q(now)} WHERE id={q(app_id)} AND prewarmed_opening IS NULL")
-            log(f'{name}：開場白已預熱')
+            # E23b：人已經進房了才算好 → 不存（handle 早就自己現場生成了，存了也沒用）
+            meta = d1_raw(f"UPDATE applications SET prewarmed_opening={q(json.dumps(msgs, ensure_ascii=False))}, "
+                          f"prewarmed_at={q(now)} WHERE id={q(app_id)} AND prewarmed_opening IS NULL "
+                          f"AND (interview_state IS NULL OR interview_state = 'not_started')").get('meta', {})
+            if meta.get('changes'):
+                log(f'{name}：開場白已預熱')
+            else:
+                log(f'{name}：開場白算好時人已經進房了，丟掉（現場生成那條路已經在處理）')
     except Exception as e:
         log(f'⚠️ {name}（{app_id}）預熱開場白失敗（不影響正常面談流程）：{e}')
     finally:
-        release_lock(app_id)
+        # E23b：預熱不再佔這場面談的 DB 鎖／_busy（改用 _prewarm_busy），所以候選人進房時 handle 不用等預熱跑完。
+        # 實測林小安：預熱 18:54:08 開始、18:55:10 才結束，handle 被擋到 18:55:12 才開始，白等 60 秒。
+        # 同時把快取清掉：交卷前預熱時 context_for 抓到的 static 沒有測驗結果（初篩通常也還沒有），
+        # 留著的話整場面談阿財都讀不到這兩段（快取要到 finish() 才清）。清掉後下一次 context_for 會重抓一次最新的。
+        clear_static_cache(app_id)
         with _lock:
-            _busy.discard(app_id)
+            _prewarm_busy.discard(app_id)
+
+
+def _post_prewarmed_opening(app_id, name):
+    """進房時如果預熱的開場白「剛好在候選人進房之後才算好」（Worker 進房那一刻沒貼到），由 daemon 直接貼上，不用再叫 AI 現場生成。
+
+    條件全部成立才貼：①有 prewarmed_opening ②這場目前只有「進入面談室」標記 ③還沒有任何 assistant 訊息（同一句 SQL 原子判斷，
+    跟 Worker 或另一個處理者同時貼也不會變兩份）④內容沒有就服法保護特徵字眼。任何一項不成立就回 False，走原本現場生成。"""
+    rows = d1(f"SELECT prewarmed_opening FROM applications WHERE id={q(app_id)} AND prewarmed_opening IS NOT NULL")
+    if not rows:
+        return False
+    try:
+        msgs = [str(m).strip() for m in json.loads(rows[0]['prewarmed_opening']) if str(m).strip()][:3]
+    except (ValueError, TypeError):
+        return False
+    if not msgs or any(law5_hits(m) for m in msgs):
+        return False
+    conv = d1(f"SELECT content FROM messages WHERE application_id={q(app_id)} AND {MK.sql_not_transition('content')} "
+              f"ORDER BY id ASC LIMIT 4")
+    if not conv or any(c['content'] != MK.ENTRY_MARKER for c in conv):
+        return False
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    meta = d1_raw(f"INSERT INTO messages (application_id, role, content, created_at) "
+                  f"SELECT {q(app_id)}, 'assistant', {q(_trad(msgs[0]))}, {q(now)} "
+                  f"WHERE NOT EXISTS (SELECT 1 FROM messages WHERE application_id = {q(app_id)} AND role = 'assistant')").get('meta', {})
+    if not meta.get('changes'):
+        return False
+    if len(msgs) > 1:
+        vals = ','.join(f"({q(app_id)},'assistant',{q(_trad(m))},'{now}')" for m in msgs[1:])
+        d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
+    snap_signals(app_id, now)
+    log(f'⚡ {name}：進房時預熱的開場白剛好算好，直接貼上（{len(msgs)} 則），不重新生成')
+    return True
 
 
 def paused_sessions():
@@ -4539,6 +4598,14 @@ def tick():
     if BACKUP_DELAY_SEC > 0:
         jobs = _backup_filter(jobs, post_wrap + pending(remaining))
     for app, fn in jobs:
+        if fn is do_prewarm:
+            # E23b：預熱也走自己的名額，不佔面談的 DB 鎖／_busy（原本預熱跑著的時候，候選人進房 handle 要等預熱結束才搶得到鎖）
+            with _lock:
+                if app['id'] in _prewarm_busy or len(_prewarm_busy) >= MAX_PREWARM_PARALLEL or app['id'] in _busy:
+                    continue
+                _prewarm_busy.add(app['id'])
+            threading.Thread(target=fn, args=(app,), daemon=True).start()
+            continue
         if fn is do_plan:
             # 擬計畫走自己的名額，不佔這場面談的 DB 鎖／_busy，所以不會擋住候選人的回覆。
             with _lock:

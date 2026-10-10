@@ -53,7 +53,8 @@ print('\n[A1] plan_candidates／prewarm_candidates 的名單')
 got = sorted(x['id'] for x in D.plan_candidates())
 check('預約在 24 小時內且已交卷／免測驗的人選會被撈到；其他情形照舊不撈', got == ['r_ready', 's_in'], got)
 gotw = sorted(x['id'] for x in D.prewarm_candidates())
-check('開場白預熱名單同步（預約在 24 小時內）', gotw == ['r_ready', 's_have', 's_in'], gotw)
+# E23（2026-10-10 Mac 09f1478）拿掉了「要先交卷」條件：預約在 24 小時內的都預熱（含還沒交卷的 s_noas、免測驗的 s_sen_noas）
+check('開場白預熱名單（預約在 24 小時內；不再要求交卷）', gotw == ['r_ready', 's_have', 's_in', 's_noas', 's_sen_noas'], gotw)
 D.PLAN_SCHEDULED_LEAD_HOURS = 100
 got2 = sorted(x['id'] for x in D.plan_candidates())
 check('把窗口改大就撈得到更遠的預約（常數可調）', 's_far' in got2, got2)
