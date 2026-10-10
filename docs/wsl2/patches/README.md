@@ -60,3 +60,10 @@
 - `e24_daemon_20261010.patch`：`git apply` 在 step1ne-recruit（含新檔 `cjk_punct.py`）。半形標點確定性清洗、起手式／問題預算由程式數、題目計畫 ≤10 題＋verify、必追問規則。
 - `e24_skill_20261010.patch`：在 **recruiting-workflow** repo 套用（`interview-conductor/SKILL.md`）；套用後立刻影響所有面談，先確認沒有面談進行中。
 - 測試（在 repo 根目錄跑、需先套 daemon patch）：`python3 docs/wsl2/patches/e17_tests/e24_test.py`、`.../cjk_punct_test.py`；模擬面談 `e24_sim.py <label> <worktree> <輸出資料夾>`（`INTERVIEW_SKILL_PATH` 可指向新版 SKILL）。
+
+---
+
+# E21（2026-10-10）：電話錄音檔 → 逐字稿 → 確認卡
+
+- `e21_worker_call_audio_20261010.patch`：**Cloudflare Worker**（`src/index.js`）的 TG 收檔區塊，只排隊 `ai_jobs(kind='call_audio')`（payload 只有 file_id）。**Mac 審過才部署**；需在 `tg_routes` 設 `call_audio_intake`（或 `consultant_assistant`）。測試：把 patch 套到 `src/index.js` 後 `node docs/wsl2/patches/e21_tests/e21_worker_test.mjs`（需把檔案複製到 repo 的 `tests/` 底下跑，因為它用 `../src/index.js`）。
+- WSL2 端（`call_audio.py`、`ai_worker.py`）已在 main，`call_audio.enabled()` 在轉文字環境裝好之前是 False；測試 `tests/call_audio_test.py`。

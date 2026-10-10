@@ -1,0 +1,51 @@
+diff --git a/src/index.js b/src/index.js
+index 7269bbb..9429bd5 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -5744,6 +5744,46 @@ export default {
+         }
+       }
+ 
++      // ── E21（2026-10-10 Jacky）電話錄音檔 → 排隊給 WSL2 轉成逐字稿 ──
++      // Jacky／Phoebe 在「電話錄音」主題（tg_routes key=call_audio_intake，沒設就找 consultant_assistant）傳 voice／audio，
++      // 或 mime 是 audio/* 的檔案（iPhone 錄音多半 m4a），訊息說明欄打人選名字。
++      // 這裡**只排隊**：寫一筆 ai_jobs(kind='call_audio')，payload 只有 TG 的 file_id 等資訊——錄音檔不經過、也不存在雲端，
++      // 由 WSL2 的 ai_worker 自己用 bot token 下載、本機轉文字、轉完刪檔，再走顧問助理的確認卡（按「寫進卡片」才寫）。
++      {
++        const caRoute = (await tgRoute(env, 'call_audio_intake')) || (await tgRoute(env, 'consultant_assistant'));
++        const am = update.message;
++        const inCa = caRoute && am && am.chat && String(am.chat.id) === String(caRoute.chat_id)
++          && Number(am.message_thread_id) === Number(caRoute.message_thread_id);
++        const caAnon = !!(am && am.sender_chat && am.from && am.from.username === 'GroupAnonymousBot');
++        const caAudio = am && (am.voice || am.audio
++          || (am.document && /^audio\//i.test(String(am.document.mime_type || '')) ? am.document : null));
++        if (inCa && caAudio && (!(am.from && am.from.is_bot) || caAnon)) {
++          const caSend = (t) => ncSend(env, caRoute.chat_id, caRoute.message_thread_id, t);
++          const caUser = String((am.from && am.from.username) || '').toLowerCase();
++          // 匿名發言分不出是誰：一律當 Jacky（跟其他逐字稿主題同一個做法）
++          const caWho = caAnon ? 'Jacky' : (caUser === 'behe10' ? 'Phoebe' : (caUser === 'jackyyuqi' ? 'Jacky' : ''));
++          if (!caWho) { await caSend('⛔ 只有 Jacky、Phoebe 可以傳電話錄音。'); return new Response('ok'); }
++          const caSize = Number(caAudio.file_size || 0);
++          if (caSize > 20 * 1024 * 1024) {   // Telegram Bot 下載上限 20MB
++            await caSend(`這個錄音檔太大（${(caSize / 1048576).toFixed(1)}MB），Telegram 機器人最多只能下載 20MB。\n請改傳較短的段落（例如把通話切成兩三段），或把 iPhone 錄音「儲存為較低品質」後再傳。`);
++            return new Response('ok');
++          }
++          const caName = String(am.caption || '').trim().slice(0, 60);
++          if (!caName) { await caSend('請在傳錄音的「說明」欄打上人選的名字（同名的話打編號），我才知道這通是誰的。'); return new Response('ok'); }
++          const caId = uid();
++          await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'call_audio', ?, 'pending', ?)`)
++            .bind(caId, JSON.stringify({
++              file_id: caAudio.file_id, file_size: caSize || null, mime: caAudio.mime_type || null, duration: caAudio.duration || null,
++              caption: caName, chat_id: String(am.chat.id), thread_id: Number(am.message_thread_id),
++              from: { id: am.from ? am.from.id : null, username: caAnon ? 'jackyyuqi' : (caUser || null), name: caWho },
++              message_id: am.message_id,
++            }), nowTaipei()).run();
++          await caSend(`🎙️ 收到「${caName}」的錄音${caSize ? `（${(caSize / 1048576).toFixed(1)}MB）` : ''}，轉文字中。`
++            + '\n轉好後會貼一張確認卡，按「✅ 寫進卡片」才會存進人選卡片。');
++          return new Response('ok');
++        }
++      }
++
+       // ── 開發電話逐字稿：客戶群組「📞 開發電話逐字稿」主題（2026-10-05 Jacky）──
+       // 開發客戶打完電話，直接在 TG 貼逐字稿（文字或 .txt／.md／Word／PDF 附件）→ 選是哪一家 →
+       // 存進那家的「通話紀錄與進度」，AI 1～3 分鐘整理成通話紀錄＋建議。跟網頁「只上傳逐字稿讓 AI 看」

@@ -108,8 +108,11 @@ try:
     check('門檻 20 分鐘 > 實測最長執行時間（client_report 437 秒）＋ CLI 逾時（480 秒）',
           W.STALE_RUNNING_MINUTES * 60 > 480 * 2, f'{W.STALE_RUNNING_MINUTES} 分鐘')
     check('白名單只含已驗證可安全重跑的 kind',
-          set(W.RECOVERABLE_KINDS) == {'post_interview_rematch', 'precall_card',
-                                       'postcall_result', 'call_prep'},
+          # 2026-10-10 E21：這個清單本來就已經比測試寫的多了（style_extract 等 4 個後來加的沒同步更新測試，main 上這項本來就是紅的）；
+          # 這裡一次對齊目前的白名單，並加上 call_audio（重跑最多多貼一張確認卡，按了才寫）。
+          set(W.RECOVERABLE_KINDS) == {'post_interview_rematch', 'precall_card', 'postcall_result', 'call_prep',
+                                       'style_extract', 'expertise_build', 'job_card_feedback', 'call_transcript_review',
+                                       'call_audio'},
           str(W.RECOVERABLE_KINDS))
 finally:
     cleanup()

@@ -1653,6 +1653,10 @@ def process(job):
         if kind == 'job_switch_fit':
             return job_switch.run_fit(payload, run_claude=run_claude)
         return job_switch.run_check(payload, run_claude=run_claude)
+    # 2026-10-10 E21：電話錄音 → 本機 Whisper 逐字稿 → 顧問助理確認卡（整條在 call_audio.py，不呼叫 claude）
+    if kind == 'call_audio':
+        import call_audio
+        return call_audio.run(job)
     if kind not in HANDLERS:
         raise RuntimeError(f'未知的工作類型：{kind}')
     builder, want_json = HANDLERS[kind]
@@ -2847,6 +2851,11 @@ def promote_writebacks():
     寫一筆 candidate_notes『電洽紀錄』時間軸」的行為，用 payload 裡的
     also_note 旗標保留。
     """
+    # E21：做完（或最終失敗）的錄音工作不留在佇列（payload 有 TG file_id、說明欄的人選名字；結果已經在確認卡上）
+    try:
+        d1_http.query("DELETE FROM ai_jobs WHERE kind='call_audio' AND status IN ('done','failed')")
+    except Exception as e:
+        log(f'  ⚠️ 清錄音工作紀錄失敗（不影響）：{str(e)[:100]}')
     rows = d1_http.query(
         "SELECT * FROM ai_jobs WHERE kind IN ('call_notes_summary','call_prep','precall_card','postcall_result') "
         "AND status IN ('done','failed') ORDER BY created_at LIMIT 20")['results']
@@ -2935,6 +2944,8 @@ RECOVERABLE_KINDS = (
     'job_card_feedback',
     # (a)+(b) UPDATE call_transcripts 同一列；bd_call_notes 用固定 id＋INSERT OR IGNORE
     'call_transcript_review',
+    # E21：重跑最多多貼一張確認卡，按「寫進卡片」才會寫入，不會重複寫資料；暫存的錄音檔每次重跑都是新的資料夾
+    'call_audio',
 )
 # 不回收（需要人工判斷）：
 #   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄
@@ -3017,16 +3028,25 @@ def tick():
     # 面談的即時回覆優先。
     if _DRAIN:
         return 0
-    limit = 1 if _interview_active_here() else CONCURRENCY
+    _active = _interview_active_here()
+    limit = 1 if _active else CONCURRENCY
     free = limit - len(_INFLIGHT)
     if free <= 0:
         return 0
+    # E21（2026-10-10）電話錄音轉文字：本機 Whisper 很吃 CPU，只有 (a) 這台已經裝好轉文字環境（WSL2）、(b) 這台沒有阿財面談進行中，
+    # 才撈 call_audio；其他情況它留在 pending（不會燒掉重試次數），等條件成立再做。Mac 永遠不撈這個 kind。
+    try:
+        import call_audio as _ca
+        _ca_ok = _ca.enabled() and not _active
+    except Exception:
+        _ca_ok = False
+    _kind_filter = '' if _ca_ok else "AND kind <> 'call_audio' "
     rows = d1_http.query(
-        "SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d "
-        # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
-        # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
-        "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
-        "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d"
+        ("SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d " + _kind_filter +
+         # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
+         # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
+         "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
+         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d")
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
@@ -3089,6 +3109,12 @@ def _run_job(job):
             f"UPDATE ai_jobs SET status={q('failed' if final else 'pending')}, "
             f"error={q(msg)} WHERE id={q(jid)}")
         log(f'  ❌ {job["kind"]}（{jid[:8]}）失敗（第 {attempts} 次）：{msg[:120]}')
+        if final and job['kind'] == 'call_audio':      # E21：錄音轉文字重試都失敗，要讓 Jacky 知道
+            try:
+                import call_audio
+                call_audio.notify_failure(job, msg)
+            except Exception:
+                pass
         # 2026-09-30：逐字稿評分放棄時，卡片要顯示「AI 分析失敗」而不是一直「分析中」
         if final and job['kind'] == 'call_transcript_review':
             try:
