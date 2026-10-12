@@ -4868,8 +4868,22 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   } catch { /* 查不到就用精簡版 */ }
   const lines = [`嗨嗨 👋 謝謝你對這個職缺有興趣！`, '', `📌 ${(j && j.title) || title}`];
   const sal = j ? salaryLine(j) : '';
-  let loc = j && j.locations ? String(j.locations).split(/[\n；;]/)[0].trim() : '';
-  if (loc.length > 30 && loc.includes('（')) loc = loc.split('（')[0].trim();   // 括號裡的補充說明太長就省略，不要截在括號中間
+  let loc = j && j.locations ? String(j.locations).trim() : '';
+  if (/^\[.*\]$/.test(loc)) {   // 有些職缺地點存成 ['台北市內湖區'] 這種清單字串
+    try { loc = JSON.parse(loc.replace(/'/g, '"')).join('、'); } catch { loc = loc.replace(/[\[\]'"]/g, '').replace(/,\s*/g, '、'); }
+  }
+  loc = loc.split(/[\n；;]/)[0].trim();
+  // 不准出現門牌地址（2026-09-03 社群貼文地址外洩事故）：從第一個路／街／巷／弄／號／段往前切，只留到最後一個行政區
+  const st = loc.search(/[路街巷弄號段]|\d+\s*樓/);
+  if (st >= 0) {
+    const head = loc.slice(0, st);
+    const cut = Math.max(...['市', '縣', '區', '鄉', '鎮', '町', '村', '郡', '都', '府'].map((c) => head.lastIndexOf(c)));
+    loc = cut >= 0 ? head.slice(0, cut + 1) : '';
+  }
+  loc = loc.replace(/（[^）]*客戶[^）]*）|\([^)]*客戶[^)]*\)/g, '').trim();   // 候選人文字不出現「客戶」
+  if (loc.includes('（') && !loc.includes('）')) loc = loc.split('（')[0].trim();   // 括號被切一半
+  if (loc.length > 30 && loc.includes('（')) loc = loc.split('（')[0].trim();
+  if (/客戶/.test(loc)) loc = '';
   if (loc.length > 40) loc = loc.slice(0, 40) + '…';
   if (sal || loc) lines.push([sal && `💰 ${sal}`, loc && `📍 ${loc}`].filter(Boolean).join('｜'));
   const intro = j && j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim() : '';
