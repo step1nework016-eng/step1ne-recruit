@@ -12,7 +12,7 @@ calls = {'fetch': 0, 'sql': []}
 row = {'resume_file_id': None, 'resume_url': ''}
 def fake_d1(sql):
     calls['sql'].append(sql)
-    if 'resume_file_id, resume_url' in sql:
+    if 'a.resume_file_id' in sql or 'resume_file_id, resume_url' in sql:
         return [dict(row)]
     return []
 D.d1 = fake_d1
@@ -30,10 +30,10 @@ D._late_checked.clear()
 row['resume_file_id'] = 'file-1'
 out = D._late_refresh(APP, static)
 chk('履歷到了（換了一份）：整份重抓並換掉快取', calls['fetch'] == 1 and out.get('resume_readable') is True and D._STATIC_CACHE.get(APP) is out, (calls, out))
-chk('重抓的結果記下 _resume_key（避免每 30 秒重抓）', out.get('_resume_key') == 'file-1|')
+chk('重抓的結果記下 _resume_key（避免每 30 秒重抓）', out.get('_resume_key') == 'file-1||')
 
 # 抽不到字的圖片履歷：同一份不要每 30 秒重抓
-static2 = {'resume_readable': False, '_resume_key': 'file-1|', 'assessment': 'a', 'screening': 's'}
+static2 = {'resume_readable': False, '_resume_key': 'file-1||', 'assessment': 'a', 'screening': 's'}
 D._late_checked.clear(); calls['fetch'] = 0
 D._late_refresh(APP, static2)
 chk('同一份履歷（抽不到字）→ 不重抓', calls['fetch'] == 0)
@@ -52,9 +52,9 @@ chk('30 秒內不重複查 D1', n2 == n1 and n1 > n0, (n0, n1, n2))
 
 # 履歷讀得到時完全不查
 D._late_checked.clear(); n0 = len(calls['sql'])
-ok = {'resume_readable': True, 'assessment': 'a', 'screening': 's'}
+ok = {'resume_readable': True, 'assessment': 'a', 'screening': 's', '_interview_started': True}   # E31：面談還沒開始時會多看一眼 parsed_at；開始後才完全不查
 D._late_refresh(APP, ok)
-chk('已有可讀履歷＋測驗＋初篩 → 不查 D1', len(calls['sql']) == n0)
+chk('已有可讀履歷＋測驗＋初篩、面談已開始 → 不查 D1', len(calls['sql']) == n0)
 
 # D1 查詢失敗：沿用快取、不丟例外
 def boom(sql): raise RuntimeError('d1 down')
