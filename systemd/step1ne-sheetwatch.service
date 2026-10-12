@@ -1,0 +1,12 @@
+[Unit]
+Description=Step1ne 客戶職缺雲端表每日比對（E28）：新職缺／內容改了／表上沒了才推 TG
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jack/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/jack/claude-projects/工作流程技能包/step1ne-recruit/client_sheet_watch.py
+StandardOutput=append:%h/aijob-automation/logs/sheetwatch.log
+StandardError=append:%h/aijob-automation/logs/sheetwatch.log
+TimeoutStartSec=180

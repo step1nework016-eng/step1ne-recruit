@@ -1,0 +1,10 @@
+[Unit]
+Description=Step1ne 客戶職缺雲端表比對，每天 15:00（Asia/Taipei）
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 Asia/Taipei
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
