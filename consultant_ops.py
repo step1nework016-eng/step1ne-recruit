@@ -556,6 +556,10 @@ def cmd_remind(a):
     if rem < now_tpe() - dt.timedelta(minutes=1):
         die(f'提醒時間 {fmt(rem)} 已經過了')
     app = resolve(a.app) if a.app else {'id': None, 'name': None}
+    # 2026-10-12：沒掛人選卡（例如 LINE 來還沒建卡）的電話，candidate_name 空著會被發財基地行事曆同步略過——
+    # 用 --name 帶名字（人選名＋職缺），行事曆才會出現。
+    if not app.get('name') and getattr(a, 'name', None):
+        app = {**app, 'name': a.name}
     rid = 'rem' + secrets.token_hex(6)
     d1("""INSERT INTO consultant_reminders (id,application_id,candidate_name,call_at,remind_at,message,target_chat_id,
              fallback_chat_id,fallback_thread_id,requested_by,requested_tg_id,status,created_at)
@@ -613,7 +617,7 @@ def main():
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)
     p.add_argument('--before', type=int, default=30); p.add_argument('--note'); p.set_defaults(fn=cmd_book)
-    p = sp.add_parser('remind', help='只提醒自己（不寫卡片）'); p.add_argument('--at', required=True); p.add_argument('--text', default='')
+    p = sp.add_parser('remind', help='只提醒自己（不寫卡片）'); p.add_argument('--at', required=True); p.add_argument('--text', default=''); p.add_argument('--name', default='', help='沒掛人選卡時的顯示名稱（例：Stanley Wang（美德 供應鏈主管））；有名字才會進發財基地行事曆')
     p.add_argument('--app'); p.add_argument('--before', type=int, default=30); p.set_defaults(fn=cmd_remind)
     p = sp.add_parser('reminders', help='還沒發的提醒'); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_reminders)
     p = sp.add_parser('cancel-remind'); p.add_argument('id'); p.set_defaults(fn=cmd_cancel_remind)
