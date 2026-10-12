@@ -4512,6 +4512,7 @@ def prewarm_candidates():
         SELECT a.id, a.name, a.job_slug FROM applications a
          LEFT JOIN jobs j ON j.slug = a.job_slug
          WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}) OR {early_sql})
+           AND COALESCE(j.status, 'open') != 'closed'   -- 2026-10-12：已關閉的職缺不預熱開場白（Worker 也會擋進房）
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND a.prewarmed_opening IS NULL
          ORDER BY a.created_at DESC LIMIT 5
