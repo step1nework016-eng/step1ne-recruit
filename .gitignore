@@ -17,3 +17,10 @@ jobintake/work/**/*.log
 # 2026-10-08：沒有個人頁的人選線索（個資，留本機不進版控）
 sourcing_runs/no_profile_leads.jsonl
 sourcing_runs/regrade_*.json
+
+# 2026-10-12 E34 網域獵人：名單／佇列／查詢紀錄放 ~/aijob-automation/state/domain_finder/，不進版控（免得擋到自動 git pull）
+domain_finder/output/
+domain_finder/cache/
+domain_finder/dr_key.txt
+domain_finder/網域口袋名單.csv
+domain_finder/網域口袋名單.html

@@ -1,0 +1,14 @@
+[Unit]
+Description=網域獵人：每天查可註冊的老網域＋同步內部看板（E34）
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit/domain_finder
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=DOMAIN_FINDER_HOME=%h/aijob-automation/state/domain_finder
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash %h/claude-projects/工作流程技能包/step1ne-recruit/domain_finder/run_daily.sh
+StandardOutput=append:%h/aijob-automation/logs/domain_finder.log
+StandardError=append:%h/aijob-automation/logs/domain_finder.log
+TimeoutStartSec=18000

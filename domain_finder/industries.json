@@ -1,0 +1,10 @@
+{
+ "招募": {
+  "要有": "recruit|hiring|career|talent|staffing|resume|headhunt|employ|workforce|vacanc|internship|payroll|interview|manpower|jobsearch|humanresource|onboard|freelanc|candidate|(^|[^a-z])jobs?([^a-z]|$)|jobs?(board|site|hub|portal|search|link|net|zone|now|finder|hunt|center|market|line|post|list)|(find|get|top|best|my|the|it|tech|remote|local|new|all)jobs?",
+  "不要": "gottalent|billytalent|talentime|brianmay|vacances|resumenprov|handball|subtitle"
+ },
+ "飯店": {
+  "要有": "hotel|hostel|resort|motel|lodge|guesthouse|ryokan|hospitality|homestay|bnb|(?<![a-z])inn(?![a-z])|[a-z]inn$",
+  "不要": "loginn|maxlinn|ravinns|splinter|bitdefender|rewardsclub|resortbar|hotelsoftware"
+ }
+}

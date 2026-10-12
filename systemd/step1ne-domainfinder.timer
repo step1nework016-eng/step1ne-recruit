@@ -1,0 +1,10 @@
+[Unit]
+Description=網域獵人每天 09:30（台灣時間）
+
+[Timer]
+OnCalendar=*-*-* 09:30:00 Asia/Taipei
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
