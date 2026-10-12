@@ -1509,12 +1509,31 @@ _late_checked = {}
 
 def _late_refresh(app_id, static):
     need_a, need_s = 'assessment' not in static, 'screening' not in static
-    if not (need_a or need_s):
+    # 2026-10-12：應徵表單多了「我用 LINE 傳履歷」——快取住的時候還沒有履歷，之後才收到。
+    # 這種情況整份 static 重抓（履歷是 fetch_application.py 組的，不能只補一段）。
+    need_r = not static.get('resume_readable')
+    if not (need_a or need_s or need_r):
         return static
     now = time.time()
     if now - _late_checked.get(app_id, 0) < LATE_RECHECK_SEC:
         return static
     _late_checked[app_id] = now
+    if need_r:
+        try:
+            row = d1(f"SELECT resume_file_id, resume_url FROM applications WHERE id={q(app_id)}")
+            got = row and (row[0].get('resume_file_id') or (row[0].get('resume_url') or '').strip())
+            key = f"{row[0].get('resume_file_id') or ''}|{(row[0].get('resume_url') or '').strip()}" if row else ''
+            # 只在「履歷換了一份」時重抓一次（抽不到字的圖片履歷不要每 30 秒重跑 fetch_application）
+            if got and key != static.get('_resume_key'):
+                fresh = _fetch_static(app_id)
+                fresh['_resume_key'] = key
+                with _static_lock:
+                    _STATIC_CACHE[app_id] = fresh
+                log(f'🔄 {app_id[:8]}：履歷是後來才收到的（LINE／補履歷頁），快取整份重抓'
+                    f'（{"讀得到" if fresh.get("resume_readable") else "還抽不到字"}）')
+                return fresh
+        except Exception as e:
+            log(f'補撈履歷失敗（沿用快取）：{str(e)[:80]}')
     new = dict(static)
     try:
         if need_a:
@@ -4606,6 +4625,9 @@ def prewarm_candidates():
          LEFT JOIN jobs j ON j.slug = a.job_slug
          WHERE (a.status = 'ready' OR (a.status = 'scheduled' AND {_scheduled_window_sql()}) OR {early_sql})
            AND COALESCE(j.status, 'open') != 'closed'   -- 2026-10-12：已關閉的職缺不預熱開場白（Worker 也會擋進房）
+           -- 2026-10-12：還沒有履歷（選了 LINE 傳、檔案還沒到）不預熱——Worker 也會擋進房，預熱了只是用沒有履歷的版本
+           AND (a.resume_file_id IS NOT NULL OR COALESCE(a.resume_url,'') != '' OR COALESCE(a.resume_104_url,'') != ''
+                OR COALESCE(a.resume_extra_files,'') NOT IN ('', '[]'))
            AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
            AND a.prewarmed_opening IS NULL
          ORDER BY a.created_at DESC LIMIT 5
