@@ -24,6 +24,9 @@ _NOT_T = MK.sql_not_transition('m.content')   # SQL 片段：這則不是過渡�
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows 上 claude CLI 是 claude.cmd，subprocess.run(['claude',...]) 不帶副檔名
 # 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
+import types
+import claude_api   # E27：阿財對談可改走 Anthropic API（預設仍是 CLI）
+
 CLAUDE_BIN = shutil.which('claude') or 'claude'
 # 同理，npx 在 Windows 是 npx.cmd，不帶副檔名會 FileNotFoundError。
 NPX_BIN = shutil.which('npx') or 'npx'
@@ -493,6 +496,34 @@ def law5_hits(text):
 _CALL_META = threading.local()
 
 
+API_MODEL = os.environ.get('ACAI_API_MODEL') or TALK_MODEL
+API_MAX_TOKENS = 8192
+
+
+def _api_meta(res, prompt, t_start):
+    """API 版的用量，格式跟 _cli_unwrap 累加的 meta 一樣，log_token_usage 照舊寫進 token_usage。"""
+    try:
+        us = res.get('usage') or {}
+        m = getattr(_CALL_META, 'meta', None) or {
+            'model': None, 'input_tokens': 0, 'output_tokens': 0,
+            'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0,
+            'cost_usd': 0.0, 'duration_ms': 0, 'api_ms': 0, 'wall_ms': 0, 'calls': 0,
+            'prompt_chars': len(prompt or ''), 'output_chars': 0}
+        m['model'] = m['model'] or res.get('model')
+        for k in ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'):
+            m[k] += int(us.get(k) or 0)
+        m['cost_usd'] += float(res.get('cost_usd') or 0)
+        m['duration_ms'] += int(res.get('ms') or 0)
+        m['api_ms'] += int(res.get('ms') or 0)
+        m['calls'] += 1
+        m['wall_ms'] += int((time.time() - t_start) * 1000)
+        m['output_chars'] = len(res.get('text') or '')
+        m['source'] = 'api'
+        _CALL_META.meta = m
+    except Exception:
+        pass
+
+
 def _cli_unwrap(r, prompt, t_start=None):
     """r 是 subprocess.run 的結果。把 JSON 外殼拆掉，r.stdout 換回模型原本的文字；
     用量累加到這條執行緒的 _CALL_META.meta（重試的那幾次也算進去，那是真的有花的）。"""
@@ -563,7 +594,7 @@ def log_token_usage(app_id, call_type, prompt, before_files):
                f"{meta['input_tokens']}, {meta['output_tokens']}, "
                f"{meta['cache_creation_input_tokens']}, {meta['cache_read_input_tokens']}, {q(now)}, "
                f"{meta['cost_usd']:.6f}, {meta['duration_ms']}, {meta['api_ms']}, {meta.get('wall_ms') or 0}, {meta['calls']}, "
-               f"{meta['prompt_chars']}, {meta['output_chars']}, {q(INTERVIEW_HOST)}, 'cli_json')")
+               f"{meta['prompt_chars']}, {meta['output_chars']}, {q(INTERVIEW_HOST)}, {q(meta.get('source') or 'cli_json')})")
         except Exception as e:
             log(f'（token 用量沒記成，不影響面談：{e}）')
         return
@@ -2296,17 +2327,31 @@ def run_claude(prompt, first_try=None, total=None):
             break
         budget = min(_first, remaining) if attempt == 0 else remaining
         t1 = time.time()
-        try:
-            r = subprocess.run(
-                [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
-                 *NO_TOOLS, '--output-format', 'json'],
-                input=sanitize(prompt),
-                capture_output=True, text=True, env=env_with_cf(), timeout=budget)
-            _cli_unwrap(r, prompt, t1)
-        except subprocess.TimeoutExpired as e:
-            last_err = e
-            log(f'⏱️ claude 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
-            continue
+        r = None
+        if claude_api.use_api():
+            # E27：走 API。不能用（額度／金鑰／連線）就這一輪改走 CLI，面談不中斷。
+            try:
+                res = claude_api.call(sanitize(prompt), API_MODEL, budget, max_tokens=API_MAX_TOKENS)
+                _api_meta(res, prompt, t1)
+                r = types.SimpleNamespace(returncode=0, stdout=res['text'], stderr='')
+            except claude_api.ApiTimeout as e:
+                last_err = e
+                log(f'⏱️ API 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
+                continue
+            except claude_api.ApiFallback as e:
+                log(f'⚠️ API 這一輪不能用（{e}），改走 CLI')
+        if r is None:
+            try:
+                r = subprocess.run(
+                    [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
+                     *NO_TOOLS, '--output-format', 'json'],
+                    input=sanitize(prompt),
+                    capture_output=True, text=True, env=env_with_cf(), timeout=budget)
+                _cli_unwrap(r, prompt, t1)
+            except subprocess.TimeoutExpired as e:
+                last_err = e
+                log(f'⏱️ claude 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
+                continue
         if r.returncode != 0:
             raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
         out = r.stdout.strip()
