@@ -139,6 +139,10 @@ _SPLIT = re.compile(r'[\s｜|/、，,；;。:：()（）\[\]【】「」"“”\
 _STOP = {'THE', 'AND', 'FOR', 'WITH', 'FROM', 'THAT', 'THIS', 'HAVE', 'YOUR', 'ARE', 'NOT', 'ALL', 'ANY', 'CAN', 'WILL', 'HTTP', 'HTTPS', 'WWW', 'COM', 'PDF', 'DOC', 'NULL', 'TRUE', 'FALSE'}
 
 
+# 英數代號前面常見的一般詞（不是廠牌／系統名），不列入
+_GENERIC_BEFORE_CODE = {'系統', '版本', '型號', '模組', '產品', '專案', '編號', '代號', '機種', '舊版', '新版', '使用', '導入'}
+
+
 def extract_terms(text, limit=40):
     """從履歷／職缺文字挑出 Whisper 容易聽錯的專有名詞：公司名、職稱、英數縮寫（T100、BOM、SAP…）。"""
     orgs, titles, ascii_t, seen = [], [], [], set()
@@ -156,7 +160,16 @@ def extract_terms(text, limit=40):
                 orgs.append(tok); seen.add(tok)
             elif _TITLE.search(tok) and len(tok) >= 3:
                 titles.append(tok); seen.add(tok)
+    for m in re.finditer(r'([一-鿿]{2,4})[ \u3000]?([A-Za-z]+[0-9][A-Za-z0-9]*)', str(text or '')):
+        w = m.group(1)
+        if w not in seen and w not in _GENERIC_BEFORE_CODE:
+            orgs.append(w); seen.add(w)
     return (orgs + ascii_t + titles)[:limit]
+
+
+# E21 實測（合成語音）：不給 initial_prompt 時 Whisper 輸出「履历／几件事／后来／12万」等簡體字，
+# zh_trad 為了不轉錯是保守的、不會全轉；給了繁體提示就整段都是繁體。所以沒有專有名詞時也一律帶這句。
+BASE_PROMPT = '以下是繁體中文的獵頭顧問與人選電話訪談。'
 
 
 def build_prompt(terms, intro='以下是獵頭顧問與人選的電話訪談，提到的公司、職稱與專有名詞有：'):
@@ -165,7 +178,7 @@ def build_prompt(terms, intro='以下是獵頭顧問與人選的電話訪談，�
         if used + len(t) + 1 > PROMPT_MAX_CHARS:
             break
         out.append(t); used += len(t) + 1
-    return (intro + '、'.join(out) + '。') if out else ''
+    return (intro + '、'.join(out) + '。') if out else BASE_PROMPT
 
 
 def load_context(app_id, d1):
@@ -196,15 +209,60 @@ def transcribe(path, terms):
     work = os.path.dirname(path)
     out = os.path.join(work, 'out.json')
     cmd = ['nice', '-n', '10', VENV_PY, os.path.abspath(__file__), '--transcribe', path, '--out', out]
+    pf = os.path.join(work, 'prompt.txt')
+    open(pf, 'w', encoding='utf-8').write(build_prompt(terms))
+    os.chmod(pf, 0o600)
+    cmd += ['--prompt', pf]
     if terms:
-        pf = os.path.join(work, 'prompt.txt')
-        open(pf, 'w', encoding='utf-8').write(build_prompt(terms))
-        os.chmod(pf, 0o600)
-        cmd += ['--prompt', pf, '--hotwords', ' '.join(terms[:30])]
+        cmd += ['--hotwords', ' '.join(terms[:30])]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=TRANSCRIBE_TIMEOUT)
     if r.returncode != 0:
         raise CallAudioError('轉文字程式失敗：' + (r.stderr or r.stdout or '')[-300:])
     return json.load(open(out, encoding='utf-8'))
+
+
+def collapse_repeats(text, max_repeat=2):
+    """同一行（或同一句）連續出現超過 max_repeat 次，只留 max_repeat 次。回 (新文字, 被刪掉的次數)。"""
+    out, removed, last, n = [], 0, None, 0
+    for line in str(text or '').split('\n'):
+        key = re.sub(r'[\s，。？！、,.?!]', '', line)
+        if key and key == last:
+            n += 1
+            if n > max_repeat:
+                removed += 1
+                continue
+        else:
+            last, n = key, 1
+        out.append(line)
+    t = '\n'.join(out)
+    # 同一行內「X X X X」的句內重複（整句重複 3 次以上）
+    def _fix(m):
+        nonlocal removed
+        removed += m.group(0).count(m.group(1)) - max_repeat
+        return m.group(1) * max_repeat
+    t = re.sub(r'(.{8,60}?)\1{%d,}' % max_repeat, _fix, t)
+    return t, removed
+
+
+def strip_term_echo(text, terms):
+    """Whisper 偶爾在尾巴（靜音處）把 hotwords／initial_prompt 的專有名詞清單原樣當成文字吐出來。
+    某一行拿掉所有專有名詞和分隔符之後幾乎不剩東西，而且至少含 2 個專有名詞 → 視為回聲，整行丟掉。回 (新文字, 丟掉行數)。"""
+    if not terms:
+        return text, 0
+    out, dropped = [], 0
+    ordered = sorted(set(terms), key=len, reverse=True)
+    for line in str(text or '').split('\n'):
+        rest, hit = line, 0
+        for t in ordered:
+            if t in rest:
+                hit += rest.count(t)
+                rest = rest.replace(t, '')
+        rest = re.sub(r'[\s，。、,.;；:：]', '', rest)
+        if hit >= 2 and len(rest) <= 2:
+            dropped += 1
+            continue
+        out.append(line)
+    return '\n'.join(out), dropped
 
 
 def _to_trad(text):
@@ -283,6 +341,12 @@ def run(job, d1=None, download=tg_download, transcribe_fn=transcribe, card_fn=po
         t0 = time.time()
         res = transcribe_fn(path, terms)
         text = _to_trad((res.get('text') or '').strip())
+        text, _echo = strip_term_echo(text, terms)
+        if _echo:
+            log(f'轉出的文字尾巴有 {_echo} 行只是提示詞的專有名詞清單，已丟掉')
+        text, _dups = collapse_repeats(text)
+        if _dups:
+            log(f'轉出的文字有 {_dups} 處連續重複的句子，已收斂（Whisper 長檔偶爾會重複同一句）')
         if len(text) < 30:
             say(f'「{app["name"]}」的錄音轉出來的文字太少（{len(text)} 字），可能是靜音或音質太差，請確認錄音檔後重傳。')
             return '轉出文字太少'
@@ -319,11 +383,17 @@ def _transcribe_main(a):
     kw = {}
     if a.hotwords:
         kw['hotwords'] = a.hotwords
+    # 長檔（15 分鐘）實測：預設的 condition_on_previous_text=True 會讓 Whisper 陷入「同一句重複好幾次」的迴圈
+    # （例如「最後想請問您為什麼想離開宣捷生技」連續 4 次）。關掉它；代價是 initial_prompt 只作用在第一個視窗，
+    # 所以專有名詞另外用 hotwords 帶（每個視窗都有效）。
+    kw['condition_on_previous_text'] = os.environ.get('CALL_AUDIO_COND', '0') == '1'
+    kw['beam_size'] = int(os.environ.get('CALL_AUDIO_BEAM', '5'))
+    kw['compression_ratio_threshold'] = 2.0
     try:
-        segs, info = model.transcribe(a.transcribe, language='zh', initial_prompt=prompt, beam_size=5, vad_filter=True, **kw)
+        segs, info = model.transcribe(a.transcribe, language='zh', initial_prompt=prompt, vad_filter=True, **kw)
     except TypeError:                       # 舊版 faster-whisper 沒有 hotwords
         kw.pop('hotwords', None)
-        segs, info = model.transcribe(a.transcribe, language='zh', initial_prompt=prompt, beam_size=5, vad_filter=True)
+        segs, info = model.transcribe(a.transcribe, language='zh', initial_prompt=prompt, vad_filter=True, **kw)
     text = '\n'.join(s.text.strip() for s in segs if s.text.strip())
     json.dump({'text': text, 'duration': info.duration, 'secs': round(time.time() - t0, 1), 'model': MODEL_NAME},
               open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
