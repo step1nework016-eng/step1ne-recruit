@@ -566,9 +566,19 @@ def _ensure_token_cols():
     global _TOKEN_COLS_READY
     if _TOKEN_COLS_READY:
         return
-    for col, typ in (('cost_usd', 'REAL'), ('duration_ms', 'INTEGER'), ('api_ms', 'INTEGER'),
-                     ('calls', 'INTEGER'), ('wall_ms', 'INTEGER'), ('prompt_chars', 'INTEGER'), ('output_chars', 'INTEGER'),
-                     ('host', 'TEXT'), ('source', 'TEXT')):
+    # E27c（2026-10-12）：先查已有哪些欄位，只補缺的。
+    # 原本是 9 個 ALTER 全送、已有的會回 400「duplicate column」，d1() 遇到 HTTP 失敗就改走 wrangler（npx，很慢）——
+    # 實測每次面談引擎重啟後的「第一則回覆」多等約 18 秒（試跑面談第一輪候選人等了 40 秒，其中模型本身只有 12 秒）。
+    want = (('cost_usd', 'REAL'), ('duration_ms', 'INTEGER'), ('api_ms', 'INTEGER'),
+            ('calls', 'INTEGER'), ('wall_ms', 'INTEGER'), ('prompt_chars', 'INTEGER'), ('output_chars', 'INTEGER'),
+            ('host', 'TEXT'), ('source', 'TEXT'))
+    try:
+        have = {r['name'] for r in d1("SELECT name FROM pragma_table_info('token_usage')")}
+    except Exception:
+        have = set()          # 查不到就維持舊作法（逐個 ALTER、失敗略過）
+    for col, typ in want:
+        if col in have:
+            continue
         try:
             d1(f"ALTER TABLE token_usage ADD COLUMN {col} {typ}")
         except Exception:
