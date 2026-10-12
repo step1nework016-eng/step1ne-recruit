@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(HERE, '..', '_tools'))
 import d1_rw  # noqa: E402
 sys.path.insert(0, HERE)
 from weekday_check import weekday_errors  # noqa: E402
+from client_name_check import client_name_errors  # noqa: E402
 
 SMTP_HOST = 'smtpout.secureserver.net'
 
@@ -71,7 +72,8 @@ def main():
             smtp.login(user, pw)
         for m in rows:
             if dry:
-                print(f"[dry] {m['kind']} → {m['to_email']}｜{m['subject']}")
+                bad = client_name_errors((m.get('subject') or '') + '\n' + (m.get('text') or '') + '\n' + (m.get('html') or ''))
+                print(f"[dry] {m['kind']} → {m['to_email']}｜{m['subject']}" + (f"  ⛔ 會擋下：{bad}" if bad else ''))
                 continue
             # 日期跟星期對不上就不寄（2026-10-08 寄出「10/9（四）」，其實是星期五）
             wd_err = weekday_errors((m.get('subject') or '') + '\n' + (m.get('text') or ''))
@@ -80,6 +82,17 @@ def main():
                         ['星期寫錯，已擋下：' + '；'.join(wd_err)[:250], m['id']])
                 _tg(f"⛔ 信沒寄出（星期寫錯）：{m['to_email']}｜{m['subject']}\n" + '\n'.join(wd_err))
                 print(f"⛔ {m['to_email']}：{wd_err}")
+                continue
+            # 客戶名寫錯就不寄（2026-10-12「美德相邦」事故）。mail_outbox 目前沒有附件欄位；
+            # 之後若加了附件，檔名也要一起放進來檢查。
+            att_names = [a.get('filename') or '' for a in (m.get('attachments') or [])] if isinstance(m.get('attachments'), list) else []
+            cn_err = client_name_errors((m.get('subject') or '') + '\n' + (m.get('text') or '') + '\n' +
+                                        (m.get('html') or '') + '\n' + '\n'.join(att_names))
+            if cn_err:
+                d1_rw.q("UPDATE mail_outbox SET status='blocked', error=? WHERE id=? AND status='pending'",
+                        ['客戶名寫錯，已擋下：' + '；'.join(cn_err)[:250], m['id']])
+                _tg(f"⛔ 信沒寄出（客戶名寫錯）：{m['to_email']}｜{m['subject']}\n" + '\n'.join(cn_err))
+                print(f"⛔ {m['to_email']}：{cn_err}")
                 continue
             # 搶這封（Mac 跟後台補寄同時看到同一封時，只會有一邊寄）
             claim = d1_rw.q("UPDATE mail_outbox SET status='sending', via='godaddy', attempts=COALESCE(attempts,0)+1 "

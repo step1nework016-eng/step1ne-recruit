@@ -42,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import d1_http  # noqa: E402
 from weekday_check import weekday_errors  # noqa: E402
+from client_name_check import client_name_errors  # noqa: E402
 
 
 # ── 2026-10-08 加：轉給客戶前先檢查人事資料表有沒有填完整 ──
@@ -210,7 +211,12 @@ def cmd_send_forms(args):
     wd_err = weekday_errors(body + '\n' + str(msg['Subject'] or ''))
     if wd_err:
         sys.exit('星期寫錯，沒有寄出：' + '；'.join(wd_err))
+    # 客戶名寫錯就不寄（2026-10-12「美德相邦」事故）。附件檔名要等下載完才知道，寄出前再查一次。
+    cn_err = client_name_errors(body + '\n' + str(msg['Subject'] or ''))
+    if cn_err:
+        sys.exit('客戶名寫錯，沒有寄出：' + '；'.join(cn_err))
     msg.set_content(body)
+    att_names = []
     for f in files:
         req = urllib.request.Request(f"https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/{f['file_id']}",
                                      headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'step1ne-ops'})
@@ -220,6 +226,10 @@ def cmd_send_forms(args):
         fn = urllib.parse.unquote(m.group(1)) if m else f['title']
         ctype = (mimetypes.guess_type(fn)[0] or 'application/octet-stream').split('/')
         msg.add_attachment(resp.read(), maintype=ctype[0], subtype=ctype[1], filename=fn)
+        att_names.append(fn)
+    cn_err = client_name_errors(body + '\n' + str(msg['Subject'] or '') + '\n' + '\n'.join(att_names))
+    if cn_err:
+        sys.exit('客戶名寫錯，沒有寄出：' + '；'.join(cn_err))
     u, p = official()
     with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=60, context=ssl.create_default_context()) as s:
         s.login(u, p)
@@ -265,6 +275,10 @@ def forward(r, atts):
     msg['Message-ID'] = email.utils.make_msgid(domain='step1ne.com')
     msg.set_content(f"您好，\n\n附上{r['candidate_name']}填寫完成的面試資料表，請您查收。\n\n謝謝！\n\n"
                     "Jacky\nStep1ne｜德仁管理顧問有限公司\n分機 25\n")
+    cn_err = client_name_errors(str(msg['Subject'] or '') + '\n' + msg.get_content() + '\n' +
+                                '\n'.join(a[0] for a in atts))
+    if cn_err:
+        return cn_err
     for fn, ctype, data in atts:
         mt, st = ctype.split('/', 1) if '/' in ctype else ('application', 'octet-stream')
         msg.add_attachment(data, maintype=mt, subtype=st, filename=fn)
@@ -312,7 +326,11 @@ def cmd_tick(args):
                 tg(f"✋ {r['candidate_name']} 回傳了資料表，但看起來沒填完整，先不轉給 {r['client_to']}：\n・" + '\n・'.join(probs) +
                    "\n\n人選補好再回信會自動重新檢查；要照現在這份直接轉，跟 Claude 說「放行 " + r['candidate_name'] + "」。")
                 continue
-            forward(r, ok)
+            cn_err = forward(r, ok)
+            if cn_err:
+                d1_http.query(f"UPDATE candidate_doc_requests SET status='held', note={q(('客戶名寫錯：' + '；'.join(cn_err))[:900])} WHERE id={q(r['id'])}")
+                tg(f"⛔ {r['candidate_name']} 的資料表沒有轉給 {r['client_to']}（客戶名寫錯）：\n" + '\n'.join(cn_err))
+                continue
             d1_http.query(f"UPDATE candidate_doc_requests SET status='forwarded', forwarded_at={q(now())} WHERE id={q(r['id'])}")
             names = '、'.join(a[0] for a in ok)
             need = len([t for t in (r.get('doc_titles') or '').split('、') if t])
