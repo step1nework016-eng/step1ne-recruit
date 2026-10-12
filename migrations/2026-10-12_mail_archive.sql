@@ -58,3 +58,13 @@ CREATE TABLE IF NOT EXISTS mail_archive_attachments (
   UNIQUE(archive_id, part_idx)
 );
 CREATE INDEX IF NOT EXISTS idx_mail_archive_att_file ON mail_archive_attachments(file_id);
+
+-- 2026-10-12 Jacky 核准：jackychen@ 的信用「私人鑰匙」開門。每人一把，只存 SHA-256 雜湊不存原文；
+-- 刪掉那一列＝作廢那把鑰匙。鑰匙原文只私訊給本人，不進任何檔案。
+CREATE TABLE IF NOT EXISTS mail_private_keys (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  label        TEXT NOT NULL,              -- Jacky / Phoebe
+  key_hash     TEXT NOT NULL UNIQUE,       -- sha256(鑰匙原文) hex
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT
+);
