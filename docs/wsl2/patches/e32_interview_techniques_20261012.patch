@@ -1,8 +1,32 @@
 diff --git a/interview_daemon.py b/interview_daemon.py
-index a3e54d1..f56c9e5 100644
+index a3e54d1..a396bd2 100644
 --- a/interview_daemon.py
 +++ b/interview_daemon.py
-@@ -4113,6 +4113,7 @@ def handle(app):
+@@ -4107,12 +4107,31 @@ def handle(app):
+         # E23b：進房那一刻預熱還沒算好、後來才算好 → 直接貼預熱的開場白，不用再等 AI 現場生成 35～45 秒
+         if _post_prewarmed_opening(app_id, name):
+             return
++        # E32-F①：取得鎖之後重新確認「最後一則還是候選人」。待回清單是主迴圈開頭抓的，可能已過時（上一輪剛好回完並放鎖）。
++        _lr = d1(f"SELECT role FROM messages WHERE application_id={q(app_id)} "
++                 f"AND {MK.sql_not_transition('content')} ORDER BY id DESC LIMIT 1")
++        if _lr and _lr[0].get('role') == 'assistant':
++            log(f'↩️ {name}：他已經被回過了（輪詢到的待回清單是過時的），這輪略過，不重複回')
++            return
+         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
+         ctx = context_for(app_id)
+         n = len(ctx.get('conversation') or [])
++        # E32-F②：候選人說要改面談時間／現在不方便 → 不硬接精簡版，直接回一句、停止提問、通知顧問約時間
++        if _reschedule_requested(ctx.get('conversation') or []):
++            _said = next((m for m in reversed(ctx.get('conversation') or []) if m.get('role') != 'assistant'), {}).get('content', '')
++            _now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
++            d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
++               f"({q(app_id)},'assistant',{q(RESCHED_REPLY)},'{_now}')")
++            snap_signals(app_id, _now)
++            log(f'🗓️ {name}：候選人要改面談時間，回「我請顧問跟您約時間」、停止提問、通知顧問')
++            tg(f'🗓️ {name} 在面談室表示要改面談時間：「{str(_said)[:80]}」\n'
++               f'職缺：{app.get("job_title") or app.get("job_slug")}\n'
++               f'阿財已回「{RESCHED_REPLY}」並停止提問，請顧問跟他約時間（面談還開著，他回來可以接續）。', THREAD_DECIDE)
++            return
          _notify_cross_job_interest(app, ctx)
          talk_prompt = build_prompt(ctx, talk_skill(ctx))
          talk_prompt += _pace_hints(ctx)      # E24：起手式重複／問題預算（程式數出來的提示）
@@ -10,13 +34,63 @@ index a3e54d1..f56c9e5 100644
          # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
          # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
          #
-@@ -4518,6 +4519,102 @@ def _judge_hint(asst):
+@@ -4156,6 +4175,9 @@ def handle(app):
+         _trans.close()      # 正式回覆已經算好、要寫入了，不要再送過渡語
+         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
+         msgs = _merge_fragments(msgs)      # E24：單獨一則「嗯，」併進下一則
++        msgs, _cut = _stop_after_question(msgs)      # E32-F：問了就等回答，後面「假設對方答案」的氣泡丟掉
++        if _cut:
++            log(f'✂️ {name}：問句後面有 {_cut} 則在替對方答，已丟掉（問了要等回答）')
+         if not msgs:
+             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
+ 
+@@ -4518,6 +4540,145 @@ def _judge_hint(asst):
      return ''
  
  
 +# ── E32（2026-10-12，張景勛 10/6 復盤）：面談技巧四項改進——程式端數出來的提示 ──
 +# 問題：①同一題重問 ②候選人一直答「沒有」還往下追 ③該問沒問（離職原因、搬遷；原本只有 acai_v2 職缺會問）④薪資逼問到第 3 次。
 +# 做法跟 _pace_hints 一樣：不靠模型自己記，由程式從對話數出來，直接告訴模型「這場已經問過什麼」。
++# F（楊策淳 10/12 19:23 現場抓到）：候選人說「可以，但面談時間需要更改」→ 阿財問「是時間不夠、還是想約其他時段？」
++# → 7 秒後沒等回答就自己說「好，那我們抓精簡版」開始問預告期。
++# 查到兩個原因：
++#  ① 同一則候選人訊息被處理了兩次：主迴圈每 3 秒先抓一份「待回清單」，抓完到真正派工之間，上一輪的 handle 剛好回完並放鎖，
++#     新一輪就用過時的清單又搶到鎖、再回一次（第二次回覆看到第一次的問句沒人答，就替對方答了）。handle() 取得鎖之後要重新確認「最後一則還是候選人」。
++#  ② 模型自己在同一輪的第二個氣泡「假設對方答案」。這支加提示＋事後擋一次。
++ASK_WAIT_RULE = ('\n\n【問了就要等回答（硬規則）】一輪回覆裡如果有問句，**問句之後不准再接「假設對方答案」的句子**'
++                 '（例如問「是時間不夠還是想約其他時段？」後面又說「如果時間比較緊，我們先聊精簡版」）；多則氣泡時，'
++                 '最後一則不能替對方做決定，要嘛以問句收尾、要嘛不問。候選人沒回答的事，不准自己當他答了。')
++RESCHED_REPLY = '沒問題，我請顧問跟您約時間，不用急，謝謝您。'
++_RESCHED_PAT = re.compile(
++    r'面談.{0,8}(時間|時段).{0,6}(更改|改期|改|延|換|調)|面談.{0,6}(改期|延期|改時間|改天|延後)'
++    r'|(現在|目前|今天|這時候|這個時間).{0,6}(不方便|沒辦法|沒空|沒時間|不太方便|有事)|不方便(現在|面談|談)'
++    r'|(改天再?(談|聊|面談|繼續)?|另約|改約|重約|下次再(談|聊|面談))|(晚點|等一下|晚一點|稍後)再(談|聊|面談|繼續)|(改|換)(個|其他|另一個)?(時間|時段)')
++_ASSUME_PAT = re.compile(r'^(如果|那(我們|就)|好[，,]?那|既然|那麼|那先|這樣的話|那我們就)|先聊精簡|精簡版|我們(先|就)(聊|問|抓)')
++
++
++def _reschedule_requested(conv):
++    """最後一則候選人訊息表示要改面談時間／現在不方便（短訊息才算，避免把工作上的「時間更改」誤判）。
++    已經回過「我請顧問跟您約時間」就不再走這條（交給模型正常接）。"""
++    for m in conv:
++        if m.get('role') == 'assistant' and RESCHED_REPLY[:8] in str(m.get('content') or ''):
++            return False
++    last = next((m for m in reversed(conv) if m.get('role') != 'assistant'), None)
++    if not last:
++        return False
++    t = str(last.get('content') or '').strip()
++    return 0 < len(t) <= 60 and '候選人已進入' not in t and bool(_RESCHED_PAT.search(t))
++
++
++def _stop_after_question(msgs):
++    """同一輪：某則以問句結尾、後面幾則都沒有問句、而且是「假設對方答案」的句型 → 後面的丟掉。回 (新 msgs, 丟掉幾則)。"""
++    for k, m in enumerate(msgs[:-1]):
++        if re.search(r'[?？]\s*$', str(m).strip()):
++            rest = msgs[k + 1:]
++            if all(not re.search(r'[?？]', str(r)) for r in rest) and any(_ASSUME_PAT.search(str(r).strip()) for r in rest):
++                return msgs[:k + 1], len(rest)
++    return msgs, 0
++
++
 +_TECH_TOPICS = {
 +    '預告期／到職時間': r'預告期|離職.{0,4}(通知|交接)|多久.{0,3}(到職|能到|可以到)|何時.{0,3}到職|最快.{0,4}到職|到職時間',
 +    '競業禁止': r'競業|不得招攬|競爭條款',
@@ -72,9 +146,12 @@ index a3e54d1..f56c9e5 100644
 +        if '薪資期望' in last_topics:
 +            salary_evasive = bool(_SALARY_EVADE.search(c)) and not re.search(r'\d', c)
 +        last_topics = []
-+    if q_count < 2:
-+        return ''
++    resched_done = any(m.get('role') == 'assistant' and RESCHED_REPLY[:8] in str(m.get('content') or '') for m in conv)
++    if q_count < 2 and not resched_done:
++        return ASK_WAIT_RULE
 +    out = []
++    if resched_done:
++        out.append('【候選人已表示要改面談時間（程式偵測）】顧問會跟他約時間。**不要開新的面談題目**，只回應他剛說的話、確認他方便的時段即可。')
 +    # A. 同一題不重問
 +    if asked:
 +        shown = '、'.join(f'{t}×{n}' + ('（已重複，不准再問）' if n >= 2 else '') for t, n in asked.items())
@@ -107,7 +184,7 @@ index a3e54d1..f56c9e5 100644
 +    # E. 收尾用語
 +    if english:
 +        out.append('【英文測驗之後的用語】只說「謝謝，英文這段我記下來了」。**不要說「英文可以清楚表達」「英文部分沒問題」這類結論句**——聽起來像通過了。')
-+    return ('\n\n' + '\n'.join(out)) if out else ''
++    return (('\n\n' + '\n'.join(out)) if out else '') + ASK_WAIT_RULE
 +
 +
  def _pace_hints(ctx):

@@ -19,7 +19,7 @@ def conv(*pairs):
 
 H = D._technique_hints
 
-chk('對話太短（<2 個問題）→ 不提示', H(conv(('A', '您好，先從這段問起：您在龍蓁淳做了什麼？'))) == '')
+chk('對話太短（<2 個問題）→ 只帶「問了就要等回答」，沒有其他提示', H(conv(('A', '您好，先從這段問起：您在龍蓁淳做了什麼？'))) == D.ASK_WAIT_RULE)
 
 # A. 同一題重問：預告期問了兩次
 c = conv(('A', '您目前公司的離職預告期大概多久？'), ('C', '提離職到交接需要2個月'),
@@ -78,6 +78,66 @@ c = conv(('A', '您目前公司的離職預告期大概多久？'), ('C', '提�
 h = H(c)
 chk('張景勛情境：同時帶出「預告期不准再問」「數據分析結案」「薪資不准第三次」「動機必問」',
     all(k in h for k in ('預告期／到職時間×2（已重複', '連續兩次否定', '薪資已經問過 2 次', '離職原因／動機')), h[:400])
+
+
+# ══ E32-F（楊策淳 10/12）：問了要等回答；候選人要改時間就停 ══
+# 1. 候選人要改時間的偵測
+for t in ['可以，但面談時間需要更改', '我現在不方便，可以改天嗎', '晚點再聊可以嗎', '不好意思今天沒辦法，想改約', '現在有事，可以換個時間嗎']:
+    chk(f'改時間偵測：{t}', D._reschedule_requested([{'role': 'assistant', 'content': '以上這些方便嗎？'}, {'role': 'candidate', 'content': t}]), t)
+for t in ['我晚點再想想薪資', '到職時間可以再談', '好，可以', '專案時間更改過兩次，但最後都有如期交付，我當時負責跟客戶溝通新的時程並重新排定里程碑，整個過程大約三個月完成']:
+    chk(f'不誤判成改時間：{t[:20]}', not D._reschedule_requested([{'role': 'assistant', 'content': '請問？'}, {'role': 'candidate', 'content': t}]), t)
+chk('已經回過「我請顧問跟您約時間」就不再走快速路徑',
+    not D._reschedule_requested([{'role': 'assistant', 'content': D.RESCHED_REPLY}, {'role': 'candidate', 'content': '還是想改天'}]))
+
+# 2. 問句後面接「假設對方答案」的氣泡 → 丟掉（楊策淳那輪的原句）
+m, cut = D._stop_after_question(['好的，方便說一下是時間不夠、還是想約其他時段嗎？', '如果現在時間比較緊，我們可以先聊精簡一點，重點的部分問完就好。'])
+chk('問句後的「如果…先聊精簡」被丟掉', cut == 1 and m == ['好的，方便說一下是時間不夠、還是想約其他時段嗎？'], (m, cut))
+m, cut = D._stop_after_question(['您預告期多久？', '加上交接，預估多久能到職？'])
+chk('兩個都是問句 → 不動', cut == 0 and len(m) == 2)
+m, cut = D._stop_after_question(['了解，您是主導過新店招募。', '想請教留任率怎麼拉到71%？'])
+chk('先陳述再問 → 不動', cut == 0 and len(m) == 2)
+m, cut = D._stop_after_question(['您預告期多久？', '（例如一個月或兩個月都可以說）'])
+chk('問句後只是補充說明（不是假設答案）→ 不丟', cut == 0 and len(m) == 2, (m, cut))
+
+# 3. 提示：永遠帶「問了就要等回答」，即使對話很短；改期後提醒不開新題
+chk('對話很短也帶「問了就要等回答」', '問了就要等回答' in H(conv(('A', '您好，先問一題？'))))
+c = conv(('A', '以上這些方便嗎？'), ('C', '可以，但面談時間需要更改'), ('A', D.RESCHED_REPLY), ('C', '好'))
+chk('走過改期流程 → 提示不要開新的面談題目', '不要開新的面談題目' in H(c), H(c)[:200])
+
+# 4. handle()：過時待回清單 → 略過；改時間 → 快速路徑（假依賴，不呼叫模型）
+import types
+def run_handle(last_role, conversation):
+    calls = {'insert': [], 'tg': [], 'claude': 0}
+    def fake_d1(sql, *a, **k):
+        if sql.startswith('SELECT role FROM messages'):
+            return [{'role': last_role}]
+        if sql.startswith('INSERT INTO messages'):
+            calls['insert'].append(sql)
+        return []
+    class T:
+        def __init__(s, *a, **k): pass
+        def start(s): pass
+        def close(s): pass
+    D.d1 = fake_d1; D._mark_host = lambda *a, **k: None; D._Transition = T
+    D._post_prewarmed_opening = lambda *a, **k: False
+    D._max_msg_id = lambda a: 1; D.context_for = lambda a: {'conversation': conversation}
+    D.snap_signals = lambda *a, **k: None; D.log = lambda *a, **k: None
+    D.tg = lambda text, *a, **k: calls['tg'].append(text)
+    def no_claude(*a, **k):
+        calls['claude'] += 1; raise AssertionError('不該呼叫模型')
+    D.run_claude = no_claude; D._notify_cross_job_interest = lambda *a, **k: None
+    D.build_prompt = lambda *a, **k: 'x'; D.talk_skill = lambda c: ''
+    D.release_lock = lambda a: None
+    D._busy.add('app-x')
+    D.handle({'id': 'app-x', 'name': '測試', 'job_slug': 'j', 'job_title': '職缺'})
+    return calls
+cs = run_handle('assistant', [{'role': 'candidate', 'content': '可以，但面談時間需要更改'}])
+chk('過時待回清單（最後一則已是阿財）→ 略過，不呼叫模型、不寫訊息', cs['claude'] == 0 and not cs['insert'] and not cs['tg'], cs)
+cs = run_handle('candidate', [{'role': 'assistant', 'content': '以上這些方便嗎？'}, {'role': 'candidate', 'content': '可以，但面談時間需要更改'}])
+chk('改面談時間 → 回固定句、不呼叫模型、TG 通知顧問',
+    cs['claude'] == 0 and len(cs['insert']) == 1 and D.RESCHED_REPLY in cs['insert'][0] and len(cs['tg']) == 1 and '改面談時間' in cs['tg'][0], cs)
+src2 = open(os.path.join(os.getcwd(), 'interview_daemon.py'), encoding='utf-8').read()
+chk('handle 事後擋有接上 _stop_after_question', 'msgs, _cut = _stop_after_question(msgs)' in src2)
 
 # 實際接進 talk_prompt 的位置存在
 src = open(os.path.join(os.getcwd(), 'interview_daemon.py'), encoding='utf-8').read()
