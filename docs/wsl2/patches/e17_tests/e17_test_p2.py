@@ -21,7 +21,7 @@ for ddl in (
     "CREATE TABLE applications (id TEXT PRIMARY KEY, name TEXT, job_slug TEXT, status TEXT, interview_state TEXT, remind_at TEXT,"
     " created_at TEXT, interview_plan_json TEXT, interview_plan_at TEXT, prewarmed_opening TEXT, prewarmed_at TEXT, pre_interview_note_at TEXT,"
     " resume_file_id TEXT, resume_url_parsed_at TEXT)",     # E17c：plan_candidates 的提早擬名單會看這兩欄
-    "CREATE TABLE jobs (slug TEXT, seniority TEXT, updated_at TEXT)",
+    "CREATE TABLE jobs (slug TEXT, seniority TEXT, updated_at TEXT, status TEXT)",
     "CREATE TABLE job_expertise (job_slug TEXT, edited_at TEXT)",
     "CREATE TABLE assessments (application_id TEXT)",
     "CREATE TABLE screenings (application_id TEXT, created_at TEXT)",      # E17c：作廢檢查會看初篩時間
@@ -38,7 +38,7 @@ def app(i, status, remind=None, sen='mid', assess=True, state=None, plan=None, p
                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (i, i, 'jb', status, state, remind, T(-30), plan, plan_at, warm, warm_at, note_at))
     if assess: DB.execute("INSERT INTO assessments VALUES (?)", (i,))
     DB.commit()
-DB.execute("INSERT INTO jobs VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
+DB.execute("INSERT INTO jobs (slug, seniority, updated_at) VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
 app('s_in',   'scheduled', remind=T(5))                     # 預約 5 小時後、已交卷 → 要擬
 app('s_far',  'scheduled', remind=T(80))                    # 預約 80 小時後 → 還沒到
 app('s_past', 'scheduled', remind=T(-3))                    # 預約時間已過 → 不擬（他不會來了／會走 ready）
@@ -62,7 +62,7 @@ D.PLAN_SCHEDULED_LEAD_HOURS = 24
 
 print('\n[A2] 計畫／開場白過期作廢')
 DB.execute("DELETE FROM applications"); DB.execute("DELETE FROM jobs"); DB.commit()
-DB.execute("INSERT INTO jobs VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
+DB.execute("INSERT INTO jobs (slug, seniority, updated_at) VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
 app('note_new', 'ready', plan='{"q":1}', plan_at=T(-3), warm='["hi"]', warm_at=T(-2.5), note_at=T(-1))      # 交代在擬好之後改過
 app('fresh',    'ready', plan='{"q":1}', plan_at=T(-1), warm='["hi"]', warm_at=T(-1), note_at=T(-3))        # 交代比計畫舊 → 保留
 app('active',   'ready', state='active', plan='{"q":1}', plan_at=T(-3), warm='["hi"]', warm_at=T(-3), note_at=T(-1))  # 已進房 → 不動

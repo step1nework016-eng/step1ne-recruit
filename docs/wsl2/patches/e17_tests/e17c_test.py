@@ -22,7 +22,7 @@ for ddl in (
     "CREATE TABLE applications (id TEXT PRIMARY KEY, name TEXT, job_slug TEXT, status TEXT, interview_state TEXT, remind_at TEXT,"
     " created_at TEXT, interview_plan_json TEXT, interview_plan_at TEXT, prewarmed_opening TEXT, prewarmed_at TEXT, pre_interview_note_at TEXT,"
     " resume_file_id TEXT, resume_url_parsed_at TEXT)",
-    "CREATE TABLE jobs (slug TEXT, seniority TEXT, updated_at TEXT)",
+    "CREATE TABLE jobs (slug TEXT, seniority TEXT, updated_at TEXT, status TEXT)",
     "CREATE TABLE job_expertise (job_slug TEXT, edited_at TEXT)",
     "CREATE TABLE assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT, b5_o REAL, b5_c REAL, b5_e REAL, b5_a REAL, b5_n REAL,"
     " grit REAL, grit_interest REAL, grit_effort REAL, quality_flag TEXT)",
@@ -41,7 +41,7 @@ def app(i, status, created=-0.2, resume_file='f1', parsed=None, state=None, plan
     DB.execute("INSERT INTO applications (id,name,job_slug,status,interview_state,created_at,interview_plan_json,interview_plan_at,prewarmed_opening,prewarmed_at,pre_interview_note_at,resume_file_id,resume_url_parsed_at)"
                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (i, i, 'jb', status, state, T(created), plan, plan_at, warm, warm_at, note_at, resume_file, parsed))
     DB.commit()
-DB.execute("INSERT INTO jobs VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
+DB.execute("INSERT INTO jobs (slug, seniority, updated_at) VALUES ('jb','mid',?)", (T(-100),)); DB.commit()
 
 print('\n[A] 提早擬名單')
 app('p_new',    'pending_assessment')                                  # 剛投遞、履歷是上傳檔 → 要擬
