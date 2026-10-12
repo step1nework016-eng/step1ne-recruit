@@ -4107,6 +4107,14 @@ def handle(app):
         # E23b：進房那一刻預熱還沒算好、後來才算好 → 直接貼預熱的開場白，不用再等 AI 現場生成 35～45 秒
         if _post_prewarmed_opening(app_id, name):
             return
+        # 取得鎖之後重新確認「最後一則還是候選人」。待回清單是主迴圈開頭抓的，可能已過時：
+        # 上一輪的 handle 剛好回完並放鎖，新一輪用過時的清單又搶到鎖、再回一次，第二次看到第一次的問句沒人答，
+        # 就替對方答了（楊策淳 10/12 19:23：同一則訊息被回兩次，第二次沒等回答就自己決定改精簡版）。
+        _lr = d1(f"SELECT role FROM messages WHERE application_id={q(app_id)} "
+                 f"AND {MK.sql_not_transition('content')} ORDER BY id DESC LIMIT 1")
+        if _lr and _lr[0].get('role') == 'assistant':
+            log(f'↩️ {name}：他已經被回過了（輪詢到的待回清單是過時的），這輪略過，不重複回')
+            return
         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
