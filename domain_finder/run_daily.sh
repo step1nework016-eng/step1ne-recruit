@@ -46,7 +46,7 @@ PY
 )"
 # 一輪 11 個要等 5 分鐘（sleep 290），Bash 預設 2 分鐘逾時會把 sleep 砍掉，所以放寬到 6 分鐘
 export BASH_DEFAULT_TIMEOUT_MS=360000 BASH_MAX_TIMEOUT_MS=600000
-# 一天 280 個 ≈ 26 輪 × 5 分鐘 ≈ 2.5 小時，上限給 4 小時
+# 2026-10-12 Jacky：免費帳號，一週約 300 個拆 7 天＝一天 43 個 ≈ 4 輪 × 5 分鐘 ≈ 20 分鐘，上限給 1 小時
 cd "$HERE" && timeout 4h claude -p "$PROMPT" "${CLAUDE_ARGS[@]}"
 rc=$?
 echo "-- claude 結束 rc=$rc"
