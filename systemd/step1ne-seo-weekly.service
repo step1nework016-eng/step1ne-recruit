@@ -1,0 +1,12 @@
+[Unit]
+Description=Step1ne 搜尋成效週報（每週一）
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash seo_report/run_weekly.sh
+TimeoutStartSec=1800
+StandardOutput=append:%h/aijob-automation/logs/seo_weekly.log
+StandardError=append:%h/aijob-automation/logs/seo_weekly.log

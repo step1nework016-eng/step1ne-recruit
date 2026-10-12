@@ -1,0 +1,9 @@
+[Unit]
+Description=每週一 10:00（台灣時間）更新搜尋成效週報
+
+[Timer]
+OnCalendar=Mon *-*-* 10:00:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target
