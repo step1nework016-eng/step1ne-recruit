@@ -4841,6 +4841,26 @@ function salaryLine(j) {
   if (lo >= 300000) return `月薪 ${lo.toLocaleString('zh-TW')}${hi && hi !== lo ? '～' + hi.toLocaleString('zh-TW') : ''} 日圓`;
   return hi && hi !== lo ? `月薪 ${fmtWan(lo)}～${fmtWan(hi)} 萬` : `月薪 ${fmtWan(lo || hi)} 萬起`;
 }
+// 對外文字不准出現客戶名稱（同官網 predeploy 守門員的原則）：client_intro 有些是直接寫公司名的
+// （例：「律准專注於…」「內湖恆新復健科診所…」），出現任何客戶全名／別名／去掉公司字尾的簡稱就整行不放。
+async function mentionsClientName(env, text) {
+  try {
+    const rows = (await env.DB.prepare(`SELECT display_name, aliases FROM client_companies`).all()).results || [];
+    const t = String(text || '').replace(/\s+/g, '');
+    for (const r of rows) {
+      const names = [r.display_name, ...String(r.aliases || '').split(/[,，、\n;；]/)];
+      for (const raw of names) {
+        const n = String(raw || '').replace(/\s+/g, '').replace(/[（(].*?[）)]/g, '');
+        if (n.length < 2) continue;
+        const short = n.replace(/(股份有限公司|有限公司|股份公司|公司|集團)$/, '').replace(/^(台北|臺北|新北|台中|臺中|高雄|內湖|新竹)(市)?/, '');
+        for (const k of [n, short, short.replace(/(科技|國際|管理顧問|顧問|開發|醫療|生技|企業|診所|復健科診所)$/, '')]) {
+          if (k && k.length >= 2 && t.includes(k)) return true;
+        }
+      }
+    }
+  } catch { return true; }   // 查不到客戶名單就保守處理：不放介紹
+  return false;
+}
 async function jobWelcomeMessage(env, slug, title, applyUrl) {
   let j = null;
   try {
@@ -4853,7 +4873,7 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   if (loc.length > 40) loc = loc.slice(0, 40) + '…';
   if (sal || loc) lines.push([sal && `💰 ${sal}`, loc && `📍 ${loc}`].filter(Boolean).join('｜'));
   const intro = j && j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim() : '';
-  if (intro && intro.length <= 60 && !/客戶/.test(intro)) lines.push(`🌏 ${intro}`);
+  if (intro && intro.length <= 60 && !/客戶/.test(intro) && !(await mentionsClientName(env, intro))) lines.push(`🌏 ${intro}`);
   if (j && j.slug) {
     // 有些職缺（保密、剛建好）沒有公開職缺頁，連結會 404——先確認打得開才附
     const pageUrl = `https://step1ne.com/jobs/${encodeURIComponent(j.slug)}/`;
