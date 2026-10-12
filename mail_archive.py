@@ -249,6 +249,9 @@ def upload(token, archive_id, idx, name, mime, data):
         return json.loads(r.read().decode())
 
 
+KOL_RE = re.compile(r'STEP1NE MATCH|KOL|KOC|創作者合作|品牌合作邀請', re.I)
+
+
 def store(mailbox, folder, imap_folder, uv, uid, raw, internal, linker, token, dry):
     msg = email.message_from_bytes(raw)
     mid = (msg.get('Message-ID') or '').strip() or f'uid:{mailbox}:{imap_folder}:{uv}:{uid}'
@@ -257,6 +260,9 @@ def store(mailbox, folder, imap_folder, uv, uid, raw, internal, linker, token, d
     subject = dec(msg.get('Subject'))
     when = taipei_time(msg, internal)
     text, trunc = body_text(msg)
+    # 2026-10-12 Jacky：KOL／KOC 創作者合作（STEP1NE MATCH）是另一條業務線，不進招募的信箱紀錄
+    if KOL_RE.search(subject or '') or 'STEP1NE MATCH' in (text or '')[:4000]:
+        return 'skip', 0, False
     atts = attachments(msg)
     to_save = [a for a in atts if a[3] is not None]
     skipped = '；'.join(a[4] for a in atts if a[4]) or None
