@@ -1,5 +1,5 @@
 diff --git a/interview_daemon.py b/interview_daemon.py
-index 0d9356d..08e8061 100644
+index a3e54d1..f56c9e5 100644
 --- a/interview_daemon.py
 +++ b/interview_daemon.py
 @@ -4113,6 +4113,7 @@ def handle(app):
@@ -10,8 +10,8 @@ index 0d9356d..08e8061 100644
          # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
          # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
          #
-@@ -4499,6 +4500,102 @@ def _opening_of(text):
-     return m[:8]
+@@ -4518,6 +4519,102 @@ def _judge_hint(asst):
+     return ''
  
  
 +# ── E32（2026-10-12，張景勛 10/6 復盤）：面談技巧四項改進——程式端數出來的提示 ──
