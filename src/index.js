@@ -3356,9 +3356,7 @@ async function handleLineEvent(env, ev) {
           const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
             + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`
             + (click.queue_id ? `&utm_content=${encodeURIComponent('q' + click.queue_id)}` : '');
-          const msg = `嗨嗨 👋 這是「${click.job_title}」的應徵入口\n\n`
-            + `流程是：\n1️⃣ 填寫應徵表單 📝\n2️⃣ 跟 AI 阿財完成初步面談 🤖\n3️⃣ 顧問審核通過後會進一步聯繫您 📞\n\n`
-            + `應徵表單連結 👇\n${applyUrl}`;
+          const msg = await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
           return lineReply(env, replyToken, msg);
         }
         // ⚠️ 2026-09-08 修：上面那個 job_title 判斷原本是「查不到職稱就完全
@@ -4827,6 +4825,48 @@ async function handleSocAction(env, cq) {
 // 2026-10-02 Jacky：「以後我可以的，ph 就可以」——Jacky 能按的 TG 核准按鈕，Phoebe 都能按
 // （寄給公司的信、放官網）。新增 Jacky 專用按鈕時，用這份名單。
 const BD_APPROVERS = ['jackyyuqi', 'behe10'];
+
+// 2026-10-12 Jacky：LINE 加好友後的自動回覆，原本只有「流程三步驟＋表單」，像在辦手續。
+// 9/12～10/11 從貼文進來收到這則的 61 人只有 20 人送出應徵；填完表的人大多會跟阿財面談，
+// 所以人是流失在「看到這則訊息之後」。改成先給他想知道的（薪資、地點、這份工作在做什麼、
+// 完整職缺頁），再講怎麼應徵；所有職缺共用，內容從 jobs 自動帶。
+// 候選人文字規則：不寫「客戶」、不用顧問／我們當主詞；保密職缺只用 client_intro 的產業描述。
+function fmtWan(n) { const w = Number(n) / 10000; return (Number.isInteger(w) ? w : Math.round(w * 10) / 10).toLocaleString('zh-TW'); }
+function salaryLine(j) {
+  const lo = Number(j.salary_min) || 0, hi = Number(j.salary_max) || 0, unit = String(j.salary_unit || '').toUpperCase();
+  if (!lo && !hi) return '';
+  if (unit === 'YEAR') return hi && hi !== lo ? `年薪 ${fmtWan(lo)}～${fmtWan(hi)} 萬` : `年薪 ${fmtWan(lo || hi)} 萬起`;
+  if (unit === 'HOUR') return `時薪 ${lo.toLocaleString('zh-TW')}${hi && hi !== lo ? '～' + hi.toLocaleString('zh-TW') : ''} 元`;
+  // 月薪：台灣職缺用「萬」；30 萬以上多半是日圓（日本職缺），照原數字＋「起」，不換算
+  if (lo >= 300000) return `月薪 ${lo.toLocaleString('zh-TW')}${hi && hi !== lo ? '～' + hi.toLocaleString('zh-TW') : ''} 日圓`;
+  return hi && hi !== lo ? `月薪 ${fmtWan(lo)}～${fmtWan(hi)} 萬` : `月薪 ${fmtWan(lo || hi)} 萬起`;
+}
+async function jobWelcomeMessage(env, slug, title, applyUrl) {
+  let j = null;
+  try {
+    j = await env.DB.prepare(`SELECT slug, title, salary_min, salary_max, salary_unit, locations, client_intro FROM jobs WHERE slug=?`).bind(slug).first();
+  } catch { /* 查不到就用精簡版 */ }
+  const lines = [`嗨嗨 👋 謝謝你對這個職缺有興趣！`, '', `📌 ${(j && j.title) || title}`];
+  const sal = j ? salaryLine(j) : '';
+  let loc = j && j.locations ? String(j.locations).split(/[\n；;]/)[0].trim() : '';
+  if (loc.length > 30 && loc.includes('（')) loc = loc.split('（')[0].trim();   // 括號裡的補充說明太長就省略，不要截在括號中間
+  if (loc.length > 40) loc = loc.slice(0, 40) + '…';
+  if (sal || loc) lines.push([sal && `💰 ${sal}`, loc && `📍 ${loc}`].filter(Boolean).join('｜'));
+  const intro = j && j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim() : '';
+  if (intro && intro.length <= 60 && !/客戶/.test(intro)) lines.push(`🌏 ${intro}`);
+  if (j && j.slug) {
+    // 有些職缺（保密、剛建好）沒有公開職缺頁，連結會 404——先確認打得開才附
+    const pageUrl = `https://step1ne.com/jobs/${encodeURIComponent(j.slug)}/`;
+    const ok = await fetch(pageUrl, { method: 'HEAD', signal: AbortSignal.timeout(2500) }).then((r) => r.ok).catch(() => false);
+    if (ok) lines.push('', `👉 完整職缺說明：${pageUrl}`);
+  }
+  lines.push('', '想應徵的話很簡單：',
+    '1️⃣ 填表單＋附履歷（手機拍照、截圖也可以）',
+    '2️⃣ 跟 AI 阿財聊大約 30 分鐘，隨時都能開始，不用約時間',
+    '3️⃣ 條件適合的話，會再安排電話細談',
+    '', `📝 應徵表單：${applyUrl}`, '', '有想先問的，直接在這裡打字就可以 😊');
+  return lines.join('\n');
+}
 
 export default {
   async fetch(request, env) {
