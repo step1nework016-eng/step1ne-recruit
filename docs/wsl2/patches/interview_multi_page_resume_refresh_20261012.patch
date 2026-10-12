@@ -1,0 +1,47 @@
+diff --git a/interview_daemon.py b/interview_daemon.py
+index 77ac1cb..0d9356d 100644
+--- a/interview_daemon.py
++++ b/interview_daemon.py
+@@ -1512,24 +1512,36 @@ def _late_refresh(app_id, static):
+     # 2026-10-12：應徵表單多了「我用 LINE 傳履歷」——快取住的時候還沒有履歷，之後才收到。
+     # 這種情況整份 static 重抓（履歷是 fetch_application.py 組的，不能只補一段）。
+     need_r = not static.get('resume_readable')
+-    if not (need_a or need_s or need_r):
++    # E31（2026-10-12）：履歷是好幾張截圖時，第 1 張先到、其他頁陸續到，parse_resumes.py 會把整組
++    # 重新 OCR、改寫同一個檔案的文字（resume_file_id 不變，只有 files.parsed_at 會變）。
++    # 面談還沒開始前也要看一下文字有沒有更新；開始後不換（避免面談中途資料變動）。
++    watch_r = need_r or not static.get('_interview_started')
++    if not (need_a or need_s or watch_r):
+         return static
+     now = time.time()
+     if now - _late_checked.get(app_id, 0) < LATE_RECHECK_SEC:
+         return static
+     _late_checked[app_id] = now
+-    if need_r:
++    if watch_r:
+         try:
+-            row = d1(f"SELECT resume_file_id, resume_url FROM applications WHERE id={q(app_id)}")
++            row = d1(f"SELECT a.resume_file_id, a.resume_url, a.interview_state, f.parsed_at "
++                     f"FROM applications a LEFT JOIN files f ON f.id = a.resume_file_id WHERE a.id={q(app_id)}")
+             got = row and (row[0].get('resume_file_id') or (row[0].get('resume_url') or '').strip())
+-            key = f"{row[0].get('resume_file_id') or ''}|{(row[0].get('resume_url') or '').strip()}" if row else ''
+-            # 只在「履歷換了一份」時重抓一次（抽不到字的圖片履歷不要每 30 秒重跑 fetch_application）
++            key = (f"{row[0].get('resume_file_id') or ''}|{(row[0].get('resume_url') or '').strip()}"
++                   f"|{row[0].get('parsed_at') or ''}") if row else ''
++            if row and (row[0].get('interview_state') or 'not_started') != 'not_started':
++                static['_interview_started'] = True
++            # 已經讀得到履歷、第一次記下 key：只記，不重抓
++            if not need_r and '_resume_key' not in static:
++                static['_resume_key'] = key
++                got = False
++            # 只在「履歷換了一份／文字重新轉過」時重抓一次（抽不到字的圖片履歷不要每 30 秒重跑 fetch_application）
+             if got and key != static.get('_resume_key'):
+                 fresh = _fetch_static(app_id)
+                 fresh['_resume_key'] = key
+                 with _static_lock:
+                     _STATIC_CACHE[app_id] = fresh
+-                log(f'🔄 {app_id[:8]}：履歷是後來才收到的（LINE／補履歷頁），快取整份重抓'
++                log(f'🔄 {app_id[:8]}：履歷是後來才收到／又多了幾頁（LINE／補履歷頁），快取整份重抓'
+                     f'（{"讀得到" if fresh.get("resume_readable") else "還抽不到字"}）')
+                 return fresh
+         except Exception as e:

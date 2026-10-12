@@ -84,7 +84,7 @@ def generate_pre_interview_note(app_id, resume_text):
         r = subprocess.run(['claude', '-p', prompt, '--model', NOTE_MODEL,
                             '--allowedTools', '', '--output-format', 'text'],
                            cwd=HERE, capture_output=True, text=True,
-                           env=env_with_cf(), timeout=90)
+                           env=env_with_cf(), timeout=90, stdin=subprocess.DEVNULL)
         note = (r.stdout or '').strip()
         if not note:
             return
@@ -394,7 +394,8 @@ def ocr_extract(raw, filename, mime):
              '--allowedTools', f'Read({tmp}/**)', '--disallowed-tools', _OCR_BAN,
              '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
              '--setting-sources', '', '--output-format', 'text'],
-            cwd=tmp, capture_output=True, text=True, timeout=600)
+            cwd=tmp, capture_output=True, text=True, timeout=600,
+            stdin=subprocess.DEVNULL)   # 2026-10-12：不關掉的話，手動執行時 claude 會把終端機／here-doc 的輸入接進提示詞
         text = (r.stdout or '').strip()
         text = ''.join(c for c in text if c in '\n\t' or ord(c) >= 32)
         if r.returncode != 0 or needs_ocr(text):
@@ -404,6 +405,199 @@ def ocr_extract(raw, filename, mime):
         return None, 'OCR 轉錄逾時（10 分鐘）'
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── 2026-10-12：一份履歷好幾張截圖，一起看；字太少就請他重截 ──
+#
+# Jacky：現在很少紙本履歷，最常見是「把 PDF 履歷截圖上傳」——一份好幾頁就是好幾張截圖。
+# 原本只有第 1 張（applications.resume_file_id）會被 OCR，第 2 張以後放在 resume_extra_files 沒人看，
+# 阿財只讀得到第一頁。改成：第 1 張是圖片的話，連同 resume_extra_files 裡（沒標 retired 的）截圖，
+# 照上傳順序一起交給 OCR，合成一份文字寫回第 1 張的 files.text_content。
+# 阿財（fetch_application.py）本來就讀 resume_file_id 的 text_content，所以那邊不用改。
+#
+# 字太少＝看不清楚：中文字少於 150 而且有意義的字（中英文字母，不含數字標點）少於 300。
+# （只看中文字會把英文履歷誤判，所以兩個條件都成立才算看不清楚。）
+#   第 1 次 → resume_read_checks.state='unreadable'：LINE 傳的推一則「再截一次」；網頁傳的由表單提示
+#   第 2 次 → 'accepted_low'：收下（有多少字就給阿財多少），TG 請顧問看原圖。不會一直擋著。
+OCR_MAX_IMAGES = 10
+READ_MIN_CJK = 150
+READ_MIN_CHARS = 300
+PAGE_SETTLE_SEC = 45        # 最後一張進來 45 秒內先不看（LINE 一張一張傳，等他傳完）
+UNREADABLE_NOTE = '截圖／照片字太少（看不清楚），已請候選人再截一次'
+
+
+def _is_img(filename, mime):
+    ext = (os.path.splitext(filename or '')[1] or '').lower()
+    return ext in IMAGE_EXTS or (mime or '').startswith('image/')
+
+
+def _taipei_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(hours=8)
+
+
+def _app_for_resume(fid):
+    rows = d1(f"SELECT id, name, resume_extra_files, interview_state FROM applications "
+              f"WHERE resume_file_id='{fid}' ORDER BY created_at DESC LIMIT 1")
+    return rows[0] if rows else None
+
+
+def _extra_image_pages(app):
+    """resume_extra_files 裡還有效（沒標 retired）的截圖，照上傳順序。回傳 files 表的列。"""
+    try:
+        extras = json.loads(app.get('resume_extra_files') or '[]')
+    except Exception:
+        extras = []
+    ids = [e['file_id'] for e in extras
+           if isinstance(e, dict) and e.get('file_id') and not e.get('retired')
+           and _is_img(e.get('filename'), '')][:OCR_MAX_IMAGES - 1]
+    ids = [i for i in ids if re.fullmatch(r'[A-Za-z0-9_-]{6,64}', str(i))]
+    if not ids:
+        return []
+    rows = d1("SELECT id, filename, mime, content_b64, chunks, storage, created_at FROM files WHERE id IN ("
+              + ','.join(f"'{i}'" for i in ids) + ")")
+    by = {r['id']: r for r in rows}
+    return [by[i] for i in ids if i in by and _is_img(by[i].get('filename'), by[i].get('mime'))]
+
+
+def read_quality(text):
+    """(看不清楚嗎, 中文字數, 有意義字數)。OCR 註記那句不算。"""
+    t = (text or '').replace(OCR_MARK, '')
+    cjk = len(re.findall(r'[一-鿿]', t))
+    chars = len(re.sub(r'[\d\s\W_]', '', t, flags=re.UNICODE))
+    return (cjk < READ_MIN_CJK and chars < READ_MIN_CHARS), cjk, chars
+
+
+def ocr_images(pages):
+    """[(raw, filename, mime)]（照順序）→ (文字, 說明)。文字可能很短（交給 read_quality 判斷）；
+    真的失敗（沒工具、逾時、沒輸出）才回 None。"""
+    if not shutil.which('claude'):
+        return None, '這台機器找不到 claude 指令，無法做 OCR'
+    tmp = tempfile.mkdtemp(prefix='resume_ocr_')
+    try:
+        names = []
+        for i, (raw, fn, mime) in enumerate(pages[:OCR_MAX_IMAGES], 1):
+            ext = (os.path.splitext(fn or '')[1] or '').lower()
+            if ext not in IMAGE_EXTS:
+                ext = '.' + (mime or 'image/jpeg').split('/')[-1].replace('jpeg', 'jpg')
+            if ext not in IMAGE_EXTS:
+                ext = '.jpg'
+            n = f'page{i:02d}{ext}'
+            open(os.path.join(tmp, n), 'wb').write(raw)
+            names.append(n)
+        total = len(names)
+        files = '\n'.join(f'- {n}（第 {i} 張，共 {total} 張）' for i, n in enumerate(names, 1))
+        prompt = OCR_PROMPT.format(files=files)
+        if total > 1:
+            prompt += ('\n- 這幾張是同一份履歷依序截圖（第 1 張在最前面），照張數順序接起來轉錄成一份。'
+                       '相鄰兩張常有重疊的段落，重疊的內容只寫一次。')
+        # 字很少的圖不能讓模型自己補一段「這張圖幾乎沒有字」的說明——那段說明會被算成履歷字數，騙過「看不清楚」的判斷
+        prompt += '\n- 圖上幾乎沒有字、或糊到看不清楚時，只輸出看得清楚的那幾個字（沒有就輸出空白），絕對不要描述圖片或解釋原因。'
+        r = subprocess.run(
+            ['claude', '-p', prompt, '--model', OCR_MODEL,
+             '--allowedTools', f'Read({tmp}/**)', '--disallowed-tools', _OCR_BAN,
+             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+             '--setting-sources', '', '--output-format', 'text'],
+            cwd=tmp, capture_output=True, text=True, timeout=600,
+            stdin=subprocess.DEVNULL)   # 2026-10-12：不關掉的話，手動執行時 claude 會把終端機／here-doc 的輸入接進提示詞
+        text = (r.stdout or '').strip()
+        text = ''.join(c for c in text if c in '\n\t' or ord(c) >= 32)
+        if r.returncode != 0:
+            return None, f'OCR 轉錄失敗（{(r.stderr or text or "無輸出")[:100]}）'
+        return text[:MAX_CHARS], f'OCR 轉錄（截圖／照片 {total} 張）'
+    except subprocess.TimeoutExpired:
+        return None, 'OCR 轉錄逾時（10 分鐘）'
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _recruit_api():
+    """step1ne-recruit-api 的網址＋管理金鑰（跟 mailbox_poll.py 同一份設定）。"""
+    conf = {}
+    for path in ('~/.config/workflow-os/recruit.env', '~/.config/workflow-os/tokens.env'):
+        try:
+            for l in open(os.path.expanduser(path), encoding='utf-8'):
+                if '=' in l and not l.startswith('#'):
+                    k, v = l.strip().split('=', 1)
+                    conf.setdefault(k, v.strip().strip("'\""))
+        except Exception:
+            pass
+    return (conf.get('RECRUIT_API_URL') or 'https://step1ne-recruit-api.aiagentg888.workers.dev'), conf.get('RECRUIT_ADMIN_TOKEN')
+
+
+def _push_unreadable(app_id):
+    api, tok = _recruit_api()
+    if not tok:
+        return False
+    req = urllib.request.Request(api.rstrip('/') + '/internal/resume-unreadable',
+                                 data=json.dumps({'application_id': app_id}).encode(),
+                                 headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {tok}',
+                                          'User-Agent': 'Mozilla/5.0 step1ne-parse-resumes'})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return bool(json.loads(r.read().decode()).get('pushed'))
+    except Exception as e:
+        print(f'  （LINE 請他重截失敗：{str(e)[:100]}）')
+        return False
+
+
+def _tg(text):
+    try:
+        conf = os.path.expanduser('~/.config/workflow-os/step1ne-tg.env')
+        e = dict(l.strip().split('=', 1) for l in open(conf, encoding='utf-8')
+                 if '=' in l and not l.startswith('#'))
+        _rc, _rt = _rm_chat_thread(e['TG_CHAT_ID'], e.get('TG_THREAD_ID'))
+        body = {'chat_id': _rc, 'text': text}
+        if _rt:
+            body['message_thread_id'] = _rt
+        urllib.request.urlopen(f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+                               data=urllib.parse.urlencode(body).encode(), timeout=20)
+    except Exception:
+        pass
+
+
+def record_read_check(app, fid, pages, text, from_line):
+    """寫 resume_read_checks，回傳 'ok'／'unreadable'／'accepted_low'。"""
+    low, cjk, chars = read_quality(text)
+    q = lambda v: 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
+    now = _taipei_now().strftime('%Y-%m-%d %H:%M:%S')
+    aid = app['id']
+    prev = d1(f"SELECT state, tries, file_id FROM resume_read_checks WHERE application_id={q(aid)}")
+    prev = prev[0] if prev else {}
+    tries = int(prev.get('tries') or 0)
+    if not low:
+        state = 'ok'
+    elif prev.get('file_id') == fid and prev.get('state') in ('unreadable', 'accepted_low'):
+        state = prev['state']          # 同一組重看一次（例如又補了一頁還是看不清楚）不重複算次數
+    else:
+        tries += 1
+        state = 'unreadable' if tries < 2 else 'accepted_low'
+    d1(f"INSERT INTO resume_read_checks (application_id, state, tries, file_id, pages, chars, cjk, source, updated_at) "
+       f"VALUES ({q(aid)}, {q(state)}, {tries}, {q(fid)}, {pages}, {chars}, {cjk}, {q('line' if from_line else 'web')}, {q(now)}) "
+       f"ON CONFLICT(application_id) DO UPDATE SET state=excluded.state, tries=excluded.tries, file_id=excluded.file_id, "
+       f"pages=excluded.pages, chars=excluded.chars, cjk=excluded.cjk, source=excluded.source, updated_at=excluded.updated_at")
+    if state == 'unreadable' and prev.get('state') != 'unreadable' or (state == 'unreadable' and prev.get('file_id') != fid):
+        if from_line:
+            ok = _push_unreadable(aid)
+            print(f"  📵 {app.get('name')}：截圖看不清楚（中文 {cjk} 字／{chars} 字），"
+                  + ('已用 LINE 請他再截一次' if ok else 'LINE 沒推成功（沒綁 LINE？）'))
+        else:
+            print(f"  📵 {app.get('name')}：截圖看不清楚（中文 {cjk} 字／{chars} 字），網頁上會請他再截一次")
+    if state == 'accepted_low' and prev.get('state') != 'accepted_low':
+        d1(f"UPDATE resume_read_checks SET flagged_at={q(now)} WHERE application_id={q(aid)}")
+        _tg(f"📎 {app.get('name') or '（未具名）'} 的截圖履歷重傳後還是看不清楚（只讀到中文 {cjk} 字），已先收下。\n"
+            f"阿財面談時履歷資料會不完整，請顧問到人選卡片看原圖（共 {pages} 張）。\n應徵 id：{aid}")
+    return state
+
+
+def _mark_prep_stale(app_id):
+    """跟 Worker 的 markPrepStale 同一招：履歷文字換了 → 讓 daemon 作廢事先擬好的題目／開場白並清快取。"""
+    try:
+        d1("UPDATE applications SET "
+           "prewarmed_at = CASE WHEN prewarmed_opening IS NOT NULL THEN '2000-01-01 00:00:00' ELSE prewarmed_at END, "
+           "interview_plan_at = CASE WHEN interview_plan_json IS NOT NULL THEN '2000-01-01 00:00:00' ELSE interview_plan_at END "
+           f"WHERE id='{app_id}' AND COALESCE(interview_state,'not_started')='not_started'")
+    except Exception:
+        pass
 
 
 def _claim_for_ocr(fid, now):
@@ -806,6 +1000,83 @@ def parse_urls():
     return ok, fail, failed_names
 
 
+def parse_image_resume(r, now, force):
+    """截圖／照片型履歷：第 1 張＋其餘截圖照順序一起 OCR。
+    回傳 'ok'／'skip'／'asked'（看不清楚、已請重截）／'fail:<給 TG 的一行>'。"""
+    fid = r['id']
+    app = _app_for_resume(fid)
+    extras = _extra_image_pages(app) if app else []
+    pages = [r] + extras
+    if force:
+        print(f"  ⏭  {r['filename']}　圖片型履歷，--force 不重做 OCR，保留原文字")
+        return 'skip'
+    # LINE 一張一張傳：最後一張進來不到 45 秒，等他傳完再一起看
+    newest = max([str(p.get('created_at') or '') for p in pages] or [''])
+    if not newest:
+        newest = (d1(f"SELECT created_at FROM files WHERE id='{fid}'") or [{}])[0].get('created_at') or ''
+    if newest and newest > (_taipei_now() - datetime.timedelta(seconds=PAGE_SETTLE_SEC)).strftime('%Y-%m-%d %H:%M:%S'):
+        print(f"  ⏳ {r['filename']}　剛收到（{len(pages)} 張），等 {PAGE_SETTLE_SEC} 秒看還有沒有下一張")
+        return 'skip'
+    if not shutil.which('claude'):
+        print(f"  ⏭  {r['filename']}　這台沒有 claude，留給另一台做 OCR")
+        return 'skip'
+    if not _claim_for_ocr(fid, now):
+        print(f"  ⏭  {r['filename']}　另一台機器正在 OCR，跳過")
+        return 'skip'
+    q = lambda v: 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
+    print(f"  🔍 {r['filename']}　截圖／照片履歷 {len(pages)} 張，一起看圖轉文字…")
+    try:
+        raws = []
+        for p in pages:
+            b64 = _file_b64(p)
+            if not b64:
+                raise RuntimeError(f"第 {len(raws) + 1} 張沒有檔案內容")
+            raws.append((base64.b64decode(b64), p['filename'], p['mime']))
+        text, note = ocr_images(raws)
+    except Exception as e:
+        text, note = None, f'解析例外：{str(e)[:120]}'
+    # 看圖的這段時間又多傳了一頁 → 這輪的結果先寫，但標成「待重看」，下一輪整組重做
+    changed = False
+    if app:
+        now_ids = [p['id'] for p in _extra_image_pages(_app_for_resume(fid) or app)]
+        changed = now_ids != [p['id'] for p in extras]
+    if text is None:
+        d1(f"UPDATE files SET text_content=NULL, parse_note={q(note)}, parsed_at='{now}' WHERE id='{fid}'")
+        print(f"  ⚠️ {r['filename']}　{note}")
+        return 'fail:' + f"{(app or {}).get('name') or r['filename']}　{note}"
+    state = 'ok'
+    if app and not changed:
+        from_line = str(r.get('filename') or '').startswith('LINE照片履歷') or any(
+            str(p.get('filename') or '').startswith('LINE照片履歷') for p in extras)
+        if not from_line:
+            got = d1(f"SELECT 1 AS x FROM resume_intake_codes WHERE file_id='{fid}' LIMIT 1")
+            from_line = bool(got)
+        state = record_read_check(app, fid, len(pages), text, from_line)
+    low, cjk, chars = read_quality(text)
+    if state == 'unreadable':
+        # 第一次看不清楚：不把那幾個字當履歷給阿財（會誤以為讀過了），等他重截
+        d1(f"UPDATE files SET text_content=NULL, parse_note={q(UNREADABLE_NOTE + f'（中文 {cjk} 字）')}, "
+           f"parsed_at='{now}' WHERE id='{fid}'")
+        return 'asked'
+    full = (text + '\n\n' + OCR_MARK) if text else None
+    if state == 'accepted_low':
+        note = f'截圖重傳後還是看不清楚（只讀到中文 {cjk} 字），已收下；請顧問看原圖'
+        # 開頭講白，阿財才不會把這幾個字當成「履歷我看過了」
+        full = ('【截圖看不清楚，只讀到下面少量文字；面談時請候選人先口頭介紹經歷】\n' + (text or '')
+                + '\n\n' + OCR_MARK)
+    d1(f"UPDATE files SET text_content={q(full)}, parse_note={q(note)}, "
+       f"parsed_at={'NULL' if changed else repr(now)} WHERE id='{fid}'")
+    if changed:
+        print(f"  🔁 {r['filename']}　看圖時又多傳了一頁，下一輪整組重看")
+        return 'skip'
+    print(f"  ✅ {r['filename']}　{len(pages)} 張，OCR {len(text)} 字（中文 {cjk}）")
+    if app:
+        _mark_prep_stale(app['id'])
+        if state == 'ok':
+            generate_pre_interview_note(app['id'], full)
+    return 'ok'
+
+
 def _claim_run_lock():
     import socket
     host = socket.gethostname()
@@ -856,6 +1127,15 @@ def main():
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     ok = fail = 0
     for r in rows:
+        # 2026-10-12：截圖／照片型履歷另外走 parse_image_resume()（整組一起 OCR、字太少請他重截）
+        if _is_img(r['filename'], r['mime']):
+            res = parse_image_resume(r, now, force)
+            if res == 'ok':
+                ok += 1
+            elif res and res.startswith('fail:'):
+                fail += 1
+                failed.append(res[5:])
+            continue
         try:
             b64 = r.get('content_b64')
             if not b64 and r.get('chunks'):

@@ -31,3 +31,22 @@ CREATE TABLE IF NOT EXISTS apply_block_log (
   ua_kind    TEXT             -- line_inapp / ig_inapp / fb_inapp / threads_inapp / mobile / desktop
 );
 CREATE INDEX IF NOT EXISTS idx_abl_created ON apply_block_log(created_at);
+
+-- 2026-10-12 第二版：截圖／照片履歷「看得清楚嗎」的檢查結果（一筆應徵一列）。
+-- 由 parse_resumes.py 在 OCR 完寫入；應徵表單／補履歷頁（GET /apply/resume-check/:token）
+-- 與 LINE 收件（step1ne-recruit）讀它決定要不要請候選人「再截一次圖」。
+--   state：pending（等 OCR）／ok／unreadable（第一次字太少，已請他重截）／accepted_low（第二次還是太少，收下並通知顧問）
+--   tries：字太少的次數（同一組檔案只算一次）；file_id：被判定的那一組的第 1 張（resume_file_id）
+CREATE TABLE IF NOT EXISTS resume_read_checks (
+  application_id TEXT PRIMARY KEY,
+  state          TEXT NOT NULL DEFAULT 'pending',
+  tries          INTEGER NOT NULL DEFAULT 0,
+  file_id        TEXT,
+  pages          INTEGER,
+  chars          INTEGER,
+  cjk            INTEGER,
+  source         TEXT,              -- line / web
+  updated_at     TEXT,
+  line_notified_at TEXT,
+  flagged_at     TEXT
+);

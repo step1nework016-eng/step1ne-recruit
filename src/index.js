@@ -3016,7 +3016,7 @@ async function handleLineResumeCodeText(env, userId, replyToken, text, now) {
   }
   await lineReply(env, replyToken, row.file_id
     ? '這組代碼的履歷已經收到了 ✅\n還有其他頁要補的話，直接傳過來就好。'
-    : '收到，請直接把履歷檔案或照片傳過來 📎\n（PDF、Word 或照片都可以，多頁的話一張一張傳就好）');
+    : '收到，請直接把履歷檔案或截圖傳過來 📎\n（PDF、Word 或截圖都可以；好幾頁的話，截圖可以一次選好幾張一起傳）');
   return true;
 }
 
@@ -3057,6 +3057,23 @@ async function markPrepStale(env, appId) {
     ).bind(STALE_PREP_TS, STALE_PREP_TS, appId).run();
   } catch (e) { console.error('markPrepStale', String(e)); }
 }
+function lineResumeMinutesAgo(now, min) {
+  const d = new Date(now.replace(' ', 'T') + 'Z');
+  d.setUTCMinutes(d.getUTCMinutes() - min);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+const LINE_IMG_NAME_RE = /\.(jpe?g|png|webp)$/i;
+// 2026-10-12：照片／截圖型履歷又多了一頁 → 讓 parse_resumes.py 把整組重新一起看一次（OCR）。
+// 正在 OCR 的那一輪不打斷（parse_resumes 做完會自己發現頁數變了、下一輪重做）。
+async function lineResumeReparse(env, primaryId) {
+  try {
+    await env.DB.prepare(
+      `UPDATE files SET parsed_at=NULL, parse_note=NULL
+        WHERE id=? AND (parse_note IS NULL OR parse_note NOT LIKE 'OCR處理中%')
+          AND (mime LIKE 'image/%' OR lower(filename) LIKE '%.jpg' OR lower(filename) LIKE '%.jpeg'
+               OR lower(filename) LIKE '%.png' OR lower(filename) LIKE '%.webp')`).bind(primaryId).run();
+  } catch (e) { console.error('lineResumeReparse', String(e)); }
+}
 async function handleLineResumeFile(env, ev) {
   const userId = ev.source && ev.source.userId;
   const replyToken = ev.replyToken;
@@ -3076,11 +3093,21 @@ async function handleLineResumeFile(env, ev) {
     if (ids.length) {
       const ph = ids.slice(0, 50).map(() => '?').join(',');
       const { results } = await env.DB.prepare(
-        `SELECT id, resume_file_id, resume_url, resume_104_url, resume_extra_files FROM applications
-          WHERE id IN (${ph}) AND superseded_by IS NULL
-            AND COALESCE(interview_state,'not_started') IN ('not_started','pending')
-          ORDER BY created_at DESC`).bind(...ids.slice(0, 50)).all();
-      pending = (results || []).find((a) => !lineResumeAppHasResume(a)) || null;
+        `SELECT a.id, a.resume_file_id, a.resume_url, a.resume_104_url, a.resume_extra_files,
+                f.created_at AS resume_at, rc.state AS read_state, rc.file_id AS read_file_id
+           FROM applications a
+           LEFT JOIN files f ON f.id = a.resume_file_id
+           LEFT JOIN resume_read_checks rc ON rc.application_id = a.id
+          WHERE a.id IN (${ph}) AND a.superseded_by IS NULL
+            AND COALESCE(a.interview_state,'not_started') IN ('not_started','pending')
+          ORDER BY a.created_at DESC`).bind(...ids.slice(0, 50)).all();
+      // 2026-10-12：一份履歷好幾張截圖是一張一張進來的——第 1 張收下後，這筆就「有履歷」了，
+      // 原本的判斷會把第 2 張以後當成「傳給顧問看別的事」而不收。改成：30 分鐘內剛收到履歷的、
+      // 或系統判定看不清楚正在等他重截的，也算還在收件中。
+      const recent = (a) => a.resume_at && a.resume_at >= lineResumeMinutesAgo(now, 30);
+      const asked = (a) => a.read_state === 'unreadable' && a.read_file_id === a.resume_file_id;
+      pending = (results || []).find((a) => !lineResumeAppHasResume(a))
+        || (results || []).find((a) => asked(a) || recent(a)) || null;
     }
     if (pending) appId = pending.id;
     else {
@@ -3162,32 +3189,75 @@ async function handleLineResumeFile(env, ev) {
         .bind(ef.length ? JSON.stringify(ef) : null, codeRow.code).run();
     }
   }
-  let appName = null;
+  let appName = null, pageNo = 0, retry = false;
   if (appId) {
     const a = await env.DB.prepare(
-      `SELECT name, job_title, resume_file_id, resume_extra_files FROM applications WHERE id=?`).bind(appId).first();
+      `SELECT a.name, a.job_title, a.resume_file_id, a.resume_extra_files, rc.state AS read_state, rc.file_id AS read_file_id
+         FROM applications a LEFT JOIN resume_read_checks rc ON rc.application_id = a.id WHERE a.id=?`).bind(appId).first();
     if (a) {
       appName = a.name;
+      retry = !!(a.resume_file_id && a.read_state === 'unreadable' && a.read_file_id === a.resume_file_id);
       if (!a.resume_file_id) {
         await env.DB.prepare(`UPDATE applications SET resume_file_id=? WHERE id=? AND resume_file_id IS NULL`).bind(fileId, appId).run();
         await markPrepStale(env, appId);
-        first = true;
+        first = true; pageNo = 1;
+      } else if (retry && a.resume_file_id !== fileId) {
+        // 2026-10-12：上一組截圖系統看不清楚、已經請他重截 → 這張是新的一組的第 1 張。
+        // 舊的那組標 retired（顧問後台還看得到，不再拿去 OCR）
+        const old = safeJsonArray(a.resume_extra_files).map((e) =>
+          (e && LINE_IMG_NAME_RE.test(String(e.filename || '')) && !e.retired) ? Object.assign({}, e, { retired: true }) : e);
+        old.push({ file_id: a.resume_file_id, filename: '（看不清楚、已重傳的舊截圖）', uploaded_at: now, source: 'line', retired: true });
+        await env.DB.prepare(`UPDATE applications SET resume_file_id=?, resume_extra_files=? WHERE id=?`)
+          .bind(fileId, JSON.stringify(old), appId).run();
+        await env.DB.prepare(`UPDATE resume_read_checks SET state='pending', updated_at=? WHERE application_id=?`).bind(now, appId).run();
+        await markPrepStale(env, appId);
+        first = true; pageNo = 1;
       } else if (a.resume_file_id !== fileId) {
-        // 第二頁以後放補充檔（顧問後台看得到；阿財讀的是第一份的文字）
+        // 第二頁以後放補充檔；照片／截圖型的會跟第 1 張照順序一起 OCR（parse_resumes.py），阿財讀得到全部頁數
         const extra = safeJsonArray(a.resume_extra_files);
         extra.push({ file_id: fileId, filename, uploaded_at: now, source: 'line' });
         await env.DB.prepare(`UPDATE applications SET resume_extra_files=? WHERE id=?`).bind(JSON.stringify(extra), appId).run();
+        pageNo = 1 + extra.filter((e) => e && !e.retired).length;
+        if (msg.type === 'image' || LINE_IMG_NAME_RE.test(filename)) {
+          await lineResumeReparse(env, a.resume_file_id);
+          await markPrepStale(env, appId);
+        }
         if (!codeRow) first = false;
       }
     }
   }
-  await lineReply(env, replyToken, first
-    ? '履歷收到了 ✅\n回到剛剛的應徵頁或面談頁繼續就可以了。'
-    : '這一份也收到了 ✅');
+  const isImg = msg.type === 'image' || LINE_IMG_NAME_RE.test(filename);
+  await lineReply(env, replyToken, retry && pageNo === 1
+    ? '收到新的截圖了 ✅\n好幾頁的話，其他頁繼續傳過來就好。'
+    : first
+      ? (isImg ? '履歷收到了 ✅\n好幾頁的話，其他頁繼續傳過來就好（會照順序一起看）。\n傳完回到剛剛的應徵頁或面談頁繼續就可以了。'
+               : '履歷收到了 ✅\n回到剛剛的應徵頁或面談頁繼續就可以了。')
+      : (pageNo > 1 ? `第 ${pageNo} 頁也收到了 ✅` : '這一份也收到了 ✅'));
   await notify(env,
     `📎 LINE 收到履歷${first ? '' : '（補充頁）'}：${appName || '（應徵表單還沒送出）'}\n檔案：${filename}`
     + (codeRow ? `\n代碼：#${codeRow.code}` : ''),
     { message_thread_id: INTAKE_THREAD }).catch(() => {});
+}
+
+const RESUME_UNREADABLE_TEXT = '照片有點看不清楚，可以再截一次圖（整頁、字大一點）嗎？';
+async function pushResumeUnreadable(env, appId, dry) {
+  if (!appId) return { ok: false, error: 'no application_id' };
+  const code = await env.DB.prepare(
+    `SELECT line_user_id FROM resume_intake_codes WHERE application_id=? AND line_user_id IS NOT NULL
+      ORDER BY line_bound_at DESC LIMIT 1`).bind(appId).first();
+  let uid = code && code.line_user_id;
+  if (!uid) {
+    const b = await env.DB.prepare(
+      `SELECT line_user_id FROM line_bindings WHERE state='bound' AND application_ids LIKE ? LIMIT 1`).bind(`%${appId}%`).first();
+    uid = b && b.line_user_id;
+  }
+  if (!uid) return { ok: true, pushed: false, reason: 'no_line_user' };
+  if (dry) return { ok: true, pushed: false, reason: 'dry_run', has_line_user: true, text: RESUME_UNREADABLE_TEXT };
+  const pushed = await linePush(env, uid, RESUME_UNREADABLE_TEXT);
+  if (pushed) {
+    await env.DB.prepare(`UPDATE resume_read_checks SET line_notified_at=? WHERE application_id=?`).bind(nowTaipei(), appId).run();
+  }
+  return { ok: true, pushed };
 }
 
 async function handleLineEvent(env, ev) {
@@ -5373,6 +5443,13 @@ export default {
       if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
       const b = await request.json().catch(() => ({}));
       return json(request, await ingestMailboxMessage(env, b));
+    }
+    // 2026-10-12：截圖／照片履歷 OCR 後字太少（看不清楚）→ parse_resumes.py 呼叫這裡，
+    // 用 LINE 推一則請他再截一次。只推給「這筆應徵的履歷是從 LINE 傳來」的人；網頁上傳的在表單上提示。
+    if (p === '/internal/resume-unreadable' && request.method === 'POST') {
+      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      const b = await request.json().catch(() => ({}));
+      return json(request, await pushResumeUnreadable(env, String(b.application_id || ''), !!b.dry_run));
     }
     // 補抓：功能上線前已經收到的回信附件（總指揮手動用，需要 ADMIN_TOKEN）
     if (p === '/internal/reply-resume' && request.method === 'POST') {
