@@ -5167,6 +5167,10 @@ export default {
       const company = clean(b.company, 80), job = clean(b.job, 200), contact = clean(b.contact, 120);
       const page = clean(b.page, 200), name = clean(b.name, 40);
       const plan = clean(b.plan, 20);
+      // 2026-10-12 Jacky：選填「想補充的需求說明」，讓公司多寫幾行（補不到多久、何時要到職、特殊條件…）。
+      // 保留換行，其他控制字元拿掉，最多 1000 字；存進 note JSON 的 detail，不另開欄位。
+      const detail = String(b.detail || '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ')
+        .replace(/\n{3,}/g, '\n\n').trim().slice(0, 1000);
       if (!company || !contact) return json(request, { ok: false, error: '請填公司名稱，以及 Email 或電話' }, 400);
       const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact);
       const isPhone = /^[0-9+\-()#\s轉]{7,}$/.test(contact);
@@ -5179,7 +5183,7 @@ export default {
         `INSERT INTO company_leads (company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?)`
       ).bind(company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
-             JSON.stringify({ contact, page, plan }), now, now).run().catch(async (e) => {
+             JSON.stringify(detail ? { contact, page, plan, detail } : { contact, page, plan }), now, now).run().catch(async (e) => {
         saved = false;
         await notify(env, `⚠️ 官網企業詢問寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
           { message_thread_id: THREAD.system }).catch(() => {});
@@ -5190,7 +5194,7 @@ export default {
       let bdId = null;
       try {
         const ex = await env.DB.prepare(`SELECT id FROM bd_outreach WHERE company = ? ORDER BY created_at DESC LIMIT 1`).bind(company).first();
-        const why = `【官網主動詢問】${now.slice(0, 10)} 從 ${page || '官網'} 留需求｜職缺：${job || '未填'}${plan ? `｜想用：${plan}` : ''}｜聯絡：${name ? name + ' ' : ''}${contact}`;
+        const why = `【官網主動詢問】${now.slice(0, 10)} 從 ${page || '官網'} 留需求｜職缺：${job || '未填'}${plan ? `｜想用：${plan}` : ''}${detail ? `｜補充：${detail.replace(/\n+/g, ' ').slice(0, 300)}${detail.length > 300 ? '…' : ''}` : ''}｜聯絡：${name ? name + ' ' : ''}${contact}`;
         if (ex) {
           bdId = ex.id;
           await env.DB.prepare(`UPDATE bd_outreach SET why_company = ? || char(10) || COALESCE(why_company,''),
@@ -5213,6 +5217,7 @@ export default {
       await notify(env,
         `🏢 官網有企業留需求了！\n\n公司：${company}\n職缺：${job || '（未填）'}\n`
         + (plan ? `想用：${plan}\n` : '')
+        + (detail ? `補充說明：\n${detail}\n` : '')
         + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
         + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
         + (bdId ? `\n→ 已建在後台「客戶 → 開發進度」（搜尋公司名就找得到）。先按下面誰接，再到卡片上記電話結果、寄公司介紹信。` : '')
