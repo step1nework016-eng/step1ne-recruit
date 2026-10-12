@@ -1339,7 +1339,7 @@ async function closedJobMessages(env, job) {
 }
 
 async function lineReply(env, replyToken, text) {
-  if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return;
+  if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return false;
   try {
     const r = await fetch('https://api.line.me/v2/bot/message/reply', {
       method: 'POST',
@@ -1354,9 +1354,23 @@ async function lineReply(env, replyToken, text) {
     // ⚠️ 2026-08-14 補：原本失敗完全吞掉，連 log 都沒有——候選人回報「沒收到訊息」
     // 時完全查不出是 replyToken 過期、Flex 格式錯，還是真的沒送出。跟
     // linePushMessages 用同一套做法，至少留得下錯誤原因。
-    if (!r.ok) console.error('lineReply failed', r.status, await r.text());
+    if (!r.ok) {
+      const errTxt = await r.text();
+      console.error('lineReply failed', r.status, errTxt);
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_reply_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, ok INTEGER, status INTEGER, detail TEXT)`).run();
+        await env.DB.prepare(`INSERT INTO line_reply_log (created_at, ok, status, detail) VALUES (?,0,?,?)`).bind(nowTaipei(), r.status, errTxt.slice(0, 300)).run();
+      } catch { /* 記不到就算了 */ }
+      return false;
+    }
+    return true;
   } catch (e) {
     console.error('lineReply threw', String(e));
+    try {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_reply_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, ok INTEGER, status INTEGER, detail TEXT)`).run();
+      await env.DB.prepare(`INSERT INTO line_reply_log (created_at, ok, status, detail) VALUES (?,0,0,?)`).bind(nowTaipei(), String(e).slice(0, 300)).run();
+    } catch { /* ignore */ }
+    return false;
   }
 }
 
@@ -3654,7 +3668,11 @@ async function handleLineEvent(env, ev) {
             + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`
             + (click.queue_id ? `&utm_content=${encodeURIComponent('q' + click.queue_id)}` : '');
           const msg = await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
-          return lineReply(env, replyToken, msg);
+          const okReply = await lineReply(env, replyToken, msg);
+          // 2026-10-12 YY又瑜 21:33 帶 [LC691] 進來只收到官方帳號自動回覆、沒收到這則歡迎訊息：
+          // 回覆沒成功就改用推播補送（人選主動來問，不能晾著）
+          if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+          return;
         }
         // ⚠️ 2026-09-08 修：上面那個 job_title 判斷原本是「查不到職稱就完全
         // 不回話」。真實事故：候選人 18:55 從 pending-co_802bdd6b-9868182d
