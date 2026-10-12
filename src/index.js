@@ -3062,6 +3062,7 @@ function lineResumeMinutesAgo(now, min) {
   d.setUTCMinutes(d.getUTCMinutes() - min);
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
+const APPLY_RETURN_PATH = '/apply-beta/';
 const LINE_IMG_NAME_RE = /\.(jpe?g|png|webp)$/i;
 // 2026-10-12：照片／截圖型履歷又多了一頁 → 讓 parse_resumes.py 把整組重新一起看一次（OCR）。
 // 正在 OCR 的那一輪不打斷（parse_resumes 做完會自己發現頁數變了、下一輪重做）。
@@ -3227,12 +3228,16 @@ async function handleLineResumeFile(env, ev) {
     }
   }
   const isImg = msg.type === 'image' || LINE_IMG_NAME_RE.test(filename);
-  await lineReply(env, replyToken, retry && pageNo === 1
+  // 2026-10-12 Jacky：從 LINE 傳完跳回應徵頁，看不到「已收到」。回覆附一個帶代碼的連結，
+  // 點回去頁面會直接帶出代碼、立刻顯示已收到（換成正式版時把 APPLY_RETURN_PATH 改成 /apply/）。
+  const backUrl = codeRow && codeRow.code
+    ? `\n\n👉 點這裡回到應徵頁繼續：\nhttps://step1ne.com${APPLY_RETURN_PATH}?rc=${encodeURIComponent(codeRow.code)}` : '';
+  await lineReply(env, replyToken, (retry && pageNo === 1
     ? '收到新的截圖了 ✅\n好幾頁的話，其他頁繼續傳過來就好。'
     : first
       ? (isImg ? '履歷收到了 ✅\n好幾頁的話，其他頁繼續傳過來就好（會照順序一起看）。\n傳完回到剛剛的應徵頁或面談頁繼續就可以了。'
                : '履歷收到了 ✅\n回到剛剛的應徵頁或面談頁繼續就可以了。')
-      : (pageNo > 1 ? `第 ${pageNo} 頁也收到了 ✅` : '這一份也收到了 ✅'));
+      : (pageNo > 1 ? `第 ${pageNo} 頁也收到了 ✅` : '這一份也收到了 ✅')) + (first ? backUrl : ''));
   await notify(env,
     `📎 LINE 收到履歷${first ? '' : '（補充頁）'}：${appName || '（應徵表單還沒送出）'}\n檔案：${filename}`
     + (codeRow ? `\n代碼：#${codeRow.code}` : ''),
