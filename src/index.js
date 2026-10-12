@@ -4864,9 +4864,14 @@ async function mentionsClientName(env, text) {
 async function jobWelcomeMessage(env, slug, title, applyUrl) {
   let j = null;
   try {
-    j = await env.DB.prepare(`SELECT slug, title, salary_min, salary_max, salary_unit, locations, client_intro FROM jobs WHERE slug=?`).bind(slug).first();
+    j = await env.DB.prepare(`SELECT j.slug, j.title, j.salary_min, j.salary_max, j.salary_unit, j.locations, j.client_intro,
+        COALESCE(j.confidential_client, 0) AS confidential_client, cc.display_name AS company_name
+        FROM jobs j LEFT JOIN client_companies cc ON cc.id = j.company_id WHERE j.slug=?`).bind(slug).first();
   } catch { /* 查不到就用精簡版 */ }
   const lines = [`嗨嗨 👋 謝謝你對這個職缺有興趣！`, '', `📌 ${(j && j.title) || title}`];
+  // 2026-10-12 Jacky 選 A：照職缺的「公司名保密」設定走——沒勾保密的才顯示公司名（用 client_companies 的乾淨名稱）
+  const named = !!(j && !Number(j.confidential_client) && j.company_name);
+  if (named) lines.push(`🏢 ${j.company_name}`);
   const sal = j ? salaryLine(j) : '';
   let loc = j && j.locations ? String(j.locations).trim() : '';
   if (/^\[.*\]$/.test(loc)) {   // 有些職缺地點存成 ['台北市內湖區'] 這種清單字串
@@ -4887,7 +4892,7 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   if (loc.length > 40) loc = loc.slice(0, 40) + '…';
   if (sal || loc) lines.push([sal && `💰 ${sal}`, loc && `📍 ${loc}`].filter(Boolean).join('｜'));
   const intro = j && j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim() : '';
-  if (intro && intro.length <= 60 && !/客戶/.test(intro) && !(await mentionsClientName(env, intro))) lines.push(`🌏 ${intro}`);
+  if (intro && intro.length <= 60 && !/客戶/.test(intro) && (named || !(await mentionsClientName(env, intro)))) lines.push(`🌏 ${intro}`);
   if (j && j.slug) {
     // 有些職缺（保密、剛建好）沒有公開職缺頁，連結會 404——先確認打得開才附
     const pageUrl = `https://step1ne.com/jobs/${encodeURIComponent(j.slug)}/`;
