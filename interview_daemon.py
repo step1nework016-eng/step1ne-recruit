@@ -4118,9 +4118,22 @@ def handle(app):
         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
+        # E32-F②：候選人說要改面談時間／現在不方便 → 不硬接精簡版，直接回一句、停止提問、通知顧問約時間
+        if _reschedule_requested(ctx.get('conversation') or []):
+            _said = next((m for m in reversed(ctx.get('conversation') or []) if m.get('role') != 'assistant'), {}).get('content', '')
+            _now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
+               f"({q(app_id)},'assistant',{q(RESCHED_REPLY)},'{_now}')")
+            snap_signals(app_id, _now)
+            log(f'🗓️ {name}：候選人要改面談時間，回「我請顧問跟您約時間」、停止提問、通知顧問')
+            tg(f'🗓️ {name} 在面談室表示要改面談時間：「{str(_said)[:80]}」\n'
+               f'職缺：{app.get("job_title") or app.get("job_slug")}\n'
+               f'阿財已回「{RESCHED_REPLY}」並停止提問，請顧問跟他約時間（面談還開著，他回來可以接續）。', THREAD_DECIDE)
+            return
         _notify_cross_job_interest(app, ctx)
         talk_prompt = build_prompt(ctx, talk_skill(ctx))
         talk_prompt += _pace_hints(ctx)      # E24：起手式重複／問題預算（程式數出來的提示）
+        talk_prompt += _technique_hints(ctx)  # E32：不重問、兩次否定換題、動機與搬遷必問、薪資最多兩次、英文結論句
         # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
         # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
         #
@@ -4164,6 +4177,9 @@ def handle(app):
         _trans.close()      # 正式回覆已經算好、要寫入了，不要再送過渡語
         msgs = [m for m in (result.get('messages') or []) if str(m).strip()][:3]
         msgs = _merge_fragments(msgs)      # E24：單獨一則「嗯，」併進下一則
+        msgs, _cut = _stop_after_question(msgs)      # E32-F：問了就等回答，後面「假設對方答案」的氣泡丟掉
+        if _cut:
+            log(f'✂️ {name}：問句後面有 {_cut} 則在替對方答，已丟掉（問了要等回答）')
         if not msgs:
             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
 
@@ -4524,6 +4540,145 @@ def _judge_hint(asst):
             return ('\n\n【你上一輪出現了評價句（程式偵測到「' + hit.group(0) + '」）】**這一輪不准再評論回答好壞**，'
                     '只重述對方講的重點，然後直接問下一題。')
     return ''
+
+
+# ── E32（2026-10-12，張景勛 10/6 復盤）：面談技巧四項改進——程式端數出來的提示 ──
+# 問題：①同一題重問 ②候選人一直答「沒有」還往下追 ③該問沒問（離職原因、搬遷；原本只有 acai_v2 職缺會問）④薪資逼問到第 3 次。
+# 做法跟 _pace_hints 一樣：不靠模型自己記，由程式從對話數出來，直接告訴模型「這場已經問過什麼」。
+# F（楊策淳 10/12 19:23 現場抓到）：候選人說「可以，但面談時間需要更改」→ 阿財問「是時間不夠、還是想約其他時段？」
+# → 7 秒後沒等回答就自己說「好，那我們抓精簡版」開始問預告期。
+# 查到兩個原因：
+#  ① 同一則候選人訊息被處理了兩次：主迴圈每 3 秒先抓一份「待回清單」，抓完到真正派工之間，上一輪的 handle 剛好回完並放鎖，
+#     新一輪就用過時的清單又搶到鎖、再回一次（第二次回覆看到第一次的問句沒人答，就替對方答了）。handle() 取得鎖之後要重新確認「最後一則還是候選人」。
+#  ② 模型自己在同一輪的第二個氣泡「假設對方答案」。這支加提示＋事後擋一次。
+ASK_WAIT_RULE = ('\n\n【問了就要等回答（硬規則）】一輪回覆裡如果有問句，**問句之後不准再接「假設對方答案」的句子**'
+                 '（例如問「是時間不夠還是想約其他時段？」後面又說「如果時間比較緊，我們先聊精簡版」）；多則氣泡時，'
+                 '最後一則不能替對方做決定，要嘛以問句收尾、要嘛不問。候選人沒回答的事，不准自己當他答了。')
+RESCHED_REPLY = '沒問題，我請顧問跟您約時間，不用急，謝謝您。'
+_RESCHED_PAT = re.compile(
+    r'面談.{0,8}(時間|時段).{0,6}(更改|改期|改|延|換|調)|面談.{0,6}(改期|延期|改時間|改天|延後)'
+    r'|(現在|目前|今天|這時候|這個時間).{0,6}(不方便|沒辦法|沒空|沒時間|不太方便|有事)|不方便(現在|面談|談)'
+    r'|(改天再?(談|聊|面談|繼續)?|另約|改約|重約|下次再(談|聊|面談))|(晚點|等一下|晚一點|稍後)再(談|聊|面談|繼續)|(改|換)(個|其他|另一個)?(時間|時段)')
+_ASSUME_PAT = re.compile(r'^(如果|那(我們|就)|好[，,]?那|既然|那麼|那先|這樣的話|那我們就)|先聊精簡|精簡版|我們(先|就)(聊|問|抓)')
+
+
+def _reschedule_requested(conv):
+    """最後一則候選人訊息表示要改面談時間／現在不方便（短訊息才算，避免把工作上的「時間更改」誤判）。
+    已經回過「我請顧問跟您約時間」就不再走這條（交給模型正常接）。"""
+    for m in conv:
+        if m.get('role') == 'assistant' and RESCHED_REPLY[:8] in str(m.get('content') or ''):
+            return False
+    last = next((m for m in reversed(conv) if m.get('role') != 'assistant'), None)
+    if not last:
+        return False
+    t = str(last.get('content') or '').strip()
+    return 0 < len(t) <= 60 and '候選人已進入' not in t and bool(_RESCHED_PAT.search(t))
+
+
+def _stop_after_question(msgs):
+    """同一輪：某則以問句結尾、後面幾則都沒有問句、而且是「假設對方答案」的句型 → 後面的丟掉。回 (新 msgs, 丟掉幾則)。"""
+    for k, m in enumerate(msgs[:-1]):
+        if re.search(r'[?？]\s*$', str(m).strip()):
+            rest = msgs[k + 1:]
+            if all(not re.search(r'[?？]', str(r)) for r in rest) and any(_ASSUME_PAT.search(str(r).strip()) for r in rest):
+                return msgs[:k + 1], len(rest)
+    return msgs, 0
+
+
+_TECH_TOPICS = {
+    '預告期／到職時間': r'預告期|離職.{0,4}(通知|交接)|多久.{0,3}(到職|能到|可以到)|何時.{0,3}到職|最快.{0,4}到職|到職時間',
+    '競業禁止': r'競業|不得招攬|競爭條款',
+    '出差／外派': r'出差|外派|派駐',
+    '搬遷／通勤': r'搬(回|過來|到|遷)|回台灣|通勤|住在|居住|遷居|常駐.{0,6}(台北|台灣)',
+    '薪資期望': r'薪資|待遇|年薪|月薪|期望.{0,4}(薪|待遇)|多少(錢|薪)|底薪|(給|提供|報|說).{0,6}數字|數字.{0,3}(方便|可以)',
+    '離職原因／動機': r'為什麼(想|要|考慮).{0,8}(換|離開|轉|動)|離職原因|離開.{0,8}原因|什麼讓您現在|推力|拉力|考慮.{0,4}(離開|轉換)|想換.{0,4}(工作|環境)',
+    '空窗期': r'空窗|沒有工作的(那段|期間)|離職後.{0,8}做什麼',
+    '數據分析': r'數據分析|分析.{0,4}(報表|數據)|報表',
+    '主導專案': r'主導.{0,4}(專案|案子)|專案.{0,4}(經驗|主導)',
+    '談判堅持條件': r'談判|堅持.{0,6}條件|議價',
+    '管理團隊': r'帶(過|領)?.{0,4}(團隊|人)|管理.{0,4}(幾|多少)人|團隊.{0,3}(規模|人數)',
+}
+_NEG_REPLY = re.compile(r'^(沒有|無|沒|不知道|不清楚|不太清楚|不確定|沒做過|沒遇過|沒有做過|沒有遇過|不會|沒什麼|沒有特別|沒有耶|沒喔|沒有喔)')
+_SALARY_EVADE = re.compile(r'面議|看公司|都可以|不一定|依.{0,4}(規定|公司)|不方便|可談|再談|彈性|不確定|看情況')
+_QMARK = re.compile(r'[?？]')
+_ENGLISH_Q = re.compile(r'[A-Za-z][A-Za-z ,\'\-]{25,}')
+TECH_MUST_ASK_AFTER = 3            # 至少問過幾個問題後，才開始提醒「必問但還沒問」
+
+
+def _topics_of(text):
+    return [t for t, pat in _TECH_TOPICS.items() if re.search(pat, str(text or ''))]
+
+
+def _is_negative(text):
+    t = re.sub(r'[\s，,。.！!？?~～、]', '', str(text or ''))
+    return bool(t) and len(t) <= 12 and bool(_NEG_REPLY.match(t))
+
+
+def _technique_hints(ctx):
+    conv = ctx.get('conversation') or []
+    asked, neg, last_topics = {}, {}, []
+    missing, q_count, salary_evasive, english = [], 0, False, False
+    for m in conv:
+        c = str(m.get('content') or '')
+        if m.get('role') == 'assistant':
+            if _ENGLISH_Q.search(c):
+                english = True
+            if _QMARK.search(c):
+                q_count += 1
+                last_topics = _topics_of(c)
+                for t in last_topics:
+                    asked[t] = asked.get(t, 0) + 1
+            continue
+        # 候選人的回覆：對照「上一個問題」的主題
+        if not last_topics:
+            continue
+        negative = _is_negative(c)
+        for t in last_topics:
+            neg[t] = (neg.get(t, 0) + 1) if negative else 0
+            if neg[t] >= 2 and t not in missing:
+                missing.append(t)
+        if '薪資期望' in last_topics:
+            salary_evasive = bool(_SALARY_EVADE.search(c)) and not re.search(r'\d', c)
+        last_topics = []
+    resched_done = any(m.get('role') == 'assistant' and RESCHED_REPLY[:8] in str(m.get('content') or '') for m in conv)
+    if q_count < 2 and not resched_done:
+        return ASK_WAIT_RULE
+    out = []
+    if resched_done:
+        out.append('【候選人已表示要改面談時間（程式偵測）】顧問會跟他約時間。**不要開新的面談題目**，只回應他剛說的話、確認他方便的時段即可。')
+    # A. 同一題不重問
+    if asked:
+        shown = '、'.join(f'{t}×{n}' + ('（已重複，不准再問）' if n >= 2 else '') for t, n in asked.items())
+        out.append('【這場已經問過的主題（程式數的）】' + shown
+                   + '。**候選人已經回答過的題目，即使答得很短，也只能換角度追一次，不准用同一句或同義句重問**；'
+                     '答得不夠就記下「回答偏簡短」，交給顧問電話補問。')
+    # B. 連兩次否定就換題
+    if missing:
+        out.append('【連續兩次否定，這個主題結案（程式數的）】' + '、'.join(missing)
+                   + '。候選人這個主題已經連續兩次答「沒有／不知道」：**記為「缺」，直接換下一題，不要再追第三層**，'
+                     '報告照實寫「本人表示沒有」。不要讓他覺得被考倒。')
+    # C. 離職原因、搬遷可行性：所有職缺必問（不受 acai_v2 限制）
+    if q_count >= TECH_MUST_ASK_AFTER:
+        todo = []
+        if asked.get('離職原因／動機', 0) == 0:
+            todo.append('**離職原因／動機**：至少問一題「為什麼想換」；在職的追問一句推力（現在哪裡想離開）＋拉力（這個職缺哪裡吸引）')
+        if asked.get('搬遷／通勤', 0) == 0:
+            todo.append('**搬遷可行性**：如果履歷或表單顯示他的居住地跟職缺地點不同（人在海外、外縣市），必問「能不能搬過來／多久可以過來」；'
+                        '居住地跟職缺同一區就問通勤即可')
+        if todo:
+            out.append('【還沒問到的必問項（程式數的）】' + '；'.join(todo)
+                       + '。**時間不夠時，這兩題優先於「專業分級往上追問」。**')
+    # D. 薪資最多問兩次
+    n_sal = asked.get('薪資期望', 0)
+    if n_sal >= 2:
+        out.append('【薪資已經問過 2 次（程式數的）】**不准第三次**。他仍沒給數字就記「本人不願透露」，交顧問電話問，直接換下一題。')
+    elif n_sal == 1 and salary_evasive:
+        out.append('【薪資第一次答得很模糊（程式數的）】第二次**換說法**：給區間選項（例如「落在 X 到 Y 之間嗎」）或改問現職大概待遇；'
+                   '他還是不給就記「本人不願透露」，不要第三次。')
+    # E. 收尾用語
+    if english:
+        out.append('【英文測驗之後的用語】只說「謝謝，英文這段我記下來了」。**不要說「英文可以清楚表達」「英文部分沒問題」這類結論句**——聽起來像通過了。')
+    return (('\n\n' + '\n'.join(out)) if out else '') + ASK_WAIT_RULE
 
 
 def _pace_hints(ctx):
