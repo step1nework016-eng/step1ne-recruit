@@ -4499,11 +4499,30 @@ def _opening_of(text):
     return m[:8]
 
 
+# ── E27d（2026-10-12，Mac 看過 API 試跑逐字稿）：不准評論回答的好壞 ──
+# API 版沒有 Claude Code 的系統提示，比較容易出現「這幾點問得滿完整的」「差異講得滿清楚的」「算是有抓到感覺的」這類評價句
+# （E27c 試跑 4 次；CLI 的羅文羿那場也有）。候選人聽起來像在被打分數，也像預告結果。
+NO_JUDGE_RULE = ('\n\n【不准評論回答的好壞（硬規則）】只接住事實（用一句話重述對方剛講的重點），**不准評論他回答得好不好**——'
+                 '禁止「問得滿完整的」「講得滿清楚的」「有抓到感覺」「很棒」「不錯」「很有條理」這類句子，'
+                 '也不要用「滿清楚」「蠻完整」當開頭。要接話就說「了解，您是○○」「嗯，所以是○○」這種重述，然後直接問下一題。')
+_JUDGE_PAT = re.compile(r'(問|講|說|答|回答|表達)得.{0,3}(滿|蠻|很|挺|不錯|好|完整|清楚|到位|扎實)|有抓到感覺|算是有抓到|很棒|太棒|很不錯|不錯的|很有條理|很扎實|很完整|令人印象|(滿|蠻|很)清楚的|(滿|蠻)完整')
+
+
+def _judge_hint(asst):
+    """最近兩則阿財訊息出現評價詞 → 提醒下一輪不要再用（程式數的）。"""
+    for m in asst[-2:]:
+        hit = _JUDGE_PAT.search(str(m.get('content') or ''))
+        if hit:
+            return ('\n\n【你上一輪出現了評價句（程式偵測到「' + hit.group(0) + '」）】**這一輪不准再評論回答好壞**，'
+                    '只重述對方講的重點，然後直接問下一題。')
+    return ''
+
+
 def _pace_hints(ctx):
     conv = ctx.get('conversation') or []
     asst = [m for m in conv if m.get('role') == 'assistant']
     if len(asst) < 3:
-        return ''
+        return NO_JUDGE_RULE + _judge_hint(asst)
     out = []
     # ① 起手式
     recent = [_opening_of(m.get('content')) for m in asst[-8:]]
@@ -4529,7 +4548,7 @@ def _pace_hints(ctx):
         elif asked >= budget - 3:
             out.append(f'【問題預算快到了（程式數的）】到目前已發出 {asked} 則問題，預算約 {budget} 則。'
                        '剩下的只補最關鍵還沒問到的 1–2 件（期望薪資依據、必要條件缺口、履歷量化數字），之後準備收尾。')
-    return ('\n\n' + '\n'.join(out)) if out else ''
+    return (('\n\n' + '\n'.join(out)) if out else '') + NO_JUDGE_RULE + _judge_hint(asst)
 
 
 def talk_skill(ctx):
