@@ -30,7 +30,7 @@ confidential_client 處理是同一類問題（候選人會用「是不是美光
 當第二道防線，只是不能只靠它。
 
 用法：
-    python3 candidate_summary_tick.py           # 補齊還沒有摘要的開放中職缺
+    python3 candidate_summary_tick.py           # 補齊沒有摘要、或職缺改過（updated_at 比摘要新）的開放中職缺
     python3 candidate_summary_tick.py --all     # 全部開放中職缺重新產一次
     python3 candidate_summary_tick.py <slug>    # 只處理指定職缺（測試用）
 """
@@ -227,8 +227,10 @@ def main():
         rows = d1(
             f"SELECT j.slug, j.title, {', '.join('j.' + c for c in FACT_FIELDS + ['client_named'])} FROM jobs j "
             f"LEFT JOIN job_candidate_summaries s ON s.job_slug = j.slug "
-            f"WHERE j.status IN ('open','active') AND s.job_slug IS NULL"
+            f"WHERE j.status IN ('open','active') AND (s.job_slug IS NULL OR j.updated_at > s.generated_at)"
         )
+        # 2026-10-12 Jacky：美德職缺 10/7 改名改薪，社群回覆還是舊的「營運發展主管 120～250萬」。
+        # 預設模式改成「沒有摘要 或 職缺在摘要產生後有改過」都重產，排程每天跑就會自動跟上。
 
     if not rows:
         log('沒有需要處理的職缺')
