@@ -62,7 +62,7 @@ python3 d1q.py q "SELECT j.slug, j.title, COALESCE(j.company_id, j.client_name, 
 
 ```bash
 python3 d1q.py q "SELECT slug, title, seniority, years_min, must_skills, nice_to_have_skills, main_duties,
-  required_conditions, preferred_background, hard_filters, locations, salary_min, salary_max, language_requirement,
+  required_conditions, preferred_background, hard_filters, locations, salary_min, salary_max, salary_unit, language_requirement,
   off_limits_note FROM jobs WHERE slug='職缺代號'"
 ```
 - `off_limits_note` 有寫的話，是**不能去挖的公司**：現職在那些公司的人一律不收。這段內容本身不要抄到任何地方。
@@ -87,6 +87,31 @@ python3 d1q.py q "SELECT f.verdict, f.reasons, f.note, COALESCE(s.headline, a.jo
 - 被標 `fit` 的是哪一類人，今晚**多找這一類**。
 - 還沒有任何評分，就照職缺條件找。
 - 在最後摘要裡寫一句「這個職缺今晚依回饋調整了什麼」。
+
+### 第二步之二：中高階職缺——先定目標公司，再從公司裡找人（E26，Jacky 2026-10-12）
+
+**適用**：這個職缺 `seniority='senior'`，**或**年薪下限 ≥ 100 萬（`salary_unit='YEAR'`）、月薪下限 ≥ 8 萬（`salary_unit='MONTH'`）。
+不適用的職缺這一段整段跳過，照原本方式找。
+
+**為什麼**：10/11～10/12 美德三個主管缺（group-it-head、phnom-penh-office-head、business-operations-manager）兩天 0 筆。
+中高階的人不會在 LinkedIn 上用職稱把自己亮出來，「用職稱關鍵字搜」找不到；要先想「**這種人會在哪些公司**」，再去那些公司裡找。
+
+1. 先讀顧問／我們已經整理好的清單：
+   ```bash
+   python3 d1q.py q "SELECT target_companies, target_titles FROM job_sourcing_settings WHERE job_slug='職缺代號'"
+   ```
+2. **有清單**：每一家公司，用「公司名（中英都搜）＋對應職能職稱」去搜，例如「台南企業 柬埔寨 廠長」「Pou Chen Cambodia general manager」。
+   **前任也算**（LinkedIn 經歷欄寫過那家公司的，包含已經離開的）。`target_titles` 是這個職缺要找的職能，照它組搜尋。
+3. **沒有清單**（或欄位是空的）：先在**本場自己建一份「目標公司地圖」10～15 家**——依「產業型態 × 職能 × 是否有海外據點」推，**每家寫一句為什麼**。
+   - 先看有沒有之前存過的：`cat ~/aijob-automation/state/company_maps/職缺代號.txt`；有就**沿用、累加**，不要每輪重建。
+   - 建好（或累加後）把整份存回同一個檔案，並**單獨一行**印到 log：
+     `COMPANYMAP {"slug":"職缺代號","companies":[{"name":"公司（中英）","why":"一句話"}, ...]}`
+   - 資料夾不存在就先 `mkdir -p ~/aijob-automation/state/company_maps`。
+4. **種子擴張**：找到合格人選時，把他待過的其他公司也加進地圖（那些公司很可能也有同類人）。
+   ⚠️ 但**不能反過來用「待過某公司」推定他有某項能力**——第三步逐條對照照舊，同一家公司的同事也要各自對照。
+5. **目標公司不可以是**：客戶本身或其關係企業、`off_limits_note` 列的公司（照舊擋；地圖裡也不要放）。
+6. 職稱關鍵字搜尋留作**補充**（公司裡找不到再用）；找名單的搜尋次數上限不變（{{SEARCH_LIMIT}} 次），每位查證仍最多 3 次。
+7. 本場結尾的 FUNNEL 要照實填 `company_first`（這個職缺有沒有走公司優先）與 `companies_searched`（實際搜了幾家公司）。
 
 ### 第三步：判斷等級（逐條對照必要條件；2026-10-08 改，程式會依你的對照重算）
 
@@ -181,6 +206,7 @@ python3 d1q.py q "SELECT id, job_slug FROM sourced_candidates WHERE (linkedin_ur
 3. 最後印一段摘要（會留在 log 裡給人看）：
    - 每個職缺新增幾位（A 幾位、B 幾位）、重複略過幾位
    - 每個職缺依顧問回饋調整了什麼（沒有回饋就寫「還沒有評分」）
+   - 中高階職缺：有沒有走「公司優先」、搜了幾家公司、哪幾家找到人（沒走就寫為什麼）
    - 哪些客戶今晚沒做到、為什麼
    - 被跳過的網站（付費牆／登入／人機驗證）
    - 瀏覽器是否已經全部關閉

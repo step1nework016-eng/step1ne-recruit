@@ -103,7 +103,7 @@ psj_note() {  # slug title client last zero2
 - 做完（不管新增幾位、甚至 0 位）先跑這一行，讓下一輪知道輪到誰：
   \`echo "\$(date '+%F %T') $slug" >> $ROTATION_FILE\`
 - **最後一行**一定要印漏斗（自己數、不確定的數字寫 -1，不要估），格式固定、單獨一行：
-  \`FUNNEL {"slug":"$slug","searches":找名單搜尋次數,"seen":查證過幾位不同的人,"no_page":沒個人頁丟掉幾位,"cd_skipped":自評C或D沒寫入幾位,"dup":重複略過幾位,"written":寫入A或B幾位}\`
+  \`FUNNEL {"slug":"$slug","searches":找名單搜尋次數,"seen":查證過幾位不同的人,"no_page":沒個人頁丟掉幾位,"cd_skipped":自評C或D沒寫入幾位,"dup":重複略過幾位,"written":寫入A或B幾位,"company_first":中高階職缺走了公司優先就寫true、沒走寫false,"companies_searched":實際搜了幾家目標公司（沒走公司優先寫0）}\`
 EOF
   if [ "$zero2" = "True" ] || [ "$zero2" = "true" ] || [ "$zero2" = "1" ]; then
     cat <<EOF
