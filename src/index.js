@@ -4865,12 +4865,14 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   let j = null;
   try {
     j = await env.DB.prepare(`SELECT j.slug, j.title, j.salary_min, j.salary_max, j.salary_unit, j.locations, j.client_intro,
-        COALESCE(j.confidential_client, 0) AS confidential_client, cc.display_name AS company_name
-        FROM jobs j LEFT JOIN client_companies cc ON cc.id = j.company_id WHERE j.slug=?`).bind(slug).first();
+        j.seniority, cc.display_name AS company_name, pi.industry_line
+        FROM jobs j LEFT JOIN client_companies cc ON cc.id = j.company_id
+        LEFT JOIN job_public_info pi ON pi.job_slug = j.slug WHERE j.slug=?`).bind(slug).first();
   } catch { /* 查不到就用精簡版 */ }
   const lines = [`嗨嗨 👋 謝謝你對這個職缺有興趣！`, '', `📌 ${(j && j.title) || title}`];
-  // 2026-10-12 Jacky 選 A：照職缺的「公司名保密」設定走——沒勾保密的才顯示公司名（用 client_companies 的乾淨名稱）
-  const named = !!(j && !Number(j.confidential_client) && j.company_name);
+  // 2026-10-12 Jacky 定案：看職缺層級——中高階（seniority='senior'）直接講公司名（含美德，Jacky 選 B）；
+  // 非中高階一律不講公司名，只寫「什麼樣的公司」（job_public_info.industry_line，人工寫、不含公司名）。
+  const named = !!(j && j.seniority === 'senior' && j.company_name);
   if (named) lines.push(`🏢 ${j.company_name}`);
   const sal = j ? salaryLine(j) : '';
   let loc = j && j.locations ? String(j.locations).trim() : '';
@@ -4891,8 +4893,12 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   if (/客戶/.test(loc)) loc = '';
   if (loc.length > 40) loc = loc.slice(0, 40) + '…';
   if (sal || loc) lines.push([sal && `💰 ${sal}`, loc && `📍 ${loc}`].filter(Boolean).join('｜'));
-  const intro = j && j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim() : '';
-  if (intro && intro.length <= 60 && !/客戶/.test(intro) && (named || !(await mentionsClientName(env, intro)))) lines.push(`🌏 ${intro}`);
+  if (named) {
+    const intro = j.client_intro ? String(j.client_intro).split(/[。\n]/)[0].trim().replace(/（[^）]*客戶[^）]*）/g, '') : '';
+    if (intro && intro.length <= 60 && !/客戶/.test(intro)) lines.push(`🌏 ${intro}`);
+  } else if (j && j.industry_line && !(await mentionsClientName(env, j.industry_line))) {
+    lines.push(`🌏 ${j.industry_line}`);
+  }
   if (j && j.slug) {
     // 有些職缺（保密、剛建好）沒有公開職缺頁，連結會 404——先確認打得開才附
     const pageUrl = `https://step1ne.com/jobs/${encodeURIComponent(j.slug)}/`;
