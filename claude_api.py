@@ -27,8 +27,14 @@ MODE_FILE = os.path.expanduser('~/.config/workflow-os/acai_llm')
 COOLDOWN_SEC = 600
 
 # 牌價（美元 / 百萬 token）：輸入、輸出、快取寫入、快取讀取。
-# ⚠️ 這是估算用（Sonnet 級距），實際以 Console 帳單為準；model 對不到就用這組。
-PRICES = {'default': (3.0, 15.0, 3.75, 0.30)}
+# 2026-10-12 E27b 統一：由 10/8 CLI 回報的 costUSD 反推（claude-sonnet-5：輸入 2／輸出 10／1 小時快取寫入 4／快取讀 0.2）。
+# 以 API 回應實際使用的模型為準（前綴比對）；對不到的模型用預設價並標示「未確認」。
+# ⚠️ 打通後拿一場的 Console 帳單對一次。目前 API 版沒有用 cache_control，快取寫入量是 0。
+PRICES = {'claude-sonnet-5': (2.0, 10.0, 4.0, 0.2)}
+DEFAULT_PRICE = (2.0, 10.0, 4.0, 0.2)
+
+# 額度不足時的回呼（由 interview_daemon 掛上 acai_budget.on_credit_exhausted）
+on_credit_exhausted = None
 
 _down_until = 0.0
 _down_reason = ''
@@ -95,8 +101,17 @@ def _mark_down(reason):
     _down_reason = reason
 
 
+def price_for(model):
+    """(價格, 是否確認過)。前綴最長者優先。"""
+    best = None
+    for k in PRICES:
+        if str(model or '').startswith(k) and (best is None or len(k) > len(best)):
+            best = k
+    return (PRICES[best], True) if best else (DEFAULT_PRICE, False)
+
+
 def cost_usd(usage, model=None):
-    pi, po, pcw, pcr = PRICES.get(model) or PRICES['default']
+    (pi, po, pcw, pcr), _ = price_for(model)
     return (int(usage.get('input_tokens') or 0) * pi
             + int(usage.get('output_tokens') or 0) * po
             + int(usage.get('cache_creation_input_tokens') or 0) * pcw
@@ -130,6 +145,11 @@ def call(prompt, model, timeout, max_tokens=4096, opener=None):
             _mark_down(f'金鑰被拒（HTTP {e.code}）')
         elif e.code == 400 and ('credit' in low or 'balance' in low):
             _mark_down('API 額度不足（Console 要 Add funds）')
+            if on_credit_exhausted:
+                try:
+                    on_credit_exhausted(_down_reason)
+                except Exception:
+                    pass
         elif e.code == 400 and 'workspace' in low:
             _mark_down('金鑰沒綁工作區（要設 ANTHROPIC_WORKSPACE_ID 或重建金鑰）')
         elif e.code in (400, 404):

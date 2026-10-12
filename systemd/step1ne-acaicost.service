@@ -1,0 +1,12 @@
+[Unit]
+Description=Step1ne 阿財 API 每日花費推播（E27b）：每位人選一行，沒有 API 花費就不發
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jack/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/jack/claude-projects/工作流程技能包/step1ne-recruit/acai_token_report.py --daily-push
+StandardOutput=append:%h/aijob-automation/logs/acai_cost.log
+StandardError=append:%h/aijob-automation/logs/acai_cost.log
+TimeoutStartSec=120

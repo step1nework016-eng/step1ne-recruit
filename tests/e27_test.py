@@ -44,7 +44,7 @@ os.environ.pop('ACAI_LLM')
 # 成功
 r = A.call('你好', 'claude-sonnet-5', 30, opener=ok_opener)
 chk('成功：文字與 usage', r['text'] == '{"reply":"嗨"}' and r['usage']['input_tokens'] == 1000)
-chk('成功：費用 = 1000×3 + 200×15 = $0.006', abs(r['cost_usd'] - 0.006) < 1e-9, r['cost_usd'])
+chk('成功：費用 = 1000×2 + 200×10 = $0.004', abs(r["cost_usd"] - 0.004) < 1e-9, r['cost_usd'])
 chk('標頭帶金鑰、版本、工作區', seen['h'].get('x-api-key', '').startswith('sk-ant-') and seen['h'].get('anthropic-version') and seen['h'].get('anthropic-workspace-id') == 'wrkspc_test')
 chk('請求內容正確', seen['body']['messages'][0]['content'] == '你好' and seen['body']['model'] == 'claude-sonnet-5')
 

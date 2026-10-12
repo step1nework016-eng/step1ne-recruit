@@ -26,6 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 會 FileNotFoundError，先解出實際路徑（macOS/Linux 不受影響）。
 import types
 import claude_api   # E27：阿財對談可改走 Anthropic API（預設仍是 CLI）
+import acai_budget  # E27b：API 額度保護（預算線、用完退 CLI＋TG）
+claude_api.on_credit_exhausted = acai_budget.on_credit_exhausted
 
 CLAUDE_BIN = shutil.which('claude') or 'claude'
 # 同理，npx 在 Windows 是 npx.cmd，不帶副檔名會 FileNotFoundError。
@@ -595,6 +597,8 @@ def log_token_usage(app_id, call_type, prompt, before_files):
                f"{meta['cache_creation_input_tokens']}, {meta['cache_read_input_tokens']}, {q(now)}, "
                f"{meta['cost_usd']:.6f}, {meta['duration_ms']}, {meta['api_ms']}, {meta.get('wall_ms') or 0}, {meta['calls']}, "
                f"{meta['prompt_chars']}, {meta['output_chars']}, {q(INTERVIEW_HOST)}, {q(meta.get('source') or 'cli_json')})")
+            if meta.get('source') == 'api':
+                acai_budget.check_async()   # E27b：背景查累計花費，不拖慢面談
         except Exception as e:
             log(f'（token 用量沒記成，不影響面談：{e}）')
         return

@@ -1,0 +1,10 @@
+[Unit]
+Description=Step1ne 阿財 API 每日花費推播，每天 21:30
+
+[Timer]
+OnCalendar=*-*-* 21:30:00
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
