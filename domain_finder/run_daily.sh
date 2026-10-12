@@ -25,7 +25,9 @@ echo "== $(date '+%F %T') 網域獵人 ${CHECK:+(check)} 資料→$DOMAIN_FINDER
 # Ubersuggest 是用 `claude mcp add --scope user` 加的，存在 ~/.claude.json，不受 --setting-sources 影響。
 # 不載入 claude.ai 帳號上的雲端連接器：那邊的 Ubersuggest 是 Mac 那個帳號，用了會吃同一份每天額度
 export ENABLE_CLAUDEAI_MCP_SERVERS=false
-CLAUDE_ARGS=(--model "$MODEL" --setting-sources '' --permission-mode bypassPermissions --output-format text)
+# E34（wsl2 實測 2026-10-12）：--setting-sources '' 會連「claude mcp add --scope user」加的連線一起藏起來（工具清單是空的）；
+# 所以用 --mcp-config 明確指定同一個 ubersuggest 連線（只有網址，沒有金鑰；登入憑證仍存在 ~/.claude 裡，是用 /mcp Authenticate 登入的那個帳號）。
+CLAUDE_ARGS=(--model "$MODEL" --setting-sources '' --mcp-config "$HERE/ubersuggest_mcp.json" --permission-mode bypassPermissions --output-format text)
 
 if [ -n "$CHECK" ]; then
   cd "$HERE" && claude -p "用 ToolSearch 找 ubersuggest 的工具。如果有 mcp__ubersuggest__auth_status，呼叫它（不要呼叫其他會用到額度的工具）。最後只回一行：『ubersuggest 工具：有／沒有；登入狀態：…（帳號 email 只顯示前三個字）』" "${CLAUDE_ARGS[@]}"
