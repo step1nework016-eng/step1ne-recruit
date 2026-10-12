@@ -2975,6 +2975,221 @@ function normalizeNameForMatch(s) {
   return String(s || '').replace(/\s+/g, '');
 }
 
+// ── 2026-10-12 應徵表單「我用 LINE 傳」履歷收件 ──
+// 候選人在應徵表單選「我用 LINE 傳」→ 表單給他一顆按鈕，打開官方帳號並預填「我要傳履歷 #XXXXX」。
+// 他送出那句 → 這裡把他的 LINE 帳號記到那組代碼上；接著他傳的檔案／照片就存成那筆應徵的履歷。
+// 代碼表 resume_intake_codes 由 step1ne-public-worker 建立（應徵表單那邊），schema 在
+// schema_resume_intake.sql。阿財面談入口（public worker /chat/:token）會擋到真的收到檔案為止。
+const LINE_RESUME_MAX_BYTES = 20 * 1024 * 1024;
+const LINE_RESUME_EXT = { pdf: 'application/pdf', doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
+const LINE_RESUME_CODE_RE = /#\s?([A-Za-z0-9]{5})(?![A-Za-z0-9])/;
+
+function lineResumeAppHasResume(a) {
+  if (!a) return false;
+  if (a.resume_file_id || String(a.resume_url || '').trim() || String(a.resume_104_url || '').trim()) return true;
+  return safeJsonArray(a.resume_extra_files).length > 0;
+}
+
+// 文字訊息裡有沒有「#XXXXX」履歷代碼。有而且查得到才接手，查不到就當普通訊息往下走
+// （不搶 [LC123] 歸因、查進度那些既有流程）。回傳 true 代表已經處理並回覆。
+async function handleLineResumeCodeText(env, userId, replyToken, text, now) {
+  const m = String(text || '').match(LINE_RESUME_CODE_RE);
+  if (!m) return false;
+  const code = m[1].toUpperCase();
+  const row = await env.DB.prepare(`SELECT * FROM resume_intake_codes WHERE code=?`).bind(code).first();
+  if (!row) return false;
+  if (row.expires_at <= now) {
+    await lineReply(env, replyToken, '這組代碼已經過期了 🙏\n請回到應徵頁，重新按一次「我用 LINE 傳」，再送出新的那句就可以了。');
+    return true;
+  }
+  if (row.line_user_id && row.line_user_id !== userId) {
+    await lineReply(env, replyToken, '這組代碼已經被另一個 LINE 帳號使用了 🙏\n請回到應徵頁重新按一次「我用 LINE 傳」，會拿到一組新的代碼。');
+    return true;
+  }
+  await env.DB.prepare(
+    `UPDATE resume_intake_codes SET line_user_id=?, line_bound_at=COALESCE(line_bound_at, ?) WHERE code=?`
+  ).bind(userId, now, code).run();
+  if (row.application_id) {
+    try { await lineResumeMergeBinding(env, userId, row.application_id, now); } catch (e) { console.error('resume bind', String(e)); }
+  }
+  await lineReply(env, replyToken, row.file_id
+    ? '這組代碼的履歷已經收到了 ✅\n還有其他頁要補的話，直接傳過來就好。'
+    : '收到，請直接把履歷檔案或照片傳過來 📎\n（PDF、Word 或照片都可以，多頁的話一張一張傳就好）');
+  return true;
+}
+
+// 跟 public worker 的 mergeLineBinding 同一套：LINE 帳號綁上這筆應徵（查進度、進度推播都靠這張表）
+async function lineResumeMergeBinding(env, lineUserId, appId, now) {
+  const ex = await env.DB.prepare(`SELECT application_ids FROM line_bindings WHERE line_user_id=?`).bind(lineUserId).first();
+  const ids = ex ? safeJsonArray(ex.application_ids) : [];
+  if (!ids.includes(appId)) ids.push(appId);
+  if (ex) {
+    await env.DB.prepare(
+      `UPDATE line_bindings SET state='bound', application_ids=?, bound_at=COALESCE(bound_at, ?), updated_at=? WHERE line_user_id=?`
+    ).bind(JSON.stringify(ids), now, now, lineUserId).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO line_bindings (line_user_id, state, application_ids, bound_at, source, created_at, updated_at)
+       VALUES (?, 'bound', ?, ?, 'resume_code', ?, ?)`
+    ).bind(lineUserId, JSON.stringify(ids), now, now, now).run();
+  }
+}
+
+// 候選人傳來的圖片／檔案。只有兩種情況會收下來當履歷：
+//   ① 他先送過「我要傳履歷 #XXXXX」（代碼還有效）
+//   ② 他已經綁定、而且有一筆還沒開始面談、也還沒有履歷的應徵
+// 沒綁定的陌生人傳檔案：不存，回應徵連結。已綁定但沒有缺履歷的應徵：不回（多半是在跟顧問聊別的事）。
+// 履歷晚到（LINE 傳來／補履歷頁）時：阿財可能已經用「還沒有履歷」的資料先擬好題目、預熱好開場白，
+// interview_daemon 也可能把那份沒有履歷的資料快取住。把那兩個時間戳設成很舊的固定值，
+// daemon 的 invalidate_stale_prepared()（每 60 秒）就會判定「職缺資料比它新」→ 作廢重擬並清快取。
+// 面談入口看到這個值會先請候選人等一下（最多 5 分鐘），不讓阿財拿舊資料開口。
+// ⚠️ 不改 interview_daemon.py（WSL2 負責）；根治版 patch 在 docs/wsl2/patches/。
+const STALE_PREP_TS = '2000-01-01 00:00:00';
+async function markPrepStale(env, appId) {
+  try {
+    await env.DB.prepare(
+      `UPDATE applications SET
+          prewarmed_at = CASE WHEN prewarmed_opening IS NOT NULL THEN ? ELSE prewarmed_at END,
+          interview_plan_at = CASE WHEN interview_plan_json IS NOT NULL THEN ? ELSE interview_plan_at END
+        WHERE id=? AND COALESCE(interview_state,'not_started')='not_started'`
+    ).bind(STALE_PREP_TS, STALE_PREP_TS, appId).run();
+  } catch (e) { console.error('markPrepStale', String(e)); }
+}
+async function handleLineResumeFile(env, ev) {
+  const userId = ev.source && ev.source.userId;
+  const replyToken = ev.replyToken;
+  const msg = ev.message || {};
+  if (!userId || !replyToken) return;
+  const now = nowTaipei();
+
+  const codeRow = await env.DB.prepare(
+    `SELECT * FROM resume_intake_codes WHERE line_user_id=? AND expires_at > ?
+      ORDER BY line_bound_at DESC LIMIT 1`).bind(userId, now).first();
+  let appId = codeRow ? codeRow.application_id : null;
+  if (!codeRow) {
+    const binding = await env.DB.prepare(
+      `SELECT state, application_ids FROM line_bindings WHERE line_user_id=?`).bind(userId).first();
+    const ids = binding && binding.state === 'bound' ? safeJsonArray(binding.application_ids) : [];
+    let pending = null;
+    if (ids.length) {
+      const ph = ids.slice(0, 50).map(() => '?').join(',');
+      const { results } = await env.DB.prepare(
+        `SELECT id, resume_file_id, resume_url, resume_104_url, resume_extra_files FROM applications
+          WHERE id IN (${ph}) AND superseded_by IS NULL
+            AND COALESCE(interview_state,'not_started') IN ('not_started','pending')
+          ORDER BY created_at DESC`).bind(...ids.slice(0, 50)).all();
+      pending = (results || []).find((a) => !lineResumeAppHasResume(a)) || null;
+    }
+    if (pending) appId = pending.id;
+    else {
+      if (binding && binding.state === 'bound') return;   // 已綁定的人傳圖給顧問看別的事，不搶著回
+      await lineReply(env, replyToken,
+        '謝謝您傳來的檔案 🙏\n目前這裡沒有對應的應徵紀錄，所以先不會存下來。\n\n'
+        + '要應徵的話，請先到這裡填應徵表單，履歷那一步選「我用 LINE 傳」，再照畫面上的指示送出就可以了 👇\n'
+        + 'https://step1ne.com/apply/?utm_source=line_file&utm_medium=line');
+      return;
+    }
+  }
+
+  // 檔案類型與大小
+  let ext = '', filename = '';
+  if (msg.type === 'file') {
+    filename = String(msg.fileName || 'resume').slice(0, 200);
+    ext = (filename.match(/\.([A-Za-z0-9]+)$/) || [, ''])[1].toLowerCase();
+    if (ext === 'heic' || ext === 'heif') {
+      await lineReply(env, replyToken, '這個照片格式（HEIC）系統讀不到 🙏\n請改用「照片」的方式傳（從相簿選照片送出），不要用「檔案」傳，就可以了。');
+      return;
+    }
+    if (!LINE_RESUME_EXT[ext]) {
+      await lineReply(env, replyToken, '這個檔案格式系統讀不到 🙏\n請傳 PDF、Word（.doc／.docx），或直接拍照／截圖傳照片過來。');
+      return;
+    }
+    if (Number(msg.fileSize || 0) > LINE_RESUME_MAX_BYTES) {
+      await lineReply(env, replyToken, '檔案超過 20MB，太大了 🙏\n可以改傳照片或截圖，一頁一張就好。');
+      return;
+    }
+  } else if (msg.type !== 'image') {
+    return;
+  }
+
+  let buf, mime;
+  try {
+    const r = await fetch(`https://api-data.line.me/v2/bot/message/${encodeURIComponent(msg.id)}/content`, {
+      headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    buf = new Uint8Array(await r.arrayBuffer());
+    mime = (r.headers.get('content-type') || '').split(';')[0].trim();
+  } catch (e) {
+    console.error('LINE 履歷下載失敗', String(e));
+    await lineReply(env, replyToken, '不好意思，這個檔案沒有收成功 🙏 麻煩再傳一次。');
+    await notify(env, `⚠️ LINE 履歷下載失敗：${String(e).slice(0, 120)}`, { message_thread_id: THREAD.system }).catch(() => {});
+    return;
+  }
+  if (buf.length > LINE_RESUME_MAX_BYTES) {
+    await lineReply(env, replyToken, '檔案超過 20MB，太大了 🙏\n可以改傳照片或截圖，一頁一張就好。');
+    return;
+  }
+  if (msg.type === 'image') {
+    ext = mime === 'image/png' ? 'png' : 'jpg';
+    const stamp = now.replace(/[-: ]/g, '').slice(0, 12);
+    filename = `LINE照片履歷_${stamp}_${String(msg.id).slice(-4)}.${ext}`;
+    mime = mime && mime.startsWith('image/') ? mime : 'image/jpeg';
+  } else {
+    mime = LINE_RESUME_EXT[ext];
+  }
+
+  // 存檔：跟 saveResume() 一樣存 R2、files 只留資料（parse_resumes.py 之後會照常抽字／OCR）
+  const fileId = uid();
+  await env.FILES.put(fileId, buf, { httpMetadata: { contentType: mime } });
+  await env.DB.prepare(
+    `INSERT INTO files (id, created_at, filename, mime, size, chunks, storage) VALUES (?,?,?,?,?,0,'r2')`
+  ).bind(fileId, now, filename, mime, buf.length).run();
+
+  let first = true;
+  if (codeRow) {
+    const upd = await env.DB.prepare(
+      `UPDATE resume_intake_codes SET file_id=?, file_received_at=? WHERE code=? AND file_id IS NULL`
+    ).bind(fileId, now, codeRow.code).run();
+    first = !!(upd.meta && upd.meta.changes);
+    if (!first) {
+      const ef = safeJsonArray(codeRow.extra_files);
+      if (!appId) ef.push({ file_id: fileId, filename, uploaded_at: now, source: 'line' });
+      await env.DB.prepare(`UPDATE resume_intake_codes SET extra_count=extra_count+1, extra_files=? WHERE code=?`)
+        .bind(ef.length ? JSON.stringify(ef) : null, codeRow.code).run();
+    }
+  }
+  let appName = null;
+  if (appId) {
+    const a = await env.DB.prepare(
+      `SELECT name, job_title, resume_file_id, resume_extra_files FROM applications WHERE id=?`).bind(appId).first();
+    if (a) {
+      appName = a.name;
+      if (!a.resume_file_id) {
+        await env.DB.prepare(`UPDATE applications SET resume_file_id=? WHERE id=? AND resume_file_id IS NULL`).bind(fileId, appId).run();
+        await markPrepStale(env, appId);
+        first = true;
+      } else if (a.resume_file_id !== fileId) {
+        // 第二頁以後放補充檔（顧問後台看得到；阿財讀的是第一份的文字）
+        const extra = safeJsonArray(a.resume_extra_files);
+        extra.push({ file_id: fileId, filename, uploaded_at: now, source: 'line' });
+        await env.DB.prepare(`UPDATE applications SET resume_extra_files=? WHERE id=?`).bind(JSON.stringify(extra), appId).run();
+        if (!codeRow) first = false;
+      }
+    }
+  }
+  await lineReply(env, replyToken, first
+    ? '履歷收到了 ✅\n回到剛剛的應徵頁或面談頁繼續就可以了。'
+    : '這一份也收到了 ✅');
+  await notify(env,
+    `📎 LINE 收到履歷${first ? '' : '（補充頁）'}：${appName || '（應徵表單還沒送出）'}\n檔案：${filename}`
+    + (codeRow ? `\n代碼：#${codeRow.code}` : ''),
+    { message_thread_id: INTAKE_THREAD }).catch(() => {});
+}
+
 async function handleLineEvent(env, ev) {
   // 面談時段 Carousel 卡片上的「選這個時段」按鈕——postback 事件，不是 message，
   // 要在最上面單獨處理，跟查進度那條 message 流程完全分開。
@@ -3257,12 +3472,19 @@ async function handleLineEvent(env, ev) {
     return;
   }
 
+  // 2026-10-12：應徵表單「我用 LINE 傳」——候選人傳來的履歷檔案／照片
+  if (ev.type === 'message' && ev.message && (ev.message.type === 'image' || ev.message.type === 'file')) {
+    return handleLineResumeFile(env, ev);
+  }
   if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
   const userId = ev.source && ev.source.userId;
   const replyToken = ev.replyToken;
   if (!userId || !replyToken) return;
   let text = String(ev.message.text || '').trim();
   const now = nowTaipei();
+
+  // 2026-10-12：「我要傳履歷 #XXXXX」——查得到代碼才接手，查不到就照原本流程往下走
+  if (await handleLineResumeCodeText(env, userId, replyToken, text, now)) return;
 
   let binding = await env.DB.prepare(
     `SELECT * FROM line_bindings WHERE line_user_id = ?`
