@@ -59,7 +59,7 @@ FILE_PROMPT = """這個資料夾裡是客戶提供的「一個職缺」的截圖
 {files}
 
 請用 Read 工具逐一打開上面每個檔案，讀出這個職缺。
-""" + SCHEMA
+{schema}"""
 
 TEXT_PROMPT = """下面是客戶提供的「一個職缺」的文字（可能是從網頁或訊息複製來的，排版會亂）。請讀出這個職缺。
 {schema}
@@ -153,7 +153,7 @@ def _read_file(entry, idx, tmp_root):
             imgs = [(fn, '整張圖')]
         files = '\n'.join(f'- {n}（{d}）' for n, d in imgs)
         r = subprocess.run(
-            ['claude', '-p', FILE_PROMPT.format(files=files), '--model', MODEL,
+            ['claude', '-p', FILE_PROMPT.format(files=files, schema=SCHEMA), '--model', MODEL,
              '--allowedTools', f'Read({tmp}/**)', '--disallowed-tools', _BAN,
              '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
              '--setting-sources', '', '--output-format', 'text'],
