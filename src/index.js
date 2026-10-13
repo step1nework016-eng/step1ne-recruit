@@ -6145,6 +6145,16 @@ export default {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ chat_id: pm.chat.id, text: `${row.display_name}，已綁定。之後客戶開發的早晚提醒（上班 09:30、下班 17:30）會私訊你。` }),
             }).catch(() => {});
+            // 綁好了順便告訴 Jacky（私訊他），不用他自己去查
+            if (row.display_name !== 'Jacky') {
+              const jk = await env.DB.prepare(`SELECT tg_chat_id FROM consultant_tg WHERE display_name='Jacky'`).first().catch(() => null);
+              if (jk && jk.tg_chat_id) {
+                await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ chat_id: jk.tg_chat_id, text: `✅ ${row.display_name} 已綁定機器人私訊，客戶開發的早晚提醒之後會私訊她。` }),
+                }).catch(() => {});
+              }
+            }
           }
         }
       }
