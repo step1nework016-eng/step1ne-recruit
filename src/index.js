@@ -6133,6 +6133,22 @@ export default {
       let update;
       try { update = await request.json(); } catch { return new Response('ok'); }
 
+      // ── 2026-10-13 Jacky：顧問私訊機器人 → 記下私訊代號（客戶開發早晚提醒才能私訊他）──
+      // 只認 consultant_tg 名單上的 TG 帳號（username 對得上才綁），其他人私訊一律不理。
+      {
+        const pm = update.message;
+        if (pm && pm.chat && pm.chat.type === 'private' && pm.from && pm.from.username && !pm.from.is_bot) {
+          const row = await env.DB.prepare(`SELECT display_name FROM consultant_tg WHERE lower(tg_username)=lower(?)`).bind(pm.from.username).first().catch(() => null);
+          if (row) {
+            await env.DB.prepare(`UPDATE consultant_tg SET tg_chat_id=?, updated_at=? WHERE display_name=?`).bind(String(pm.chat.id), nowTaipei(), row.display_name).run().catch(() => {});
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: pm.chat.id, text: `${row.display_name}，已綁定。之後客戶開發的早晚提醒（上班 09:30、下班 17:30）會私訊你。` }),
+            }).catch(() => {});
+          }
+        }
+      }
+
       // ── 2026-10-02 Jacky 要把 TG 拆成社群／人選／客戶三個群組 ──
       // 機器人被拉進新群組、或有人在群組打 /chatid，就把群組編號記進 tg_groups 並回覆，
       // 不用人去查群組 ID。只記錄，不改任何通知去向（改去向由總指揮確認後再切）。
