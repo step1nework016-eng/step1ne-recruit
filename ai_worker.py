@@ -1657,6 +1657,10 @@ def process(job):
     if kind == 'call_audio':
         import call_audio
         return call_audio.run(job)
+    # 2026-10-13：客戶提供的職缺（文字／截圖／PDF）→ AI 讀出職缺欄位，整條在 job_read.py 自己跑完
+    if kind == 'job_read':
+        import job_read
+        return job_read.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
     if kind not in HANDLERS:
         raise RuntimeError(f'未知的工作類型：{kind}')
     builder, want_json = HANDLERS[kind]
