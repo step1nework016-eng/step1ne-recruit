@@ -377,11 +377,15 @@ async function resendSend(env, init, worker = 'recruit') {
       let rid = null;
       try { rid = (await r.clone().json()).id || null; } catch { /* 沒有 id 就算了 */ }
       const to = Array.isArray(p.to) ? p.to.join(', ') : String(p.to || '');
+      // 2026-10-13：記下實際帶了哪些附件（檔名＋大小）。之前只存文字，事後完全查不出有沒有附件。
+      const attLog = Array.isArray(p.attachments) && p.attachments.length
+        ? p.attachments.map((x) => `${String(x.filename || '').slice(0, 120)}（${Math.round(Math.floor(String(x.content || '').length * 3 / 4) / 1024)}KB）`).join('、')
+        : null;
       await env.DB.prepare(
-        `INSERT INTO mail_sent_log (sent_at, worker, from_addr, to_email, subject, text, html, resend_id)
-         VALUES (datetime('now','+8 hours'), ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO mail_sent_log (sent_at, worker, from_addr, to_email, subject, text, html, resend_id, attachments)
+         VALUES (datetime('now','+8 hours'), ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(worker, String(p.from || ''), to, String(p.subject || ''), p.text ? String(p.text) : null,
-             p.html ? String(p.html).slice(0, 200000) : null, rid).run();
+             p.html ? String(p.html).slice(0, 200000) : null, rid, attLog).run();
     } catch (e) { console.error('mail_sent_log 寫入失敗', e && e.message); }
   }
   return r;

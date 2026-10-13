@@ -58,10 +58,13 @@ def pending():
             return
         out.append((ref, at, to or '', subject or '（無主旨）', body or '', None, None))
 
-    for r in D.d1("SELECT id, sent_at, from_addr, to_email, subject, text, html FROM mail_sent_log") or []:
+    for r in D.d1("SELECT id, sent_at, from_addr, to_email, subject, text, html, attachments FROM mail_sent_log") or []:
         ref = f"mail_sent_log:{r['id']}"
         if ref not in done and r['sent_at']:
-            out.append((ref, r['sent_at'], r['to_email'] or '', r['subject'] or '（無主旨）', r['text'] or '', r['html'], r['from_addr']))
+            body = r['text'] or ''
+            if r.get('attachments'):   # 備份副本只存文字，附件檔名寫在內文最前面，一眼看得出當時有帶什麼
+                body = f"【系統寄出時帶的附件：{r['attachments']}】\n\n{body}"
+            out.append((ref, r['sent_at'], r['to_email'] or '', r['subject'] or '（無主旨）', body, r['html'], r['from_addr']))
 
     for r in D.d1("SELECT id, contact_email, subject, body, sent_at FROM bd_outreach WHERE sent_at IS NOT NULL") or []:
         add(f"bd_outreach:{r['id']}", r['sent_at'], r['contact_email'], r['subject'], r['body'])
