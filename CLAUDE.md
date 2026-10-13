@@ -62,3 +62,7 @@ Python 常駐 daemon 不會自動 reload——改完程式碼一定要 `launchct
 ## 驗證 JS/Worker 語法別信 `node --check`
 
 Cloudflare Worker 用 ESM，`node --check` 對這類檔案不可靠。要驗證語法用 `npx wrangler deploy --dry-run --outdir /tmp/xxx`，那是真正的 esbuild 打包器，才會抓到真的語法錯誤。
+
+## 管理者（Phoebe）電腦上的 Claude
+
+在管理者電腦上工作時，先讀 `docs/管理者交接說明.md`（怎麼拿資料、可用助理、硬規則）。
