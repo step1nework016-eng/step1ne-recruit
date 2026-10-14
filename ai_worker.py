@@ -24,6 +24,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -3049,6 +3050,16 @@ def tick():
     except Exception:
         _ca_ok = False
     _kind_filter = '' if _ca_ok else "AND kind <> 'call_audio' "
+    # 2026-10-14 Jacky：電洽逐字稿評分交給 WSL2。這台（Mac）撞到太重的工作時，在
+    # ~/.config/workflow-os/ai_worker_skip_kinds.txt 列出「這台不撈的 kind」（逗號或換行分隔），
+    # 這些工作會留在 pending，由沒有列出它的那台（WSL2）撈走。檔案不存在＝照舊什麼都撈。
+    try:
+        _sk = open(os.path.expanduser('~/.config/workflow-os/ai_worker_skip_kinds.txt'), encoding='utf-8').read()
+        _skip = [k for k in re.split(r'[,\s]+', _sk) if re.fullmatch(r'[a-z_]{3,40}', k)]
+        if _skip:
+            _kind_filter += "AND kind NOT IN (" + ','.join("'" + k + "'" for k in _skip) + ") "
+    except Exception:
+        pass
     rows = d1_http.query(
         ("SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d " + _kind_filter +
          # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
