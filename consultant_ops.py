@@ -513,6 +513,57 @@ def cmd_decline(a):
     print(f'✅ 已貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}\n--- 信件內容 ---\n{d["text"]}')
 
 
+def cmd_free_mail(a):
+    """自由信件（2026-10-14 Jacky：Phoebe 的 Claude 也要能寄信給客戶、人選）。
+    只產生確認卡；Jacky／Phoebe／提出的顧問在 TG 按「確認寄出」才會從 official@ 寄出。可附檔（pdf、word、excel、ppt、圖片）。"""
+    import base64
+    import mimetypes
+    w = who(); need_where(w)
+    subject = (a.subject or '').strip()
+    text = open(a.text_file, encoding='utf-8').read().strip() if a.text_file else (a.text or '').strip()
+    if not subject or not text:
+        die('主旨和內文都要有（--subject、--text-file 或 --text）')
+    app = {'id': '', 'name': a.company or a.to, 'job_title': '', 'job_slug': ''}
+    if a.who:
+        app = resolve(a.who)
+    # 日期跟星期對不上、客戶名寫錯，在貼確認卡之前就擋（寄信程式寄出前也會再擋一次）
+    try:
+        from weekday_check import weekday_errors
+        from client_name_check import client_name_errors
+        e1 = weekday_errors(subject + '\n' + text)
+        if e1:
+            die('星期寫錯了：' + '；'.join(e1))
+        e2 = client_name_errors(subject + '\n' + text)
+        if e2:
+            die('客戶名稱寫法不對：' + '；'.join(e2))
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+    if app.get('id'):
+        prob = check_candidate_text(app['id'], subject + '\n' + text)
+        if prob:
+            die(prob)
+    atts = []
+    for path in (a.attach or []):
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            die(f'找不到附件：{path}')
+        mime = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+        atts.append({'name': os.path.basename(path), 'mime': mime, 'b64': base64.b64encode(open(path, 'rb').read()).decode()})
+    d = bo('/admin/free-mail', {'action': 'draft', 'to': a.to, 'cc': a.cc or '', 'subject': subject, 'text': text, 'attachments': atts})
+    if not d.get('ok'):
+        die(d.get('error') or '產生草稿失敗')
+    files = d.get('files') or []
+    params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name']}
+    who_line = f'人選：{app["name"]}（{app.get("job_title") or app.get("job_slug") or "—"}）\n' if app.get('id') else (f'公司：{a.company}\n' if a.company else '')
+    card = ('📧 確認寄出｜自由信件\n' + who_line + f'收件：{d["to"]}\n' + (f'副本：{", ".join(d["cc"])}\n' if d.get('cc') else '') +
+            f'主旨：{d["subject"]}\n' + (f'附件：{"、".join(f["filename"] for f in files)}\n' if files else '') + '─' * 14 + '\n' + text + '\n' +
+            card_tail(w, '寄出後約 1 分鐘內從 official@ 寄出，並存進寄件備份。'))
+    aid = create_action('free_mail', app, params, d['to'], d['subject'], text, card, [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')])
+    print(f'✅ 已貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}' + (f'\n附件：{len(files)} 個' if files else ''))
+
+
 def cmd_summary(a):
     app = resolve(a.who)
     w = who(); need_where(w)
@@ -613,6 +664,10 @@ def main():
     p.add_argument('--reason', default='fit', choices=list(DECLINE_REASONS)); p.add_argument('--extra')
     p.add_argument('--no-keep', action='store_true'); p.add_argument('--subject'); p.add_argument('--text-file')
     p.add_argument('--again', action='store_true'); p.set_defaults(fn=cmd_decline)
+    p = sp.add_parser('free-mail', help='自由信件：寄給客戶或人選（確認卡；可附檔）'); p.add_argument('--to', required=True)
+    p.add_argument('--cc'); p.add_argument('--subject', required=True); p.add_argument('--text-file'); p.add_argument('--text')
+    p.add_argument('--attach', action='append', help='附件路徑，可重複'); p.add_argument('--who', help='收件人是人選時填人選姓名或編號（會套用人選文字規則、寫進人選卡片）')
+    p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）'); p.set_defaults(fn=cmd_free_mail)
     p = sp.add_parser('summary', help='電洽逐字稿寫進卡片（確認卡）'); p.add_argument('who'); p.add_argument('--file'); p.add_argument('--text')
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)

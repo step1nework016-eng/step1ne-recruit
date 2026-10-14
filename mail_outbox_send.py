@@ -53,6 +53,28 @@ def _tg(text):
         pass
 
 
+BACKOFFICE = 'https://step1ne-backoffice-worker.aiagentg888.workers.dev'
+
+
+def _fetch_file(file_id):
+    tok = None
+    for f in ('~/.config/workflow-os/tokens.env', '~/.config/workflow-os/recruit.env'):
+        try:
+            for line in open(os.path.expanduser(f), encoding='utf-8'):
+                if line.startswith('RECRUIT_ADMIN_TOKEN='):
+                    tok = line.strip().split('=', 1)[1].strip().strip("'\"")
+        except Exception:
+            continue
+        if tok:
+            break
+    if not tok:
+        raise RuntimeError('沒有後台金鑰')
+    req = urllib.request.Request(f'{BACKOFFICE}/admin/file/{urllib.parse.quote(file_id)}',
+                                 headers={'authorization': f'Bearer {tok}', 'user-agent': 'mail_outbox_send/1.0'})
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return r.read()
+
+
 def main():
     dry = '--dry-run' in sys.argv
     try:
@@ -85,7 +107,11 @@ def main():
                 continue
             # 客戶名寫錯就不寄（2026-10-12「美德相邦」事故）。mail_outbox 目前沒有附件欄位；
             # 之後若加了附件，檔名也要一起放進來檢查。
-            att_names = [a.get('filename') or '' for a in (m.get('attachments') or [])] if isinstance(m.get('attachments'), list) else []
+            try:
+                _atts = json.loads(m.get('attachments_json') or '[]')
+            except Exception:
+                _atts = []
+            att_names = [a.get('filename') or '' for a in _atts if isinstance(a, dict)]
             cn_err = client_name_errors((m.get('subject') or '') + '\n' + (m.get('text') or '') + '\n' +
                                         (m.get('html') or '') + '\n' + '\n'.join(att_names))
             if cn_err:
@@ -118,8 +144,27 @@ def main():
             msg.set_content(m.get('text') or '')
             if m.get('html'):
                 msg.add_alternative(m['html'], subtype='html')
+            cc_list = [x.strip() for x in (m.get('cc') or '').split(',') if x.strip()]
+            if cc_list:
+                msg['Cc'] = ', '.join(cc_list)
+            # 2026-10-14 自由信件的附件：檔案存在後台（R2），這裡用管理金鑰抓回來附上；抓不到就不寄、退回等待，不寄出沒附件的信
+            att_fail = None
+            for a in _atts:
+                try:
+                    raw = _fetch_file(a['file_id'])
+                    mt, _, st = str(a.get('mime') or 'application/octet-stream').partition('/')
+                    msg.add_attachment(raw, maintype=mt or 'application', subtype=st or 'octet-stream', filename=a.get('filename') or 'attachment')
+                except Exception as e:
+                    att_fail = f'附件抓不到：{a.get("filename")}（{str(e)[:80]}）'
+                    break
+            if att_fail:
+                d1_rw.q("UPDATE mail_outbox SET status='pending', error=? WHERE id=?", [att_fail[:250], m['id']])
+                print(f"❌ {m['to_email']}：{att_fail}")
+                if (m.get('attempts') or 0) >= 2:
+                    _tg(f"⚠️ 信沒寄出（附件抓不到）：{m['to_email']}｜{m['subject']}\n{att_fail}")
+                continue
             try:
-                smtp.send_message(msg)
+                smtp.send_message(msg, to_addrs=[m['to_email']] + cc_list)
             except Exception as e:
                 d1_rw.q("UPDATE mail_outbox SET status='pending', error=? WHERE id=?", [f'GoDaddy 寄信失敗：{e}'[:300], m['id']])
                 print(f"❌ {m['to_email']}：{e}")

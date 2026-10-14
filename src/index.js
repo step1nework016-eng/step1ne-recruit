@@ -4535,6 +4535,26 @@ async function handleConsultantOpsAction(env, cq) {
       await finish('done', d, `📤 ${who} 按了確認，已寄給 ${d.to || row.preview_to}`, `📤 ${row.candidate_name}：${row.kind === 'call_mail' ? '約電話信' : '確認電話時間的信'}已寄出（${who} 按的）${extra}`);
       return;
     }
+    // 2026-10-14 自由信件（寄給客戶或人選；Jacky、Phoebe 或提出的顧問本人按「確認寄出」才排進寄件匣，由 official@ 寄出）
+    if (row.kind === 'free_mail') {
+      const toMail = String(row.preview_to || '').toLowerCase();
+      // 收件人是人選（有帶人選編號，或信箱對得上應徵紀錄）→ 套用人選看得到的文字規則（禁用字、保密客戶名）
+      let candAppId = row.application_id || '';
+      if (!candAppId) {
+        const ca = await env.DB.prepare(`SELECT id FROM applications WHERE lower(email)=? ORDER BY created_at DESC LIMIT 1`).bind(toMail).first().catch(() => null);
+        candAppId = ca ? ca.id : '';
+      }
+      if (candAppId) {
+        const bad = await copsGuardCandidateText(env, candAppId, `${row.preview_subject || ''}\n${row.preview_text || ''}`);
+        if (bad) { await ans(`⛔ 沒有寄：${bad}`); await finish('failed', { error: bad }, `⛔ 擋下：${bad}`); return; }
+      }
+      const d = await copsBo(env, '/admin/free-mail', { action: 'send', to: toMail, cc: p.cc || '', subject: row.preview_subject, text: row.preview_text,
+        files: p.files || [], by: p.by || row.requested_by || who, application_id: row.application_id || null, company: p.company || null });
+      if (!d.ok) { await ans(`沒寄出：${d.error}`); await finish('failed', d, `❌ 沒寄出：${String(d.error || '').slice(0, 40)}`); return; }
+      await ans('📤 已排入寄件，約 1 分鐘內寄出');
+      await finish('done', d, `📤 ${who} 按了確認，已排入寄給 ${toMail}`, `📤 自由信件已排入寄件匣（約 1 分鐘內從 official@ 寄出）：${toMail}｜${row.preview_subject}${(p.files || []).length ? `（附件 ${(p.files || []).length} 個）` : ''}`);
+      return;
+    }
     if (row.kind === 'decline_mail') {
       const d = await copsBo(env, `${appPath}/decline-mail`, { ...p, action: 'send' });
       if (!d.ok) { await ans(`沒寄出：${d.error}`); await finish('failed', d, `❌ 沒寄出：${String(d.error || '').slice(0, 40)}`); return; }
