@@ -1663,6 +1663,13 @@ def process(job):
         import job_read
         return job_read.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
     # 2026-10-14：認識公司「請 AI 研究這家公司」→ 104 職缺＋公開資料研究，整條在 company_research.py 自己跑完
+    # 2026-10-14：客戶卡片「從現有人選配對」＋「針對這個職缺的匿名摘要」（整條在 bd_job_match.py 自己跑完）
+    if kind in ('bd_job_match', 'bd_job_brief'):
+        import bd_job_match
+        _pl = json.loads(job.get('payload_json') or '{}')
+        if kind == 'bd_job_match':
+            return bd_job_match.run_match(_pl, run_claude=run_claude)
+        return bd_job_match.run_brief(_pl, run_claude=run_claude)
     if kind == 'company_research':
         import company_research
         return company_research.run(json.loads(job.get('payload_json') or '{}'))
