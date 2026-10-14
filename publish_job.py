@@ -291,6 +291,8 @@ def check_duplicate(j):
     讓顧問決定」，實際結果是自動化流程沒有人在看那行字，照樣上架。
     真的要重複就加 --force。
     """
+    # 2026-10-14 Jacky：每個職缺現在有固定「職缺代號」（J-0001…），名稱相同不再擋上架／重產頁面。
+    return None
     title = (j.get('title') or '').strip()
     if not title:
         return None
