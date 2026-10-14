@@ -1,0 +1,13 @@
+[Unit]
+Description=Step1ne 依職缺開發名單每日掃描（104 財務會計類，最近 30 天）→ D1 bd_hiring_leads
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 hiring_leads_scan.py 財務會計 30
+TimeoutStartSec=1800
+StandardOutput=append:%h/aijob-automation/logs/hiringleads.log
+StandardError=append:%h/aijob-automation/logs/hiringleads.log

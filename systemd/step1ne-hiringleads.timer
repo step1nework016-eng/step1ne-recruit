@@ -1,0 +1,9 @@
+[Unit]
+Description=每天 08:40（台灣時間）掃描依職缺開發名單
+
+[Timer]
+OnCalendar=*-*-* 08:40:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target
