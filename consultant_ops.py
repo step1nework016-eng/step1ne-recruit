@@ -640,6 +640,47 @@ def cmd_cancel_remind(a):
     print('✅ 已取消' if (r.get('meta') or {}).get('changes') else '❌ 沒取消到（不存在、已發出，或不是你建的）')
 
 
+def cmd_match(a):
+    """從現有人選配對（等同後台客戶卡片按鈕）。--company/--job 開始；--run 查結果；--brief 對選定人選產匿名摘要。"""
+    who_ = os.environ.get('COPS_TG_NAME', '') or os.environ.get('COPS_TG_USERNAME', '')
+    if a.company and a.job:
+        r = bo('/admin/bd/job-match', {'company': a.company, 'job_slug': a.job, 'by': who_})
+        if not r.get('ok'):
+            die(f'配對沒啟動：{r.get("error")}')
+        print(f'✅ 已排進 AI 配對（run_id：{r["run_id"]}）。約 3～8 分鐘，之後用 --run {r["run_id"]} 看結果。')
+        return
+    if a.run and a.brief:
+        ids = [x.strip() for x in a.brief.split(',') if x.strip()]
+        r = bo('/admin/bd/job-brief', {'run_id': a.run, 'application_ids': ids})
+        if not r.get('ok'):
+            die(f'匿名摘要沒啟動：{r.get("error")}')
+        for b in r.get('briefs', []):
+            print(f'・{b["application_id"]}：{b["status"]}' + ('（先前已排過）' if b.get('already') else ''))
+        print('約 3～6 分鐘；做好會放進這家客戶的匿名履歷清單，不會自動寄出。')
+        return
+    if a.run:
+        r = bo(f'/admin/bd/job-match?run_id={urllib.parse.quote(a.run)}')
+        if not r.get('ok'):
+            die(f'查不到：{r.get("error")}')
+        run = r['run']
+        print(f'{run["company"]}｜{run["job_title"]}｜狀態：{run["status"]}')
+        if run['status'] != 'done':
+            print('還沒好，過幾分鐘再查。' + (f' 錯誤：{run.get("error")}' if run.get('error') else ''))
+            return
+        res = r.get('result') or {}
+        if not res.get('picks'):
+            print(res.get('note') or '沒有合適的人選')
+        for p in res.get('picks', []):
+            print(f'\n{p["code"]} {p["name"]}｜適合度 {p["fit"]}｜{p["status"]}｜期望 {p["expected"]}｜可到職 {p["available"]}｜application_id {p["application_id"]}')
+            for m in p['matches']: print(f'   符合：{m}')
+            for g in p['gaps']: print(f'   落差：{g}')
+            if p.get('note'): print(f'   備註：{p["note"]}')
+        for b in r.get('briefs', []):
+            print(f'\n匿名摘要 {b["code"]}：{b["status"]}' + (f'（{b["filename"]}）' if b.get('filename') else ''))
+        return
+    die('用法：--company 公司 --job 職缺slug 開始；--run ID 看結果；--run ID --brief 人選id,人選id 產匿名摘要')
+
+
 def cmd_pending(a):
     for r in rows("""SELECT id,kind,candidate_name,status,requested_by,created_at,decided_by FROM consultant_ops_actions
                       ORDER BY created_at DESC LIMIT ?""", [a.n]):
@@ -676,6 +717,7 @@ def main():
     p.add_argument('--app'); p.add_argument('--before', type=int, default=30); p.set_defaults(fn=cmd_remind)
     p = sp.add_parser('reminders', help='還沒發的提醒'); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_reminders)
     p = sp.add_parser('cancel-remind'); p.add_argument('id'); p.set_defaults(fn=cmd_cancel_remind)
+    p = sp.add_parser('match', help='從現有人選配對＋針對職缺匿名摘要（等同後台客戶卡片按鈕）'); p.add_argument('--company'); p.add_argument('--job', help='職缺 slug'); p.add_argument('--run'); p.add_argument('--brief', help='application_id，逗號分隔'); p.set_defaults(fn=cmd_match)
     p = sp.add_parser('pending', help='最近的確認卡狀態'); p.add_argument('-n', type=int, default=10); p.set_defaults(fn=cmd_pending)
     a = ap.parse_args()
     a.fn(a)
