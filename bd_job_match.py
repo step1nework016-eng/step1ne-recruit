@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 
@@ -235,42 +236,22 @@ def run_brief(payload, run_claude):
     try:
         if not shutil.which('weasyprint'):
             raise RuntimeError('這台機器沒有 weasyprint，做不出 PDF')
-        a = D.query("SELECT a.id, a.seq_no, a.name, a.job_title, COALESCE(substr(f.text_content,1,9000), substr(a.resume_url_text,1,9000), '') rt "
-                    "FROM applications a LEFT JOIN files f ON f.id=a.resume_file_id WHERE a.id=" + q(payload['application_id']))['results']
+        a = D.query("SELECT a.id, a.seq_no, a.name FROM applications a WHERE a.id=" + q(payload['application_id']))['results']
         if not a:
             raise RuntimeError('找不到這位人選')
         a = a[0]
-        src = a.get('rt') or ''
-        rp = D.query("SELECT substr(content_json,1,6000) c FROM reports WHERE application_id=" + q(a['id']) + " ORDER BY created_at DESC LIMIT 1")['results']
-        if len(src) < 200 and not rp:
-            raise RuntimeError('這位人選沒有可讀的履歷或報告文字')
         code = f"S-{int(a['seq_no'] or 0):03d}"
         job = payload['job']
-        prompt = f"""{BRIEF_RULES}
-=== 這次的職缺 ===
-{_job_text(job)}
-
-=== 人選履歷原文 ===
-{src[:8000]}
-
-=== 初篩報告（可能沒有）===
-{(rp[0]['c'] if rp else '無')}
-
-請整理成一頁的匿名摘要，重點依這個職缺調整（與職缺相關的經歷放前面、寫細一點）。只輸出 JSON，格式：
-{BRIEF_SCHEMA}"""
-        brief, bad = None, []
-        for attempt in (1, 2):
-            brief = _json(run_claude(prompt + (f"\n\n⚠️ 上一次輸出出現了不能出現的字：{bad}，這次一定要完全拿掉。" if bad else ''), want_json=True, timeout=600))
-            bad = _leaks(brief, a['name'], src)
-            if not bad:
-                break
-        if bad:
-            raise RuntimeError(f'匿名檢查沒過（兩次都出現：{bad}），沒有產出')
+        # 2026-10-14 Jacky：匿名履歷只有一種標準版（make_anon_cv.py 的 anon 模式：姓＋先生／小姐、
+        # 公司寫產業＋規模、不寫學校、不放「與職缺對照／需確認」這類內部評估）。以前這裡自己做了一版
+        # 「針對職缺對照」，會把人選的弱項寫給還沒簽約的客戶看，作廢。
         tmp = tempfile.mkdtemp(prefix='brief_')
         try:
-            hp, pp = os.path.join(tmp, 'b.html'), os.path.join(tmp, 'b.pdf')
-            open(hp, 'w', encoding='utf-8').write(_render(code, brief))
-            subprocess.run(['weasyprint', hp, pp], check=True, timeout=120, capture_output=True)
+            pp = os.path.join(tmp, 'b.pdf')
+            r = subprocess.run([sys.executable, os.path.join(HERE, 'make_anon_cv.py'), a['id'], '--mode', 'anon', '--out', pp],
+                               capture_output=True, text=True, timeout=900)
+            if r.returncode != 0 or not os.path.exists(pp):
+                raise RuntimeError('匿名履歷產生失敗：' + ((r.stdout or '') + (r.stderr or ''))[-200:])
             data = open(pp, 'rb').read()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

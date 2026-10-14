@@ -28,7 +28,7 @@
 | 104 職缺找客戶（依職缺開發） | 後台「客戶 / BD → 依職缺開發」；每天由 `hiring_leads_scan.py` 更新 | 不用 |
 | 補客戶 Email／電話 | 後台客戶卡片「更新電話／Email」 | 不用 |
 | 匿名履歷 | 人選卡片「製作匿名履歷」→ TG 確認 | TG 按確認 |
-| 從現有人選配對＋針對職缺匿名摘要 | `consultant_ops.py match --company 公司 --job 職缺slug`（開始）→ 幾分鐘後 `match --run <run_id>`（看結果）→ `match --run <run_id> --brief <application_id>,…`（產匿名摘要，不會自動寄） | 不用；需 WSL2 的 ai_worker 在跑 |
+| 從現有人選配對＋針對職缺匿名摘要 | `consultant_ops.py match --company 公司 --job 職缺slug`（開始）→ 幾分鐘後 `match --run <run_id>`（看結果）→ `match --brief <application_id>,…`（做匿名履歷：走標準流程，草稿貼 TG「客戶履歷人工確認」，確認才產 PDF；不會自動寄） | 不用；需 WSL2 的 ai_worker 在跑 |
 | LinkedIn 查人、送邀請、傳訊息 | 要用 Phoebe 自己的 Chrome（Claude in Chrome 擴充功能），登入她自己的 LinkedIn | 她明確同意才送，一次一位 |
 
 ## 三、一定要守的規則（Jacky 的規定，兩邊都一樣）

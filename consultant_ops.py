@@ -649,14 +649,13 @@ def cmd_match(a):
             die(f'配對沒啟動：{r.get("error")}')
         print(f'✅ 已排進 AI 配對（run_id：{r["run_id"]}）。約 3～8 分鐘，之後用 --run {r["run_id"]} 看結果。')
         return
-    if a.run and a.brief:
+    if a.brief:
+        # 匿名履歷一律走既有標準流程（做出 A-01 範本那套）：AI 整理→草稿貼 TG「客戶履歷人工確認」→ 顧問確認才產 PDF。
+        # 不再用自己發明的格式（2026-10-14 Jacky：舊格式含「與職缺對照／需確認」，不能給未簽約客戶看）。
         ids = [x.strip() for x in a.brief.split(',') if x.strip()]
-        r = bo('/admin/bd/job-brief', {'run_id': a.run, 'application_ids': ids})
-        if not r.get('ok'):
-            die(f'匿名摘要沒啟動：{r.get("error")}')
-        for b in r.get('briefs', []):
-            print(f'・{b["application_id"]}：{b["status"]}' + ('（先前已排過）' if b.get('already') else ''))
-        print('約 3～6 分鐘；做好會放進這家客戶的匿名履歷清單，不會自動寄出。')
+        for aid in ids:
+            r = bo(f'/admin/application/{urllib.parse.quote(aid)}/client-formal-report', {'anonymous': True, 'by': who_ or '顧問'})
+            print(f'・{aid}：' + ('✅ 已送出，草稿 1～2 分鐘後貼到 TG「客戶履歷人工確認」，確認後才產 PDF' if r.get('ok') else f'❌ {r.get("error")}'))
         return
     if a.run:
         r = bo(f'/admin/bd/job-match?run_id={urllib.parse.quote(a.run)}')
@@ -678,7 +677,7 @@ def cmd_match(a):
         for b in r.get('briefs', []):
             print(f'\n匿名摘要 {b["code"]}：{b["status"]}' + (f'（{b["filename"]}）' if b.get('filename') else ''))
         return
-    die('用法：--company 公司 --job 職缺slug 開始；--run ID 看結果；--run ID --brief 人選id,人選id 產匿名摘要')
+    die('用法：--company 公司 --job 職缺slug 開始；--run ID 看結果；--brief 人選application_id,… 產匿名履歷')
 
 
 def cmd_pending(a):
