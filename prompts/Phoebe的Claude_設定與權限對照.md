@@ -7,7 +7,7 @@
 
 1. `cd` 到 step1ne-recruit 資料夾，`git pull`，確認有這些檔案：
    `consultant_ops.py`、`company_research.py`、`company_jobs_104.py`、`hiring_leads_scan.py`、`mail_outbox_send.py`、`prompts/企業開發前深度研究指令_V1.0.md`。
-2. 確認 `~/.config/workflow-os/recruit.env` 有 `RECRUIT_ADMIN_TOKEN`（後台 API 金鑰）。**沒有的話停下來，請 Phoebe 找 Jacky 要，不要自己找。**
+2. 確認 `~/.config/workflow-os/tokens.env` 有 `RECRUIT_ADMIN_TOKEN`（後台 API 金鑰；檔案只放這一行就好，不要放其他金鑰），以及 `step1ne-tg.env` 有 `TG_BOT_TOKEN`（貼確認卡用）。**沒有的話停下來，請 Phoebe 找 Jacky 要，不要自己找。**
 3. 確認 TG 身分：Phoebe 的 TG 帳號是 `behe10`，系統已登記為顧問「Phoebe」，核准權跟 Jacky 一樣（BD_APPROVERS）。
    用顧問助理（TG「Step1ne AI 顧問室」）下指令時，環境變數 `COPS_TG_ID`、`COPS_CHAT`、`COPS_TG_USERNAME=behe10` 要帶對。
 4. 試一次「自由信件」確認卡（寄給她自己的信箱，不會寄給任何客戶或人選）：
