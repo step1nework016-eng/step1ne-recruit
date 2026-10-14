@@ -4269,11 +4269,16 @@ async function ingestMailboxMessage(env, b) {
       .bind(cbm.reply_at && already ? cbm.reply_at : now, body || null, cbm.id).run().catch(() => {});
     const cv = await saveAtt(cbm.application_id);
     const pcQueued = cv.length ? await refreshPrecallAfterResume(env, cbm.application_id) : false;
+    // 2026-10-14 金玉霜事故：她回「下午3點有會議，挪到1:30呢？」，這條路只更新 call_booking_mails、沒寫進人選卡片，
+    // TG 也只是普通一則，顧問沒看到、照原時間排。→ 回信一律也寫進人選卡片的「來信」，並把「對方可能改時間」標出來。
+    await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+      .bind(uid(), cbm.application_id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, 'official@ 信箱').run().catch(() => {});
     await mark('call_booking', cbm.application_id);
     if (already && !cv.length) return { ok: true, matched: 'call_booking', notified: false };
+    const timeChange = /挪|改到|改成|調整|換|不方便|沒辦法|無法|取消|延|提前|可以嗎|好嗎|\?|？/.test(body.split(/\n>|於 .{0,40}寫道/)[0] || '');
     const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner || '（還沒指派顧問）');
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
-    await notify(env, `📞 人選回信（official@ 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
+    await notify(env, `${timeChange ? '🚨⚠️ 對方可能改了時間，先回信確認再打電話！\n' : ''}📞 人選回信（official@ 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
       + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片${pcQueued ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(cbm.application_id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'call_booking', notified: true };
