@@ -90,6 +90,13 @@ def build_spec(job, saved_spec):
     """
     spec = dict(saved_spec or {})
     spec['slug'] = job['slug']
+    # 2026-10-14 Jacky：顧問可以把某個區塊設成「官網不顯示」（spec['hidden'] 存區塊代號）。
+    # 只清空頁面要用的文案區塊；薪資／職稱不在這裡處理（薪資會同步寫回 jobs 表，不能清掉）。
+    for _k in (spec.get('hidden') or []):
+        if _k in ('duties', 'must', 'plus', 'why', 'benefits', 'faq', 'spec'):
+            spec[_k] = []
+        elif _k in ('intro', 'subtitle'):
+            spec[_k] = ''
     title = spec.get('title') or job.get('title') or job['slug']
     spec['title'] = title
     if not spec.get('page_title'):
