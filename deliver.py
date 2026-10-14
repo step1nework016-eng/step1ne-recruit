@@ -1262,6 +1262,15 @@ def build_consultant_html(data, meta):
 
 # ─────────────────────────────────────────────────────────────
 
+def _anon_trim(t):
+    """匿名履歷的一句話總結只留優點：「；惟／，但…」之後的缺點、待確認、待遇落差一律截掉。"""
+    t = str(t or '')
+    m = re.search(r'[；;，,。]\s*(惟|但|然而|不過|唯)', t)
+    if m:
+        t = t[:m.start()].rstrip('；;，, ') + '。'
+    return t
+
+
 def build_client_html_v2(data, meta, show=None):
     """2026-09-29 Jacky 新版客戶履歷（照他給的「江逸泓_人選推薦」PDF）。
 
@@ -1298,7 +1307,8 @@ def build_client_html_v2(data, meta, show=None):
         srcs.append('顧問電洽摘要')
     if meta.get('disc'):
         srcs.append('工作風格測驗')
-    row('來源', e(srcs[0] + '／' + '＋'.join(srcs[1:]) if len(srcs) > 1 else srcs[0]))
+    if not anonymous:   # 2026-10-14 匿名履歷照 A-01／C-03 範本：不放「來源」列
+        row('來源', e(srcs[0] + '／' + '＋'.join(srcs[1:]) if len(srcs) > 1 else srcs[0]))
 
     # 工作經歷：由舊到新（模型給的順序不一定，靠起始年份排）
     def _start(w):
@@ -1325,6 +1335,8 @@ def build_client_html_v2(data, meta, show=None):
     qa = [(txt(x.get('q')), txt(x.get('a'))) for x in (data.get('qa') or []) if isinstance(x, dict)]
     qa = [(q, a) for q, a in qa if q and a]
     qa_html = ''.join(f'<div class="qa"><div class="q"><b>Q｜</b>{e(q)}</div><div>A：{e(a)}</div></div>' for q, a in qa)
+    if anonymous:   # 匿名履歷不放面談／電洽逐項查證（內部對話紀錄）
+        qa_html = ''
     qa_title = '電洽逐項查證（顧問詢問內容與人選回覆）' if (meta.get('call_summary_client') or not meta.get('has_real_interview')) else '面談逐項查證（詢問內容與人選回覆）'
 
     # 2026-10-05 修：這裡原本每一條都寫死綠色 ✓——周亦宣客戶版「10年以上」明明寫了「未達10年」、
@@ -1343,9 +1355,12 @@ def build_client_html_v2(data, meta, show=None):
             return '<span class="no">✗ 不符</span>'
         return f'<span class="warn">! {e(v if v != "待確認" else "待確認")}</span>'
     cond = ''.join(f'<li>{e(txt(x.get("requirement")))}　{_cond_mark(x)} {e(txt(x.get("evidence")))}</li>'
-                   for x in (data.get('condition_check') or []) if isinstance(x, dict) and txt(x.get('requirement')))
+                   for x in (data.get('condition_check') or []) if isinstance(x, dict) and txt(x.get('requirement'))
+                   and not (anonymous and '✓' not in _cond_mark(x)))   # 匿名履歷只列「✓ 符合」，不列待確認／不符
     pros = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('recommend_points') or []) if txt(x))
     gaps = ''.join(f'<li>{e(txt(x))}</li>' for x in (data.get('gaps') or []) if txt(x))
+    if anonymous:   # 匿名履歷不放「缺項」（會把人選弱項給還沒簽約的客戶看）
+        gaps = ''
 
     if data.get('axis_notes') and not (data.get('observations') or {}).get('axis_notes'):
         data = dict(data, observations=dict(data.get('observations') or {}, axis_notes=data['axis_notes']))
@@ -1364,6 +1379,8 @@ def build_client_html_v2(data, meta, show=None):
         return p0
     spec_rows = [(l, r, _pos_from_note(l, r, c, p), re.sub(r'^[^：:]{2,20}↔[^：:]{2,20}[：:]\s*', '', str(c or '')) or None)
                  for l, r, p, c in spec_rows]
+    if anonymous:   # 匿名履歷範本只有三軸；第四軸（條件導向↔認同導向）會寫到待遇態度，不放
+        spec_rows = [r for r in spec_rows if '條件導向' not in str(r[0])]
     spec_html = ''.join(
         f'<div class="axis"><span class="l">{e(l)}</span><span class="bar"><span class="dot" style="left:{p}%"></span></span><span class="r">{e(r)}</span></div>'
         + (f'<p class="axis-note">{e(txt(c))}</p>' if c else '')
@@ -1371,6 +1388,8 @@ def build_client_html_v2(data, meta, show=None):
 
     flags = [txt(x) for x in (data.get('notes_to_client') or []) if txt(x)]
     alt = txt(data.get('alt_suggestion'))
+    if anonymous:
+        flags, alt = [], ''
     flags_html = ''.join(f'<p>{i + 1}. {e(x)}</p>' for i, x in enumerate(flags)) + (f'<p>{e(alt)}</p>' if alt else '')
     zh_n = '一二三四五六七八九十'
 
@@ -1382,6 +1401,8 @@ def build_client_html_v2(data, meta, show=None):
     brand['STAMP_TEXT'] = ('本推薦報告內容整理自候選人' + '、'.join(['履歷'] + srcs[1:]).replace('顧問電洽摘要', '顧問電洽紀錄')
                            + '，正式聘用前建議另行安排面試與資歷查證。')
     tpl = open(os.path.join(TPL_DIR, 'client_v2.html'), encoding='utf-8').read()
+    if anonymous:   # 匿名履歷不放期望待遇（範本只有 可到職／地點／目前狀態）
+        tpl = tpl.replace('<th style="width:30%">期望待遇</th>', '').replace('<td>{{EXPECTED}}</td>', '')
     return _render(tpl, {
         'NAME': e(name), 'JOB': job, 'INTRO': e(txt(data.get('intro') or data.get('overview'))),
         'EXPECTED': e(txt(sr.get('expected_salary')) or '未提及'),
@@ -1390,7 +1411,7 @@ def build_client_html_v2(data, meta, show=None):
         'STATUS': e(txt(sr.get('status')) or '未提及'),
         'BASICS_ROWS': ''.join(rows), 'HISTORY': ''.join(hist), 'GAP': gap_html,
         'QA_TITLE': qa_title, 'QA': qa_html, 'COND': cond, 'PROS': pros, 'GAPS': gaps,
-        'SPECTRUM': spec_html, 'SUMMARY': e(txt(data.get('one_line_summary'))),
+        'SPECTRUM': spec_html, 'SUMMARY': e(_anon_trim(txt(data.get('one_line_summary'))) if anonymous else txt(data.get('one_line_summary'))),
         'FLAGS_COUNT': zh_n[len(flags) - 1] if 0 < len(flags) <= 10 else str(len(flags)),
         'FLAGS': flags_html, **brand,
     }, {'history': bool(hist), 'qa': bool(qa_html), 'cond': bool(cond), 'pros': bool(pros), 'gaps': bool(gaps),
