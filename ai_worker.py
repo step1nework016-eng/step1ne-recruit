@@ -1661,6 +1661,10 @@ def process(job):
     if kind == 'job_read':
         import job_read
         return job_read.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-10-14：認識公司「請 AI 研究這家公司」→ 104 職缺＋公開資料研究，整條在 company_research.py 自己跑完
+    if kind == 'company_research':
+        import company_research
+        return company_research.run(json.loads(job.get('payload_json') or '{}'))
     if kind not in HANDLERS:
         raise RuntimeError(f'未知的工作類型：{kind}')
     builder, want_json = HANDLERS[kind]
