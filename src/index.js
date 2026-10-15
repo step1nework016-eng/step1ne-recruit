@@ -5067,10 +5067,16 @@ async function handleSocAction(env, cq) {
               });
               return parts;
             };
+            // 2026-10-15 加（Jacky：後台按發文還是不會串文）：後台選「純職缺／對話」等公式產的稿
+            // 不會寫分串標記，350～400 字照樣整篇一則發出去。規則是超過 300 字就要串文，
+            // 所以沒標記又超過 300 字時，照空白行分段自動切，每則 250 字內、段落不拆開。
             const markedParts = splitByThreadMarkers(row.draft);
+            const plain = String(row.draft || '').trim();
             const chunks = markedParts
               ? markedParts.flatMap((p) => splitForThreads(p))
-              : splitForThreads(row.draft);
+              : plain.length > 300
+                ? splitForThreads(plain, 250)
+                : splitForThreads(plain);
             let firstId = null, lastId = null;
             for (const chunk of chunks) {
               lastId = await postOne(chunk, lastId);
