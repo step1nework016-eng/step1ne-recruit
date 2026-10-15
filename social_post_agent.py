@@ -564,7 +564,9 @@ def mask_end_client(text):
     text = _OTHER_RE.sub('知名大廠', text)
     text = re.sub(r'(半導體大廠|知名大廠)\s*(?=半導體)', '', text)
     text = re.sub(r'(半導體大廠)(\s*[、／/]\s*半導體大廠)+', r'\1', text)
-    return re.sub(r'\bFab\s*\d+[A-Za-z]?\s*', '', text)
+    text = re.sub(r'\bFab\s*\d+[A-Za-z]?\s*', '', text)
+    # 2026-10-15 Jacky：薪資寫了範圍就不加「起」（40,833～50,167元起 → 40,833～50,167元）
+    return re.sub(r'(\d[\d,.]*\s*[Kk萬元]?\s*[～~\-–至到]\s*\d[\d,.]*\s*(?:[Kk]|萬|元)?)\s*起', r'\1', text)
 
 
 def format_job_requirement(job):

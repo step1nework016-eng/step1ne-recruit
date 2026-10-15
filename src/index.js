@@ -1087,7 +1087,9 @@ function maskEndClient(text) {
     .replace(OTHER_RE, '知名大廠')
     .replace(/(半導體大廠|知名大廠)\s*(?=半導體)/g, '')
     .replace(/(半導體大廠)(\s*[、／/]\s*半導體大廠)+/g, '$1')
-    .replace(/\bFab\s*\d+[A-Za-z]?\s*/g, '');
+    .replace(/\bFab\s*\d+[A-Za-z]?\s*/g, '')
+    // 薪資寫了範圍就不加「起」（Jacky 2026-10-15）
+    .replace(/(\d[\d,.]*\s*[Kk萬元]?\s*[～~\-–至到]\s*\d[\d,.]*\s*(?:[Kk]|萬|元)?)\s*起/g, '$1');
 }
 
 // 2026-10-15 Jacky：顧問貼自己發的 Threads 網址，不要再問職缺文／話題文／寫法，
