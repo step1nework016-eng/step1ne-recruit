@@ -1405,10 +1405,10 @@ def build_client_html_v2(data, meta, show=None):
         tpl = tpl.replace('<th style="width:30%">期望待遇</th>', '').replace('<td>{{EXPECTED}}</td>', '')
     return _render(tpl, {
         'NAME': e(name), 'JOB': job, 'INTRO': e(txt(data.get('intro') or data.get('overview'))),
-        'EXPECTED': e(txt(sr.get('expected_salary')) or '未提及'),
-        'AVAILABLE': e(txt(sr.get('available')) or '未提及'),
-        'LOCATION': e(txt(sr.get('location')) or '未提及'),
-        'STATUS': e(txt(sr.get('status')) or '未提及'),
+        'EXPECTED': e(txt(sr.get('expected_salary')) or '依後續面談可談'),
+        'AVAILABLE': e(txt(sr.get('available')) or '後續如有錄取機會可安排'),
+        'LOCATION': e(txt(sr.get('location')) or '依後續面談確認'),
+        'STATUS': e(txt(sr.get('status')) or '依後續面談說明'),
         'BASICS_ROWS': ''.join(rows), 'HISTORY': ''.join(hist), 'GAP': gap_html,
         'QA_TITLE': qa_title, 'QA': qa_html, 'COND': cond, 'PROS': pros, 'GAPS': gaps,
         'SPECTRUM': spec_html, 'SUMMARY': e(_anon_trim(txt(data.get('one_line_summary'))) if anonymous else txt(data.get('one_line_summary'))),
