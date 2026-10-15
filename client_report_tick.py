@@ -309,6 +309,20 @@ def build_draft_text(name, synth):
         lines += [synth['_anon_warn'], '']
     if synth.get('_worker_id'):
         lines.append(f'（由「{synth["_worker_id"]}」這台裝置處理）')
+    # 2026-10-15 Jacky：推薦履歷一律要有年齡、性別、中文姓名、期望薪資（美德人資每次都會要），
+    # 缺哪個就在草稿最上面講白，讓顧問送件前先問人選，不要等客戶回信來要。匿名履歷不檢查。
+    if not synth.get('_anon_warn') and not synth.get('anon_code'):
+        import re as _re
+        b = synth.get('basics') or {}
+        sr = synth.get('summary_row') or {}
+        empty = lambda v: (not v) or any(k in str(v) for k in ('未提及', '未問到', '未提供', '不詳', '待確認', '依後續面談'))
+        miss = []
+        if not _re.search(r'[\u4e00-\u9fff]', name or ''): miss.append('中文姓名')
+        if empty(b.get('age')): miss.append('年齡')
+        if empty(b.get('gender')): miss.append('性別')
+        if empty(sr.get('expected_salary')): miss.append('期望薪資')
+        if miss:
+            lines += [f'⚠️ 送件前還缺：{"、".join(miss)}（客戶人資會要，美德每次都問）→ 先問人選再送', '']
     if synth.get('one_liner'):
         lines.append(f'【一句話定位】{synth["one_liner"]}')
     fc = synth.get('for_client') or {}
