@@ -1077,6 +1077,15 @@ async function ncClearSession(env, chatId, userId) {
 // 直接記一筆到這位顧問名下，之後成效回填照常追蹤數據。同一個網址貼兩次不重複記。
 async function spQuickImport(env, chatId, threadId, userId, url, acc) {
   await ncClearSession(env, chatId, userId);
+  // 短網址（/share/xxx）展開常失敗，存短網址成效抓不到：改用該帳號最新一篇的正式網址
+  if (/\/share\//.test(url)) {
+    try {
+      const a = await env.DB.prepare(`SELECT access_token, platform_user_id FROM social_accounts WHERE id=?`).bind(acc.id).first();
+      const r = await fetch(`https://graph.threads.net/v1.0/${a.platform_user_id}/threads?fields=permalink&limit=1&access_token=${a.access_token}`);
+      const j = await r.json();
+      if (j && j.data && j.data[0] && j.data[0].permalink) url = j.data[0].permalink.split('?')[0];
+    } catch {}
+  }
   const dup = await env.DB.prepare(`SELECT id FROM social_post_queue WHERE url=? LIMIT 1`).bind(url).first().catch(() => null);
   if (dup) { await ncSend(env, chatId, threadId, `這篇已經記過了（${acc.label}），會繼續追蹤數據。`); return; }
   await env.DB.prepare(
