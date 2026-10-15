@@ -972,6 +972,31 @@ WRAP_INSTRUCTION = (
 )
 
 
+def ensure_thread_markers(post, limit=300, chunk=250):
+    """2026-10-15 Jacky：每一種寫法（原始格式、純CTA、對話討論）都要串文。
+    AI 常常沒照規則標分串，超過 300 字又沒標記時，照空白行分段自動補
+    「【串文第 N 則】」，每則 250 字內、段落不拆開。審核卡片看得到切點，
+    發文程式也照這個標記拆。"""
+    if not post or len(post) <= limit or re.search(r'^\s*【串文第\s*\d+\s*則】\s*$', post, re.M):
+        return post
+    paras = re.split(r'\n\s*\n', post.strip())
+    parts, cur = [], ''
+    for para in paras:
+        cand = cur + '\n\n' + para if cur else para
+        if len(cand) <= chunk or not cur:
+            cur = cand
+        else:
+            parts.append(cur); cur = para
+    if cur:
+        parts.append(cur)
+    if len(parts) < 2:
+        return post
+    out = parts[0]
+    for i, part in enumerate(parts[1:], 2):
+        out += f'\n\n【串文第 {i} 則】\n\n' + part
+    return out
+
+
 def strip_markdown(text):
     """防呆用：就算模型沒完全照上面的要求，還是把常見 Markdown 符號濾掉，
     不要讓 # ** ` 這些符號原樣出現在真的貼出去的內容裡。"""
@@ -1618,6 +1643,7 @@ def process_topic(queue_row, topic):
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # cta_type 同上（見 _cta_kind 的說明）。話題文走的是
         # line_community_link_suffix，一樣吃 cta_template。
+        post = ensure_thread_markers(post)
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_mission={q(mission_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
@@ -1777,6 +1803,7 @@ def process_job(queue_row, job, repost=False):
         # 但這個欄位 381 筆全是空的——沒有它，改了 CTA 也無從驗證有沒有變好。
         # 'own' = 用顧問自己的句子，'default' = 用共用的那句，'formula' = 走
         # 寫作公式自帶的 CTA 規則。兩週後就能比出哪一種有效。
+        post = ensure_thread_markers(post)
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_formula={q(formula_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q('social_only' if social_only else _cta_kind(account_id, style_row))} WHERE id={qid}")
