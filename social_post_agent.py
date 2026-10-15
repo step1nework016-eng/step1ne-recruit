@@ -539,7 +539,32 @@ def strip_address_numbers(text):
     的貼文文字（輸出端再擋一次，防模型從別的地方撿到或憑常識腦補出完整地址）。"""
     if not text:
         return text
-    return _ADDR_NUM_RE.sub(r'\1', text)
+    return mask_end_client(_ADDR_NUM_RE.sub(r'\1', text))
+
+
+# 2026-10-15 Jacky：社群發文不要出現台積電、美光這類終端大廠名（職缺資料寫了，
+# AI 會照抄，Phoebe 898 就把「台積電 Fab8」發出去）。輸出端一律換成泛稱，
+# 廠區編號（Fab8、八廠）一併拿掉。名單要加就加在下面兩組。
+_SEMI_BRANDS = [r'台積電', r'台灣積體電路(?:製造)?(?:股份有限公司)?', r'TSMC',
+                r'台灣美光', r'美光(?:科技)?', r'Micron', r'聯電', r'聯華電子', r'UMC',
+                r'力積電', r'PSMC', r'世界先進', r'日月光', r'ASE', r'南亞科(?:技)?', r'華邦(?:電)?',
+                r'英特爾', r'Intel', r'三星', r'Samsung', r'聯發科', r'MediaTek', r'艾司摩爾', r'ASML',
+                r'應用材料', r'Applied Materials', r'科林研發', r'Lam Research', r'東京威力', r'旺宏', r'矽品', r'京元電']
+_OTHER_BRANDS = [r'鴻海', r'富士康', r'Foxconn', r'輝達', r'NVIDIA', r'Nvidia', r'蘋果', r'Apple',
+                 r'廣達', r'緯創', r'和碩', r'仁寶', r'台達電']
+_wb = lambda xs: [rf'(?<![A-Za-z]){x}(?![A-Za-z])' if re.match(r'[A-Za-z]', x) else x for x in xs]  # 英文名要整個字才算，避免 CASE、BASE 被誤換
+_SEMI_RE = re.compile(r'(?:' + '|'.join(_wb(_SEMI_BRANDS)) + r')\s*(?:Fab\s*\d+[A-Za-z]?|[一二三四五六七八九十0-9]+\s*廠)?', re.I)
+_OTHER_RE = re.compile(r'(?:' + '|'.join(_wb(_OTHER_BRANDS)) + r')', re.I)
+
+
+def mask_end_client(text):
+    if not text:
+        return text
+    text = _SEMI_RE.sub('半導體大廠', text)
+    text = _OTHER_RE.sub('知名大廠', text)
+    text = re.sub(r'(半導體大廠|知名大廠)\s*(?=半導體)', '', text)
+    text = re.sub(r'(半導體大廠)(\s*[、／/]\s*半導體大廠)+', r'\1', text)
+    return re.sub(r'\bFab\s*\d+[A-Za-z]?\s*', '', text)
 
 
 def format_job_requirement(job):

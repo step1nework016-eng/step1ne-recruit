@@ -1073,6 +1073,23 @@ async function ncClearSession(env, chatId, userId) {
 //   時事話題文／AI阿財：哪一種 → 選話題（清單＋自己打字）→ 存
 // Jacky：「希望能依照一鍵發文的邏輯去問」。兩邊順序一樣，顧問不用記兩套。
 // 寫入集中在這一支，按鈕流程跟打字流程都呼叫它，不要各寫一份 INSERT。
+// 2026-10-15 Jacky：社群發文不要出現台積電、美光這類終端大廠名。產稿端（social_post_agent.py
+// mask_end_client）已經換掉，這裡是發文前最後一道，顧問自己改稿加回去也擋得到。名單兩邊要一起改。
+const SEMI_BRANDS = ['台積電','台灣積體電路(?:製造)?(?:股份有限公司)?','TSMC','台灣美光','美光(?:科技)?','Micron','聯電','聯華電子','UMC','力積電','PSMC','世界先進','日月光','ASE','南亞科(?:技)?','華邦(?:電)?','英特爾','Intel','三星','Samsung','聯發科','MediaTek','艾司摩爾','ASML','應用材料','Applied Materials','科林研發','Lam Research','東京威力','旺宏','矽品','京元電'];
+const OTHER_BRANDS = ['鴻海','富士康','Foxconn','輝達','NVIDIA','蘋果','Apple','廣達','緯創','和碩','仁寶','台達電'];
+const wbBrand = (xs) => xs.map((x) => (/^[A-Za-z]/.test(x) ? `(?<![A-Za-z])${x}(?![A-Za-z])` : x));
+const SEMI_RE = new RegExp(`(?:${wbBrand(SEMI_BRANDS).join('|')})\\s*(?:Fab\\s*\\d+[A-Za-z]?|[一二三四五六七八九十0-9]+\\s*廠)?`, 'gi');
+const OTHER_RE = new RegExp(`(?:${wbBrand(OTHER_BRANDS).join('|')})`, 'gi');
+function maskEndClient(text) {
+  if (!text) return text;
+  return String(text)
+    .replace(SEMI_RE, '半導體大廠')
+    .replace(OTHER_RE, '知名大廠')
+    .replace(/(半導體大廠|知名大廠)\s*(?=半導體)/g, '')
+    .replace(/(半導體大廠)(\s*[、／/]\s*半導體大廠)+/g, '$1')
+    .replace(/\bFab\s*\d+[A-Za-z]?\s*/g, '');
+}
+
 // 2026-10-15 Jacky：顧問貼自己發的 Threads 網址，不要再問職缺文／話題文／寫法，
 // 直接記一筆到這位顧問名下，之後成效回填照常追蹤數據。同一個網址貼兩次不重複記。
 async function spQuickImport(env, chatId, threadId, userId, url, acc) {
@@ -4927,6 +4944,7 @@ async function handleSocAction(env, cq) {
               const goLink = `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`;
               // 2026-09-24（Jacky）：話題文不要帶連結，只有職缺文接應徵窗口
               // 2026-10-07：未簽約客戶職缺沒有職缺頁／應徵連結，草稿結尾已經是顧問 LINE 或私訊，不再接 /go/
+              row.draft = maskEndClient(row.draft);
               const body = (row.topic_id || row.job_status === 'social_only') ? row.draft : `${row.draft}\n\n▪️ 應徵了解窗口：\n${goLink}`;
               const pr = await fetch('https://api.linkedin.com/v2/ugcPosts', {
                 method: 'POST',
@@ -5092,6 +5110,7 @@ async function handleSocAction(env, cq) {
             // 2026-10-15 加（Jacky：後台按發文還是不會串文）：後台選「純職缺／對話」等公式產的稿
             // 不會寫分串標記，350～400 字照樣整篇一則發出去。規則是超過 300 字就要串文，
             // 所以沒標記又超過 300 字時，照空白行分段自動切，每則 250 字內、段落不拆開。
+            row.draft = maskEndClient(row.draft);
             const markedParts = splitByThreadMarkers(row.draft);
             const plain = String(row.draft || '').trim();
             const chunks = markedParts
