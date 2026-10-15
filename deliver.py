@@ -1315,9 +1315,16 @@ def build_client_html_v2(data, meta, show=None):
         m = re.search(r'(19|20)\d{2}', str(w.get('duration') or ''))
         return m.group(0) if m else '9999'
     wh = [w for w in (data.get('work_history') or []) if w.get('nature') != '工讀']
-    wh = sorted(wh, key=_start)
+    # 2026-10-15 Jacky 範本（A-01／C-03）：新到舊；沒有年份的早期資歷放最後，標「更早經歷」
+    dated = sorted([w for w in wh if _start(w) != '9999'], key=_start, reverse=True)
+    undated = [w for w in wh if _start(w) == '9999']
+    wh = dated + undated
     hist = []
+    _first_undated = True
     for w in wh:
+        if _start(w) == '9999' and _first_undated:
+            hist.append('<div class="wh"><div class="dur" style="margin-top:6px">更早經歷</div></div>')
+            _first_undated = False
         dur = txt(w.get('duration'))
         m = re.search(r'[（(]([^）)]*年[^）)]*)[）)]', dur or '')
         head = f'{m.group(1)}（{re.sub(r"[（(].*?[）)]", "", dur).strip()}）' if m else dur
