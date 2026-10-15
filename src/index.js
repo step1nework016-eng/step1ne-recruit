@@ -5025,7 +5025,28 @@ async function handleSocAction(env, cq) {
             // 手機可讀性規則：超過 15～20 行就拆串），照標記切，每串一則、串在第一則底下。
             // 標記必須完整（1/N、2/N…N/N 依序、N≥2），不完整就當普通草稿、照舊只按字數切。
             // 每一段仍然再過一次 splitForThreads，單段超過 480 字一樣會被安全切開。
+            // 2026-10-15 加：10/14 起產稿規則改成第 1 則不標、後面每則單獨一行寫「【串文第 N 則】」，
+            // 但這裡只認 1/2 格式，結果整篇（含標記字樣）被當一則發出去（Jacky 截圖）。
+            // 認得到這種標記就照標記切：標記前＝第 1 則，標記行本身不發出去。
+            const splitByChineseMarkers = (text) => {
+              const lines = String(text).split('\n');
+              const marks = [];
+              lines.forEach((l, i) => {
+                const m = l.trim().match(/^[【\[]?\s*串文\s*第\s*(\d{1,2})\s*則\s*[】\]]?$/);
+                if (m) marks.push({ i, k: Number(m[1]) });
+              });
+              if (!marks.length) return null;
+              const bounds = [-1, ...marks.map((m) => m.i), lines.length];
+              const parts = [];
+              for (let b = 0; b < bounds.length - 1; b++) {
+                const part = lines.slice(bounds[b] + 1, bounds[b + 1]).join('\n').trim();
+                if (part) parts.push(part);
+              }
+              return parts.length >= 2 ? parts : null;
+            };
             const splitByThreadMarkers = (text) => {
+              const zh = splitByChineseMarkers(text);
+              if (zh) return zh;
               const lines = String(text).split('\n');
               const marks = [];
               lines.forEach((l, i) => {
