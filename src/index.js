@@ -1073,6 +1073,19 @@ async function ncClearSession(env, chatId, userId) {
 //   時事話題文／AI阿財：哪一種 → 選話題（清單＋自己打字）→ 存
 // Jacky：「希望能依照一鍵發文的邏輯去問」。兩邊順序一樣，顧問不用記兩套。
 // 寫入集中在這一支，按鈕流程跟打字流程都呼叫它，不要各寫一份 INSERT。
+// 2026-10-15 Jacky：顧問貼自己發的 Threads 網址，不要再問職缺文／話題文／寫法，
+// 直接記一筆到這位顧問名下，之後成效回填照常追蹤數據。同一個網址貼兩次不重複記。
+async function spQuickImport(env, chatId, threadId, userId, url, acc) {
+  await ncClearSession(env, chatId, userId);
+  const dup = await env.DB.prepare(`SELECT id FROM social_post_queue WHERE url=? LIMIT 1`).bind(url).first().catch(() => null);
+  if (dup) { await ncSend(env, chatId, threadId, `這篇已經記過了（${acc.label}），會繼續追蹤數據。`); return; }
+  await env.DB.prepare(
+    `INSERT INTO social_post_queue (job_slug, account_id, status, requested_at, posted_at, url, content_formula)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind('✍️ 顧問自行發文', acc.id, 'posted', nowTaipei(), nowTaipei(), url, 'default').run();
+  await ncSend(env, chatId, threadId, `✅ 已記錄（${acc.label}），之後會自動追蹤這篇的數據。`);
+}
+
 async function spImportFinish(env, chatId, threadId, userId, data, row) {
   await env.DB.prepare(
     `INSERT INTO social_post_queue
@@ -7095,6 +7108,8 @@ export default {
               return new Response('ok');
             }
             if (account) {
+              await spQuickImport(env, spRow.chat.id, spThreadId, spRow.from.id, resolvedUrl0, account);
+              return new Response('ok');
               const resolvedUrl = resolvedUrl0;
               const replacedNote = spSess ? '（換成這則，剛剛那則不處理了）\n' : '';
               await ncSetSession(env, spRow.chat.id, spRow.from.id, 'sp_choose_type',
@@ -7346,6 +7361,9 @@ export default {
             if (sess.data.handle && !acc.account_username) {
               await env.DB.prepare(`UPDATE social_accounts SET account_username=? WHERE id=? AND COALESCE(account_username,'')=''`).bind(sess.data.handle, acc.id).run().catch(() => {});
             }
+            await spAns(`帳號：${acc.label}`);
+            await spQuickImport(env, spChatId, spThreadId2, spCq.from.id, sess.data.url, acc);
+            return new Response('ok');
             await ncSetSession(env, spChatId, spCq.from.id, 'sp_choose_type', { url: sess.data.url, accountId: acc.id, accountLabel: acc.label });
             await spAns(`帳號：${acc.label}`);
             await ncSend(env, spChatId, spThreadId2, `這篇是哪一種？（帳號：${acc.label}）`, {
