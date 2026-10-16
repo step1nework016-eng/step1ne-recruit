@@ -112,6 +112,13 @@ def process_one(req_row):
                  f"done_at=datetime('now','+8 hours') WHERE id={D.q(req_id)}")
             return
 
+    # 2026-10-16 Jacky：匿名履歷優點放大、缺點只留在原本資料位置——程式再保險一次：清掉獨立的缺點區塊、拿掉「私立」字眼
+    if req_row.get('anon_code') and isinstance(data, dict):
+        data['gaps'] = []
+        if isinstance(data.get('for_client'), dict):
+            data['for_client']['job_fit_cons'] = []
+        data = json.loads(json.dumps(data, ensure_ascii=False).replace('私立', ''))
+
     # ⚠️ 2026-09-09 加：周海暉那份「一句話總結」空白事故——AI 有時會把
     # trait_one_liner 寫在最外層，沒照 schema 放進 for_client 底下，
     # deliver.py 只認 for_client.trait_one_liner，抓不到就整格空白。

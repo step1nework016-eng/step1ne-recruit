@@ -886,6 +886,11 @@ Jacky 針對上一版提出的修改意見：
 - 不寫電話、Email、LINE、地址門牌、個人網站、LinkedIn。
 - summary_row.expected_salary 一律填「面議」，任何地方都不寫人選的期望薪資或過去薪資數字。
 - 現職如果還在職，現職公司也要匿名（寫成「目前任職於○○產業公司」）。
+- 2026-10-16 Jacky（匿名履歷定案寫法）：**優點可以放大，缺點保留在原本資料位置即可**。
+  intro、one_line_summary、recommend_points、for_client.reasons／job_fit_pros 只寫亮點，把最強、最貼近職缺的經歷放最前面寫具體；
+  不寫缺點、落差、「建議進一步確認」；gaps 與 for_client.job_fit_cons 一律輸出空陣列；
+  學校照實寫在 education_lines，但不加「私立」「非國立」這類字眼；沒符合的條件只在 condition_check 那一格照實寫證據。
+- 不寫可推出前公司是哪家的細節（地名＋標案名、獨家產品、專案名稱），也不寫前雇主的內控爭議、被要求改帳這類負面內情；離職原因用中性說法。
 """
 
     return f"""你是獵頭顧問的助理，要把一位候選人的履歷、對話紀錄（可能是阿財AI面談逐字稿、
