@@ -1024,6 +1024,28 @@ def ensure_thread_markers(post, limit=300, chunk=250):
     return out
 
 
+def link_out_of_first(post):
+    """2026-10-16 Jacky：連結（含 LINE）不能在第一則，要在串文裡。
+    第一則裡有網址的段落（例如結尾「👉 加 LINE 跟我聊聊：網址」）搬成最後一則串文；
+    原本就在後面幾則的不動。發文程式那邊也有同一道防線（step1ne-recruit src/index.js）。"""
+    if not post or not re.search(r'https?://', post):
+        return post
+    mark = re.compile(r'^\s*【串文第\s*(\d+)\s*則】\s*$', re.M)
+    m = mark.search(post)
+    first, rest = (post[:m.start()], post[m.start():]) if m else (post, '')
+    paras = re.split(r'\n\s*\n', first.strip())
+    keep = [x for x in paras if not re.search(r'https?://', x)]
+    moved = [x for x in paras if re.search(r'https?://', x)]
+    if not keep or not moved:
+        return post
+    nums = [int(n) for n in mark.findall(post)]
+    nxt = (max(nums) if nums else 1) + 1
+    out = '\n\n'.join(keep)
+    if rest:
+        out += '\n\n' + rest.strip()
+    return out + f'\n\n【串文第 {nxt} 則】\n\n' + '\n\n'.join(moved)
+
+
 def strip_markdown(text):
     """防呆用：就算模型沒完全照上面的要求，還是把常見 Markdown 符號濾掉，
     不要讓 # ** ` 這些符號原樣出現在真的貼出去的內容裡。"""
@@ -1671,6 +1693,7 @@ def process_topic(queue_row, topic):
         # cta_type 同上（見 _cta_kind 的說明）。話題文走的是
         # line_community_link_suffix，一樣吃 cta_template。
         post = ensure_thread_markers(post)
+        post = link_out_of_first(post)
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_mission={q(mission_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q(_cta_kind(account_id, style_row))} WHERE id={qid}")
@@ -1831,6 +1854,7 @@ def process_job(queue_row, job, repost=False):
         # 'own' = 用顧問自己的句子，'default' = 用共用的那句，'formula' = 走
         # 寫作公式自帶的 CTA 規則。兩週後就能比出哪一種有效。
         post = ensure_thread_markers(post)
+        post = link_out_of_first(post)
         d1(f"UPDATE social_post_queue SET draft={q(post)}, status='drafted', "
            f"content_formula={q(formula_tag)}, content_length={q(length_tag)}, "
            f"cta_type={q('social_only' if social_only else _cta_kind(account_id, style_row))} WHERE id={qid}")
