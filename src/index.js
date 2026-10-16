@@ -1473,6 +1473,21 @@ async function readProgressToken(env, k) {
 
 // 用 LIFF 網址當外殼：一般網址在部分手機會被丟到外部瀏覽器；LIFF 一定在 LINE 裡開。
 // 認人不靠 LIFF 登入，靠網址裡的通行證 k（官方帳號認得的 ID）。
+// 2026-10-16：查進度頁用 LINE 登入（LIFF）拿到的 ID 跟官方帳號那組不同。綁定時把兩組對起來存在
+// line_bindings.liff_user_id，之後已綁定的人點選單打開頁面就能直接看到進度，不用再經過聊天室。
+// LIFF 身分一律用 ID token 跟 LINE 驗證（不信任前端傳來的 userId）。
+async function verifyLiffIdToken(idToken) {
+  if (!idToken) return null;
+  try {
+    const r = await fetch('https://api.line.me/oauth2/v2.1/verify', { method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ id_token: idToken, client_id: '2011631457' }) });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d && d.sub ? d.sub : null;
+  } catch { return null; }
+}
+
 async function progressFormReply(env, replyToken, userId) {
   const k = await makeProgressToken(env, userId);
   return lineReplyMessages(env, replyToken, [{ type: 'template', altText: '查詢面試進度：請點連結填寫查詢表單',
@@ -3845,8 +3860,12 @@ async function handleLineEvent(env, ev) {
       }
     }
 
-    const msgs = await buildProgressMessages(env, ids);
-    return lineReplyMessages(env, replyToken, msgs);
+    // 2026-10-16 Jacky：已綁定的人不要在聊天室洗一串訊息，回一顆「查看面試進度」按鈕打開進度頁；
+    // 打開一次之後頁面就記得他，以後點選單直接顯示。
+    const kView = await makeProgressToken(env, userId);
+    return lineReplyMessages(env, replyToken, [{ type: 'template', altText: '查看面試進度',
+      template: { type: 'buttons', text: '點下面的按鈕查看最新的面試進度。打開一次之後，以後點選單「追蹤面試進度」就會直接顯示。',
+        actions: [{ type: 'uri', label: '查看面試進度', uri: 'https://liff.line.me/2011631457-WcDji8Bx?k=' + encodeURIComponent(kView) }] } }]);
   }
 
   // 三步驟驗證：姓名 → 信箱 → 手機。一步一則，不是一次打完——
@@ -5481,6 +5500,25 @@ export default {
     // 等於白開了這個網頁，Jacky 要求直接在網頁上顯示進度。跟 buildProgressMessages()
     // （LINE 對話裡查進度）共用同一個 deriveApplicationProgress()，不要另外寫一套
     // 判斷邏輯——不然候選人在網頁跟在 LINE 對話裡看到的文字之後會慢慢兜不起來。
+    if (p === '/progress-liff' && request.method === 'POST') {
+      // 頁面帶 LIFF 的 ID token（和選填的通行證 k）：有 k 就把兩組 ID 對起來；回傳這個人的綁定狀態與進度
+      let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
+      const liffSub = await verifyLiffIdToken(String(b.id_token || ''));
+      const oaUid = b.k ? await readProgressToken(env, String(b.k)) : null;
+      if (b.k && !oaUid) return json(request, { ok: false, error: 'token_expired' }, 401);
+      if (oaUid && liffSub) {
+        await env.DB.prepare(`UPDATE line_bindings SET liff_user_id=NULL WHERE liff_user_id=? AND line_user_id<>?`).bind(liffSub, oaUid).run();
+        await env.DB.prepare(`UPDATE line_bindings SET liff_user_id=? WHERE line_user_id=?`).bind(liffSub, oaUid).run();
+      }
+      const binding = oaUid
+        ? await env.DB.prepare(`SELECT application_ids FROM line_bindings WHERE line_user_id=? AND state='bound'`).bind(oaUid).first()
+        : liffSub ? await env.DB.prepare(`SELECT application_ids FROM line_bindings WHERE liff_user_id=? AND state='bound' ORDER BY bound_at DESC LIMIT 1`).bind(liffSub).first() : null;
+      if (!binding) return json(request, { ok: true, bound: false, rows: [], linked: !!(oaUid && liffSub) });
+      const rows = [];
+      for (const id of safeJsonArray(binding.application_ids)) { const row = await deriveApplicationProgress(env, id); if (row) rows.push(row); }
+      return json(request, { ok: true, bound: true, rows, linked: !!(oaUid && liffSub) });
+    }
+
     if (p === '/progress-data' && request.method === 'GET') {
       const kTok = (url.searchParams.get('k') || '').trim();
       const lineUserId = kTok ? (await readProgressToken(env, kTok) || '') : (url.searchParams.get('userId') || '').trim();
