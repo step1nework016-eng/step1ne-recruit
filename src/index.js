@@ -1484,7 +1484,7 @@ async function verifyLiffIdToken(idToken) {
       body: new URLSearchParams({ id_token: idToken, client_id: '2011631457' }) });
     if (!r.ok) return null;
     const d = await r.json();
-    return d && d.sub ? d.sub : null;
+    return d && d.sub ? d : null;
   } catch { return null; }
 }
 
@@ -5503,16 +5503,34 @@ export default {
     if (p === '/progress-liff' && request.method === 'POST') {
       // 頁面帶 LIFF 的 ID token（和選填的通行證 k）：有 k 就把兩組 ID 對起來；回傳這個人的綁定狀態與進度
       let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
-      const liffSub = await verifyLiffIdToken(String(b.id_token || ''));
+      const liffTok = await verifyLiffIdToken(String(b.id_token || ''));
+      const liffSub = liffTok ? liffTok.sub : null;
       const oaUid = b.k ? await readProgressToken(env, String(b.k)) : null;
       if (b.k && !oaUid) return json(request, { ok: false, error: 'token_expired' }, 401);
       if (oaUid && liffSub) {
         await env.DB.prepare(`UPDATE line_bindings SET liff_user_id=NULL WHERE liff_user_id=? AND line_user_id<>?`).bind(liffSub, oaUid).run();
         await env.DB.prepare(`UPDATE line_bindings SET liff_user_id=? WHERE line_user_id=?`).bind(liffSub, oaUid).run();
       }
-      const binding = oaUid
+      let binding = oaUid
         ? await env.DB.prepare(`SELECT application_ids FROM line_bindings WHERE line_user_id=? AND state='bound'`).bind(oaUid).first()
         : liffSub ? await env.DB.prepare(`SELECT application_ids FROM line_bindings WHERE liff_user_id=? AND state='bound' ORDER BY bound_at DESC LIMIT 1`).bind(liffSub).first() : null;
+      // 已綁定但還沒對過 LINE 登入身分的人（例如在聊天室綁的）：用 LINE 名稱自動對一次——
+      // 跟 10/7 auto_oa_twin 同一個判準：名稱完全一樣、而且只有一位已綁定的人對得上，並再用官方帳號即時查一次名稱確認。
+      // 對不上或同名兩位以上就不猜，照舊走聊天室拿表單。
+      if (!binding && liffSub && !oaUid && liffTok.name) {
+        const { results: same } = await env.DB.prepare(
+          `SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound' AND liff_user_id IS NULL AND display_name=? LIMIT 3`).bind(liffTok.name).all();
+        if ((same || []).length === 1) {
+          const pf = await lineBotProfile(env, same[0].line_user_id);
+          if (pf && pf.displayName === liffTok.name) {
+            const dupe = await env.DB.prepare(`SELECT COUNT(*) n FROM line_bindings WHERE state='bound' AND display_name=?`).bind(liffTok.name).first();
+            if (dupe && dupe.n === 1) {
+              await env.DB.prepare(`UPDATE line_bindings SET liff_user_id=? WHERE line_user_id=?`).bind(liffSub, same[0].line_user_id).run();
+              binding = same[0];
+            }
+          }
+        }
+      }
       if (!binding) return json(request, { ok: true, bound: false, rows: [], linked: !!(oaUid && liffSub) });
       const rows = [];
       for (const id of safeJsonArray(binding.application_ids)) { const row = await deriveApplicationProgress(env, id); if (row) rows.push(row); }
