@@ -1443,6 +1443,41 @@ async function linePushMessages(env, lineUserId, messages) {
   }
 }
 
+// ── 查進度表單通行證（2026-10-16）──
+// 查進度表單不再用 LINE 登入認人（那組 LINE 登入掛在另一個 LINE 帳號底下，認到的 ID 官方帳號推不到）。
+// 改成官方帳號在聊天室回一個帶通行證的表單連結：通行證裡是官方帳號認得的 userId，用 HMAC（兩邊共用的 PROGRESS_LINK_SECRET，值在 step1ne-line.env）簽過、72 小時有效。
+// step1ne-recruit 與 step1ne-public-worker 兩邊這段要一模一樣（一邊簽、一邊驗）。
+function _ptB64(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function _ptUnB64(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); }
+async function _ptSig(env, payload) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(env.PROGRESS_LINK_SECRET || '')),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const buf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('progress:' + payload));
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 32);
+}
+async function makeProgressToken(env, userId, ttlHours = 72) {
+  const payload = `${userId}.${Math.floor(Date.now() / 1000) + ttlHours * 3600}`;
+  return _ptB64(payload) + '.' + (await _ptSig(env, payload));
+}
+async function readProgressToken(env, k) {
+  try {
+    const i = String(k || '').lastIndexOf('.');
+    if (i < 1) return null;
+    const payload = _ptUnB64(k.slice(0, i));
+    if ((await _ptSig(env, payload)) !== k.slice(i + 1)) return null;
+    const [uid, exp] = payload.split('.');
+    if (!uid || !(+exp > Date.now() / 1000)) return null;
+    return uid;
+  } catch { return null; }
+}
+
+async function progressFormReply(env, replyToken, userId) {
+  const k = await makeProgressToken(env, userId);
+  return lineReplyMessages(env, replyToken, [{ type: 'template', altText: '查詢面試進度：請點連結填寫查詢表單',
+    template: { type: 'buttons', text: '請點下面的按鈕填寫查詢表單。第一次需要核對姓名、信箱、手機，之後就不用再填。',
+      actions: [{ type: 'uri', label: '填寫查詢表單', uri: 'https://step1ne.com/progress/?k=' + encodeURIComponent(k) }] } }]);
+}
+
 async function lineReplyMessages(env, replyToken, messages) {
   if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return;
   try {
@@ -3775,7 +3810,8 @@ async function handleLineEvent(env, ev) {
     await env.DB.prepare(
       `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at) VALUES (?, 'ask_name', ?, ?)`
     ).bind(userId, now, now).run();
-    return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
+    // 2026-10-16 Jacky：要保留「在 LINE 裡跳頁面填表單」，聊天室只回帶通行證的表單按鈕
+    return progressFormReply(env, replyToken, userId);
   }
 
   if (binding.state === 'bound') {
@@ -3828,12 +3864,10 @@ async function handleLineEvent(env, ev) {
   // 對話節奏比較像真人客服，漏打一項也只要補那一項，不用整段重打。
   if (text === LINE_PROGRESS_TRIGGER) {
     // 已經在流程裡了，把「現在卡在哪一步」的提示再說一次；其他狀態（只記來源）就從姓名開始問
-    const resend = { ask_name: LINE_ASK_NAME_TEXT, ask_email: LINE_ASK_EMAIL_TEXT, ask_phone: LINE_ASK_PHONE_TEXT };
-    if (resend[binding.state]) return lineReply(env, replyToken, resend[binding.state]);
     await env.DB.prepare(
       `UPDATE line_bindings SET state='ask_name', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id=?`
     ).bind(now, userId).run();
-    return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
+    return progressFormReply(env, replyToken, userId);
   }
 
   if (binding.state === 'ask_name') {
@@ -5530,7 +5564,8 @@ export default {
     // （LINE 對話裡查進度）共用同一個 deriveApplicationProgress()，不要另外寫一套
     // 判斷邏輯——不然候選人在網頁跟在 LINE 對話裡看到的文字之後會慢慢兜不起來。
     if (p === '/progress-data' && request.method === 'GET') {
-      const lineUserId = (url.searchParams.get('userId') || '').trim();
+      const kTok = (url.searchParams.get('k') || '').trim();
+      const lineUserId = kTok ? (await readProgressToken(env, kTok) || '') : (url.searchParams.get('userId') || '').trim();
       if (!lineUserId) return json(request, { ok: false, error: '缺少 userId' }, 400);
       const binding = await env.DB.prepare(
         `SELECT application_ids FROM line_bindings WHERE line_user_id = ? AND state='bound'`
