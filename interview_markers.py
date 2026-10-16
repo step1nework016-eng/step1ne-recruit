@@ -27,8 +27,16 @@ TRANSITION_TEXTS = (
 )
 
 
+# 2026-10-16：出錯時程式送給人選的道歉句。它不是「回答」——人選的上一句其實沒被回。
+# 不排除的話，道歉之後最後一則變成 assistant，等 CLI／API 修好了阿財也不會再接話（王偉恩 10/16）。
+# 只用來「判斷誰在等誰」與過濾對話歷史；不放進 TRANSITION_TEXTS（那是等待過渡語的輪替池）。
+APOLOGY_TEXTS = (
+    '不好意思，我這邊系統出了點狀況。我們的顧問會直接與您聯繫，很抱歉耽誤您的時間。',
+)
+
+
 def is_transition(text):
-    return (text or '').strip() in TRANSITION_TEXTS
+    return (text or '').strip() in TRANSITION_TEXTS or (text or '').strip() in APOLOGY_TEXTS
 
 
 def pick_transition(last_text=None, rng=None):
@@ -44,7 +52,7 @@ def _sql_str(s):
 
 def sql_not_transition(col='content'):
     """SQL 片段：這一欄不是過渡語。例：f"... WHERE application_id=... AND {sql_not_transition('m.content')}"。"""
-    return f"{col} NOT IN (" + ", ".join(_sql_str(t) for t in TRANSITION_TEXTS) + ")"
+    return f"{col} NOT IN (" + ", ".join(_sql_str(t) for t in TRANSITION_TEXTS + APOLOGY_TEXTS) + ")"
 
 
 def sql_send_transition(app_id_sql, now_sql, text=None):
