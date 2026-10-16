@@ -3768,9 +3768,14 @@ async function handleLineEvent(env, ev) {
   // 第一次出現：只在候選人主動觸發（按鈕／打字）時才介入，
   // 其他訊息不搶著回——這支只負責「查進度」這一件事，不要變成搶走
   // Jacky 之後可能在 LINE Official Account Manager 設的其他自動回覆的地盤。
+  // 2026-10-16 改回聊天室三步驟：查進度 LIFF 掛在另一組 LINE 帳號底下，綁到的 ID 官方帳號推不到
+  // （liff_progress 綁的 6 筆 profile 全 404）。在聊天室綁，拿到的就是官方帳號認得的 ID。
   if (!binding) {
     if (text !== LINE_PROGRESS_TRIGGER) return;
-    return lineReply(env, replyToken, LINE_PROGRESS_LIFF_TEXT);
+    await env.DB.prepare(
+      `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at) VALUES (?, 'ask_name', ?, ?)`
+    ).bind(userId, now, now).run();
+    return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
   }
 
   if (binding.state === 'bound') {
@@ -3822,8 +3827,13 @@ async function handleLineEvent(env, ev) {
   // 三步驟驗證：姓名 → 信箱 → 手機。一步一則，不是一次打完——
   // 對話節奏比較像真人客服，漏打一項也只要補那一項，不用整段重打。
   if (text === LINE_PROGRESS_TRIGGER) {
-    // 已經在流程裡了，把「現在卡在哪一步」的提示再說一次，不用另外講「你已經問過了」
-    return lineReply(env, replyToken, LINE_PROGRESS_LIFF_TEXT);
+    // 已經在流程裡了，把「現在卡在哪一步」的提示再說一次；其他狀態（只記來源）就從姓名開始問
+    const resend = { ask_name: LINE_ASK_NAME_TEXT, ask_email: LINE_ASK_EMAIL_TEXT, ask_phone: LINE_ASK_PHONE_TEXT };
+    if (resend[binding.state]) return lineReply(env, replyToken, resend[binding.state]);
+    await env.DB.prepare(
+      `UPDATE line_bindings SET state='ask_name', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id=?`
+    ).bind(now, userId).run();
+    return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
   }
 
   if (binding.state === 'ask_name') {
