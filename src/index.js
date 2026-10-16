@@ -5070,6 +5070,18 @@ async function handleSocAction(env, cq) {
               : plain.length > 300
                 ? splitForThreads(plain, 250)
                 : splitForThreads(plain);
+            // 2026-10-16 Jacky：連結不能在第一則，要放在串文裡。第一則有連結的段落（例如結尾「私訊我：連結」那段）
+            // 一律搬到最後一則回覆；原本就在後面幾則的連結不動。
+            if (chunks.length && /https?:\/\//.test(chunks[0])) {
+              const paras = chunks[0].split(/\n\s*\n/);
+              const keep = paras.filter((x) => !/https?:\/\//.test(x)).join('\n\n').trim();
+              const moved = paras.filter((x) => /https?:\/\//.test(x)).join('\n\n').trim();
+              if (keep && moved) {
+                chunks[0] = keep;
+                if (chunks.length > 1) chunks[chunks.length - 1] = chunks[chunks.length - 1] + '\n\n' + moved;
+                else chunks.push(moved);
+              }
+            }
             let firstId = null, lastId = null;
             for (const chunk of chunks) {
               lastId = await postOne(chunk, lastId);
