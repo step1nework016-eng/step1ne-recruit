@@ -3049,21 +3049,8 @@ async function buildProgressMessages(env, applicationIds) {
 // ⚠️ 2026-08-13 再改：一開始做成「三項一次打在同一則」，Jacky 要求改成
 // 一次只問一項——先講清楚要問三個，然後一則一則來（姓名→信箱→手機），
 // 對話節奏比較像真人客服，也不會因為使用者漏打一項就整則作廢要重打。
-const LINE_ASK_NAME_TEXT =
-  '請提供三項資料幫您核對身分並查詢面試進度：姓名、信箱、手機號碼。\n\n'
-  + '一項一項來，麻煩先輸入您的姓名：';
 // 2026-10-07 Jacky：查進度改走圖文選單的 LIFF 表單，不再在聊天室一項一項問。
 // 打字觸發或舊狀態一律只回這個按鈕連結。
-const LINE_PROGRESS_LIFF_URL = 'https://liff.line.me/2011631457-WcDji8Bx';
-const LINE_PROGRESS_LIFF_TEXT = '查詢面試進度請點這裡（第一次會請您確認姓名、信箱、手機，之後就不用再填）：\n' + LINE_PROGRESS_LIFF_URL;
-const LINE_ASK_EMAIL_TEXT = '謝謝，接著請輸入您應徵時留的信箱：';
-const LINE_ASK_PHONE_TEXT = '好，最後請輸入您應徵時留的手機號碼：';
-const LINE_BAD_EMAIL_TEXT = '這個看起來不像信箱，麻煩再輸入一次：';
-const LINE_BAD_PHONE_TEXT = '這個看起來不像手機號碼，麻煩再輸入一次：';
-const LINE_NO_MATCH_TEXT =
-  '這三項資料（姓名、信箱、手機號碼）沒有辦法完全對到應徵紀錄，'
-  + '請確認是不是跟應徵當時留的資料一字不差（信箱大小寫沒關係，其他請照原本填的）。'
-  + '想再試一次，請重新輸入姓名；想直接找顧問，歡迎透過下方選單聯繫我們。';
 
 function normalizeNameForMatch(s) {
   return String(s || '').replace(/\s+/g, '');
@@ -3808,7 +3795,7 @@ async function handleLineEvent(env, ev) {
   if (!binding) {
     if (text !== LINE_PROGRESS_TRIGGER) return;
     await env.DB.prepare(
-      `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at) VALUES (?, 'ask_name', ?, ?)`
+      `INSERT INTO line_bindings (line_user_id, state, created_at, updated_at) VALUES (?, 'pending_phone', ?, ?)`
     ).bind(userId, now, now).run();
     // 2026-10-16 Jacky：要保留「在 LINE 裡跳頁面填表單」，聊天室只回帶通行證的表單按鈕
     return progressFormReply(env, replyToken, userId);
@@ -3865,99 +3852,16 @@ async function handleLineEvent(env, ev) {
   if (text === LINE_PROGRESS_TRIGGER) {
     // 已經在流程裡了，把「現在卡在哪一步」的提示再說一次；其他狀態（只記來源）就從姓名開始問
     await env.DB.prepare(
-      `UPDATE line_bindings SET state='ask_name', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id=?`
+      `UPDATE line_bindings SET state='pending_phone', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id=?`
     ).bind(now, userId).run();
     return progressFormReply(env, replyToken, userId);
   }
 
-  if (binding.state === 'ask_name') {
-    if (!text) return lineReply(env, replyToken, LINE_ASK_NAME_TEXT);
-    await env.DB.prepare(
-      `UPDATE line_bindings SET pending_name=?, state='ask_email', updated_at=? WHERE line_user_id=?`
-    ).bind(text, now, userId).run();
-    return lineReply(env, replyToken, LINE_ASK_EMAIL_TEXT);
+  // 2026-10-16 Jacky：聊天室一題一題問姓名／信箱／手機的舊流程已刪除，綁定一律走表單（progressFormReply）。
+  // 還卡在舊狀態（ask_*）的人，打字不再被當成答案，退回只記來源的狀態、不回話。
+  if (['ask_name', 'ask_email', 'ask_phone'].includes(binding.state)) {
+    await env.DB.prepare(`UPDATE line_bindings SET state='pending_phone', pending_name=NULL, pending_email=NULL, updated_at=? WHERE line_user_id=?`).bind(now, userId).run();
   }
-
-  if (binding.state === 'ask_email') {
-    if (!text.includes('@')) return lineReply(env, replyToken, LINE_BAD_EMAIL_TEXT);
-    await env.DB.prepare(
-      `UPDATE line_bindings SET pending_email=?, state='ask_phone', updated_at=? WHERE line_user_id=?`
-    ).bind(text, now, userId).run();
-    return lineReply(env, replyToken, LINE_ASK_PHONE_TEXT);
-  }
-
-  if (binding.state === 'ask_phone') {
-    const norm = normalizePhone(text);
-    if (norm.length < 8) return lineReply(env, replyToken, LINE_BAD_PHONE_TEXT);
-
-    const nameNorm = normalizeNameForMatch(binding.pending_name);
-    const emailNorm = String(binding.pending_email || '').trim().toLowerCase();
-
-    // 應徵量對這間公司的規模來說不大，直接掃全表在 JS 裡正規化比對，
-    // 比在 SQL 裡處理各種手機號碼格式（有無 -、+886）簡單也不容易漏比對。
-    const { results } = await env.DB.prepare(
-      `SELECT id, name, phone, email FROM applications
-        WHERE superseded_by IS NULL AND phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`
-    ).all();
-    const matched = (results || []).filter((r) =>
-      normalizePhone(r.phone) === norm
-      && (r.email || '').trim().toLowerCase() === emailNorm
-      && normalizeNameForMatch(r.name) === nameNorm);
-
-    if (!matched.length) {
-      // 三項對不起來——不知道是哪一項錯，整段重來比只重問一項可靠
-      await env.DB.prepare(
-        `UPDATE line_bindings SET state='ask_name', pending_name=NULL, pending_email=NULL, updated_at=?
-          WHERE line_user_id=?`
-      ).bind(now, userId).run();
-      return lineReply(env, replyToken, LINE_NO_MATCH_TEXT);
-    }
-
-    const ids = matched.map((m) => m.id);
-
-    // ⚠️ 2026-09-17 補：三項文字驗證這條路徑，webhook 收到的是純文字訊息事件，
-    // 沒有 LIFF 那種 liff.getProfile() 可以直接拿頭像/顯示名稱——不補這段，
-    // 用這條舊流程綁定的人選在顧問後台／人選面談室永遠不會有頭像，會一直被
-    // 誤判成「顯示邏輯壞掉」（這個月已經抓過三次類似案例，這次查證後其實是
-    // 這條路徑本來就沒抓過大頭貼，不是排序或快取的問題）。用既有的
-    // GET /v2/bot/profile/:userId（跟 admin 逾期名單那支同款 fetch）補抓一次，
-    // 抓不到就留 NULL，不擋綁定本身成功。
-    let profDisplayName = null; let profPictureUrl = null;
-    try {
-      const prof = await fetch(`https://api.line.me/v2/bot/profile/${userId}`,
-        { headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` } });
-      if (prof.ok) { const pj = await prof.json(); profDisplayName = pj.displayName || null; profPictureUrl = pj.pictureUrl || null; }
-    } catch { /* 抓不到就留 NULL，前端一樣有姓名色塊當備援 */ }
-
-    await env.DB.prepare(
-      `UPDATE line_bindings SET state='bound', phone=?, email=?, application_ids=?, bound_at=?, updated_at=?,
-              pending_name=NULL, pending_email=NULL, display_name=COALESCE(?, display_name), picture_url=COALESCE(?, picture_url)
-        WHERE line_user_id = ?`
-    ).bind(text, binding.pending_email, JSON.stringify(ids), now, now, profDisplayName, profPictureUrl, userId).run();
-
-    // 配對紀錄要讓顧問在後台看得到，這裡先推一則 Telegram 通知——
-    // 跟「顧問人選回報區」不是同一件事，放系統回報主題就好，不用麻煩顧問回應。
-    await notify(env,
-      `🔗 LINE 查詢進度：${matched[0].name} 完成三項驗證綁定（${matched.length} 筆應徵紀錄）`,
-      { message_thread_id: THREAD.system });
-
-    // ⚠️ 2026-08-13 補：原本綁定成功直接跳進度卡，候選人這邊沒有任何
-    // 「你已經綁定成功」的明講——Jacky 自己測試時就覺得像什麼都沒發生
-    // （顧問那邊靠 Telegram 通知知道，候選人這邊完全沒有對應的訊息）。
-    const bindOk = { type: 'text',
-      text: `✅ 綁定成功！以後您可以隨時點選單「追蹤面試進度」查詢，不用再重新輸入資料。\n\n以下是您目前的進度：` };
-    const msgs = await buildProgressMessages(env, ids);
-    return lineReplyMessages(env, replyToken, [bindOk, ...msgs]);
-  }
-
-  // ⚠️ 2026-08-13 事故：這支流程改版過（原本一次問完三項，改成一步一問），
-  // 改版前建立的綁定紀錄留著舊的 state 值（例如 'pending_phone'），
-  // 沒有任何分支認得那個值，訊息就這樣被吃掉、候選人已讀不回——
-  // Jacky 自己測試時就撞到。任何不認得的 state 一律當成「重新開始」，
-  // 不要讓 LINE OA 對候選人沉默，那比走錯流程還糟。
-  // ⚠️ 2026-10-07 改：社群貼文帶 [LC…] 進來的人會留一筆 state='pending_phone' 的來源紀錄，
-  // 原本落到這裡就被「重新開始」成 ask_name，之後他隨便傳一句（黃英誠：「已填表 後續貴公司再聯絡嗎」）
-  // 都被當成姓名開始盤問。查進度已改走 LIFF 表單，這裡一律不接手、不回話，讓顧問在 OA 後台回。
   return;
 }
 
