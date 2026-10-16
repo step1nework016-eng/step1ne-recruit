@@ -1471,11 +1471,13 @@ async function readProgressToken(env, k) {
   } catch { return null; }
 }
 
+// 用 LIFF 網址當外殼：一般網址在部分手機會被丟到外部瀏覽器；LIFF 一定在 LINE 裡開。
+// 認人不靠 LIFF 登入，靠網址裡的通行證 k（官方帳號認得的 ID）。
 async function progressFormReply(env, replyToken, userId) {
   const k = await makeProgressToken(env, userId);
   return lineReplyMessages(env, replyToken, [{ type: 'template', altText: '查詢面試進度：請點連結填寫查詢表單',
     template: { type: 'buttons', text: '請點下面的按鈕填寫查詢表單。第一次需要核對姓名、信箱、手機，之後就不用再填。',
-      actions: [{ type: 'uri', label: '填寫查詢表單', uri: 'https://step1ne.com/progress/?k=' + encodeURIComponent(k) }] } }]);
+      actions: [{ type: 'uri', label: '填寫查詢表單', uri: 'https://liff.line.me/2011631457-WcDji8Bx?k=' + encodeURIComponent(k) }] } }]);
 }
 
 async function lineReplyMessages(env, replyToken, messages) {

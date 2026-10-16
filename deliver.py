@@ -1293,7 +1293,9 @@ def build_client_html_v2(data, meta, show=None):
     def row(label, val):
         if val:
             rows.append(f'<tr><th>{e(label)}</th><td>{val}</td></tr>')
-    row('年齡', e(txt(b.get('age'))))
+    # 2026-10-15 Jacky：推薦履歷要有年齡、性別（客戶人資每次都要）；匿名履歷兩者都不放
+    row('年齡', '' if anonymous else e(txt(b.get('age'))))
+    row('性別', '' if anonymous else e(txt(b.get('gender'))))
     row('居住地', e(txt(b.get('residence'))))
     edu = [txt(x) for x in (data.get('education_lines') or []) if txt(x)]
     row('學歷', '<br>'.join(e(x) for x in edu) if edu else e(txt(b.get('education'))))
