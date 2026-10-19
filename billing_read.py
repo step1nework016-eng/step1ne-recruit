@@ -202,16 +202,14 @@ def _png_gray(path, w, h, data):
 def _invoice_images_nopil(pdf, tmp, idx):
     """沒有 Pillow（WSL2）：pdftoppm 出灰階 PGM，用位元組切片轉 90 度（C 層速度），自己寫成 PNG。"""
     base = os.path.join(tmp, f'd{idx}_g')
-    subprocess.run(['pdftoppm', '-gray', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '1800', pdf, base],
+    subprocess.run(['pdftoppm', '-gray', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '1600', pdf, base],
                    capture_output=True, timeout=120, check=True)
     buf = open(base + '.pgm', 'rb').read()
     m = re.match(rb'P5\s+(\d+)\s+(\d+)\s+(\d+)\s', buf)
     w, h = int(m.group(1)), int(m.group(2))
     data = buf[m.end():m.end() + w * h]
     out = []
-    if h >= w:   # 直式不用轉（2026-10-19：只給必要的圖，越少越快）
-        _png_gray(os.path.join(tmp, f'd{idx}_orig.png'), w, h, data); out.append(f'd{idx}_orig.png')
-        return out
+    _png_gray(os.path.join(tmp, f'd{idx}_orig.png'), w, h, data); out.append(f'd{idx}_orig.png')
     cw = b''.join(data[x::w][::-1] for x in range(w))      # 順時針：新寬 h、新高 w
     ccw = b''.join(data[x::w] for x in range(w - 1, -1, -1))
     for tag, d in (('rot_cw', cw), ('rot_ccw', ccw)):
@@ -261,13 +259,11 @@ def _invoice_images(raw, name, mime, tmp, idx):
             img = img.resize((int(w * k), int(h * k)))
         img.save(os.path.join(tmp, fn))
         out.append(fn)
-    # 2026-10-19 Jacky：要 20 秒內帶入 → 只給兩張（轉 90 度兩個方向），不再給原圖與表頭放大（圖越多 AI 越慢）
-    w0, h0 = im.size
-    if h0 >= w0:   # 直式（例如電子發票證明聯）不用轉，給原圖一張就好
-        save(im, f'd{idx}_orig.png', 1800)
-        return out
+    # 2026-10-19 Jacky：要 20 秒內帶入 → 不再給表頭放大圖（圖越多 AI 越慢）
+    # 掃描常是直式頁面裡橫放兩聯發票，方向猜不準 → 原圖＋兩個轉向，共三張（原本五張）
+    save(im, f'd{idx}_orig.png', 1600)
     for tag, tr in (('rot_cw', Image.ROTATE_270), ('rot_ccw', Image.ROTATE_90)):
-        save(im.transpose(tr), f'd{idx}_{tag}.png', 1800)
+        save(im.transpose(tr), f'd{idx}_{tag}.png', 1600)
     return out
 
 
