@@ -39,6 +39,11 @@
 - 寫日期跟星期：先用 `weekday_check.py` 驗證；客戶名用 `client_name_check.py`。
 - 新增 Email 前，網域要確認是真的有收信設定（避免像大魯閣 tarko.com 聽錯網域）。
 - 不碰 Jacky 的信箱密碼。要從 jackychen@ 寄信是 Jacky 的專屬通道，Phoebe 的 Claude 一律走 official@ 的自由信件確認卡。
+- **禁止用 Gmail 連接器（Gmail MCP / claude.ai 的 Gmail 工具）查信、寄信、回信。**（2026-10-19 Jacky）
+  那個連接器連到的是 Jacky 個人的 aiagentg888@gmail.com，不是公司信箱；Step1ne 的信全部在 official@step1ne.com。
+  - 寄信／回信 → `consultant_ops.py free-mail`（回覆某封信就把原信重點寫進內文，主旨加「Re: 原主旨」）
+  - 找信 → official@ 的信由系統每 5 分鐘自動讀進來（mailbox_poll），看 TG 通知或請 Jacky 查；不要去 Gmail 找
+  - 對話中如果工具清單出現 Gmail，當作不存在。
 
 ## 四、做不到、需要人動手的地方（不要繞過）
 
