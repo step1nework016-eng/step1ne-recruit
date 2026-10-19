@@ -153,16 +153,8 @@ def _meaningful(text):
 def _prepare(raw, name, mime, doc_type, tmp, idx):
     """回傳 ('text', 文字) 或 ('images', [檔名...])。"""
     mime = (mime or '').lower()
-    if doc_type == 'invoice' and (mime == 'application/pdf' or name.lower().endswith('.pdf')):
-        # 發票常是掃描、橫放、手寫：整頁＋放大局部切塊（跟履歷 OCR 同一套），小字和手寫才看得清楚
-        import parse_resumes as PR
-        src = os.path.join(tmp, f'd{idx}.pdf')
-        open(src, 'wb').write(raw)
-        sub = os.path.join(tmp, f'inv{idx}')
-        os.makedirs(sub, exist_ok=True)
-        imgs = PR._render_pdf_images(src, sub)
-        os.unlink(src)
-        return 'images', [f'inv{idx}/{n}' for n, _ in imgs]
+    if doc_type == 'invoice':
+        return 'images', _invoice_images(raw, name, mime, tmp, idx)
     if mime == 'application/pdf' or name.lower().endswith('.pdf'):
         src = os.path.join(tmp, f'd{idx}.pdf')
         open(src, 'wb').write(raw)
@@ -194,6 +186,52 @@ def _prepare(raw, name, mime, doc_type, tmp, idx):
     fn = f'd{idx}_img{ext}'
     open(os.path.join(tmp, fn), 'wb').write(raw)
     return 'images', [fn]
+
+
+def _invoice_images(raw, name, mime, tmp, idx):
+    """發票常是掃描、整張橫放、手寫：給 AI 原圖＋轉 90 度兩個方向＋表頭放大（買受人、統編在那裡）。
+    沒有 Pillow 的機器退回整頁＋局部切塊。"""
+    is_pdf = (mime or '').lower() == 'application/pdf' or name.lower().endswith('.pdf')
+    src = os.path.join(tmp, f'd{idx}' + ('.pdf' if is_pdf else '.img'))
+    open(src, 'wb').write(raw)
+    try:
+        from PIL import Image
+    except Exception:
+        Image = None
+    if Image is None:
+        if not is_pdf:
+            fn = f'd{idx}_img.png'
+            os.replace(src, os.path.join(tmp, fn))
+            return [fn]
+        import parse_resumes as PR
+        sub = os.path.join(tmp, f'inv{idx}')
+        os.makedirs(sub, exist_ok=True)
+        imgs = PR._render_pdf_images(src, sub)
+        return [f'inv{idx}/{n}' for n, _ in imgs]
+    if is_pdf:
+        base = os.path.join(tmp, f'd{idx}_hi')
+        subprocess.run(['pdftoppm', '-png', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '3000', src, base],
+                       capture_output=True, timeout=120, check=True)
+        im = Image.open(base + '.png')
+    else:
+        im = Image.open(src)
+    im = im.convert('RGB')
+    out = []
+
+    def save(img, fn, long_edge=2000):
+        w, h = img.size
+        k = long_edge / max(w, h)
+        if k < 1:
+            img = img.resize((int(w * k), int(h * k)))
+        img.save(os.path.join(tmp, fn))
+        out.append(fn)
+    save(im, f'd{idx}_orig.png')
+    for tag, tr in (('rot_cw', Image.ROTATE_270), ('rot_ccw', Image.ROTATE_90)):
+        r = im.transpose(tr)
+        save(r, f'd{idx}_{tag}.png')
+        w, h = r.size
+        save(r.crop((0, 0, w, h // 2)), f'd{idx}_{tag}_top.png', 2400)
+    return out
 
 
 def _claude(prompt, tmp):
@@ -228,7 +266,7 @@ def read_docs(docs, kind):
                              + '、'.join(val) + ' ===')
                 how.append(f'{d["name"]}：掃描 {len(val)} 頁（看圖）')
         if kind == 'invoice':
-            prompt = '下面是一張台灣統一發票（電子發票證明聯或三聯式），請讀出欄位。\n' + INVOICE_SCHEMA + '\n\n' + '\n\n'.join(parts)
+            prompt = '下面是一張台灣統一發票（電子發票證明聯或三聯式），請讀出欄位。圖片是同一張發票的原圖、轉 90 度的兩個方向、以及表頭放大，請挑看得懂的方向讀（表頭放大圖裡有買受人與統一編號）。\n' + INVOICE_SCHEMA + '\n\n' + '\n\n'.join(parts)
         elif kind == 'offer':
             prompt = '下面是客戶給的「聘書／入職通知書」，請讀出薪資資訊。\n' + OFFER_SCHEMA + '\n\n' + '\n\n'.join(parts)
         else:
