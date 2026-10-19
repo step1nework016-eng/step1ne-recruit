@@ -47,10 +47,16 @@ CONTRACT_SCHEMA = """只輸出一個 JSON 物件（不要 Markdown、不要說�
   "categories": [
     {
       "name": "收費類別名稱（例：正職代招、高階獵才、約聘）",
-      "fee_type": "只能是 monthly_multiple／annual_percent／fixed_amount／manual 其中一個",
+      "fee_type": "只能是 monthly_multiple／annual_percent／fixed_amount／contract_total_percent／custom／manual 其中一個",
       "levels": [{"name": "職級名稱（例：一般職員）", "months": 幾個月月薪的數字}],      // 只有 monthly_multiple 才填
       "brackets": [{"min": 年薪下限整數或 null, "max": 年薪上限整數或 null, "percent": 百分比數字, "min_fee": 最低服務費整數或 null}],  // 只有 annual_percent 才填
       "amount": 固定金額整數,                                                          // 只有 fixed_amount 才填
+      // contract_total_percent 用 brackets：[{"min": 約聘月數下限, "max": 約聘月數上限或 null, "min_inclusive": true/false, "max_inclusive": true/false, "percent": 百分比, "months_override": 計費月數或 null}]
+      "base": ["monthly"/"annual"/"contract_months"/"bonus_months"/"fixed" 這幾個英文字裡選、相乘],      // 只有 custom 才填
+      "fixed_value": base 有 "fixed" 才填金額,
+      "bracket_var": "annual／monthly／contract_months／level／null（custom 用哪個變數分級距）",
+      "custom_brackets": [{"min":…, "max":…, "min_inclusive": true/false, "max_inclusive": true/false, "level": "依職級時的職級名稱", "mode": "percent 或 multiple", "value": 數字, "months_override": 數字或 null, "min_fee": 數字或 null, "max_fee": 數字或 null}],
+      "explain": "custom 時用一句話說明你怎麼把條款翻成積木",
       "installments": [{"label": "第一期／一次付清", "percent": 比例數字, "trigger_unit": "days 或 months", "trigger_value": 整數}],
       "guarantee_days": 保證期天數或 null,
       "manual_reason": "fee_type 是 manual 時寫原因，否則 null",
@@ -68,7 +74,7 @@ CONTRACT_SCHEMA = """只輸出一個 JSON 物件（不要 Markdown、不要說�
   "tax_id": "甲方統一編號，沒有填 null",
   "legal_cap": true 或 false（合約有沒有「不超過／依就業服務法或主管機關所定收費上限」這類條款）,
   "legal_cap_text": "該條款原文（節錄），沒有填 null",
-  "worked_examples": [{"category": "類別", "level": "職級", "monthly_salary": 月薪, "annual_salary": 年薪, "expected_untaxed": 範例算出的服務報酬（未稅）, "text": "範例原文"}],
+  "worked_examples": [{"category": "類別", "level": "職級", "monthly_salary": 月薪, "annual_salary": 年薪, "contract_months": 約聘月數或 null, "expected_untaxed": 範例算出的服務報酬（未稅）, "text": "範例原文"}],
   "manual_items": [{"item": "哪一項", "reason": "為什麼系統沒辦法自動算", "quote": "原文節錄"}],
   "notes": "其他跟收費有關、但上面放不進去的重點（例：保證期遞補、退費比例），沒有填 null"
 }
@@ -77,8 +83,16 @@ CONTRACT_SCHEMA = """只輸出一個 JSON 物件（不要 Markdown、不要說�
 - monthly_multiple：服務報酬＝「月薪 × 幾個月」，依職級（一般職員／管理職…）不同月數。
 - annual_percent：服務報酬＝「固定年薪 × 百分比」，依年薪級距不同百分比；有最低服務費就填 min_fee。
 - fixed_amount：一個固定金額。
-- 其他任何算法（例：約聘總薪資 × 百分比、依約聘期間長短、時薪、按件、看不懂的）→ fee_type 填 "manual"，
-  manual_reason 寫清楚，並在 manual_items 加一條；不要硬套成上面三種。
+- contract_total_percent：約聘案件，服務報酬＝「月薪 × 約聘月數 × 百分比」，百分比依「約聘月數」分級距；
+  某級距規定「以 N 個月計」時填 months_override。例：6（含）～未滿 9 個月以 6 個月之約聘總薪資 × 30%、
+  9（含）～未滿 12 個月以實際約聘總薪資 × 25%、12 個月（含）以上 × 20% →
+  brackets：[{"min":6,"max":9,"min_inclusive":true,"max_inclusive":false,"percent":30,"months_override":6},
+  {"min":9,"max":12,"min_inclusive":true,"max_inclusive":false,"percent":25},{"min":12,"max":null,"min_inclusive":true,"percent":20}]。
+- custom（自訂算法）：上面四種都不是、但能用「計費基礎相乘 × 依某個變數分級距的倍數或百分比（可有計費月數、最低／最高收費）」表達的，
+  翻成 custom，"brackets" 改填在 "custom_brackets"，並在 manual_items 以外的 notes 說明；系統會標「AI 草擬的自訂算法，請確認」。
+  計費基礎只能從 monthly（月薪）、annual（固定年薪）、contract_months（約聘月數）、bonus_months（年終月數）、fixed（固定金額）挑。
+- 連 custom 都表達不了的（例：時薪、按件、看不懂、需要判斷的條件）→ fee_type 填 "manual"，
+  manual_reason 寫清楚，並在 manual_items 加一條；不要硬套。
 - installments：每一期要有比例＋「報到滿幾天／幾個月」。合約寫「報到滿 30 個曆日服務報酬成立」且一次收 100%，
   就是 [{"label":"一次付清","percent":100,"trigger_unit":"days","trigger_value":30}]；
   寫「報到日起 10 日內一次付清」就是 trigger_value 10。分期比例寫在附件的，要去附件找。
