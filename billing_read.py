@@ -264,7 +264,7 @@ def read_docs(docs, kind):
             else:
                 parts.append(f'=== 文件 {i + 1}：{label}「{d["name"]}」是掃描檔，請用 Read 工具逐一打開這些圖片：'
                              + '、'.join(val) + ' ===')
-                how.append(f'{d["name"]}：掃描 {len(val)} 頁（看圖）')
+                how.append(f'{d["name"]}：掃描 {len(val)} 張圖（看圖）' + ('，含轉向' if any('_rot_' in v for v in val) else ''))
         if kind == 'invoice':
             prompt = '下面是一張台灣統一發票（電子發票證明聯或三聯式），請讀出欄位。圖片是同一張發票的原圖、轉 90 度的兩個方向、以及表頭放大，請挑看得懂的方向讀（表頭放大圖裡有買受人與統一編號）。\n' + INVOICE_SCHEMA + '\n\n' + '\n\n'.join(parts)
         elif kind == 'offer':
