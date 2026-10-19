@@ -3085,13 +3085,19 @@ def tick():
         ("SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d " + _kind_filter +
          # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
          # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
-         "ORDER BY CASE WHEN kind IN ('billing_read','precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
+         "ORDER BY CASE WHEN kind IN (" + ','.join(q(k) for k in URGENT_KINDS) + ") THEN 0 "
          "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d")
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
     for job in rows:
         jid = job['id']
+        # 2026-10-19 Jacky：保留 1 個位子給顧問在畫面前等的事。背景工作最多佔 limit-1 個，
+        # 一次湧進一大批背景工作時，讀合約／讀發票／電洽卡片也永遠有位子。
+        if limit >= 2 and job['kind'] not in URGENT_KINDS:
+            bg_busy = sum(1 for k in _INFLIGHT_KIND.values() if k not in URGENT_KINDS)
+            if bg_busy >= limit - 1:
+                continue
         # 2026-09-10 加：多台機器（不同裝置，同一個claude帳號各跑一份這支）
         # 同時搶同一批 pending 工作時，原本這個 UPDATE 沒有 WHERE status='pending'，
         # 兩台機器都會「成功」把同一筆改成running、各自跑一次claude CLI——
@@ -3106,6 +3112,7 @@ def tick():
             continue
         log(f'處理 {job["kind"]}（{jid[:8]}），裝置：{WORKER_ID}（同時進行 {len(_INFLIGHT) + 1}/{CONCURRENCY}）')
         _INFLIGHT[jid] = _POOL.submit(_run_job, job)
+        _INFLIGHT_KIND[jid] = job['kind']
     return len(rows)
 
 
@@ -3126,6 +3133,7 @@ def _reap_done():
     for jid, fut in list(_INFLIGHT.items()):
         if fut.done():
             _INFLIGHT.pop(jid, None)
+            _INFLIGHT_KIND.pop(jid, None)
             try:
                 fut.result()
             except Exception as e:  # _run_job 自己會吞例外，這裡只是保險
@@ -3172,6 +3180,10 @@ import concurrent.futures as _cf
 CONCURRENCY = max(1, int(os.environ.get('AI_WORKER_CONCURRENCY', '3')))
 _POOL = _cf.ThreadPoolExecutor(max_workers=CONCURRENCY)
 _INFLIGHT = {}
+_INFLIGHT_KIND = {}   # jid → kind，算「背景工作佔了幾個位子」用
+# 顧問在畫面前等的工作：排最前面，而且永遠保留 1 個位子給它們（見 tick）
+URGENT_KINDS = ('billing_read', 'precall_card', 'postcall_result', 'call_notes_summary', 'call_prep',
+                'client_call_split', 'job_card_feedback', 'job_switch_fit')
 _DRAIN = False   # 偵測到新版、等手上工作做完準備換版時為 True，這段期間不接新工作
 
 
