@@ -188,6 +188,36 @@ def _prepare(raw, name, mime, doc_type, tmp, idx):
     return 'images', [fn]
 
 
+def _png_gray(path, w, h, data):
+    import zlib
+    import struct
+    raw = b''.join(b'\x00' + data[y * w:(y + 1) * w] for y in range(h))
+    def chunk(t, d):
+        return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    with open(path, 'wb') as f:
+        f.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 0, 0, 0, 0))
+                + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+
+
+def _invoice_images_nopil(pdf, tmp, idx):
+    """沒有 Pillow（WSL2）：pdftoppm 出灰階 PGM，用位元組切片轉 90 度（C 層速度），自己寫成 PNG。"""
+    base = os.path.join(tmp, f'd{idx}_g')
+    subprocess.run(['pdftoppm', '-gray', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '2600', pdf, base],
+                   capture_output=True, timeout=120, check=True)
+    buf = open(base + '.pgm', 'rb').read()
+    m = re.match(rb'P5\s+(\d+)\s+(\d+)\s+(\d+)\s', buf)
+    w, h = int(m.group(1)), int(m.group(2))
+    data = buf[m.end():m.end() + w * h]
+    out = []
+    _png_gray(os.path.join(tmp, f'd{idx}_orig.png'), w, h, data); out.append(f'd{idx}_orig.png')
+    cw = b''.join(data[x::w][::-1] for x in range(w))      # 順時針：新寬 h、新高 w
+    ccw = b''.join(data[x::w] for x in range(w - 1, -1, -1))
+    for tag, d in (('rot_cw', cw), ('rot_ccw', ccw)):
+        _png_gray(os.path.join(tmp, f'd{idx}_{tag}.png'), h, w, d); out.append(f'd{idx}_{tag}.png')
+        _png_gray(os.path.join(tmp, f'd{idx}_{tag}_top.png'), h, w // 2, d[:h * (w // 2)]); out.append(f'd{idx}_{tag}_top.png')
+    return out
+
+
 def _invoice_images(raw, name, mime, tmp, idx):
     """發票常是掃描、整張橫放、手寫：給 AI 原圖＋轉 90 度兩個方向＋表頭放大（買受人、統編在那裡）。
     沒有 Pillow 的機器退回整頁＋局部切塊。"""
@@ -198,6 +228,11 @@ def _invoice_images(raw, name, mime, tmp, idx):
         from PIL import Image
     except Exception:
         Image = None
+    if Image is None and is_pdf:
+        try:
+            return _invoice_images_nopil(src, tmp, idx)
+        except Exception:
+            pass
     if Image is None:
         if not is_pdf:
             fn = f'd{idx}_img.png'
