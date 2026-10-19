@@ -34,7 +34,7 @@ case "${1:-}" in
   status)
     for n in $NAMES; do
       IFS='|' read -r pat dir cmd log < <(spec "$n")
-      pid=$(pgrep -f "python3 -u $pat\|python3 $pat" | head -1)
+      pid=$(pgrep -f "python3.*$pat" | head -1)
       if [ -n "$pid" ]; then
         bad=$(tr '\0' '\n' < /proc/$pid/environ | grep '^PATH=' | grep -c '/mnt/c')
         echo "✅ $n  pid=$pid  啟動於 $(ps -o lstart= -p $pid)  $( [ "$bad" != 0 ] && echo '⚠️ PATH 含 Windows 路徑，請用 restart 重啟')"
