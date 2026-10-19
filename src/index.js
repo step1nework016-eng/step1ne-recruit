@@ -4565,6 +4565,19 @@ async function handleConsultantOpsAction(env, cq) {
       await finish('done', d, `📤 ${who} 按了確認，已排入寄給 ${toMail}`, `📤 自由信件已排入寄件匣（約 1 分鐘內從 official@ 寄出）：${toMail}｜${row.preview_subject}${(p.files || []).length ? `（附件 ${(p.files || []).length} 個）` : ''}`);
       return;
     }
+    // 2026-10-19 收費進程（backoffice billing_v2.js 建的卡）：按了才轉呼叫後台。只放行這兩支：
+    //   terms-confirm＝合約讀取結果確認生效；mail＝逾期提醒卡「擬催款信」（只是再貼一張確認卡，不會寄）
+    if (row.kind === 'bo_call') {
+      const path = String(p.path || '');
+      if (!['/admin/billing2/terms-confirm', '/admin/billing2/mail'].includes(path)) {
+        await ans('不允許的動作'); await finish('failed', { error: 'path not allowed' }, '❌ 不允許的動作'); return;
+      }
+      const d = await copsBo(env, path, { ...(p.body || {}), by: who });
+      if (!d.ok) { await ans(`沒完成：${d.error || '後台出錯'}`); await finish('failed', d, `❌ 沒完成：${String(d.error || '').slice(0, 40)}`); return; }
+      await ans(String(d.message || '完成了'));
+      await finish('done', d, `✅ ${who}：${p.done_label || '已處理'}`, d.say || null);
+      return;
+    }
     if (row.kind === 'decline_mail') {
       const d = await copsBo(env, `${appPath}/decline-mail`, { ...p, action: 'send' });
       if (!d.ok) { await ans(`沒寄出：${d.error}`); await finish('failed', d, `❌ 沒寄出：${String(d.error || '').slice(0, 40)}`); return; }

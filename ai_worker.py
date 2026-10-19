@@ -1672,6 +1672,10 @@ def process(job):
     if kind == 'job_read':
         import job_read
         return job_read.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-10-19：收費進程 AI 讀已簽合約／聘書月薪（整條在 billing_read.py 自己跑完，讀完呼叫後台 read-done）
+    if kind == 'billing_read':
+        import billing_read
+        return billing_read.run(json.loads(job.get('payload_json') or '{}'))
     # 2026-10-14：認識公司「請 AI 研究這家公司」→ 104 職缺＋公開資料研究，整條在 company_research.py 自己跑完
     # 2026-10-14：客戶卡片「從現有人選配對」＋「針對這個職缺的匿名摘要」（整條在 bd_job_match.py 自己跑完）
     if kind in ('bd_job_match', 'bd_job_brief'):
