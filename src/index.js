@@ -2918,6 +2918,16 @@ async function deriveApplicationProgress(env, appId) {
   const jobTitle = app.job_title || app.job_slug || '這個職缺';
   let message;
   let showNudgeButton = false;   // 卡片要不要多顯示「提醒顧問看一下」按鈕
+  // 推薦過、但每一筆推薦都已經結束（客戶說不要／顧問標不推／人選放棄）
+  let forwardsAllEnded = false;
+  if (report && report.consultant_decision === 'forwarded') {
+    const fwc = await env.DB.prepare(
+      `SELECT COUNT(*) AS n,
+              SUM(CASE WHEN client_rejected_at IS NULL AND advisor_not_recommended_at IS NULL AND candidate_withdrawn_at IS NULL THEN 1 ELSE 0 END) AS active
+         FROM candidate_forwards WHERE application_id = ?`
+    ).bind(appId).first();
+    forwardsAllEnded = !!(fwc && fwc.n > 0 && !fwc.active);
+  }
   let statusLine = '';   // 2026-10-19：卡片上的「目前狀態」一行（目前只有已推薦會顯示）
   let closed = false;   // 結案不續——卡片要換成橘色，跟一般進度更新的藍色卡區分開
 
@@ -2952,6 +2962,12 @@ async function deriveApplicationProgress(env, appId) {
       + '歡迎持續留意我們之後釋出的其他職缺。';
   } else if (report && report.consultant_decision === 'need_more') {
     message = '審閱後想再跟您確認一些細節，會盡快主動聯繫您，麻煩留意來電或訊息。';
+  } else if (stageUp === 'CLOSED_INTERNAL' || forwardsAllEnded) {
+    // 2026-10-19 Jacky 選「中性說法」：用人單位已說不要（或顧問標不推、人選放棄、顧問靜默結案），
+    // 但還沒正式發婉拒訊息的人選——不能再講「審閱中／要不要催」，也不主動講婉拒。
+    // 只有人選自己來查才會看到，系統不會因為這個狀態主動推播。
+    message = '這個職缺目前沒有安排下一步，您的資料會保留，有更合適的職缺會再與您聯繫。'
+      + '有任何問題也歡迎透過選單直接找顧問聊聊。';
   } else {
     // 🚨 2026-08-13 提醒：這個 switch 裡任何一支文案都不能直接 echo 顧問內部欄位
     // （handled_note 等）——呂皓宇那次事故的教訓，見 feedback_candidate_facing_copy_rules。
