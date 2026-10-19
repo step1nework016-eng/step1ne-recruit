@@ -49,8 +49,9 @@ case "${1:-}" in
     echo "目錄: $dir"; echo "指令: $cmd"; echo "log:  $log"; echo "npx:  $(command -v npx)"
     [ "$dry" = "--dry" ] && exit 0
     pkill -f "$pat"; sleep 3
-    cd "$dir" && env $cmd >> "$log" 2>&1 < /dev/null &
-    disown; sleep 5
+    # setsid＋nohup：脫離呼叫它的終端機／WSL session，session 一關程式也不會跟著被關
+    ( cd "$dir" && exec setsid nohup env $cmd >> "$log" 2>&1 < /dev/null ) &
+    sleep 5
     pgrep -f "$pat" >/dev/null && echo "✅ 已重啟 $n" || echo "❌ 沒起來，看 $log" ;;
   *) echo "用法: $0 status | restart <名稱> [--dry]"; exit 1 ;;
 esac
