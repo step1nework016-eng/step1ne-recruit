@@ -202,19 +202,20 @@ def _png_gray(path, w, h, data):
 def _invoice_images_nopil(pdf, tmp, idx):
     """沒有 Pillow（WSL2）：pdftoppm 出灰階 PGM，用位元組切片轉 90 度（C 層速度），自己寫成 PNG。"""
     base = os.path.join(tmp, f'd{idx}_g')
-    subprocess.run(['pdftoppm', '-gray', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '2600', pdf, base],
+    subprocess.run(['pdftoppm', '-gray', '-singlefile', '-f', '1', '-l', '1', '-scale-to', '1800', pdf, base],
                    capture_output=True, timeout=120, check=True)
     buf = open(base + '.pgm', 'rb').read()
     m = re.match(rb'P5\s+(\d+)\s+(\d+)\s+(\d+)\s', buf)
     w, h = int(m.group(1)), int(m.group(2))
     data = buf[m.end():m.end() + w * h]
     out = []
-    _png_gray(os.path.join(tmp, f'd{idx}_orig.png'), w, h, data); out.append(f'd{idx}_orig.png')
+    if h >= w:   # 直式不用轉（2026-10-19：只給必要的圖，越少越快）
+        _png_gray(os.path.join(tmp, f'd{idx}_orig.png'), w, h, data); out.append(f'd{idx}_orig.png')
+        return out
     cw = b''.join(data[x::w][::-1] for x in range(w))      # 順時針：新寬 h、新高 w
     ccw = b''.join(data[x::w] for x in range(w - 1, -1, -1))
     for tag, d in (('rot_cw', cw), ('rot_ccw', ccw)):
         _png_gray(os.path.join(tmp, f'd{idx}_{tag}.png'), h, w, d); out.append(f'd{idx}_{tag}.png')
-        _png_gray(os.path.join(tmp, f'd{idx}_{tag}_top.png'), h, w // 2, d[:h * (w // 2)]); out.append(f'd{idx}_{tag}_top.png')
     return out
 
 
@@ -260,12 +261,13 @@ def _invoice_images(raw, name, mime, tmp, idx):
             img = img.resize((int(w * k), int(h * k)))
         img.save(os.path.join(tmp, fn))
         out.append(fn)
-    save(im, f'd{idx}_orig.png')
+    # 2026-10-19 Jacky：要 20 秒內帶入 → 只給兩張（轉 90 度兩個方向），不再給原圖與表頭放大（圖越多 AI 越慢）
+    w0, h0 = im.size
+    if h0 >= w0:   # 直式（例如電子發票證明聯）不用轉，給原圖一張就好
+        save(im, f'd{idx}_orig.png', 1800)
+        return out
     for tag, tr in (('rot_cw', Image.ROTATE_270), ('rot_ccw', Image.ROTATE_90)):
-        r = im.transpose(tr)
-        save(r, f'd{idx}_{tag}.png')
-        w, h = r.size
-        save(r.crop((0, 0, w, h // 2)), f'd{idx}_{tag}_top.png', 2400)
+        save(im.transpose(tr), f'd{idx}_{tag}.png', 1800)
     return out
 
 
@@ -301,7 +303,7 @@ def read_docs(docs, kind):
                              + '、'.join(val) + ' ===')
                 how.append(f'{d["name"]}：掃描 {len(val)} 張圖（看圖）' + ('，含轉向' if any('_rot_' in v for v in val) else ''))
         if kind == 'invoice':
-            prompt = '下面是一張台灣統一發票（電子發票證明聯或三聯式），請讀出欄位。圖片是同一張發票的原圖、轉 90 度的兩個方向、以及表頭放大，請挑看得懂的方向讀（表頭放大圖裡有買受人與統一編號）。\n' + INVOICE_SCHEMA + '\n\n' + '\n\n'.join(parts)
+            prompt = '下面是一張台灣統一發票（電子發票證明聯或三聯式），請讀出欄位。圖片是同一張發票（可能轉了兩個方向），請挑看得懂的方向讀；三聯式掃描常有兩聯並排，內容相同，讀一聯即可。\n' + INVOICE_SCHEMA + '\n\n' + '\n\n'.join(parts)
         elif kind == 'offer':
             prompt = '下面是客戶給的「聘書／入職通知書」，請讀出薪資資訊。\n' + OFFER_SCHEMA + '\n\n' + '\n\n'.join(parts)
         else:

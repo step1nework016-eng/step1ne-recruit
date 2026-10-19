@@ -3085,7 +3085,7 @@ def tick():
         ("SELECT * FROM ai_jobs WHERE status='pending' AND attempts < %d " + _kind_filter +
          # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
          # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
-         "ORDER BY CASE WHEN kind IN ('precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
+         "ORDER BY CASE WHEN kind IN ('billing_read','precall_card','postcall_result','call_notes_summary','call_prep','client_call_split','job_card_feedback','job_switch_fit') THEN 0 "
          "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d")
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
@@ -3207,6 +3207,33 @@ def _maybe_self_update(last_checked):
     return autoupdate.maybe_self_update(last_checked, log=log, name='ai_worker', can_restart=_can_restart)
 
 
+def _fast_kinds():
+    """2026-10-19 Jacky：上傳發票要 20 秒內帶入。顧問在畫面前等的 kind，空檔每 3 秒看一次（只查有沒有這種 pending，走 status 索引，很輕）。"""
+    ks = ['billing_read']
+    try:
+        sk = open(os.path.expanduser('~/.config/workflow-os/ai_worker_skip_kinds.txt'), encoding='utf-8').read()
+        skip = {x.strip() for x in re.split(r'[,\n]', sk) if x.strip()}
+        ks = [k for k in ks if k not in skip]
+    except Exception:
+        pass
+    return ks
+
+
+def _nap():
+    ks = _fast_kinds()
+    end = time.time() + POLL_SEC
+    while time.time() < end:
+        time.sleep(3)
+        if not ks:
+            continue
+        try:
+            rows = d1_http.query("SELECT 1 AS x FROM ai_jobs WHERE status='pending' AND kind IN (" + ','.join(q(k) for k in ks) + ") LIMIT 1")
+            if rows:
+                return
+        except Exception:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--once', action='store_true')
@@ -3223,7 +3250,7 @@ def main():
         except Exception as e:
             log(f'⚠️ 這一輪出錯（不影響下一輪）：{str(e)[:200]}')
         last_update_check = _maybe_self_update(last_update_check)
-        time.sleep(POLL_SEC)
+        _nap()
 
 
 if __name__ == '__main__':
