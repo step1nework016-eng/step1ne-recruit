@@ -1684,6 +1684,10 @@ def process(job):
         if kind == 'bd_job_match':
             return bd_job_match.run_match(_pl, run_claude=run_claude)
         return bd_job_match.run_brief(_pl, run_claude=run_claude)
+    # 2026-10-19：官網企業詢問 → AI 擬回信 → 客戶群組 free_mail 確認卡（整條在 inbound_reply.py；按確認才會寄）
+    if kind == 'inbound_reply':
+        import inbound_reply
+        return inbound_reply.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
     if kind == 'company_research':
         import company_research
         return company_research.run(json.loads(job.get('payload_json') or '{}'))
@@ -3183,7 +3187,7 @@ _INFLIGHT = {}
 _INFLIGHT_KIND = {}   # jid → kind，算「背景工作佔了幾個位子」用
 # 顧問在畫面前等的工作：排最前面，而且永遠保留 1 個位子給它們（見 tick）
 URGENT_KINDS = ('billing_read', 'precall_card', 'postcall_result', 'call_notes_summary', 'call_prep',
-                'client_call_split', 'job_card_feedback', 'job_switch_fit')
+                'client_call_split', 'job_card_feedback', 'job_switch_fit', 'inbound_reply')
 _DRAIN = False   # 偵測到新版、等手上工作做完準備換版時為 True，這段期間不接新工作
 
 

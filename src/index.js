@@ -5669,11 +5669,13 @@ export default {
       // company_leads.id 是 INTEGER AUTOINCREMENT，不要自己塞 id（第一版塞了 UUID，寫入全失敗）。
       // 寫入失敗不能再默默吞掉——人家留了需求，系統卻沒存，最糟的情況是連通知都沒人看到。
       let saved = true;
+      let leadId = null;
       await env.DB.prepare(
         `INSERT INTO company_leads (company, signal, signal_type, source_kind, source_person, heard_at, status, note, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?)`
       ).bind(company, job || '（未填職缺）', 'inbound_web', 'website', name || null, now, 'new',
-             JSON.stringify(detail ? { contact, page, plan, detail } : { contact, page, plan }), now, now).run().catch(async (e) => {
+             JSON.stringify(detail ? { contact, page, plan, detail } : { contact, page, plan }), now, now).run()
+        .then((r) => { leadId = (r && r.meta && r.meta.last_row_id) || null; }).catch(async (e) => {
         saved = false;
         await notify(env, `⚠️ 官網企業詢問寫入資料庫失敗（通知照發）：${String(e).slice(0, 200)}`,
           { message_thread_id: THREAD.system }).catch(() => {});
@@ -5702,6 +5704,13 @@ export default {
       // 開發進度看板有 5 分鐘快取（在後台 Worker），請它清掉，新卡片才會馬上出現
       if (bdId) await fetch('https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/bd/cache-bust', {
         method: 'POST', headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` }, signal: AbortSignal.timeout(5000) }).catch(() => {});
+      // 2026-10-19 Jacky：留 Email 的，排給 AI 擬回信（ai_worker → inbound_reply.py），擬好貼 free_mail 確認卡到這個主題，
+      // 有人按「確認寄出」才會從 official@ 寄；只留電話的不擬。
+      let replyQueued = false;
+      if (isEmail && leadId) {
+        await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'inbound_reply', ?, 'pending', ?)`)
+          .bind(crypto.randomUUID(), JSON.stringify({ lead_id: leadId }), now).run().then(() => { replyQueued = true; }).catch(() => {});
+      }
       const topic = await getOrCreateTopic(env, 'inbound_leads', '🏢 官網企業詢問');
       const iRoute = await tgRoute(env, 'client_inbound');
       await notify(env,
@@ -5711,6 +5720,8 @@ export default {
         + `聯絡：${name ? name + '　' : ''}${contact}\n從哪一頁：${page || '—'}\n\n`
         + `→ 我們在頁面上承諾「1 個工作天內回覆」，請盡快聯絡。`
         + (bdId ? `\n→ 已建在後台「客戶 → 開發進度」（搜尋公司名就找得到）。先按下面誰接，再到卡片上記電話結果、寄公司介紹信。` : '')
+        + (replyQueued ? `\n→ AI 正在擬回信草稿（簽名 Phoebe），約 1～5 分鐘後會在這裡貼確認卡；按「確認寄出」才會寄。`
+          : (isPhone ? `\n→ 對方只留電話，AI 不擬回信，請直接打電話聯絡。` : ''))
         + (saved ? '' : '\n⚠️ 這筆沒有存進系統，請手動記下。'),
         { ...(iRoute || (topic ? { message_thread_id: topic } : {})),
           ...(bdId ? { reply_markup: { inline_keyboard: [[

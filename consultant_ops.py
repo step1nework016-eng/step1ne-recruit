@@ -561,11 +561,23 @@ def cmd_free_mail(a):
     if not d.get('ok'):
         die(d.get('error') or '產生草稿失敗')
     files = d.get('files') or []
+    # 2026-10-19：--file-id 直接附系統裡已存在的檔案（例如公司簡介 PROFILE_FILE_ID），不用每次重新上傳一份
+    for fid in (a.file_id or []):
+        fid, _, fname = fid.partition(':')
+        fr = rows('SELECT id, filename, mime FROM files WHERE id=?', [fid.strip()])
+        if not fr:
+            die(f'系統裡找不到這個檔案：{fid}')
+        files.append({'file_id': fr[0]['id'], 'filename': fname.strip() or fr[0]['filename'] or 'attachment.pdf',
+                      'mime': fr[0]['mime'] or 'application/octet-stream'})
+    if len(files) > 5:
+        die('附件最多 5 個')
     params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name']}
     who_line = f'人選：{app["name"]}（{app.get("job_title") or app.get("job_slug") or "—"}）\n' if app.get('id') else (f'公司：{a.company}\n' if a.company else '')
     card = ('📧 確認寄出｜自由信件\n' + who_line + f'收件：{d["to"]}\n' + (f'副本：{", ".join(d["cc"])}\n' if d.get('cc') else '') +
             f'主旨：{d["subject"]}\n' + (f'附件：{"、".join(f["filename"] for f in files)}\n' if files else '') + '─' * 14 + '\n' + text + '\n' +
             card_tail(w, '寄出後約 1 分鐘內從 official@ 寄出，並存進寄件備份。'))
+    if a.card_note:
+        card = a.card_note.strip() + '\n' + card
     aid = create_action('free_mail', app, params, d['to'], d['subject'], text, card, [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')])
     print(f'✅ 已貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}' + (f'\n附件：{len(files)} 個' if files else ''))
 
@@ -713,7 +725,9 @@ def main():
     p = sp.add_parser('free-mail', help='自由信件：寄給客戶或人選（確認卡；可附檔）'); p.add_argument('--to', help='收件信箱；寄給人選時可省略，會自動帶人選卡片上的 Email')
     p.add_argument('--cc'); p.add_argument('--subject', required=True); p.add_argument('--text-file'); p.add_argument('--text')
     p.add_argument('--attach', action='append', help='附件路徑，可重複'); p.add_argument('--who', help='收件人是人選時填人選姓名或編號（會套用人選文字規則、寫進人選卡片）')
-    p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）'); p.set_defaults(fn=cmd_free_mail)
+    p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）')
+    p.add_argument('--file-id', action='append', help='附系統裡已存在的檔案：檔案編號，或「編號:顯示檔名」，可重複')
+    p.add_argument('--card-note', help='確認卡最上面多一行說明（不會進信裡）'); p.set_defaults(fn=cmd_free_mail)
     p = sp.add_parser('summary', help='電洽逐字稿寫進卡片（確認卡）'); p.add_argument('who'); p.add_argument('--file'); p.add_argument('--text')
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)
