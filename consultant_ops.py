@@ -526,6 +526,12 @@ def cmd_free_mail(a):
     app = {'id': '', 'name': a.company or a.to, 'job_title': '', 'job_slug': ''}
     if a.who:
         app = resolve(a.who)
+    if not a.to:
+        # 2026-10-19 Jacky：寄給人選不要再叫人去查信箱，直接用卡片上的 Email
+        em = rows('SELECT email FROM applications WHERE id=?', [app['id']]) if app.get('id') else []
+        a.to = (em[0].get('email') or '').strip() if em else ''
+        if not a.to:
+            die('沒有收件信箱：請加 --to，或用 --who 指定一位卡片上有 Email 的人選')
     # 日期跟星期對不上、客戶名寫錯，在貼確認卡之前就擋（寄信程式寄出前也會再擋一次）
     try:
         from weekday_check import weekday_errors
@@ -704,7 +710,7 @@ def main():
     p.add_argument('--reason', default='fit', choices=list(DECLINE_REASONS)); p.add_argument('--extra')
     p.add_argument('--no-keep', action='store_true'); p.add_argument('--subject'); p.add_argument('--text-file')
     p.add_argument('--again', action='store_true'); p.set_defaults(fn=cmd_decline)
-    p = sp.add_parser('free-mail', help='自由信件：寄給客戶或人選（確認卡；可附檔）'); p.add_argument('--to', required=True)
+    p = sp.add_parser('free-mail', help='自由信件：寄給客戶或人選（確認卡；可附檔）'); p.add_argument('--to', help='收件信箱；寄給人選時可省略，會自動帶人選卡片上的 Email')
     p.add_argument('--cc'); p.add_argument('--subject', required=True); p.add_argument('--text-file'); p.add_argument('--text')
     p.add_argument('--attach', action='append', help='附件路徑，可重複'); p.add_argument('--who', help='收件人是人選時填人選姓名或編號（會套用人選文字規則、寫進人選卡片）')
     p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）'); p.set_defaults(fn=cmd_free_mail)

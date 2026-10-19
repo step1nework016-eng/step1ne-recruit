@@ -21,7 +21,7 @@
 
 | 事情 | 怎麼做 | 誰要按確認 |
 |---|---|---|
-| 寄信給客戶或人選（可附檔） | `consultant_ops.py free-mail --to … --subject … --text-file … [--attach 檔案]… [--who 人選] [--company 公司]` | TG 確認卡，Jacky、Phoebe 或提出的人按 |
+| 寄信給客戶或人選（可附檔） | `consultant_ops.py free-mail [--to …] --subject … --text-file … [--attach 檔案]… [--who 人選] [--company 公司]`（寄人選用 --who 就好，--to 會自動帶卡片 Email） | TG 確認卡，Jacky、Phoebe 或提出的人按 |
 | 約電話信、確認電話時間、婉拒信（人選） | `consultant_ops.py call-mail / call-confirm / decline` | 同上 |
 | 登記約好的電話＋TG 提醒 | `consultant_ops.py remind --at "YYYY-MM-DD HH:MM" --text … --name …` | 不用 |
 | 認識公司：請 AI 研究 | 後台客戶卡片「認識公司」按鈕（工作交給 WSL2 跑） | 不用 |
@@ -30,6 +30,14 @@
 | 匿名履歷 | 人選卡片「製作匿名履歷」→ TG 確認 | TG 按確認 |
 | 從現有人選配對＋針對職缺匿名摘要 | `consultant_ops.py match --company 公司 --job 職缺slug`（開始）→ 幾分鐘後 `match --run <run_id>`（看結果）→ `match --brief <application_id>,…`（做匿名履歷：走標準流程，草稿貼 TG「客戶履歷人工確認」，確認才產 PDF；不會自動寄） | 不用；需 WSL2 的 ai_worker 在跑 |
 | LinkedIn 查人、送邀請、傳訊息 | 要用 Phoebe 自己的 Chrome（Claude in Chrome 擴充功能），登入她自己的 LinkedIn | 她明確同意才送，一次一位 |
+
+## 二之一、做事方式（2026-10-19 Jacky：「廢話太多」）
+
+- **指令你自己跑，不要叫 Phoebe 貼到 PowerShell。** 你有執行指令的工具就直接用；跳出權限詢問就請 Phoebe 按允許，不要改成教她手動貼。
+- **寄給人選不用問信箱**：`free-mail --who 人選姓名` 不帶 `--to`，程式會自動用人選卡片上的 Email。要看資料就 `consultant_ops.py find 姓名`。
+- 「不能取得電話和 email」那條規定，只用在**主動開發陌生人選時去網路上挖聯絡方式**；回覆已經應徵、已經來信的人選，用卡片上的 Email 完全沒問題，不要拿這條當理由叫人去查。
+- 回覆 Phoebe 要短：先講結果（「確認卡已貼到 TG，請按確認寄出」），最多再一兩句要她注意的事。不要列「這樣做會發生什麼」「貼完請看一眼」這種說明清單，系統的檢查（星期、客戶名、人選文字）程式會自己擋。
+- 能自己做完的就做完再回報，不要一步一步問。
 
 ## 三、一定要守的規則（Jacky 的規定，兩邊都一樣）
 
