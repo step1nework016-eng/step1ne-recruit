@@ -1546,6 +1546,9 @@ function progressFlexBubble(prog, jobSlug) {
         ...(prog.secondStageDate
           ? [{ type: 'text', text: `🗓 第二階段面試日期：${prog.secondStageDate}`, size: 'sm', color: '#8993a8' }]
           : []),
+        ...(prog.statusLine
+          ? [{ type: 'text', text: `📍 目前狀態：${prog.statusLine}`, size: 'sm', color: '#2f6fed', weight: 'bold' }]
+          : []),
         { type: 'separator', margin: 'md' },
         { type: 'text', text: prog.message, size: 'md', wrap: true, margin: 'md', color: '#16202e' },
       ],
@@ -2915,6 +2918,7 @@ async function deriveApplicationProgress(env, appId) {
   const jobTitle = app.job_title || app.job_slug || '這個職缺';
   let message;
   let showNudgeButton = false;   // 卡片要不要多顯示「提醒顧問看一下」按鈕
+  let statusLine = '';   // 2026-10-19：卡片上的「目前狀態」一行（目前只有已推薦會顯示）
   let closed = false;   // 結案不續——卡片要換成橘色，跟一般進度更新的藍色卡區分開
 
   // 2026-08-18 加：備選是平行狀態，不是線性階段的其中一關——優先於下面的
@@ -2996,11 +3000,16 @@ async function deriveApplicationProgress(env, appId) {
           'CLIENT_DECISION_PENDING', 'INTERVIEWING', 'OFFER_PENDING',
         ]);
         const hasClientStageSignal = IN_PROGRESS_WITH_CLIENT.has(placementStage);
+        // 2026-10-19 Jacky：顧問按了「推薦給客戶」（consultant_decision='forwarded'）本身就是
+        // 「已經送出去了」的證據。原本只認手寫跟進紀錄／進度表，只按按鈕沒寫紀錄的人選
+        // （近 60 天 23 位已推薦裡有 11 位）一直看到「審閱中、要不要催」。
+        const forwardedSignal = !!(report && report.consultant_decision === 'forwarded');
         const prm = pendingReviewMessage(
           daysSince,
           hasAppt,
-          !!(app.handled_note && app.handled_note.trim()) || hasClientStageSignal,
+          !!(app.handled_note && app.handled_note.trim()) || hasClientStageSignal || forwardedSignal,
         );
+        if (forwardedSignal) statusLine = '已推薦給用人單位';
         message = prm.text;
         showNudgeButton = prm.escalated;
         break;
@@ -3026,7 +3035,7 @@ async function deriveApplicationProgress(env, appId) {
   }
 
   return { jobTitle, message, name: app.name || '', interviewDate, secondStageDate, jobSlug: app.job_slug || '',
-    showNudgeButton, appId, closed };
+    showNudgeButton, appId, closed, statusLine };
 }
 
 // 2026-08-13 從純文字升級成 Flex——跟 notifyLineProgress() 的主動推播共用
