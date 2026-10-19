@@ -4224,6 +4224,8 @@ async function refreshPrecallAfterResume(env, appId) {
 
 // ── official@ 信箱收信（mailbox_poll.py → /internal/mailbox-ingest）──────────────
 async function ingestMailboxMessage(env, b) {
+  // 2026-10-19 Jacky：jackychen@ 的信也要進 TG（之前只讀 official@），通知上標清楚是哪個信箱
+  const mbx = /^jackychen@/i.test(String(b.mailbox || '')) ? 'jackychen@' : 'official@';
   const msgId = String(b.message_id || '').trim().slice(0, 300);
   const fromRaw = String(b.from || '');
   const fromEmail = ((fromRaw.match(/<([^>]+)>/) || [])[1] || fromRaw).trim().toLowerCase();
@@ -4262,7 +4264,7 @@ async function ingestMailboxMessage(env, b) {
     }
     return saved;
   };
-  const excerpt = body ? body.slice(0, 1500) : '（這封沒有文字內容，請到 official@ 信箱看）';
+  const excerpt = body ? body.slice(0, 1500) : `（這封沒有文字內容，請到 ${mbx} 信箱看）`;
   const cardUrl = (id) => `https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(id)}`;
 
   // ① 約電話的回信（跟 Resend 那段同一張表；Resend 那邊已經記過＝兩邊都收到，只補附件不重推）
@@ -4282,14 +4284,14 @@ async function ingestMailboxMessage(env, b) {
     // 2026-10-14 金玉霜事故：她回「下午3點有會議，挪到1:30呢？」，這條路只更新 call_booking_mails、沒寫進人選卡片，
     // TG 也只是普通一則，顧問沒看到、照原時間排。→ 回信一律也寫進人選卡片的「來信」，並把「對方可能改時間」標出來。
     await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
-      .bind(uid(), cbm.application_id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, 'official@ 信箱').run().catch(() => {});
+      .bind(uid(), cbm.application_id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, `${mbx} 信箱`).run().catch(() => {});
     await mark('call_booking', cbm.application_id);
     if (already && !cv.length) return { ok: true, matched: 'call_booking', notified: false };
     const timeChange = /挪|改到|改成|調整|換|不方便|沒辦法|無法|取消|延|提前|可以嗎|好嗎|\?|？/.test(body.split(/\n>|於 .{0,40}寫道/)[0] || '');
     const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner || '（還沒指派顧問）');
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
-    await notify(env, `${timeChange ? '🚨⚠️ 對方可能改了時間，先回信確認再打電話！\n' : ''}📞 人選回信（official@ 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
-      + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片${pcQueued ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+    await notify(env, `${timeChange ? '🚨⚠️ 對方可能改了時間，先回信確認再打電話！\n' : ''}📞 人選回信（${mbx} 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
+      + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片${pcQueued ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 ${mbx} 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(cbm.application_id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'call_booking', notified: true };
   }
@@ -4313,7 +4315,7 @@ async function ingestMailboxMessage(env, b) {
     await env.DB.prepare(`UPDATE bd_outreach SET last_event_at=? WHERE id=?`).bind(now, orow.id).run().catch(() => {});
     const topic = await getOrCreateTopic(env, 'bd_signals', '📬 開發信 開信・回信').catch(() => null);
     const cRoute = await tgRoute(env, 'client_signals');
-    await notify(env, `✉️ 客戶回信了！（official@ 信箱）\n\n公司：${orow.company}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1200)}`,
+    await notify(env, `✉️ 客戶回信了！（${mbx} 信箱）\n\n公司：${orow.company}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1200)}`,
       cRoute || (topic ? { message_thread_id: topic } : undefined)).catch(() => {});
     return { ok: true, matched: 'bd_reply', notified: true };
   }
@@ -4332,11 +4334,11 @@ async function ingestMailboxMessage(env, b) {
     const cv = await saveAtt(app.id);
     const pcQueued2 = cv.length ? await refreshPrecallAfterResume(env, app.id) : false;
     await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
-      .bind(uid(), app.id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, 'official@ 信箱').run().catch(() => {});
+      .bind(uid(), app.id, '來信', `主旨：${subject}\n\n${body}`.slice(0, 4000), now, `${mbx} 信箱`).run().catch(() => {});
     await mark('candidate', app.id);
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
-    await notify(env, `📧 人選來信（official@ 信箱）｜${app.name}\n職缺：${app.job_title || '—'}\n主旨：${subject || '—'}\n\n${excerpt}`
-      + (cv.length ? `\n\n📎 附件（${cv.join('、')}）已放進人選卡片${pcQueued2 ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 official@ 信箱下載' : ''))
+    await notify(env, `📧 人選來信（${mbx} 信箱）｜${app.name}\n職缺：${app.job_title || '—'}\n主旨：${subject || '—'}\n\n${excerpt}`
+      + (cv.length ? `\n\n📎 附件（${cv.join('、')}）已放進人選卡片${pcQueued2 ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 ${mbx} 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(app.id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'candidate', notified: true };
   }
@@ -4352,8 +4354,8 @@ async function ingestMailboxMessage(env, b) {
     await mark('client', client.id);
     const extra = client.tg_topic_id ? { message_thread_id: Number(client.tg_topic_id), ...(client.tg_topic_chat_id ? { chat_id: client.tg_topic_chat_id } : {}) }
       : (await tgRoute(env, 'client_signals')) || undefined;
-    await notify(env, `🏢 客戶來信（official@ 信箱）｜${client.display_name}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1500)}`
-      + (att.length ? `\n\n📎 有 ${att.length} 個附件，請到 official@ 信箱下載` : ''), extra).catch(() => {});
+    await notify(env, `🏢 客戶來信（${mbx} 信箱）｜${client.display_name}\n寄件人：${fromName ? fromName + ' ' : ''}<${fromEmail}>\n主旨：${subject || '—'}\n\n${excerpt.slice(0, 1500)}`
+      + (att.length ? `\n\n📎 有 ${att.length} 個附件，請到 ${mbx} 信箱下載` : ''), extra).catch(() => {});
     return { ok: true, matched: 'client', notified: true };
   }
 
@@ -5518,6 +5520,7 @@ export default {
       let b; try { b = await request.json(); } catch { return json(request, { ok: false, error: '格式錯誤' }, 400); }
       const liffTok = await verifyLiffIdToken(String(b.id_token || ''));
       const liffSub = liffTok ? liffTok.sub : null;
+      console.log('progress-liff', JSON.stringify({ diag: b.diag || null, hasIdt: !!b.id_token, verified: !!liffTok, name: liffTok && liffTok.name, hasK: !!b.k }));
       const oaUid = b.k ? await readProgressToken(env, String(b.k)) : null;
       if (b.k && !oaUid) return json(request, { ok: false, error: 'token_expired' }, 401);
       if (oaUid && liffSub) {

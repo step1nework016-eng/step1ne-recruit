@@ -32,7 +32,9 @@ import sys
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATE = os.path.expanduser('~/.config/workflow-os/step1ne-mailbox.state.json')
+# 2026-10-19 Jacky：jackychen@ 的信也要進 TG。加 --box jacky 讀 jackychen@（密碼只在 Mac 的 jacky-mailbox.env），狀態檔與鎖分開。
+BOX = 'jacky' if ('--box' in sys.argv and sys.argv[sys.argv.index('--box') + 1] == 'jacky') else 'official'
+STATE = os.path.expanduser('~/.config/workflow-os/' + ('jacky-mailbox' if BOX == 'jacky' else 'step1ne-mailbox') + '.state.json')
 SKIP_FROM = re.compile(r'(@step1ne\.com$|@secureserver\.net$|godaddy|@titan\.email$|mailer-daemon|postmaster)', re.I)
 DOC = re.compile(r'\.(pdf|docx?)$', re.I)
 MAX_ATT = 8 * 1024 * 1024
@@ -101,7 +103,7 @@ def _claim_lock():
         host = socket.gethostname().replace("'", '')
         rows = d1_rw.q(
             "INSERT INTO deploy_locks (target, owner, host, acquired_at) "
-            f"VALUES ('cron:mailbox_poll', 'mailbox_poll', '{host}', datetime('now','+8 hours')) "
+            f"VALUES ('{'cron:mailbox_poll' if BOX == 'official' else 'cron:mailbox_poll:jacky'}', 'mailbox_poll', '{host}', datetime('now','+8 hours')) "
             "ON CONFLICT(target) DO UPDATE SET host=excluded.host, acquired_at=excluded.acquired_at "
             "WHERE deploy_locks.host = excluded.host OR deploy_locks.acquired_at < datetime('now','+8 hours','-10 minutes') "
             "RETURNING host")
@@ -125,7 +127,11 @@ def main():
     if not dry and not _claim_lock():
         print('另一台機器這一輪已經在讀信，跳過')
         return
-    box = _env('~/.config/workflow-os/step1ne-mailbox.env')
+    if BOX == 'jacky':
+        jb = _env('~/.config/workflow-os/jacky-mailbox.env')
+        box = {'MAIL_IMAP_HOST': jb.get('MAIL_IMAP_HOST') or 'imap.secureserver.net', 'MAIL_IMAP_USER': jb['MAIL_USER'], 'MAIL_IMAP_PASS': jb['MAIL_PASS']}
+    else:
+        box = _env('~/.config/workflow-os/step1ne-mailbox.env')
     rec = _env('~/.config/workflow-os/recruit.env')
     api, token = rec.get('RECRUIT_API_URL'), rec.get('RECRUIT_ADMIN_TOKEN')
     state = {}
@@ -173,7 +179,7 @@ def main():
                 date_tpe = None
             payload = {'message_id': (msg.get('Message-ID') or f'uid:{uidvalidity}:{uid}').strip(),
                        'from': frm, 'subject': subject, 'text': _text(msg), 'date_taipei': date_tpe,
-                       'attachments': _attachments(msg)}
+                       'attachments': _attachments(msg), 'mailbox': 'jackychen@step1ne.com' if BOX == 'jacky' else 'official@step1ne.com'}
             if dry:
                 print(f'[dry] {date_tpe}｜{addr}｜{subject[:60]}｜附件 {len(payload["attachments"])}')
                 continue
