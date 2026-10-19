@@ -3003,7 +3003,16 @@ async function deriveApplicationProgress(env, appId) {
         // 2026-10-19 Jacky：顧問按了「推薦給客戶」（consultant_decision='forwarded'）本身就是
         // 「已經送出去了」的證據。原本只認手寫跟進紀錄／進度表，只按按鈕沒寫紀錄的人選
         // （近 60 天 23 位已推薦裡有 11 位）一直看到「審閱中、要不要催」。
-        const forwardedSignal = !!(report && report.consultant_decision === 'forwarded');
+        // 只算「還在進行中」的推薦：客戶已說不要、顧問標不推、人選自己放棄的不算，
+        // 不然被婉拒但還沒結案的人選會看到「已推薦、等回覆」。
+        let forwardedSignal = false;
+        if (report && report.consultant_decision === 'forwarded') {
+          const fwActive = await env.DB.prepare(
+            `SELECT 1 FROM candidate_forwards WHERE application_id = ?
+               AND client_rejected_at IS NULL AND advisor_not_recommended_at IS NULL AND candidate_withdrawn_at IS NULL LIMIT 1`
+          ).bind(appId).first();
+          forwardedSignal = !!fwActive;
+        }
         const prm = pendingReviewMessage(
           daysSince,
           hasAppt,
