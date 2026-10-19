@@ -49,6 +49,7 @@ CONTRACT_SCHEMA = """只輸出一個 JSON 物件（不要 Markdown、不要說�
       "name": "收費類別名稱（例：正職代招、高階獵才、約聘）",
       "fee_type": "只能是 monthly_multiple／annual_percent／fixed_amount／contract_total_percent／custom／manual 其中一個",
       "levels": [{"name": "職級名稱（例：一般職員）", "months": 幾個月月薪的數字}],      // 只有 monthly_multiple 才填
+      "salary_basis": "monthly（照聘書月薪）或 annual_div_12（合約寫「月薪＝固定年度薪資總額 ÷ 12」）",  // 只有 monthly_multiple 才填
       "brackets": [{"min": 年薪下限整數或 null, "max": 年薪上限整數或 null, "percent": 百分比數字, "min_fee": 最低服務費整數或 null}],  // 只有 annual_percent 才填
       "amount": 固定金額整數,                                                          // 只有 fixed_amount 才填
       // contract_total_percent 用 brackets：[{"min": 約聘月數下限, "max": 約聘月數上限或 null, "min_inclusive": true/false, "max_inclusive": true/false, "percent": 百分比, "months_override": 計費月數或 null}]
@@ -81,6 +82,7 @@ CONTRACT_SCHEMA = """只輸出一個 JSON 物件（不要 Markdown、不要說�
 
 型態規則（非常重要，不准變通）：
 - monthly_multiple：服務報酬＝「月薪 × 幾個月」，依職級（一般職員／管理職…）不同月數。
+  合約若定義「計費月薪＝固定年度薪資總額 ÷ 12」（例如保障 13 個月時月薪基準會比聘書月薪高），salary_basis 填 annual_div_12。
 - annual_percent：服務報酬＝「固定年薪 × 百分比」，依年薪級距不同百分比；有最低服務費就填 min_fee。
 - fixed_amount：一個固定金額。
 - contract_total_percent：約聘案件，服務報酬＝「月薪 × 約聘月數 × 百分比」，百分比依「約聘月數」分級距；
