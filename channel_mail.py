@@ -22,13 +22,26 @@ sys.path.insert(0, HERE)
 PHONE = '02-6605-7111'
 LICENSE = '北市就服字第 0363 號'
 TRAINING_URL = 'https://step1ne.com/training/'
-SHARE_TEXT = (
-    '半導體建廠・BIM 培訓職缺（無經驗可）\n'
-    '適合：工程、設計、建築、土木相關科系同學，以及想轉職的社會人士\n'
-    '地點：新竹、苗栗、台中、雲林等地\n'
-    '特色：無經驗可、公司提供培訓、正職僱用\n'
-    f'職缺與報名：{TRAINING_URL}\n'
-    f'（Step1ne 德仁管理顧問，{LICENSE}）')
+# 2026-10-20 Jacky：對象分兩種——大專院校（培訓專區）／一般求職者（營造專區）
+AUDIENCE = {
+    'school': {'url': 'https://step1ne.com/training/', 'label': '大專院校學員',
+               'share': ('半導體建廠・BIM 培訓職缺（無經驗可）\n'
+                         '適合：工程、設計、建築、土木相關科系同學，以及想轉職的社會人士\n')},
+    'construction': {'url': 'https://step1ne.com/construction/', 'label': '求職民眾',
+                     'share': ('半導體建廠・營造工程職缺（含無經驗可培訓）\n'
+                               '適合：工程、設計、建築、土木相關背景，以及想轉職的社會人士\n')},
+}
+
+
+def share_text(aud):
+    a = AUDIENCE.get(aud) or AUDIENCE['school']
+    return (a['share']
+            + '地點：新竹科學園區、苗栗銅鑼科學園區、台中后里園區等地\n'
+            + '特色：無經驗可、公司提供培訓、正職僱用\n'
+            + f"職缺與報名：{a['url']}\n"
+            + f'（Step1ne 德仁管理顧問，{LICENSE}）')
+
+
 # AI 寫的段落不准出現：費用、規模誇大、客戶公司名（另外 mail_outbox_send 寄出前還會再擋一次客戶名）
 BAD = re.compile(r'費用|收費|服務費|最大|第一|唯一|保證錄取|保證')
 
@@ -123,6 +136,8 @@ def run(payload, run_claude=None):
         from ai_worker import run_claude as rc
         run_claude = rc
     files = '、'.join(str(x) for x in (payload.get('files') or []) if x)[:300]
+    _aud = AUDIENCE.get(payload.get('audience')) or AUDIENCE['school']
+    note = (note + '\n' if note else '') + f"（這封信要請對方轉給：{_aud['label']}）"
     prompt = build_prompt(ch, logs, jobs, note, files)
     data = None
     err = ''
@@ -145,14 +160,16 @@ def run(payload, run_claude=None):
     if err or not data:
         raise RuntimeError(f'AI 擬信不合格：{err or "沒有輸出"}')
     joblines = '\n'.join(f"・{_title(j['title'])}｜{_loc(j)}\n  https://step1ne.com/jobs/{j['slug']}/" for j in jobs)
+    aud = payload.get('audience') if payload.get('audience') in AUDIENCE else 'school'
+    aud_url = AUDIENCE[aud]['url']
     if data.get('include_jobs', True) is not False:
         mid = ('目前開放的職缺：\n' + joblines + '\n\n'
-               + f'全部培訓職缺與報名：{TRAINING_URL}\n\n'
-               + '以下這段可以直接轉貼給學員：\n'
-               + '────────────\n' + SHARE_TEXT + '\n────────────\n\n'
+               + f"全部職缺與報名：{aud_url}\n\n"
+               + f"以下這段可以直接轉貼給{AUDIENCE.get(aud, AUDIENCE['school'])['label']}：\n"
+               + '────────────\n' + share_text(aud) + '\n────────────\n\n'
                + '如果需要職缺說明會或其他資料，歡迎直接回信或來電。謝謝您！\n\n')
     else:
-        mid = f'培訓職缺與報名頁面：{TRAINING_URL}\n\n有任何問題歡迎直接回信或來電，謝謝您！\n\n'
+        mid = f'職缺與報名頁面：{aud_url}\n\n有任何問題歡迎直接回信或來電，謝謝您！\n\n'
     text = (data['opening'].strip() + '\n\n' + mid
             + f'Step1ne 德仁管理顧問\n顧問：{by}\n電話：{PHONE}\nEmail：official@step1ne.com\n就業服務許可證：{LICENSE}')
     return json.dumps({'to': ch.get('email') or '', 'subject': data['subject'].strip(), 'text': text}, ensure_ascii=False)
