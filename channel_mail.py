@@ -65,12 +65,15 @@ def _load(channel_id):
 
 def _loc(j):
     v = j.get('locations') or ''
-    try:
-        x = json.loads(v)
-        if isinstance(x, list):
-            v = '、'.join(x)
-    except Exception:
-        pass
+    if isinstance(v, str) and v.strip().startswith('['):
+        import ast
+        for parse in (json.loads, ast.literal_eval):   # 有些職缺存成 ['新竹'] 這種單引號格式
+            try:
+                x = parse(v)
+                if isinstance(x, list):
+                    return '、'.join(str(i) for i in x)
+            except Exception:
+                pass
     return str(v).strip()
 
 
@@ -78,7 +81,7 @@ def _title(t):
     return (t or '').replace('(', '（').replace(')', '）')
 
 
-def build_prompt(ch, logs, jobs, note):
+def build_prompt(ch, logs, jobs, note, files=''):
     hist = '\n'.join(f"- {l.get('event_at') or ''} {l.get('by') or ''}（{l.get('kind')}）：{(l.get('text') or '')[:200]}"
                      + (f"｜窗口：{l['contact_name']}" if l.get('contact_name') else '') for l in logs) or '（還沒有紀錄）'
     jl = '\n'.join(f"- {_title(j['title'])}（{_loc(j)}）" for j in jobs)
@@ -90,17 +93,23 @@ def build_prompt(ch, logs, jobs, note):
 【管道備註】{ch.get('note') or '—'}
 【最近聯絡紀錄（新到舊）】
 {hist}
-【顧問這次想說的（最重要，照這個寫）】{note or '（沒寫，就寫成第一次寄職缺資訊）'}
+【顧問這次想說的（這封信的目的，最重要，照這個寫）】{note or '（沒寫，就寫成第一次寄職缺資訊）'}
+【這封信會附上的檔案】{files or '（沒有附件）'}
 【要推的職缺（信件後面會自動附完整清單，你不用列）】
 {jl}
 
-只輸出 JSON：{{"subject":"主旨","opening":"開頭段落"}}
+只輸出 JSON：{{"subject":"主旨","opening":"信的本文","include_jobs":true}}
+🚨 最重要：信的目的完全照「顧問這次想說的」。管道備註和聯絡紀錄只是背景，用來稱呼對方、接續前情，
+   **不要自己把背景裡的其他事情（合作條件、簽約、問問題）加進信裡**，除非顧問備註有要求。
+   例：備註「我要提供填寫好的招募 BIM 工程師表單」→ 這封就是「回傳填好的表單，請查收附件」，簡短即可。
+include_jobs：信的目的是「提供職缺資訊請對方轉發」才給 true（後面會自動接職缺清單和轉貼文字）；
+   回傳表單、回覆問題、約時間這類就給 false（只會接一行培訓職缺頁連結）。
 規則：
 1. subject：20～35 字，只講這封信提供什麼（例：「半導體建廠 BIM 培訓職缺｜可轉給學員參考」），不要在主旨向對方要東西（信箱、電話），不要驚嘆號。
-2. opening：2～4 段、合計 120～260 字。稱呼用窗口名字（「林小姐您好」），不知道就用「{ch.get('name')} 承辦人您好」。
-   第一段：自我介紹一句（Step1ne 德仁管理顧問，協助半導體產業招募，也與多家營造相關企業合作），如果紀錄裡通過電話，要接著說「延續先前電話中提到的」。
-   第二段：說明這批職缺接受無經驗、公司提供培訓，適合工程、設計、建築、土木相關科系同學與想轉職的人；請對方方便時轉給學員或民眾。
-   有顧問備註就照備註調整內容（例如對方要求提供內容到信箱、要辦說明會）。
+2. opening：1～4 段、合計 60～260 字（回傳表單這類可以很短）。稱呼用窗口名字（「林小姐您好」），不知道就用「{ch.get('name')} 承辦人您好」。
+   如果紀錄裡通過電話，開頭接「延續先前電話中提到的」；第一次聯絡才需要一句自我介紹（Step1ne 德仁管理顧問，協助半導體產業招募，也與多家營造相關企業合作）。
+   有附件就明確寫出附件是什麼、請對方查收（例：「附件是我們填寫好的招募需求表，再麻煩您查收」）。
+   如果目的是提供職缺請對方轉發：說明這批職缺接受無經驗、公司提供培訓，適合工程、設計、建築、土木相關科系同學與想轉職的人。
 3. 不要列職缺名稱清單、不要寫連結、不要寫簽名——這些會自動接在後面。
 4. 不寫費用、不寫「最大／第一」、不保證錄取、不寫任何客戶公司名稱；繁體中文、客氣精簡，不要行銷話術。"""
 
@@ -113,7 +122,8 @@ def run(payload, run_claude=None):
     if run_claude is None:
         from ai_worker import run_claude as rc
         run_claude = rc
-    prompt = build_prompt(ch, logs, jobs, note)
+    files = '、'.join(str(x) for x in (payload.get('files') or []) if x)[:300]
+    prompt = build_prompt(ch, logs, jobs, note, files)
     data = None
     err = ''
     for _ in range(2):
@@ -135,12 +145,15 @@ def run(payload, run_claude=None):
     if err or not data:
         raise RuntimeError(f'AI 擬信不合格：{err or "沒有輸出"}')
     joblines = '\n'.join(f"・{_title(j['title'])}｜{_loc(j)}\n  https://step1ne.com/jobs/{j['slug']}/" for j in jobs)
-    text = (data['opening'].strip() + '\n\n'
-            + '目前開放的職缺：\n' + joblines + '\n\n'
-            + f'全部培訓職缺與報名：{TRAINING_URL}\n\n'
-            + '以下這段可以直接轉貼給學員：\n'
-            + '────────────\n' + SHARE_TEXT + '\n────────────\n\n'
-            + '如果需要職缺說明會或其他資料，歡迎直接回信或來電。謝謝您！\n\n'
+    if data.get('include_jobs', True) is not False:
+        mid = ('目前開放的職缺：\n' + joblines + '\n\n'
+               + f'全部培訓職缺與報名：{TRAINING_URL}\n\n'
+               + '以下這段可以直接轉貼給學員：\n'
+               + '────────────\n' + SHARE_TEXT + '\n────────────\n\n'
+               + '如果需要職缺說明會或其他資料，歡迎直接回信或來電。謝謝您！\n\n')
+    else:
+        mid = f'培訓職缺與報名頁面：{TRAINING_URL}\n\n有任何問題歡迎直接回信或來電，謝謝您！\n\n'
+    text = (data['opening'].strip() + '\n\n' + mid
             + f'Step1ne 德仁管理顧問\n顧問：{by}\n電話：{PHONE}\nEmail：official@step1ne.com\n就業服務許可證：{LICENSE}')
     return json.dumps({'to': ch.get('email') or '', 'subject': data['subject'].strip(), 'text': text}, ensure_ascii=False)
 
