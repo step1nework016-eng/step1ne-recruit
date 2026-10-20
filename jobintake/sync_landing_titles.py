@@ -20,7 +20,8 @@ import consultant_ops as C  # noqa: E402
 SITE = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 PAGES = ['training/index.html', 'construction/index.html']
 # 標題本身沒寫地點、又跟別的職缺同名時，卡片上補地區
-REGION = {'bim-engineer-houli': '台中后里', 'semiconductor-bim-mep-drafting-trainee-hsinchu': '新竹'}
+REGION = {'bim-engineer-houli': '台中后里', 'semiconductor-bim-mep-drafting-trainee-hsinchu': '新竹科學園區',
+          'bim-engineer-tongluo': '苗栗銅鑼'}
 
 
 def nice(slug, title):
@@ -36,7 +37,7 @@ def titles(slugs):
     out = {}
     for s in slugs:
         r = C.rows("SELECT title, status FROM jobs WHERE slug=?", [s])
-        if r and r[0]['status'] == 'open' and r[0]['title']:
+        if r and r[0]['status'] in ('open', 'closed') and r[0]['title']:  # 額滿（closed）卡片也照系統名稱
             out[s] = nice(s, r[0]['title'])
     return out
 
@@ -48,7 +49,7 @@ def sync_page(path):
     # /construction/：<a class="job" href="/jobs/slug/"> ... <h3 class="job-title">標題</h3>
     pats = [
         re.compile(r'(<article class="tc[^"]*"[^>]*>(?:(?!</article>).)*?<h3>)([^<]*)(</h3>(?:(?!</article>).)*?href="/jobs/([^/"]+)/"(?:(?!</article>).)*?</article>)', re.S),
-        re.compile(r'(<a class="job" href="/jobs/([^/"]+)/">(?:(?!</a>).)*?<h3 class="job-title">)([^<]*)(</h3>)', re.S),
+        re.compile(r'(<a class="job[^"]*" href="/jobs/([^/"]+)/">(?:(?!</a>).)*?<h3 class="job-title">)([^<]*)(</h3>)', re.S),
     ]
     slugs = set(re.findall(r'href="/jobs/([^/"]+)/"', html))
     tt = titles(slugs)
