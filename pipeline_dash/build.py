@@ -131,6 +131,9 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
     def inwin(ts):
         return ts and ws <= ts[:10] < we
     hired = {f['js'] for f in fws if f['st'] in ('offer', 'onboard')}
+    # 已關閉的職缺：有錄取、或最近 30 天還有推薦（例如客戶暫緩的職缺）也要算
+    recent = str(dt.date.fromisoformat(str(c.now_tpe())[:10]) - dt.timedelta(days=30))
+    hired |= {f['js'] for f in fws if (f['fat'] or '') >= recent and not f['nr']}
     if mode == 'cum':
         scope = {s for s, j in jobmap.items() if j['status'] in ACTIVE or s in hired}
     else:
@@ -154,8 +157,8 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
             if (mode == 'cum' and a['status'] in IV) or (mode == 'new' and inwin(a['interview_ended_at'])):
                 slot(a['job_slug'])['iv'].append(nm(a['name']))
         for f in fws:
-            if f['js'] not in scope or not flt(f['owner']):
-                continue
+            if f['js'] not in scope or not flt(f['owner']) or f['nr']:
+                continue   # 顧問不推＝沒有真的推給客戶，不算推薦
             n, lab = fw_label(f, ovr)
             done = f['r'] or f['nr'] or f['w'] or f['st'] == 'onboard'
             if mode == 'cum' or inwin(f['fat']):

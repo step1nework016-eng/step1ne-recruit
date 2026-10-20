@@ -318,6 +318,10 @@ def build_draft_text(name, synth):
     對不對，決定要不要放行」，不用照PDF版面排。
     """
     lines = [f'📋 {name} 客戶推薦履歷草稿（確認後回覆「做PDF」才會產出PDF）', '']
+    # 2026-10-20 Jacky：推之前先對客戶講過的推薦門檻（client_gate.py），不符就放最上面講白
+    if synth.get('_gate'):
+        import client_gate
+        lines += client_gate.format_block(synth['_gate'])
     if synth.get('_anon_warn'):
         lines += [synth['_anon_warn'], '']
     if synth.get('_worker_id'):
@@ -403,7 +407,7 @@ def promote_synthesized():
     狀態改回 pending；跑失敗（重試 3 次都不行）就直接標錯誤，不要讓請求卡死
     在 awaiting_synthesis 裡永遠沒人管。
     """
-    rows = D.d1("SELECT id, application_id, ai_job_id, anon_code FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, ai_job_id, anon_code, company_id, target_job_slug FROM client_report_requests "
                 "WHERE status='awaiting_synthesis' AND ai_job_id IS NOT NULL")
     for row in rows:
         job = D.d1(f"SELECT status, result_text, error, payload_json, worker_id FROM ai_jobs WHERE id={D.q(row['ai_job_id'])}")
@@ -452,6 +456,19 @@ def promote_synthesized():
                 leaks = anon_leaks(synth, real_name)
                 if leaks:
                     draft_synth['_anon_warn'] = '⚠️ 可能還有沒匿名到的字：' + '、'.join(leaks[:8]) + '——請在下面回覆要改的地方'
+            # 客戶推薦門檻：只對實名推薦做（匿名履歷是開發信用，不是正式推薦）；檢查失敗不擋草稿
+            if not row.get('anon_code'):
+                try:
+                    import client_gate
+                    aj = D.d1(f"SELECT job_slug FROM applications WHERE id={D.q(row['application_id'])}")
+                    job = row.get('target_job_slug') or (aj[0]['job_slug'] if aj else None)
+                    co = row.get('company_id')
+                    if not co and job:
+                        jr = D.d1(f"SELECT company_id FROM jobs WHERE slug={D.q(job)}")
+                        co = jr[0]['company_id'] if jr else None
+                    draft_synth['_gate'] = client_gate.check(co, job, client_gate.profile_from_synth(synth))
+                except Exception as e:
+                    print(f'[推薦門檻] 檢查失敗（不影響草稿）：{e}', file=sys.stderr)
             send_confirm_draft(row['id'], name, draft_synth)
         elif j['status'] == 'failed':
             D.d1(f"UPDATE client_report_requests SET status='error', "
