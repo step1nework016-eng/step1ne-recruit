@@ -975,6 +975,9 @@ WRAP_INSTRUCTION = (
     f'包進去等於讓這句說明被誤判成貼文本體。這種情況下，你的整段回覆裡根本不應該\n'
     f'出現 {POST_START}／{POST_END} 這兩個標記。\n'
     f'Markdown 符號不會被平台轉成粗體或標題，只會照字面被貼出去、變成亂碼。\n\n'
+    f'🚨 **薪資只寫區間，不寫算法**（2026-10-20 Jacky）：寫成「月薪 4.1～5 萬」這種區間；'
+    f'不寫「平均」「起」、不寫年終怎麼攤、幾個月、年度總額、×14÷12 這類計算方式。'
+    f'資料只有下限沒有上限時，寫「月薪 X 萬以上」。\n\n'
     f'🚨 **社群文不提「AI阿財」「阿財」這個名字**（2026-10-20 Jacky）；要講 AI 初篩就講「AI 初步面談」，不要叫名字。文末如果要邀請互動，'
     f'說留言、私訊或加 LINE 找顧問；不要說「找 Step1ne 聊聊」（公司名不是互動窗口）。'
     f'\n\n🚨 **排版與串文規則（2026-10-14 依 423 篇已發文的成效比對訂的）**：\n'
@@ -1340,6 +1343,10 @@ def brand_fix(post):
     lines = post.split('\n')
     if any('阿財' in l for l in lines):
         lines = [l for l in lines if '阿財' not in l]
+    # 薪資算法保底（2026-10-20）：括號裡在講年終攤提／年度總額的整段拿掉，句子本身留著
+    SAL = r'[（(][^（）()]*(?:攤|年度總額|個月年薪|[×x÷]\s*1[2-6])[^（）()]*[）)]'
+    lines = [re.sub(SAL, '', l) for l in lines]
+    lines = [l for l in lines if not re.search(r'攤入月薪|攤到|÷\s*12|×\s*14|年度總額', l)]
     out = '\n'.join(lines)
     first = out.find(BRAND)
     if first >= 0:
