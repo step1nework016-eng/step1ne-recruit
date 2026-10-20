@@ -50,6 +50,8 @@ def sync_page(path):
     pats = [
         re.compile(r'(<article class="tc[^"]*"[^>]*>(?:(?!</article>).)*?<h3>)([^<]*)(</h3>(?:(?!</article>).)*?href="/jobs/([^/"]+)/"(?:(?!</article>).)*?</article>)', re.S),
         re.compile(r'(<a class="job[^"]*" href="/jobs/([^/"]+)/">(?:(?!</a>).)*?<h3 class="job-title">)([^<]*)(</h3>)', re.S),
+        # 2026-10-20 /construction/ 改成跟 /training/ 一樣的完整卡片（article.ctc）
+        re.compile(r'(<article class="ctc[^"]*">(?:(?!</article>).)*?<h3 class="job-title">)([^<]*)(</h3>(?:(?!</article>).)*?href="/jobs/([^/"]+)/"(?:(?!</article>).)*?</article>)', re.S),
     ]
     slugs = set(re.findall(r'href="/jobs/([^/"]+)/"', html))
     tt = titles(slugs)
@@ -72,6 +74,7 @@ def sync_page(path):
 
     html = pats[0].sub(rep_tc, html)
     html = pats[1].sub(rep_job, html)
+    html = pats[2].sub(rep_tc, html)
     if changes and WRITE:
         open(path, 'w', encoding='utf-8').write(html)
     return changes
