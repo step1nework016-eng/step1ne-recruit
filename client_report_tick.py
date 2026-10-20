@@ -466,7 +466,7 @@ def tick():
     # INSERT時直接給pending，沒有ai_job_id，promote_synthesized()不會碰到），
     # 這條沒有AI生成內容可審，維持原樣直接產PDF。'confirmed' 才是走過人工
     # 確認關卡、Jacky在TG按了「✅確認，產出PDF」的那批。
-    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json, status, anon_code FROM client_report_requests "
+    rows = D.d1("SELECT id, application_id, company_id, synthetic_content_json, show_json, status, anon_code, target_job_slug FROM client_report_requests "
                 "WHERE status IN ('pending','confirmed') ORDER BY requested_at ASC LIMIT 5")
     # 2026-09-17 加：跟 social_post_agent.py 同一個坑、同一套修法——原本抓到就直接
     # 處理，中間沒有「先搶下這筆」的手續。搬去第二台機器同時跑之後，兩台輪詢時間點
