@@ -119,6 +119,29 @@ const LINE_SOURCE_TAGS = [
   { tag: '#課程班', source: 'line_course_class_paper_qr', label: '大專院校課程班學員（紙本 QR code）', jobsUrl: 'https://step1ne.com/training/' },
 ];
 
+// 2026-10-20 Jacky 定稿：課程班學員的歡迎卡——公司介紹（半導體招募＋營造企業合作）
+// ＋兩顆按鈕：直接投遞（去培訓職缺頁應徵→阿財面談）／跟顧問洽談（先問 AutoCAD 程度）。
+function courseWelcomeFlex(jobsUrl) {
+  return { type: 'flex', altText: '歡迎加入全民獵才｜培訓職缺說明', contents: { type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#1c2f6b', paddingAll: '16px',
+      contents: [{ type: 'text', text: '歡迎加入全民獵才 👋', color: '#ffffff', size: 'md', weight: 'bold', wrap: true }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md', contents: [
+      { type: 'text', wrap: true, size: 'sm', color: '#16202e',
+        text: '全民獵才長期協助半導體產業招募，也與多家營造相關企業合作，目前有無經驗可、提供培訓的工程職缺（BIM、機電繪圖、專案工程等）。' },
+      { type: 'text', wrap: true, size: 'sm', color: '#16202e', text: '想了解更多職缺內容，可以選一種方式開始 👇' },
+      { type: 'text', wrap: true, size: 'xs', color: '#8993a8',
+        text: '・直接投遞：挑職缺填應徵表單，接著完成線上面談\n・跟顧問洽談：先聊聊您的 AutoCAD 程度與想做的方向' },
+    ] },
+    footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px', contents: [
+      { type: 'button', style: 'primary', color: '#2f6fed', height: 'sm',
+        action: { type: 'uri', label: '直接投遞履歷完成面談', uri: jobsUrl } },
+      { type: 'button', style: 'secondary', height: 'sm',
+        action: { type: 'postback', label: '跟顧問洽談', data: 'cc_talk', displayText: '我想跟顧問洽談' } },
+    ] },
+  } };
+}
+const CC_CAD_LEVELS = { none: '沒用過', basic: '學過基礎', draw: '能獨立畫圖', pro: '很熟練' };
+
 // 內容定案於 2026-08-14（line_faq_content.md），求職者跟企業窗口分開兩份。
 // 存成陣列而不是去讀 line_faq_content.md：Worker 執行環境沒有檔案系統，
 // 內容改了就直接改這裡，兩邊本來就要保持一致。
@@ -3669,6 +3692,25 @@ async function handleLineEvent(env, ev) {
     // 2026-08-14 加：常見問題分層選單——圖文選單「常見問題」按鈕直接是這個
     // postback（不用打字），先選身分再選題目，回答完給一顆「看其他問題」
     // 按鈕繞回同一份清單。
+    // 2026-10-20 課程班歡迎卡「跟顧問洽談」→ 先問 AutoCAD 程度（按鈕選，不用打字）
+    if (data === 'cc_talk') {
+      return lineReplyMessages(env, ev.replyToken, [{ type: 'text',
+        text: '好的 🙌 顧問會在這裡跟您聯繫。\n先請問您目前的 AutoCAD 程度是？（點下面選一個）',
+        quickReply: { items: Object.entries(CC_CAD_LEVELS).map(([k, v]) => ({ type: 'action',
+          action: { type: 'postback', label: v, data: `cc_cad:${k}`, displayText: `AutoCAD：${v}` } })) } }]);
+    }
+    if (data.startsWith('cc_cad:')) {
+      const level = CC_CAD_LEVELS[data.slice(7)] || '未知';
+      const uid = ev.source && ev.source.userId;
+      let name = '（抓不到）';
+      try { const pf = uid ? await lineBotProfile(env, uid) : null; if (pf && pf.displayName) name = pf.displayName; } catch { /* ignore */ }
+      try {
+        await notify(env, `🙋 課程班學員想跟顧問洽談\n暱稱：${name}\nAutoCAD 程度：${level}\n@behe10 麻煩到 LINE 官方帳號後台回覆聯繫`,
+          { message_thread_id: THREAD.decide });
+      } catch { /* ignore */ }
+      return lineReply(env, ev.replyToken,
+        `收到，AutoCAD 程度：${level} ✍️\n獵頭顧問稍後會在這裡與您聯繫 📞\n方便的話，可以先回覆您的姓名和想做的職務方向。`);
+    }
     if (data === 'faq_start') {
       return lineReplyMessages(env, ev.replyToken, [faqRoleFlex()]);
     }
@@ -3743,18 +3785,12 @@ async function handleLineEvent(env, ev) {
         `UPDATE line_bindings SET source=?, updated_at=? WHERE line_user_id=?`
       ).bind(srcTag.source, now, userId).run();
     }
-    const msg = `您好 👋 歡迎加入全民獵才（Step1ne 德仁管理顧問）！\n\n`
-      + `全民獵才是台灣本土的獵頭顧問團隊，幫求職者媒合工程、半導體、營建、管理與業務等職缺，`
-      + `從推薦、面試安排到薪資溝通，求職者全程免費。\n\n`
-      + `已收到您的訊息 🙌 獵頭顧問稍後會在這裡與您聯繫 📞\n\n`
-      + `方便的話，可以先回覆：\n1️⃣ 您的姓名\n2️⃣ 想找的職務或科系\n\n`
-      + `先看看目前的職缺 👇\n${srcTag.jobsUrl}`;
-    const okReply = await lineReply(env, replyToken, msg);
-    if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+    const msgs = [courseWelcomeFlex(`${srcTag.jobsUrl}?utm_source=line_course&utm_medium=line`)];
+    await lineReplyMessages(env, replyToken, msgs);  // ⚠️ 這支不回傳成功與否，別加推播補送，會重複
     try {
       const pf = await lineBotProfile(env, userId);
-      await notify(env, `📲 新的 LINE 詢問（來源：${srcTag.label}）\n暱稱：${(pf && pf.displayName) || '（抓不到）'}\n`
-        + `訊息：${text.slice(0, 200)}\n@behe10 麻煩到 LINE 官方帳號後台回覆聯繫`,
+      await notify(env, `📲 新的 LINE 加入（來源：${srcTag.label}）\n暱稱：${(pf && pf.displayName) || '（抓不到）'}\n`
+        + `已回歡迎卡，等對方選「直接投遞」或「跟顧問洽談」`,
         { message_thread_id: THREAD.decide });
     } catch { /* 通知失敗不能擋回覆 */ }
     return;
