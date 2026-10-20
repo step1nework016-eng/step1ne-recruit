@@ -979,7 +979,7 @@ Jacky 針對上一版提出的修改意見：
 "alt_suggestion":"人選如果還適合客戶的其他職務類型，一句話建議；沒有就空字串",
 "one_liner":"一句話定位30字內",
 "overview":"開頭概述3-4句：目前狀態（在職/待業）、主要經歷方向、有無相關經驗、居住地與通勤方式、可到職日、對這個職缺的意願，沒有把握的項目就不提那一句，不要用「未提供」湊句子",
-"basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":null,"license":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
+"basics":{{"residence":null,"age":null,"gender":null,"education":null,"languages":null,"certificates":"照履歷原文完整列出所有證照（含等級與類別，例：甲種職業安全衛生業務主管、乙級職業安全衛生管理員、營造業丙種職業安全衛生業務主管），用、分隔，一張都不准省略；履歷沒有證照才填 null","license":null,"military":null,"source":"履歷／應徵表單，非面談詢問"}},
 "for_client":{{"reasons":["3點推薦理由，要跟職缺條件掛勾"],"job_fit_pros":["2-3點，指超出到職可行性清單以外、讓這個人選比及格線更出色的地方——已經寫進 hard_filters 的項目（機車駕照、能接受到班等）不要在這裡重複講一次，那些是門檻不是優點"],"job_fit_cons":["1-2點"],"trait_one_liner":"依電洽語氣跟應答方式寫一句對這個人特質的觀察，沒有足夠根據就留空字串"}},
 "work_history":[{{"employer":"","role":"","duration":"","salary":"這段工作的月薪，履歷或電洽有寫才填（例：月薪 55,000 元），沒有就空字串","source":"履歷","nature":"雇主|工讀（求學期間工讀／短期打工，跟職缺專業無關的舊經歷才標這個，正式全職工作一律標「雇主」）","note":"電洽有補充相關內容才填，沒有就空字串","detail_bullets":["這段工作的具體內容，逐點列，只有履歷/逐字稿有寫才列，1-3點，沒有具體內容就空陣列——nature是工讀的話這格留空，不用列細節"],"leave_reason":"離職原因，中性描述，沒問到就空字串"}}],
 "hard_filters":[{{"label":"清單上的項目名稱，逐項照上面清單的順序跟數量","status":"pass|partial|unknown","detail":"依據逐字稿或履歷的具體理由，unknown就寫這場還沒問到"}}],
