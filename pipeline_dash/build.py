@@ -7,14 +7,15 @@
   1. 從 D1 重算「本週新增」與「累計到本週」（含每個數字背後的人選名單）
   2. 寫進 D1 pipeline_weekly（wk＝該週週一日期）；已封存（frozen=1）的週不再覆寫
   3. 跨週後第一次跑：上一週用日期重算一次「新增」後封存（累計保留上週最後一次跑的結果）
-  4. 組 index.html（template.html＋所有週資料）→ wrangler deploy 到 step1ne 帳號的 Worker
+  4. 網頁每次被打開時，Worker 會自己去 step1ne-pipeline-data 讀 D1 最新資料（2026-10-20 改），
+     所以平常只要更新 D1；改了 template.html／worker.js 才需要 --deploy（要 step1ne.com 帳號 token，只在 Mac）
 
 人工欄位（球在誰、說明、Email 推薦、開發中客戶、新客戶、人選狀態覆寫）放在
 D1 site_settings key=pipeline_dash_overlay（JSON），每週快照會連同當週的人工欄位一起存。
 
 用法：
-  python3 pipeline_dash/build.py               # 平常排程跑這個
-  python3 pipeline_dash/build.py --no-deploy   # 只更新資料不上線
+  python3 pipeline_dash/build.py               # 平常排程跑這個：只更新 D1，網頁打開就是新資料（不用 token）
+  python3 pipeline_dash/build.py --deploy      # 改了版面才用：部署 Worker（要 step1ne-frontend-cf.env）
   python3 pipeline_dash/build.py --backfill    # 補過去幾週的「新增」（只補沒有的週）
 部署需要 ~/.config/workflow-os/step1ne-frontend-cf.env（step1ne.com 那個帳號的 token）。
 """
@@ -396,10 +397,11 @@ def deploy():
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--no-deploy', action='store_true')
+    ap.add_argument('--deploy', action='store_true', help='改了 template.html／worker.js 才需要')
+    ap.add_argument('--no-deploy', action='store_true', help='舊參數，保留相容；現在預設就不部署')
     ap.add_argument('--backfill', action='store_true')
     a = ap.parse_args()
     run(a.backfill)
     print('index.html', render(), 'bytes')
-    if not a.no_deploy:
+    if a.deploy:
         deploy()

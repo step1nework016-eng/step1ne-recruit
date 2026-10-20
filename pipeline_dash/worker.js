@@ -1,5 +1,14 @@
-// Step1ne 帶案儀表板：通行碼門禁＋單頁。改內容：重跑 build 後重新產 worker.js 再 wrangler deploy
-import HTML from "./index.html";
+// Step1ne 帶案儀表板（pipeline.step1ne.com）：通行碼門禁＋單頁。
+// 2026-10-20 改：資料不再寫死在網頁裡——每次打開頁面才去 step1ne-pipeline-data（另一個帳號、接 D1）拿最新的週資料，
+// 套進 template.html。所以 WSL2 每天只要更新 D1，網頁不用重新部署；只有改版面（template.html／這支）才要從 Mac 部署。
+import TPL from "./template.html";
+const DATA_URL = 'https://step1ne-pipeline-data.aiagentg888.workers.dev/';
+async function page_html(env){
+  const r = await fetch(DATA_URL, { headers: { 'x-pipe-key': env.PIPE_KEY || '' } });
+  if (!r.ok) return null;
+  const data = (await r.text()).replace(/</g, '\\u003c');
+  return TPL.replace('/*__DATA__*/null', data);
+}
 // 通行碼門禁：輸對一次記 30 天 cookie（cookie 存的是通行碼雜湊，不是明碼）
 async function sha(s){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return [...new Uint8Array(d)].map(x=>x.toString(16).padStart(2,'0')).join('')}
 const page=(err)=>new Response(`<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Step1ne 帶案儀表板</title>
@@ -12,7 +21,9 @@ async function handle(request,env){
     return page(true)}
   const ck=(request.headers.get('cookie')||'').match(/(?:^|;\s*)pd=([a-f0-9]+)/);
   if(!env.DASH_PASS||!ck||ck[1]!==want) return page(false);
-  return new Response(HTML,{headers:{'content-type':'text/html;charset=utf-8','x-robots-tag':'noindex','cache-control':'no-store'}});
+  const html=await page_html(env);
+  if(!html) return new Response('資料暫時讀不到，請稍後重新整理。',{status:503,headers:{'content-type':'text/plain;charset=utf-8'}});
+  return new Response(html,{headers:{'content-type':'text/html;charset=utf-8','x-robots-tag':'noindex','cache-control':'no-store'}});
 }
 
 export default {async fetch(request,env){const u=new URL(request.url);
