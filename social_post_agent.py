@@ -975,10 +975,8 @@ WRAP_INSTRUCTION = (
     f'包進去等於讓這句說明被誤判成貼文本體。這種情況下，你的整段回覆裡根本不應該\n'
     f'出現 {POST_START}／{POST_END} 這兩個標記。\n'
     f'Markdown 符號不會被平台轉成粗體或標題，只會照字面被貼出去、變成亂碼。\n\n'
-    f'🚨 **文末如果要邀請候選人互動，一律說「找 AI阿財 聊聊」，不要說「找 Step1ne 聊聊」**。\n'
-    f'2026-09-09 真實事故：多篇貼文結尾寫「有興趣歡迎找Step1ne聊聊」已經公開發布——\n'
-    f'Step1ne 是公司品牌名，不是互動窗口，候選人看了不知道要去哪裡「找」，\n'
-    f'AI阿財才是候選人實際會互動的對象（面談小幫手）。沒有要邀請互動的貼文不受影響。'
+    f'🚨 **社群文不提「AI阿財」「阿財」這個名字**（2026-10-20 Jacky）；要講 AI 初篩就講「AI 初步面談」，不要叫名字。文末如果要邀請互動，'
+    f'說留言、私訊或加 LINE 找顧問；不要說「找 Step1ne 聊聊」（公司名不是互動窗口）。'
     f'\n\n🚨 **排版與串文規則（2026-10-14 依 423 篇已發文的成效比對訂的）**：\n'
     f'・第一行 15～25 字，直接講重點，不要鋪陳。\n'
     f'・每一段 20～35 字（手機約 2 行，最多 3 行），段與段之間空一行；整篇約 10～14 行。\n'
@@ -1305,10 +1303,55 @@ def job_raw_format_line_suffix(account_id, style_row, job_slug=None, queue_id=No
     return ''
 
 
+# ── 品牌名「全民獵才」（2026-10-20 Jacky）──────────────────────────
+# 每篇社群文要出現一次「全民獵才」，而且只出現一次。每個帳號放的位置固定但彼此不同，
+# 同一天幾個顧問發的文才不會長得一樣（例：EYLISE 在標題「全民獵才徵才｜…」，Jacky 在結尾）。
+BRAND = '全民獵才'
+BRAND_SLOTS = {
+    'title': '放在第一行標題：職缺文寫成「全民獵才徵才｜職稱…」；話題文第一行用「全民獵才｜」開頭',
+    'intro': '放在開頭前兩句的自我介紹，例如「我是全民獵才的獵頭顧問」',
+    'body': '放在內文中段自然帶到，例如「這個缺是全民獵才這週接到的」「在全民獵才常遇到…」',
+    'cta': '放在最後邀請互動的那一句，例如「加 LINE 找全民獵才聊聊」「留言或私訊全民獵才」',
+    'auto': '這個帳號的結尾會自動附上「全民獵才」LINE 官方帳號連結，所以內文一次都不要寫',
+}
+BRAND_SLOT_BY_ACCOUNT = {2: 'title', 6: 'title', 1: 'cta', 5: 'cta', 3: 'intro', 7: 'intro', 8: 'auto', 28: 'cta'}
+
+
+def brand_slot(account_id):
+    try:
+        aid = int(account_id)
+    except Exception:
+        return 'body'
+    return BRAND_SLOT_BY_ACCOUNT.get(aid) or ['body', 'intro', 'cta', 'title'][aid % 4]
+
+
+def brand_rule(account_id):
+    if brand_slot(account_id) == 'auto':
+        return f'\n\n🏷️ {BRAND_SLOTS["auto"]}。\n'
+    return (f'\n\n🏷️ **品牌名「{BRAND}」：整篇剛好出現一次，不能沒有、也不能出現第二次。**'
+            f'這個帳號的位置：{BRAND_SLOTS[brand_slot(account_id)]}。要讀起來自然，不要硬塞；'
+            f'其他地方要指自己就用「我」，不要再寫一次{BRAND}。\n')
+
+
+def brand_fix(post):
+    """輸出端保底：拿掉阿財、全民獵才超過一次就只留第一次。少了不硬補（交給審核的人看）。"""
+    if not post:
+        return post
+    lines = post.split('\n')
+    if any('阿財' in l for l in lines):
+        lines = [l for l in lines if '阿財' not in l]
+    out = '\n'.join(lines)
+    first = out.find(BRAND)
+    if first >= 0:
+        head, tail = out[:first + len(BRAND)], out[first + len(BRAND):]
+        out = head + tail.replace('找' + BRAND, '找我').replace('私訊' + BRAND, '私訊我').replace(BRAND, '我們')
+    return out
+
+
 def generate_draft(job, account_id):
-    prompt = skill(account_id) + '\n\n' + format_job_requirement(job) + WRAP_INSTRUCTION
+    prompt = skill(account_id) + '\n\n' + format_job_requirement(job) + brand_rule(account_id) + WRAP_INSTRUCTION
     raw = run_claude(prompt)
-    post = extract_post(raw) if raw else None
+    post = brand_fix(extract_post(raw)) if raw else None
     # 輸出端再擋一次完整地址——來源端（format_job_requirement）已經擋過，
     # 這裡是保底：萬一模型從其他管道（自己的常識、標題裡的地名）拼出完整
     # 門牌，還是要在真正存進 draft 之前擋下來。
@@ -1362,10 +1405,11 @@ def generate_draft_job_styled(job, style_row, account_id=None):
         + '\n\n【這個職缺的原始資料——自由運用，挑對這篇公式有幫助的部分即可，'
           '不用照抄成清單格式，也不用全部用到】\n' + facts
         + voice_tail(account_id)
+        + brand_rule(account_id)
         + WRAP_INSTRUCTION
     )
     raw = run_claude(prompt)
-    post = extract_post(raw) if raw else None
+    post = brand_fix(extract_post(raw)) if raw else None
     return raw, strip_address_numbers(post) if post else None
 
 
@@ -1517,9 +1561,9 @@ def generate_draft_topic(topic, style_row, account_id=None):
     # 2026-09-24：話題文以前完全沒帶顧問的語氣（選了公式就只剩公式），補上語氣卡。
     # 同日改：有手寫的話題語氣卡就用話題卡，沒有才沿用招募語氣卡（見 topic_voice_tail）
     prompt = (TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row)
-              + topic_voice_tail(account_id) + WRAP_INSTRUCTION)
+              + topic_voice_tail(account_id) + brand_rule(account_id) + WRAP_INSTRUCTION)
     raw = run_claude(prompt)
-    post = extract_post(raw) if raw else None
+    post = brand_fix(extract_post(raw)) if raw else None
     return raw, strip_address_numbers(post) if post else None
 
 
