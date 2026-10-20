@@ -110,13 +110,13 @@ const LINE_BIM_CAMPUS_TRIGGERS = {
   '🙋我要應徵BIM工程師C': 'campus_bim_v3', // 原版風格
 };
 
-// 2026-10-20 Jacky：lin.ee/981trm4 改給「大專院校課程班學員」跟「紙本 QR code」用。
+// 2026-10-20 Jacky：lin.ee/981trm4 改給「大專院校課程班學員」用（發紙本 QR code 給學員掃）。
 // 連結預填一句話（line.me/R/oaMessage/@930yldgp/?...），句尾帶 #標籤，
 // 候選人按送出就認得出是從哪裡來的。用「包含標籤」判斷，不要求整句一樣——
 // 人常會改預填文字。
 const LINE_SOURCE_TAGS = [
-  { tag: '#課程班', source: 'line_course_class', label: '大專院校課程班學員', jobsUrl: 'https://step1ne.com/training/' },
-  { tag: '#紙本QR', source: 'line_paper_qr', label: '紙本 QR code', jobsUrl: 'https://step1ne.com/jobs/' },
+  // 只有一個管道：大專院校課程班學員，來源是發給他們的紙本 QR code（LINE 後台「加入好友的管道」設定）
+  { tag: '#課程班', source: 'line_course_class_paper_qr', label: '大專院校課程班學員（紙本 QR code）', jobsUrl: 'https://step1ne.com/training/' },
 ];
 
 // 內容定案於 2026-08-14（line_faq_content.md），求職者跟企業窗口分開兩份。
