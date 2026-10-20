@@ -3592,6 +3592,19 @@ def _not_covered_block(ctx):
     return src + NOT_COVERED_MD_RULE
 
 
+def _blockers_report_block(ctx):
+    """2026-10-20 Jacky：弘昌 BIM／律准培訓這類職缺設了「優先確認」清單（job_expertise.blockers_json），
+    顧問要一眼看到每一項人選怎麼答，才能直接判斷送不送、不用再電洽。"""
+    bl = [b for b in (ctx.get('blockers') or []) if b.get('ask_who') != '用人單位' and b.get('item')]
+    if not bl:
+        return ''
+    items = '\n'.join(f'{i}. {b["item"]}' for i, b in enumerate(bl, 1))
+    return ('\n\n📋 另外加一段「## 優先確認項目（逐項）」（**只給顧問看**），放在報告最前面的摘要之後。'
+            '下面每一項照順序各寫一行，格式：`項目——人選的回答重點（具體到地點、時間、交通工具、年數、原話）`；'
+            '逐字稿沒談到的寫 `項目——[沒問到]`，答得含糊的寫 `項目——[含糊] 他說「原話」`。不要評價、不要合併項目、不要省略任何一項：\n'
+            + items)
+
+
 NOT_COVERED_MD_RULE = (
     '\n\n📋 另外加一段「## 這次沒問到的地方」（**只給顧問看，客戶版不會出現**）。'
     '位置：放在「## 適合的職務方向」之後、「建議」欄之前。'
@@ -3664,6 +3677,7 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
            '並在建議欄說明是在哪一個環節斷的。不要因為資料不全就給空泛的結論。'
            if abandoned else '')
         + (_not_covered_block(ctx) if with_not_covered else '')
+        + _blockers_report_block(ctx)
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     return prompt
 
