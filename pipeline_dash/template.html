@@ -128,6 +128,14 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .st-已寄資料,.st-拿到窗口,.st-已聯繫{background:var(--accent-soft);color:var(--accent)}.st-未聯繫{background:var(--bg);color:var(--muted)}
 @media (max-width:640px){.bdi{padding:12px 4px}.bdl{background:none;border:0;border-radius:0;border-top:1px solid var(--line)}.bh small{margin-left:0;width:100%}}
 [hidden]{display:none!important}
+@media (max-width:640px){
+/* 每一格固定在哪一行：名稱／球在誰＝第1行、人數＝第2行、比率＝第3行、說明＝第4行（舊週沒有「球在誰」也不會往上擠） */
+.cards tbody td,.cards tfoot td{grid-row:2}
+.cards tbody td:first-child,.cards tfoot td:first-child,.cards td:has(.chip){grid-row:1}
+.cards tbody td.pct,.cards tfoot td.pct{grid-row:3}
+.cards tbody td.note{grid-row:4}
+.db .cards td.rtd{grid-row:3}
+}
 </style></head><body>
 <div class="wrap">
 <header><h1>Step1ne 帶案狀況</h1><p class="sub" id="sub"></p></header>
