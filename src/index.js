@@ -110,6 +110,15 @@ const LINE_BIM_CAMPUS_TRIGGERS = {
   '🙋我要應徵BIM工程師C': 'campus_bim_v3', // 原版風格
 };
 
+// 2026-10-20 Jacky：lin.ee/981trm4 改給「大專院校課程班學員」跟「紙本 QR code」用。
+// 連結預填一句話（line.me/R/oaMessage/@930yldgp/?...），句尾帶 #標籤，
+// 候選人按送出就認得出是從哪裡來的。用「包含標籤」判斷，不要求整句一樣——
+// 人常會改預填文字。
+const LINE_SOURCE_TAGS = [
+  { tag: '#課程班', source: 'line_course_class', label: '大專院校課程班學員', jobsUrl: 'https://step1ne.com/training/' },
+  { tag: '#紙本QR', source: 'line_paper_qr', label: '紙本 QR code', jobsUrl: 'https://step1ne.com/jobs/' },
+];
+
 // 內容定案於 2026-08-14（line_faq_content.md），求職者跟企業窗口分開兩份。
 // 存成陣列而不是去讀 line_faq_content.md：Worker 執行環境沒有檔案系統，
 // 內容改了就直接改這裡，兩邊本來就要保持一致。
@@ -3719,6 +3728,36 @@ async function handleLineEvent(env, ev) {
       + `流程是：\n1️⃣ 填寫應徵表單 📝\n2️⃣ 跟 AI 阿財完成初步面談 🤖\n3️⃣ 顧問審核通過後會進一步聯繫您 📞\n\n`
       + `應徵表單連結 👇\n${applyUrl}`;
     return lineReply(env, replyToken, msg);
+  }
+
+  // ── 課程班／紙本 QR 來源（2026-10-20）──
+  const srcTag = LINE_SOURCE_TAGS.find((t) => text.includes(t.tag));
+  if (srcTag) {
+    if (!binding) {
+      await env.DB.prepare(
+        `INSERT INTO line_bindings (line_user_id, state, source, created_at, updated_at)
+         VALUES (?, 'pending_phone', ?, ?, ?)`
+      ).bind(userId, srcTag.source, now, now).run();
+    } else if (!binding.source) {
+      await env.DB.prepare(
+        `UPDATE line_bindings SET source=?, updated_at=? WHERE line_user_id=?`
+      ).bind(srcTag.source, now, userId).run();
+    }
+    const msg = `您好 👋 歡迎加入全民獵才（Step1ne 德仁管理顧問）！\n\n`
+      + `全民獵才是台灣本土的獵頭顧問團隊，幫求職者媒合工程、半導體、營建、管理與業務等職缺，`
+      + `從推薦、面試安排到薪資溝通，求職者全程免費。\n\n`
+      + `已收到您的訊息 🙌 獵頭顧問稍後會在這裡與您聯繫 📞\n\n`
+      + `方便的話，可以先回覆：\n1️⃣ 您的姓名\n2️⃣ 想找的職務或科系\n\n`
+      + `先看看目前的職缺 👇\n${srcTag.jobsUrl}`;
+    const okReply = await lineReply(env, replyToken, msg);
+    if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+    try {
+      const pf = await lineBotProfile(env, userId);
+      await notify(env, `📲 新的 LINE 詢問（來源：${srcTag.label}）\n暱稱：${(pf && pf.displayName) || '（抓不到）'}\n`
+        + `訊息：${text.slice(0, 200)}\n@behe10 麻煩到 LINE 官方帳號後台回覆聯繫`,
+        { message_thread_id: THREAD.decide });
+    } catch { /* 通知失敗不能擋回覆 */ }
+    return;
   }
 
   // ── Threads／LinkedIn 貼文＋職缺社群回覆的 LINE 歸因 ──
