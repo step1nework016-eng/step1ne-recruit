@@ -4261,15 +4261,20 @@ async function decideCheckupRouteFresh(env, c) {
     }
     if (!c.ready_notified_at && c.email && c.chat_token) {
       try {
-        await sendMail(
+        // 2026-10-20 改：sendMail 沒金鑰／Resend 回錯時是回 false 不是丟例外，
+        // 原本照樣寫 ready_notified_at，等於「沒寄卻記成寄了」，排程補寄也救不回來。
+        // 改成真的寄出才記。
+        const sent = await sendMail(
           env, c.email, `健檢對談連結已經可以使用`,
           [`${c.name} 您好，`,
            `工作風格測驗已經收到，目前可以直接開始跟阿福的健檢對談。`,
            `如果現在不方便，這封信可以先留著，準備好了再點下面的連結進入對談室即可。`],
           { url: `https://step1ne.com/checkup-chat/?t=${c.chat_token}`, text: '進入健檢對談室' }
         );
-        await env.DB.prepare(`UPDATE checkups SET ready_notified_at=? WHERE id=?`)
-          .bind(nowTaipei(), c.id).run();
+        if (sent) {
+          await env.DB.prepare(`UPDATE checkups SET ready_notified_at=? WHERE id=?`)
+            .bind(nowTaipei(), c.id).run();
+        }
       } catch { /* 寄信失敗不影響進對談室 */ }
     }
     return { route: 'now', chat_token: c.chat_token, slots: await checkupOpenSlots(env) };
@@ -9086,6 +9091,44 @@ export default {
         { message_thread_id: CHECKUP_THREAD });
       await env.DB.prepare(`UPDATE checkups SET reminded_at=? WHERE id=?`)
         .bind(nowTaipei(), r.id).run();
+    }
+
+    // 2026-10-20 加（洪嘉娸事故的安全網）：測驗交了、但分流從來沒跑過
+    // （status 還是 new／parsed、沒寄過連結信、沒進房間）超過 10 分鐘的，
+    // 這裡補跑同一支 decideCheckupRouteFresh——有空位就改 ready＋寄連結信。
+    // 主修在 public worker 的交卷端點；這段是那邊萬一失敗時的備援。
+    //   - 房間滿了就先跳過、下一輪（15 分鐘後）再試，不在這裡把人改成
+    //     awaiting_booking——排程沒辦法帶他去預約頁，改了反而沒人通知他。
+    //   - 只看最近 2 天、且 2026-10-21 之後交卷的：9/17、9/19 那兩筆舊單跟
+    //     洪嘉娸（已人工寄過信，但 ready_notified_at 沒補）不會在部署當下被突然寄信。
+    try {
+      const stuck = await env.DB.prepare(
+        `SELECT k.id, k.name, k.email, k.chat_token, k.remind_at, k.chat_state, k.status,
+                k.ready_notified_at, MIN(a.created_at) AS assessed_at
+           FROM checkups k JOIN checkup_assessments a ON a.checkup_id = k.id
+          WHERE k.status IN ('new','parsed') AND k.chat_state = 'not_started'
+            AND k.ready_notified_at IS NULL AND k.chat_token IS NOT NULL AND k.email IS NOT NULL
+          GROUP BY k.id
+         HAVING assessed_at <= datetime('now','+8 hours','-10 minutes')
+            AND assessed_at >= datetime('now','+8 hours','-2 days')
+            AND assessed_at >= '2026-10-21 00:00:00'
+          LIMIT 5`
+      ).all();
+      for (const k of (stuck.results || [])) {
+        const load = await checkupLiveLoad(env);
+        if (load.active + load.pending >= CHECKUP_LIVE_LIMIT) break;
+        const r = await decideCheckupRouteFresh(env, k);
+        const after = await env.DB.prepare(`SELECT ready_notified_at FROM checkups WHERE id=?`)
+          .bind(k.id).first();
+        await notify(env,
+          `🩺 健檢補發連結：${k.name} 測驗 ${k.assessed_at} 就交了，但一直沒拿到對談連結。\n` +
+          `已由排程補跑分流（結果：${r.route}）` +
+          (after?.ready_notified_at ? '，連結信已寄出。' : '\n⚠️ 連結信沒寄成功，請手動聯繫。') +
+          `\n單號：${k.id}`,
+          { message_thread_id: CHECKUP_THREAD });
+      }
+    } catch (e) {
+      console.log('checkup stuck sweep failed', String(e && e.message || e));
     }
 
     // 婉拒的候選人：不在顧問按下去的當下就寄信，晚 3 小時再寄一封委婉的信。

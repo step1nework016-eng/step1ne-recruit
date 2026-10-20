@@ -34,9 +34,10 @@ def q(v):
 
 
 def file_b64(file_id):
-    """檔案內容：舊資料放 content_b64，新資料切塊存 file_chunks。"""
+    """檔案內容：舊資料放 content_b64，再來切塊存 file_chunks，
+    2026-09-03 之後的新檔案放 R2（files 表只剩 metadata，storage='r2'）。"""
     fid = str(file_id).replace("'", "''")
-    rows = d1(f"SELECT content_b64, chunks FROM files WHERE id='{fid}'")
+    rows = d1(f"SELECT content_b64, chunks, storage FROM files WHERE id='{fid}'")
     if not rows:
         return None
     if rows[0].get('content_b64'):
@@ -45,7 +46,21 @@ def file_b64(file_id):
         # 依 idx 排序組回來，順序錯了整份檔案就壞掉
         parts = d1(f"SELECT b64 FROM file_chunks WHERE file_id='{fid}' ORDER BY idx ASC")
         return ''.join(p['b64'] for p in parts)
+    # 2026-10-20 補（履歷被誤判讀不到）：這支只會讀 content_b64／chunks，
+    # 9/3 搬到 R2 之後的檔案兩個都是空的，一律被當成「這份檔案沒有內容」、
+    # resume_readable=0——9/17、9/19、10/20 三筆 R2 履歷全中。
+    # 改用 parse_resumes.py 既有的 R2 讀法（打後台 /admin/file/:id），不另接 R2。
+    if rows[0].get('storage') == 'r2':
+        return PR._fetch_r2_b64(str(file_id))
     return None
+
+
+def _ready_text(file_id):
+    """parse_resumes.py 已經抽好、寫在 files.text_content 的文字（含它的 OCR 結果）。
+    有就直接用，跟阿財讀同一份，不用再抽一次。"""
+    fid = str(file_id).replace("'", "''")
+    rows = d1(f"SELECT text_content, storage, created_at FROM files WHERE id='{fid}'")
+    return rows[0] if rows else {}
 
 
 def main():
@@ -70,26 +85,48 @@ def main():
                 f"WHERE cf.checkup_id='{cid}' AND cf.kind='resume' ORDER BY cf.created_at ASC LIMIT 1")
         if not fs:
             d1(f"UPDATE checkups SET parsed_at='{now}', resume_readable=0, "
-               f"resume_note='沒有上傳履歷檔（只有連結或作品集）', status='parsed', "
+               f"resume_note='沒有上傳履歷檔（只有連結或作品集）', "
+               f"status=CASE WHEN status='new' THEN 'parsed' ELSE status END, "
                f"updated_at='{now}' WHERE id='{cid}'")
             print(f"  ⚠️ {c['name']}　沒有履歷檔")
             continue
 
         f = fs[0]
-        try:
-            b64 = file_b64(f['file_id'])
-            if not b64:
-                raise RuntimeError('這份檔案沒有內容')
-            text, note = extract(base64.b64decode(b64), f.get('filename'), f.get('mime'))
-        except Exception as e:
-            text, note = None, f'解析例外：{str(e)[:120]}'
+        meta = _ready_text(f['file_id'])
+        pre = (meta.get('text_content') or '').strip()
+        if len(pre) >= 200:
+            # 2026-10-20：files.text_content 已經有夠長的文字就直接用（門檻 200 字
+            # 跟 parse_resumes.py 判斷「太短要重抽」同一個數字）
+            text, note = pre, None
+        else:
+            try:
+                b64 = file_b64(f['file_id'])
+                if not b64:
+                    raise RuntimeError('這份檔案沒有內容')
+                text, note = extract(base64.b64decode(b64), f.get('filename'), f.get('mime'))
+            except Exception as e:
+                text, note = None, f'解析例外：{str(e)[:120]}'
+
+        # 2026-10-20：R2 檔讀不到（後台暫時連不上／權杖沒讀到）時不要當場判死刑——
+        # 先不寫 parsed_at，下一輪（daemon 每 8 秒）再試；parse_resumes.py 補好
+        # files.text_content 後上面那段也會直接接手。超過 30 分鐘還是讀不到才照實記「讀不到」。
+        if not text and meta.get('storage') == 'r2':
+            age_ok = d1("SELECT 1 AS y FROM files WHERE id='" + str(f['file_id']).replace("'", "''") +
+                        "' AND created_at >= datetime('now','+8 hours','-30 minutes')")
+            if age_ok:
+                print(f"  ⏳ {c['name']}　R2 履歷這輪還讀不到（{note}），下一輪再試")
+                continue
 
         if text:
             # 控制字元會讓後面把文字當命令列參數傳給 claude 時整個炸掉
             text = ''.join(ch for ch in text if ch in '\n\t' or ord(ch) >= 32)
 
+        # 2026-10-20：status 只在還是 'new' 時才改成 'parsed'。交卷那一刻 Worker
+        # 可能已經先把它分流成 ready／awaiting_booking／scheduled，這裡無條件蓋回
+        # 'parsed' 會把分流結果洗掉（--force 重抽舊單時也一樣）。
         d1(f"UPDATE checkups SET resume_text={q(text)}, resume_note={q(note)}, "
-           f"resume_readable={1 if text else 0}, parsed_at='{now}', status='parsed', "
+           f"resume_readable={1 if text else 0}, parsed_at='{now}', "
+           f"status=CASE WHEN status='new' THEN 'parsed' ELSE status END, "
            f"updated_at='{now}' WHERE id='{cid}'")
         print(f"  {'✅' if text else '⚠️'} {c['name']}　"
               + (f'{len(text)} 字' if text else str(note)))
