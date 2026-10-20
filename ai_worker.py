@@ -1688,6 +1688,10 @@ def process(job):
     if kind == 'inbound_reply':
         import inbound_reply
         return inbound_reply.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-10-20：招募管道寄信 → AI 擬信，寫回 result_text 給後台頁面顯示（不貼卡、不寄信，顧問在頁面按寄出才寄）
+    if kind == 'channel_mail':
+        import channel_mail
+        return channel_mail.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
     if kind == 'company_research':
         import company_research
         return company_research.run(json.loads(job.get('payload_json') or '{}'))

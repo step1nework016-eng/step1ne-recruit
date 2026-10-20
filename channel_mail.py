@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""channel_mail.py — 招募管道（學校／就業中心／訓練機構）AI 擬信（2026-10-20 Jacky 拍板 A 案）
+
+流程：
+  顧問在後台「招募管道」卡片 → 寄信 → 按「AI 幫我擬信」
+  → backoffice 排 ai_jobs(kind='channel_mail', payload={channel_id, note, by})
+  → 這支（ai_worker.py 接手）：讀管道資料＋最近紀錄＋顧問備註 → claude 只寫主旨和開頭段落
+  → 職缺清單、轉貼文字、簽名是固定樣板（從系統帶，不讓 AI 編職缺內容）
+  → 回傳 JSON {to, subject, text} 寫回 ai_jobs.result_text，顧問在頁面上看、可改，按「寄出」才寄
+  **這支程式不會寄任何信。**
+
+手動測試：python3 channel_mail.py <channel_id> ["備註"] [顧問名]
+"""
+import json
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+PHONE = '02-6605-7111'
+LICENSE = '北市就服字第 0363 號'
+TRAINING_URL = 'https://step1ne.com/training/'
+SHARE_TEXT = (
+    '半導體建廠・BIM 培訓職缺（無經驗可）\n'
+    '適合：工程、設計、建築、土木相關科系同學，以及想轉職的社會人士\n'
+    '地點：新竹、苗栗、台中、雲林等地\n'
+    '特色：無經驗可、公司提供培訓、正職僱用\n'
+    f'職缺與報名：{TRAINING_URL}\n'
+    f'（Step1ne 德仁管理顧問，{LICENSE}）')
+# AI 寫的段落不准出現：費用、規模誇大、客戶公司名（另外 mail_outbox_send 寄出前還會再擋一次客戶名）
+BAD = re.compile(r'費用|收費|服務費|最大|第一|唯一|保證錄取|保證')
+
+
+def _ops():
+    import consultant_ops
+    return consultant_ops
+
+
+def _load(channel_id):
+    c = _ops()
+    r = c.rows("SELECT * FROM recruit_channels WHERE id=?", [int(channel_id)])
+    if not r:
+        raise RuntimeError(f'找不到招募管道 #{channel_id}')
+    ch = r[0]
+    logs = c.rows("SELECT event_at, by, kind, text, result, contact_name FROM recruit_channel_logs "
+                  "WHERE channel_id=? ORDER BY id DESC LIMIT 6", [int(channel_id)])
+    try:
+        slugs = json.loads(ch.get('jobs') or '[]')
+    except Exception:
+        slugs = []
+    jobs = []
+    for s in slugs:
+        j = c.rows("SELECT slug, title, status, locations FROM jobs WHERE slug=?", [s])
+        if j and j[0]['status'] == 'open':
+            jobs.append(j[0])
+    # 管道沒綁職缺（或綁的都關了）→ 帶培訓職缺專區那幾個
+    if not jobs:
+        jobs = c.rows("SELECT slug, title, status, locations FROM jobs WHERE status='open' AND slug IN "
+                      "('bim-engineer-houli','semiconductor-bim-mep-drafting-trainee-hsinchu','bim-mep-drafting-engineer-hsinchu',"
+                      "'trainee-engineering-design-engineer','trainee-semiconductor-project-engineer')", [])
+    return ch, logs, jobs
+
+
+def _loc(j):
+    v = j.get('locations') or ''
+    try:
+        x = json.loads(v)
+        if isinstance(x, list):
+            v = '、'.join(x)
+    except Exception:
+        pass
+    return str(v).strip()
+
+
+def _title(t):
+    return (t or '').replace('(', '（').replace(')', '）')
+
+
+def build_prompt(ch, logs, jobs, note):
+    hist = '\n'.join(f"- {l.get('event_at') or ''} {l.get('by') or ''}（{l.get('kind')}）：{(l.get('text') or '')[:200]}"
+                     + (f"｜窗口：{l['contact_name']}" if l.get('contact_name') else '') for l in logs) or '（還沒有紀錄）'
+    jl = '\n'.join(f"- {_title(j['title'])}（{_loc(j)}）" for j in jobs)
+    return f"""你是台灣獵頭公司 Step1ne 德仁管理顧問的顧問，要寫一封信給招募合作管道（學校職涯中心、系辦、就業服務站、職訓機構），
+請對方把我們的「無經驗可、公司提供培訓」工程職缺轉給學員或求職民眾。
+
+【管道】{ch.get('name')}（類型：{ch.get('kind') or '—'}）
+【窗口】{ch.get('contact_name') or '（不知道名字）'}
+【管道備註】{ch.get('note') or '—'}
+【最近聯絡紀錄（新到舊）】
+{hist}
+【顧問這次想說的（最重要，照這個寫）】{note or '（沒寫，就寫成第一次寄職缺資訊）'}
+【要推的職缺（信件後面會自動附完整清單，你不用列）】
+{jl}
+
+只輸出 JSON：{{"subject":"主旨","opening":"開頭段落"}}
+規則：
+1. subject：20～35 字，寫清楚是什麼（例：「半導體建廠 BIM 培訓職缺｜可轉給學員參考」），不要驚嘆號。
+2. opening：2～4 段、合計 120～260 字。稱呼用窗口名字（「林小姐您好」），不知道就用「{ch.get('name')} 承辦人您好」。
+   第一段：自我介紹一句（Step1ne 德仁管理顧問，協助半導體產業招募，也與多家營造相關企業合作），如果紀錄裡通過電話，要接著說「延續先前電話中提到的」。
+   第二段：說明這批職缺接受無經驗、公司提供培訓，適合工程、設計、建築、土木相關科系同學與想轉職的人；請對方方便時轉給學員或民眾。
+   有顧問備註就照備註調整內容（例如對方要求提供內容到信箱、要辦說明會）。
+3. 不要列職缺名稱清單、不要寫連結、不要寫簽名——這些會自動接在後面。
+4. 不寫費用、不寫「最大／第一」、不保證錄取、不寫任何客戶公司名稱；繁體中文、客氣精簡，不要行銷話術。"""
+
+
+def run(payload, run_claude=None):
+    channel_id = payload.get('channel_id')
+    note = (payload.get('note') or '').strip()
+    by = (payload.get('by') or '').strip() or 'Phoebe'
+    ch, logs, jobs = _load(channel_id)
+    if run_claude is None:
+        from ai_worker import run_claude as rc
+        run_claude = rc
+    prompt = build_prompt(ch, logs, jobs, note)
+    data = None
+    err = ''
+    for _ in range(2):
+        out = run_claude(prompt + (f'\n\n⚠️ 上一次不合格：{err}，請重寫。' if err else ''), want_json=True, timeout=300)
+        try:
+            data = json.loads(out)
+        except Exception:
+            m = re.search(r'\{.*\}', out or '', re.S)
+            data = json.loads(m.group(0)) if m else None
+        if not data or not data.get('subject') or not data.get('opening'):
+            err = '缺 subject 或 opening'
+            continue
+        hit = BAD.search(data['subject'] + data['opening'])
+        if hit:
+            err = f'出現不准寫的字「{hit.group(0)}」'
+            continue
+        err = ''
+        break
+    if err or not data:
+        raise RuntimeError(f'AI 擬信不合格：{err or "沒有輸出"}')
+    joblines = '\n'.join(f"・{_title(j['title'])}｜{_loc(j)}\n  https://step1ne.com/jobs/{j['slug']}/" for j in jobs)
+    text = (data['opening'].strip() + '\n\n'
+            + '目前開放的職缺：\n' + joblines + '\n\n'
+            + f'全部培訓職缺與報名：{TRAINING_URL}\n\n'
+            + '以下這段可以直接轉貼給學員：\n'
+            + '────────────\n' + SHARE_TEXT + '\n────────────\n\n'
+            + '如果需要職缺說明會或其他資料，歡迎直接回信或來電。謝謝您！\n\n'
+            + f'Step1ne 德仁管理顧問\n顧問：{by}\n電話：{PHONE}\nEmail：official@step1ne.com\n就業服務許可證：{LICENSE}')
+    return json.dumps({'to': ch.get('email') or '', 'subject': data['subject'].strip(), 'text': text}, ensure_ascii=False)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+    print(json.loads(run({'channel_id': sys.argv[1], 'note': sys.argv[2] if len(sys.argv) > 2 else '',
+                          'by': sys.argv[3] if len(sys.argv) > 3 else 'Jacky'}))['text'])
