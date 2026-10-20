@@ -189,6 +189,13 @@ def process_one(job):
 
     log(f'✅ 完成：{slug}')
     mark_done(slug, error=None)
+    # 2026-10-20：/training/、/construction/ 是手刻頁，標題要另外跟系統同步
+    try:
+        rs = subprocess.run([sys.executable, os.path.join(HERE, 'sync_landing_titles.py'), '--deploy'],
+                            capture_output=True, text=True, timeout=300)
+        log('專區頁標題同步：' + (rs.stdout.strip().splitlines() or ['（無輸出）'])[-1])
+    except Exception as e:
+        log(f'⚠️ 專區頁標題同步失敗（職缺頁已上線，不影響）：{e}')
     DJ.tg_send(
         f'✅ <b>JD 已更新上線</b>　{DJ._esc(spec["title"])}\n'
         f'https://step1ne.com/jobs/{DJ._esc(slug)}/', [], slug)
