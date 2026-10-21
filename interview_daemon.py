@@ -3703,6 +3703,11 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
         + JOB_MATCH_MD_RULE
         + CAREER_DIRECTIONS_MD_RULE
         + (CAREER_DIRECTIONS_UNSPECIFIED if job_slug == 'unspecified' else '')
+        # 2026-10-21 Jacky：快速應徵面談前本來就不做測驗，報告不准寫「disc_primary 未填寫／無法做 DISC 對照」
+        + (('\n\n🧭 這位是「快速應徵」進來的：面談前本來就不做工作風格測驗（面談後才補），沒有 DISC 資料是正常的。'
+            '「人格特質」那段不要提 DISC、測驗、disc_primary 或「表單未填」，直接寫面談中觀察到的特質與具體依據。'
+            '報告裡也一律不准出現任何系統欄位名稱（例如 disc_primary、resume_url、must_skills）。')
+           if str((ctx.get('application') or {}).get('note') or '').startswith('【快速應徵') else '')
         + '\n\n【職缺硬條件】\n' + json.dumps(ctx.get('job') or {}, ensure_ascii=False, indent=1)
         + _job_card_scoring_block(ctx)
         + _ladder_report_block(ctx)
