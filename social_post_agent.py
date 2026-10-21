@@ -1126,15 +1126,20 @@ def is_social_only(job):
     return str((job or {}).get('status') or '') == 'social_only'
 
 
-def social_only_cta(account_id):
+def social_only_cta(account_id, job_slug=None, queue_id=None):
+    # 2026-10-21 Jacky：社群文案裡的 LINE OA 連結一律要走 /go/（點了對話框會帶「您好，我想了解這個職缺 [LC代碼]」），
+    # 原始 lin.ee 點進去不會帶代碼，看不出是哪篇帶來的、也不會自動回覆。未簽約職缺的 LINE 回覆已改成請人選留資料＋通知顧問，
+    # 不會再給應徵連結，所以這裡也可以走 /go/。
     link = ''
     if account_id:
         acc = d1(f"SELECT line_link FROM social_accounts WHERE id={q(account_id)}")
         link = ((acc or [{}])[0].get('line_link') or '').strip()
+        if link and 'lin.ee' in link:
+            link = go_link(account_id, job_slug, queue_id) or link
     return ('\n\n👉 有興趣的話，加 LINE 跟我聊聊，或直接私訊我：\n' + (link or BRAND_LINE_OA))
 
 
-def social_only_finalize(post, account_id):
+def social_only_finalize(post, account_id, job_slug=None, queue_id=None):
     """拿掉模型自己寫的任何網址，結尾補上 LINE／私訊。"""
     body = _URL_RE.sub('', post or '')
     # 網址拿掉後留下「…LINE 官方帳號聯繫顧問：」「應徵連結：」這種空殼句，整行拿掉；
@@ -1145,7 +1150,7 @@ def social_only_finalize(post, account_id):
                      and not re.search(r'阿財|AI\s*面談|AI\s*面試|線上應徵|投遞履歷|官網應徵', l))
     body = re.sub(r'[ \t]+\n', '\n', body)
     body = re.sub(r'\n{3,}', '\n\n', body).rstrip()
-    return body + social_only_cta(account_id)
+    return body + social_only_cta(account_id, job_slug, queue_id)
 
 
 def go_link(account_id, job_slug=None, queue_id=None):
@@ -1270,6 +1275,8 @@ def _cta_text(acc):
     link = (acc or {}).get('line_link') or ''
     if not link:
         return ''
+    if 'lin.ee' in link and (acc or {}).get('id'):
+        link = go_link(acc['id']) or link
     tpl = ((acc or {}).get('cta_template') or '').strip() or DEFAULT_CTA
     # 顧問可能忘了寫 {link}——那就把連結補在最後，不要讓貼文變成沒有連結。
     # 這是整段設計的底線：句子可以各寫各的，連結不可以不見。
@@ -1894,10 +1901,14 @@ def process_job(queue_row, job, repost=False):
         social_only = is_social_only(job)
         if social_only:
             # 未簽約客戶職缺：不接 /go/、不接應徵連結，只留 LINE／私訊（2026-10-07 Jacky 選項 A）
-            post = social_only_finalize(post, account_id)
+            post = social_only_finalize(post, account_id, job_slug=slug, queue_id=qid)
         else:
             post = post + line_community_link_suffix(account_id, job_slug=slug, queue_id=qid) \
                         + job_raw_format_line_suffix(account_id, style_row, job_slug=slug, queue_id=qid)
+        # 2026-10-21 Jacky：最後保險——AI 自己寫進去或公式自帶的 lin.ee 也一律換成 /go/（才會帶 [LC代碼]）
+        _gl = go_link(account_id, slug, qid)
+        if _gl:
+            post = re.sub(r'https?://lin\.ee/[A-Za-z0-9]+', _gl, post)
         formula_tag = (style_row.get('subtype') or style_row.get('name')) if style_row else 'default'
         length_tag = 'short' if len(post) < 300 else ('long' if len(post) > 600 else 'medium')
         # 2026-09-21 補記 cta_type：顧問反映「CTA 成效不好、可能太過雷同」，
