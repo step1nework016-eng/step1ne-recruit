@@ -84,9 +84,8 @@ check(D._quick_resume_bye_line('T2') is None, '已附履歷 → 道別訊息不�
 # ── 1. 感謝信時機 ──
 src = open(os.path.join(HERE, 'interview_daemon.py'), encoding='utf-8').read()
 fin = src[src.index('def finish('):src.index('prompt = build_report_prompt(', src.index('def finish('))]
-check('if close and _is_q:' in fin, 'finish()：快速應徵只有 close=True（真的關房）才寄感謝信，paused 不寄')
-cp = src[src.index('def close_paused('):src.index('def held_too_long(')]
-check('invite_assessment_after_interview' in cp, 'close_paused()：保留期滿真的關房時才寄')
+check('left=_left' in fin and '_left = (not close) or abandoned' in fin, 'finish()：中途離開（paused）當下就寄，信標成 left')
+check('notify_candidate' in fin and 'if not _sent' in fin, '原本流程：舊的「可以回來接著談」只在 HTML 信排不進去時才當備援')
 
 REC = [{'title': '工程設計工程師(儲備培訓)', 'location': '桃竹苗地區', 'salary': '依資歷核薪', 'employment': '正職',
         'why': '土木背景接近', 'url': 'https://step1ne.com/jobs/x/', 'evidence': '人選原話不外流'}]
@@ -104,6 +103,30 @@ DB["kind='assessment_invite'"] = [{'1': 1}]
 D.invite_assessment_after_interview('T2', recs=REC)
 ins = [s for s in SQL if s.startswith('INSERT INTO mail_outbox')]
 check(len(ins) == 1 and "'acai_job_recs'" in ins[0], '感謝信已寄過、這次才有推薦 → 推薦職缺另寄一封')
+
+# 中途離開：信上有回面談室按鈕；已寄過 → 回來談完不寄第二封
+DB.clear(); SQL.clear()
+DB['FROM applications WHERE id='] = [A_ROW]
+D.invite_assessment_after_interview('T2', recs=[], left=True)
+ins = [s for s in SQL if s.startswith('INSERT INTO mail_outbox')]
+check(len(ins) == 1 and f'interview/?t={TOK}' in ins[0] and '24 小時內點這個連結就能接著聊' in ins[0], '中途離開：感謝信附回面談室連結')
+DB.clear(); SQL.clear()
+DB['FROM applications WHERE id='] = [A_ROW]
+DB["kind='assessment_invite'"] = [{'1': 1}]
+D.invite_assessment_after_interview('T2', recs=[])
+check(not [s for s in SQL if s.startswith('INSERT INTO mail_outbox')], '回來談完、沒新推薦 → 不寄任何信（不寄第二封感謝信）')
+NROW = dict(A_ROW, origin='', note='', has_resume=1)
+DB.clear(); SQL.clear()
+DB['FROM applications WHERE id='] = [NROW]
+DB['FROM assessments'] = [{'1': 1}]
+D.send_normal_thanks('T2', recs=[], left=True)
+ins = [s for s in SQL if s.startswith('INSERT INTO mail_outbox')]
+check(len(ins) == 1 and "'interview_thanks'" in ins[0] and '✓ 履歷已收到' in ins[0] and '工作風格測驗' not in ins[0]
+      and 'interview/?t=' in ins[0], '原本流程中途離開：一封 HTML（履歷已收到、無測驗、附回面談室）')
+DB["kind='interview_thanks'"] = [{'1': 1}]
+SQL.clear(); D.send_normal_thanks('T2', recs=REC)
+ins = [s for s in SQL if s.startswith('INSERT INTO mail_outbox')]
+check(len(ins) == 1 and "'acai_job_recs'" in ins[0], '原本流程回來談完有推薦 → 只另寄推薦短信')
 
 # ── HTML 信本體 ──
 s, t, h = ITM.build(name='測試2', job_title='BIM', token=TOK, has_resume=False, show_assessment=True, recs=REC)

@@ -4028,22 +4028,22 @@ def _saved_recs(app_id):
         return []
 
 
-def _queue_thanks_mail(a, kind, *, has_resume, show_assessment, recs, done_label='剛剛'):
+def _queue_thanks_mail(a, kind, *, has_resume, show_assessment, recs, done_label='剛剛', left=False):
     """組 HTML＋純文字感謝信（interview_thanks_mail.build）放進 mail_outbox，由 mail_outbox_send.py 用 multipart/alternative 寄。"""
     import interview_thanks_mail as ITM
     import uuid as _uuid
     subject, text, html = ITM.build(name=a.get('name'), job_title=a.get('job_title') or a.get('job_slug') or '',
                                     token=a['chat_token'], has_resume=has_resume, show_assessment=show_assessment,
-                                    recs=recs, done_label=done_label)
+                                    recs=recs, done_label=done_label, left=left)
     d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, html, ref_table, ref_id, status, created_at) VALUES ("
        f"{q(str(_uuid.uuid4()))}, {q(kind)}, {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
        f"{q(subject)}, {q(text)}, {q(html)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
 
 
-def invite_assessment_after_interview(app_id, recs=None, done_label='剛剛'):
+def invite_assessment_after_interview(app_id, recs=None, done_label='剛剛', left=False):
     """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
-    ⚠️ 只在面談「真的結束」（房間關了：正常收尾，或 paused 保留期滿 close_paused）才呼叫——
-    paused 當下不寄（2026-10-21 測試：上一場測試 paused 時寄出的感謝信，被當成這一場面談中途寄來的）。
+    正常談完就寄；中途離開（paused）離開當下就寄（left=True，信上多「24 小時內點連結接著聊」）。
+    每筆只寄一封；回來談完不寄第二封（見 finish() 的說明）。
     只寄一次；已經寄過、這次才有推薦職缺 → 推薦職缺單獨寄一封短信。
     2026-10-21 起信件是 HTML 設計版＋純文字版（interview_thanks_mail.py），已做過測驗的不放測驗那步。
     信放進 mail_outbox，由 mail_outbox_send.py 從 official@ 寄出（跟其他一對一信件同一條路）。"""
@@ -4061,13 +4061,13 @@ def invite_assessment_after_interview(app_id, recs=None, done_label='剛剛'):
         return
     did_test = bool(d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"))
     _queue_thanks_mail(a, 'assessment_invite', has_resume=bool(a.get('has_resume')), show_assessment=not did_test,
-                       recs=recs, done_label=done_label)
+                       recs=recs, done_label=done_label, left=left)
     if not did_test:
         funnel_event(app_id, 'assessment_invited', {'via': 'after_interview'})
     log(f"{a.get('name')}：快速應徵，面談後感謝信（HTML）已排寄")
 
 
-def send_normal_thanks(app_id, recs=None):
+def send_normal_thanks(app_id, recs=None, left=False):
     """原本流程（非快速應徵）正常談完的感謝信——取代後台 /admin/interview-done 那封純文字「面談紀錄已收到」，
     內容同一件事（謝謝＋下一步），改成跟快速應徵同一個設計。中途離開那封（請他回來接著談）不在這裡，照舊走 notify_candidate。
     回傳 True＝已排寄（或已經寄過）；False＝排不進去，呼叫端退回舊的 notify_candidate。"""
@@ -4076,10 +4076,11 @@ def send_normal_thanks(app_id, recs=None):
         return False
     a = r[0]
     if d1(f"SELECT 1 FROM mail_outbox WHERE kind='interview_thanks' AND ref_id={q(app_id)} LIMIT 1"):
+        _recs_only_mail(a, recs)   # 已寄過（中途離開時寄的）→ 回來談完才有的推薦職缺另寄短信；不寄第二封感謝信
         return True
     did_test = bool(d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"))
     _queue_thanks_mail(a, 'interview_thanks', has_resume=bool(a.get('has_resume')), show_assessment=not did_test,
-                       recs=recs if recs is not None else _saved_recs(app_id))
+                       recs=recs if recs is not None else _saved_recs(app_id), left=left)
     log(f"{a.get('name')}：面談後感謝信（HTML）已排寄")
     return True
 
@@ -4118,25 +4119,25 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         except Exception as e:
             log(f'{name}：推薦職缺失敗（不影響報告）：{e}')
 
-    # 2026-10-21 Jacky 測試：面談後感謝信（含補履歷連結／測驗／推薦職缺）只在「房間真的關了」才寄。
-    # paused（候選人離開、房間留著給他回來）不寄——那時寄「感謝您參加面談」，他人可能還在面談頁、或明天回來接著談。
-    # paused 的人要等 close_paused() 真的關房才寄；中途回來談完的，在正常收尾這裡寄。
-    # 放在產報告「之前」：報告要跑好幾分鐘（測試2 這場報告晚了 10 分鐘），信不必等它。
+    # 感謝信放在產報告「之前」：報告要跑好幾分鐘（測試2 這場報告晚了 10 分鐘），信不必等它。
     _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
     _is_q = _is_quick_app(_qa[0])
-    if close and _is_q:
+    # 2026-10-21 Jacky 拍板：感謝信（HTML 設計版）每筆應徵只寄一封——
+    #   正常談完 → 談完就寄；中途離開（paused，房間留 24 小時）→ 離開當下就寄，信上多一行「24 小時內點連結接著聊」，
+    #   原本那封純文字「可以回來接著談」併進這封，不再另寄。回來談完不寄第二封，只有新產生的推薦職缺另寄短信。
+    #   已上傳履歷／做過測驗的，信裡那一步顯示已完成或不出現（信會跟著狀態變，不是不寄）。
+    _left = (not close) or abandoned
+    if _is_q:
         try:
-            invite_assessment_after_interview(app_id, recs=acai_recs)
+            invite_assessment_after_interview(app_id, recs=acai_recs, left=_left)
         except Exception as e:
             log(f'{name}：面談後感謝信失敗（不影響報告）：{e}')
-    elif not _is_q:
-        # 原本流程：正常談完 → HTML 感謝信（mail_outbox）；中途離開 → 照舊走後台那封「可以回來接著談」。
+    else:
         _sent = False
-        if close and not abandoned:
-            try:
-                _sent = send_normal_thanks(app_id, recs=acai_recs)
-            except Exception as e:
-                log(f'{name}：面談後感謝信（HTML）失敗，改寄舊版：{e}')
+        try:
+            _sent = send_normal_thanks(app_id, recs=acai_recs, left=_left)
+        except Exception as e:
+            log(f'{name}：面談後感謝信（HTML）失敗，改寄舊版：{e}')
         if not _sent:
             notify_candidate(app_id, abandoned, extra_lines=_recs_email_lines(acai_recs))
 
@@ -5638,7 +5639,7 @@ def close_paused(app):
         d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}' "
            f"WHERE id={q(app_id)} AND interview_state='paused'")
         log(f'{name}：保留 {STALE_HOLD_MIN} 分鐘仍未回來，關閉面談室')
-        try:   # 房間真的關了才寄面談後感謝信（快速應徵；paused 當下刻意不寄，見 finish()）
+        try:   # 保險：感謝信離開當下就寄了（見 finish()），這裡只補「當時沒寄成」的；已寄過的不會重寄
             if (d1(f"SELECT interview_state FROM applications WHERE id={q(app_id)}") or [{}])[0].get('interview_state') == 'done':
                 invite_assessment_after_interview(app_id, done_label='已完成')
         except Exception as e:

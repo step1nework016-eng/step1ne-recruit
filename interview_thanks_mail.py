@@ -34,6 +34,11 @@ def resume_url(token):
     return f'{SITE}/resume/?t={token}'
 
 
+def room_url(token):
+    """回面談室的連結（應徵頁「馬上開始」按鈕用的同一個）。"""
+    return f'{SITE}/interview/?t={token}'
+
+
 def assessment_url(token):
     return f'{SITE}/assessment/?t={token}&after=1'
 
@@ -72,13 +77,15 @@ def _button(url, text, bg=C_NOW_DK, pad='12px 22px'):
             f'font-weight:700;font-size:15px;padding:{pad};border-radius:10px;">{e(text)}</a>')
 
 
-def build(*, name, job_title, token, has_resume, show_assessment, recs=None, done_label='剛剛'):
+def build(*, name, job_title, token, has_resume, show_assessment, recs=None, done_label='剛剛', left=False):
     """回傳 (subject, text, html)。
 
     has_resume：True → 履歷那步顯示「✓ 履歷已收到」不放按鈕；False → 放上傳履歷按鈕（/resume/?t=…）
     show_assessment：True → 放「工作風格測驗（選填）」那步（/assessment/?t=…&after=1）
     recs：acai_job_recs 的公開 view（title/location/salary/employment/why/url）；空的就整塊不出現
-    done_label：「完成線上面談」那步上面的小字；房間關了一段時間才寄的（中途離開）用「已完成」
+    done_label：「完成線上面談」那步上面的小字；房間關了一段時間才寄的用「已完成」
+    left：中途離開（房間還留著）→ 最上面加一行「24 小時內點這個連結就能接著聊」＋回面談室按鈕，
+          第一步改成「已聊過的內容已記錄」。2026-10-21 Jacky：原本那封「可以回來接著談」併進這封，不寄兩封。
     """
     name = str(name or '').strip()
     job = str(job_title or '').strip()
@@ -88,7 +95,7 @@ def build(*, name, job_title, token, has_resume, show_assessment, recs=None, don
     subject = f'感謝您參加「{job}」線上面談' + ('' if has_resume else '｜上傳履歷讓顧問幫您推薦')
 
     # ── 時間軸 ──
-    steps = [_step(_dot_done(), done_label, C_OK, '完成線上面談')]
+    steps = [_step(_dot_done(), done_label, C_OK, '已聊過的內容已記錄' if left else '完成線上面談')]
     if has_resume:
         steps.append(_step(_dot_done(), '已完成', C_OK, '✓ 履歷已收到'))
     else:
@@ -143,7 +150,11 @@ def build(*, name, job_title, token, has_resume, show_assessment, recs=None, don
         '<h1 style="margin:12px 0 6px;font-size:22px;line-height:1.4;">感謝您參加線上面談！</h1>'
         f'<p style="margin:0;font-size:15px;line-height:1.7;color:{C_MU};">{e(name)} 您好，謝謝您花時間跟阿財聊「{e(job)}」。'
         '<br>您的回答已經整理好，接下來會這樣進行：</p></td></tr>'
-        '<tr><td style="padding:16px 24px 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        + (f'<tr><td style="padding:14px 24px 0;"><div style="background:#E8F3FA;border-radius:12px;padding:14px 16px;'
+           f'text-align:center;"><div style="font-size:14.5px;font-weight:700;margin:0 0 10px;">'
+           f'面談還沒結束也沒關係，24 小時內點這個連結就能接著聊</div>'
+           + _button(room_url(token), '回到面談室接著聊') + '</div></td></tr>' if left else '')
+        +         '<tr><td style="padding:16px 24px 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + ''.join(steps) + '</table></td></tr>'
         + recs_html +
         '<tr><td style="padding:18px 24px 8px;text-align:center;">'
@@ -154,8 +165,10 @@ def build(*, name, job_title, token, has_resume, show_assessment, recs=None, don
         '</table></td></tr></table></body></html>')
 
     # ── 純文字版（收不到 HTML 的信箱看這份；內容跟 HTML 一樣） ──
-    t = [f'{name} 您好，', '', f'謝謝您花時間跟阿財聊「{job}」。您的回答已經整理好，接下來會這樣進行：', '',
-         f'✓ 完成線上面談（{done_label}）']
+    t = [f'{name} 您好，', '', f'謝謝您花時間跟阿財聊「{job}」。您的回答已經整理好，接下來會這樣進行：', '']
+    if left:
+        t += ['面談還沒結束也沒關係，24 小時內點這個連結就能接著聊：', f'  {room_url(token)}', '']
+    t.append(f'✓ {"已聊過的內容已記錄" if left else "完成線上面談"}（{done_label}）')
     if has_resume:
         t.append('✓ 履歷已收到')
     else:
