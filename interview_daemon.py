@@ -3712,6 +3712,23 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
     return prompt
 
 
+def funnel_event(app_id, event, props=None):
+    """2026-10-21 應徵漏斗追蹤：寫一筆伺服器事件到 apply_funnel_events（同一筆應徵同一事件只記一次）。
+    表由 public-worker 建；這裡失敗只記 log，絕不影響面談流程。props 不放個資。"""
+    try:
+        if d1(f"SELECT 1 FROM apply_funnel_events WHERE application_id={q(app_id)} AND event={q(event)} LIMIT 1"):
+            return
+        r = d1(f"SELECT job_slug, origin, note FROM applications WHERE id={q(app_id)}")
+        a = r[0] if r else {}
+        flow = 'quick' if (a.get('origin') == 'quick_apply' or str(a.get('note') or '').startswith('【快速應徵')) else 'original'
+        an = d1(f"SELECT anon_id FROM apply_funnel_events WHERE application_id={q(app_id)} AND anon_id IS NOT NULL LIMIT 1")
+        d1("INSERT INTO apply_funnel_events (anon_id, application_id, flow, job_slug, event, props_json, source, created_at) VALUES ("
+           f"{q(an[0]['anon_id'] if an else None)}, {q(app_id)}, {q(flow)}, {q(a.get('job_slug'))}, {q(event)}, "
+           f"{q(json.dumps(props, ensure_ascii=False) if props else None)}, 'server', datetime('now','+8 hours'))")
+    except Exception as e:
+        log(f'漏斗事件 {event} 寫入失敗（不影響面談）：{e}')
+
+
 def invite_assessment_after_interview(app_id):
     """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
     面談結束（含中途離開）就寄一封測驗連結，只寄一次；已經做過測驗的不寄。
@@ -3743,6 +3760,7 @@ def invite_assessment_after_interview(app_id):
        f"{q(str(_uuid.uuid4()))}, 'assessment_invite', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
        f"{q('最後一步：工作風格測驗（約 5 分鐘）｜' + job)}, {q(text)}, 'applications', {q(app_id)}, 'pending', "
        f"datetime('now','+8 hours'))")
+    funnel_event(app_id, 'assessment_invited', {'via': 'after_interview'})
     log(f"{a.get('name')}：快速應徵，面談後已排寄工作風格測驗連結")
 
 
@@ -3768,6 +3786,7 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         # 看到非 active 會自動轉回 active）。容量計算只算 active，不會卡住別人。
         d1(f"UPDATE applications SET interview_state='paused', "
            f"status='interviewed' WHERE id={q(app_id)}")
+    funnel_event(app_id, 'interview_done', {'abandoned': bool(abandoned), 'closed': bool(close)})
 
     prompt = build_report_prompt(app_id, ctx, job_slug, abandoned)
     _before_files = _snapshot_session_files()
