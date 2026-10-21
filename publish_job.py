@@ -25,6 +25,8 @@ spec = importlib.util.spec_from_file_location('d', os.path.join(HERE, 'interview
 D = importlib.util.module_from_spec(spec); spec.loader.exec_module(D)
 spec2 = importlib.util.spec_from_file_location('bg', os.path.join(HERE, 'jobtpl', 'body_gen.py'))
 BG = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(BG)
+spec4 = importlib.util.spec_from_file_location('i18n_links', os.path.join(HERE, 'jobtpl', 'i18n_links.py'))
+I18N = importlib.util.module_from_spec(spec4); spec4.loader.exec_module(I18N)
 spec3 = importlib.util.spec_from_file_location('pf', os.path.join(HERE, 'jobintake', 'publishing_filters.py'))
 PF = importlib.util.module_from_spec(spec3); spec3.loader.exec_module(PF)
 
@@ -131,7 +133,9 @@ def render_page(j):
     top = tpl
     for k, v in vals.items():
         top = top.replace('{' + k + '}', str(v))
-    return top + BG.build_body({**j, 'title_enc': urllib.parse.quote(j['title'])}) + bot
+    page = top + BG.build_body({**j, 'title_enc': urllib.parse.quote(j['title'])}) + bot
+    # 有印尼文／越南文翻譯的職缺，自動加 hreflang 與語言切換（沒翻譯的不會多任何東西）。見 jobtpl/i18n_links.py
+    return I18N.inject(page, j['slug'], SITE)
 
 
 def upsert_d1(j):
