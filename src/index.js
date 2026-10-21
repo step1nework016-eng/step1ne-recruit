@@ -3955,6 +3955,15 @@ async function handleLineEvent(env, ev) {
       `SELECT lc.job_slug, COALESCE(j.title, lc.job_slug) AS title FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug
         WHERE lc.line_user_id = ? AND lc.clicked_at >= datetime('now','+8 hours','-14 days') ORDER BY lc.clicked_at DESC LIMIT 1`
     ).bind(userId).first().catch(() => null) || { title: '培訓職缺' };   // 從預設訊息／關鍵字卡片按的，沒有點擊紀錄也要回
+    // 2026-10-21 實際狀況：人選連按好幾次「想了解」，系統每次都回同一段、顧問已經在聊了還插話。
+    // 同一個人 12 小時內只自動回一次，之後交給顧問手動聊（不回、也不再通知）。
+    let repliedRecently = null;
+    try {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_kw_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, line_user_id TEXT, kind TEXT, text TEXT, at TEXT)`).run();
+      repliedRecently = await env.DB.prepare(`SELECT 1 FROM line_kw_replies WHERE line_user_id = ? AND kind = 'want' AND at >= datetime('now','+8 hours','-12 hours') LIMIT 1`).bind(userId).first();
+      if (!repliedRecently) await env.DB.prepare(`INSERT INTO line_kw_replies (line_user_id, kind, text, at) VALUES (?, 'want', ?, ?)`).bind(userId, String(text).slice(0, 60), now).run();
+    } catch { /* 查不到就照常回 */ }
+    if (repliedRecently) return;
     if (last) {
       const msg = `收到 🙌 顧問會在上班時間盡快用 LINE 回覆你，先幫你確認「${last.title}」的工作內容和基本條件。\n\n`
         + `方便的話，可以先在這裡告訴我們：\n① 你的名字\n② 目前住哪個縣市\n③ 有沒有用過 AutoCAD 或 Revit`;
