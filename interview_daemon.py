@@ -4011,12 +4011,21 @@ def _recs_only_mail(a, recs):
         return
     job = a.get('job_title') or a.get('job_slug') or ''
     text = '\n'.join([f"{a.get('name') or ''} 您好，", '', f"感謝您今天撥空參加「{job}」的線上面談。", '']
-                     + lines + ['', '顧問看完今天的面談內容後，會再跟您聯繫。謝謝您！', '',
+                     + lines + ['', '看完今天的面談內容後，會有人再跟您聯繫。謝謝您！', '',
                                 'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號'])
+    subject = f'感謝您參加「{job}」線上面談'
+    # 2026-10-21 新版設計（site_settings mail_design_v2：off／test／on），字跟純文字版一樣
+    html = None
+    try:
+        import mail_layout as ML
+        if ML.use_v2(a.get('name'), query=d1):
+            html = ML.render_text(subject, text, avatar=True)
+    except Exception as e:
+        log(f'推薦職缺信新版設計失敗，改寄純文字：{e}')
     import uuid as _uuid
-    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
+    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, html, ref_table, ref_id, status, created_at) VALUES ("
        f"{q(str(_uuid.uuid4()))}, 'acai_job_recs', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
-       f"{q(f'感謝您參加「{job}」線上面談')}, {q(text)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
+       f"{q(subject)}, {q(text)}, {q(html)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
     log(f"{a.get('name')}：面談後推薦職缺信已排寄")
 
 

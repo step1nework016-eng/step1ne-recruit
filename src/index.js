@@ -1,4 +1,5 @@
 import { applyLaterTick } from './apply_later.js';
+import { mailV2For, renderSendMailV2, renderTextMailV2, renderMailV2 } from './mail_v2.js';
 /**
  * Step1ne 招募表單 API。
  *
@@ -424,7 +425,7 @@ async function resendSend(env, init, worker = 'recruit') {
   return r;
 }
 
-async function sendMail(env, to, subject, lines, cta, attachments) {
+async function sendMail(env, to, subject, lines, cta, attachments, opts = {}) {
   if (!env.RESEND_API_KEY || !to) return false;
   const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const steps = Array.isArray(cta) ? cta : null;
@@ -449,7 +450,7 @@ async function sendMail(env, to, subject, lines, cta, attachments) {
     : '';
   // 信件的 HTML 要用最保守的寫法：Gmail 會拆掉 flex、grid 與大部分現代 CSS。
   // 所以這裡只用 inline-block、table 與行內樣式。
-  const html =
+  let html =
     `<div style="background:#f4f1ea;padding:26px 14px;">` +
     `<div style="font-family:-apple-system,'Noto Sans TC',sans-serif;line-height:1.8;color:#23262d;` +
     `max-width:540px;margin:0 auto;background:#ffffff;border-radius:14px;padding:30px 28px;">` +
@@ -490,6 +491,18 @@ async function sendMail(env, to, subject, lines, cta, attachments) {
     `地址：臺北市內湖區康寧路三段 54 之 7 號 3 樓<br><br>` +
     `這封信由系統自動發送，請勿直接回覆——有問題請走上面的 LINE 留言，會盡快回覆您。` +
     `</p></div></div>`;
+
+  // 2026-10-21 新版設計（site_settings mail_design_v2：off／test／on）。只換長相，字跟純文字版不變。
+  // opts.client＝寄給企業的信（例如招募評估工具），永遠用舊版。
+  if (!opts.client) {
+    try {
+      if (await mailV2For(env, { email: to, name: opts.name || (lines && lines[0]) })) {
+        const all = String(subject) + (lines || []).join('');
+        html = renderSendMailV2(subject, (lines || []).filter((x) => x != null), cta,
+          { avatar: /阿財|面談室|初步面談|面談連結|面談時間/.test(all) && !/阿福|健檢/.test(all) });
+      }
+    } catch (e) { console.error('mail_v2 render', e && e.message); }
+  }
 
   try {
     const r = await resendSend(env, {
@@ -4110,7 +4123,7 @@ async function applyScreenDecision(env, applicationId, decision, opts = {}) {
         ? [`${app.name} 您好，`,
            `您應徵的「${app.job_title || app.job_slug}」，資料評估後想進一步了解您的狀況。`,
            `下面的連結是您的專屬面談室，AI 面談顧問阿財會與您進行約 20 到 30 分鐘的正式面談，`,
-           `結束後獵頭顧問會評估是否推薦給用人單位面試。`,
+           `結束後會再評估是否推薦給用人單位面試。`,
            `請把這封信留著——中途離開的話，用同一個連結就能回到原本的對話。`]
         : [`${app.name} 您好，`,
            `您應徵的「${app.job_title || app.job_slug}」，資料評估後想進一步了解您的狀況。`,
@@ -6163,7 +6176,7 @@ export default {
             `您好${companyName ? `，${companyName}` : ''}：`,
             '感謝您對 STEP1NE 招募服務的關注。點擊下方按鈕，1 分鐘內完成評估，立即取得建議的招募形式，並可另存或列印 PDF。',
           ],
-          { url: link, text: '前往招募形式評估工具' }
+          { url: link, text: '前往招募形式評估工具' }, undefined, { client: true }
         );
         if (!sent) return json(request, { ok: false, error: '寄送失敗，可能是 RESEND_API_KEY 沒設或信箱格式問題' }, 500);
 
@@ -9021,7 +9034,7 @@ export default {
                 url: `https://step1ne.com/assessment/?t=${a.chat_token}`, text: '開始測驗' },
               { title: '第二步・初步面談（約 20–30 分鐘）',
                 body: '由 AI 面談助理「阿財」進行，用打字的就可以。'
-                    + '這個連結要先完成第一步才會開啟；如果是約定時間的面談，時間到我們也會再寄一次提醒。'
+                    + '這個連結要先完成第一步才會開啟；如果是約定時間的面談，時間到也會再寄一次提醒給您。'
                     + '過程中有任何狀況，面談室右上角有「回報問題」按鈕，我們會即時收到。',
                 url: `https://step1ne.com/interview/?t=${a.chat_token}`, text: '進入面談室' },
             ]

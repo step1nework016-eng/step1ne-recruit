@@ -216,6 +216,13 @@ def cmd_send_forms(args):
     if cn_err:
         sys.exit('客戶名寫錯，沒有寄出：' + '；'.join(cn_err))
     msg.set_content(body)
+    # 2026-10-21 新版設計（site_settings mail_design_v2：off／test／on），字跟純文字版一樣
+    try:
+        import mail_layout as ML
+        if ML.use_v2(a.get('name'), query=lambda sql: d1_http.query(sql)['results']):
+            msg.add_alternative(ML.render_text(msg['Subject'], body), subtype='html')
+    except Exception as e:
+        print(f'（新版信件設計失敗，改寄純文字：{e}）')
     att_names = []
     for f in files:
         req = urllib.request.Request(f"https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/file/{f['file_id']}",
