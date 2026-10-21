@@ -200,7 +200,113 @@ def load_bd():
     for r in c.rows("SELECT company,assigned_to FROM bd_outreach WHERE assigned_to IS NOT NULL AND status!='superseded' "
                     "ORDER BY updated_at", []):
         own[r['company']] = r['assigned_to']
-    return st, logs, own
+    return st, logs, own, load_touch()
+
+
+ANON_RE = re.compile(r'S-(?:X[0-9a-fA-F]{4}|\d{3})')
+ANON_FILE_RE = re.compile(r'匿名人選推薦_([A-Z]-[0-9A-Za-z]{2,5})_')
+RESP_RES = {'interested', 'not_hiring', 'not_interested'}
+
+
+def ckey(name):
+    return short(name, '') or (name or '').strip()
+
+
+def load_touch():
+    """每家開發公司的「寄信／電話／給過的人選／對方回覆」原始事件（2026-10-21 加）。
+    寄信來源三個：
+      sys  ＝系統真的寄出的信（bd_outreach 首封＋追信 sent_at、mail_outbox 開發公司信／回信）
+      man  ＝顧問在開發看板手動記的「寄信」（bd_call_logs mail_sent=1，或 kind=mail 且沒有填結果；
+             kind=mail 但有填結果＝記的是對方回信，不算我們寄的）
+    同一家同一天的手動紀錄只算 1 封；那天系統已經有寄信紀錄，手動那筆就當成同一封不重複算。"""
+    sys_m, man_m, calls, cands, resp = [], [], [], [], []
+    oco = {}
+    for r in c.rows("SELECT id,company,sent_at,followup1_sent_at f1,followup2_sent_at f2,candidate_ref,"
+                    "COALESCE(candidate_card,'') card,cv_file_id,reply_note,opened_at FROM bd_outreach", []):
+        oco[r['id']] = r['company']
+        for t in (r['sent_at'], r['f1'], r['f2']):
+            if t:
+                sys_m.append((ckey(r['company']), t[:10]))
+        if r['sent_at'] and r['candidate_ref'] and (r['card'].strip() or r['cv_file_id']) \
+                and not r['candidate_ref'].startswith('SVC-'):
+            cands.append((ckey(r['company']), r['candidate_ref'], r['sent_at'][:10], '開發信'))
+        if r['sent_at'] and (r['reply_note'] or '').strip():
+            resp.append((ckey(r['company']), (r['sent_at'] or '')[:10], '有回覆', True))
+    for r in c.rows("SELECT a.filename,o.company,o.sent_at FROM bd_mail_attachments a JOIN bd_outreach o ON o.id=a.outreach_id "
+                    "WHERE o.sent_at IS NOT NULL", []):
+        m = ANON_FILE_RE.search(r['filename'] or '')
+        if m:
+            cands.append((ckey(r['company']), m.group(1), r['sent_at'][:10], '開發信附件'))
+    rep = {r['id']: oco.get(r['outreach_id']) for r in c.rows("SELECT id,outreach_id FROM bd_replies", [])}
+    for r in c.rows("SELECT kind,ref_table,ref_id,sent_at,attachments_json FROM mail_outbox "
+                    "WHERE status='sent' AND sent_at IS NOT NULL AND ref_table IN ('bd_company','bd_replies')", []):
+        co = r['ref_id'] if r['ref_table'] == 'bd_company' else rep.get(r['ref_id'])
+        if not co:
+            continue
+        sys_m.append((ckey(co), r['sent_at'][:10]))
+        try:
+            files = [a.get('filename') or '' for a in json.loads(r['attachments_json'] or '[]')]
+        except Exception:
+            files = []
+        for f in files:
+            m = ANON_FILE_RE.search(f)
+            if m:
+                cands.append((ckey(co), m.group(1), r['sent_at'][:10], '信件附件'))
+    for r in c.rows("SELECT outreach_id,created_at FROM bd_replies WHERE outreach_id IS NOT NULL", []):
+        if oco.get(r['outreach_id']):
+            resp.append((ckey(oco[r['outreach_id']]), r['created_at'][:10], '回信', True))
+    for r in c.rows("SELECT company,kind,result,note,mail_sent,mail_sent_at,COALESCE(event_at,created_at) at "
+                    "FROM bd_call_logs WHERE deleted_at IS NULL", []):
+        k, at = ckey(r['company']), (r['at'] or '')[:10]
+        if r['kind'] == 'call' or (not r['kind'] and r['result']):
+            calls.append((k, at))
+        if r['result'] in RESP_RES:
+            resp.append((k, at, RES.get(r['result'], r['result']), r['kind'] == 'mail'))
+        out_mail = r['mail_sent'] == 1 or (r['kind'] == 'mail' and not r['result'])
+        if out_mail:
+            d = (r['mail_sent_at'] or r['at'] or '')[:10]
+            man_m.append((k, d))
+            for code in dict.fromkeys(ANON_RE.findall(r['note'] or '')):
+                cands.append((k, code, d, '顧問紀錄'))
+    old = {r['old_code']: r['code'] for r in c.rows(
+        "SELECT old_code,code FROM candidate_anon_codes WHERE old_code IS NOT NULL", [])}
+    return {'sys': sys_m, 'man': man_m, 'calls': calls, 'cands': cands, 'resp': resp, 'old': old}
+
+
+def touch_for(T, ws, we):
+    """回傳 {公司key: {...}}；累計＝到這週結束為止，本週＝[ws, we)"""
+    out = defaultdict(lambda: {'m': 0, 'mw': 0, 'c': 0, 'cw': 0, 'cands': {}, 'resp': None})
+    sysd = set()
+    for k, d in T['sys']:
+        if d < we:
+            out[k]['m'] += 1
+            out[k]['mw'] += ws <= d
+            sysd.add((k, d))
+    for k, d in set(T['man']):
+        if d < we and (k, d) not in sysd:
+            out[k]['m'] += 1
+            out[k]['mw'] += ws <= d
+    for k, d in T['calls']:
+        if d < we:
+            out[k]['c'] += 1
+            out[k]['cw'] += ws <= d
+    for k, code, d, via in sorted(T['cands'], key=lambda x: x[2]):
+        if d < we:
+            cur = T['old'].get(code)
+            label = f'{code}（現 {cur}）' if cur else code
+            out[k]['cands'].setdefault(label, (d, via))
+    for k, d, txt, _ in sorted(T['resp'], key=lambda x: x[1]):
+        if d >= we or k not in out or not out[k]['cands']:
+            continue
+        first = min(v[0] for v in out[k]['cands'].values())
+        if d >= first:   # 給人選之後的最新一次回應
+            out[k]['resp'] = f"{d[5:].replace('-', '/')} {txt}"
+    res = {}
+    for k, v in out.items():
+        cl = [{'code': code, 'd': d[5:].replace('-', '/'), 'via': via} for code, (d, via) in v['cands'].items()]
+        res[k] = {'mails': [v['m'], v['mw']], 'calls': [v['c'], v['cw']], 'cands': cl,
+                  'resp': v['resp'] or ('還沒有回覆紀錄' if cl else '')}
+    return res
 
 
 def log_text(l):
@@ -225,7 +331,9 @@ def derive_stage(s, ls):
 
 
 def bd_view(bd, recruit_rows, ws, we):
-    st, logs, own = bd
+    st, logs, own, T = bd
+    tch = touch_for(T, ws, we)
+    Z = {'mails': [0, 0], 'calls': [0, 0], 'cands': [], 'resp': ''}
     by = defaultdict(list)
     for l in logs:
         by[l['company']].append(l)
@@ -246,7 +354,7 @@ def bd_view(bd, recruit_rows, ws, we):
             nm_ = short(co, '') or co
             item = {'company': nm_, 'owner': owner, 'stage': sg, 'hot': s['tag'] == 'HOT',
                     'last': log_text(ls[0]) if ls else '', 'next': s['next_step'] or '', 'due': (s['next_due'] or '')[5:].replace('-', '/'),
-                    'logs': [log_text(l) for l in ls[:10]]}
+                    'logs': [log_text(l) for l in ls[:10]], **tch.get(ckey(co), Z)}
             r = unsigned.get(nm_)
             if r:
                 item['recruit'] = f"已開 {r['jobs']} 缺｜應徵 {r['app']}｜推薦 {r['fw']}"
@@ -255,13 +363,13 @@ def bd_view(bd, recruit_rows, ws, we):
             lst.append(item)
             kc[sg] += 1
             wl = [l for l in ls if ws <= l['at'][:10] < we]
-            if wl:
+            if wl or item['mails'][1] or item['calls'][1]:
                 wk.append({**item, 'logs': [log_text(l) for l in wl]})
         if tab == 'all':   # 沒在開發看板上、但已經開職缺的未簽約客戶（例如先上社群的）
             for g, r in unsigned.items():
                 if g not in seen and (r['app'] or r['fw'] or r['jobs']):
                     lst.append({'company': g, 'owner': '', 'stage': '已開職缺', 'hot': False, 'last': '', 'next': '', 'due': '', 'logs': [],
-                                'recruit': f"已開 {r['jobs']} 缺｜應徵 {r['app']}｜推薦 {r['fw']}"})
+                                **tch.get(g, Z), 'recruit': f"已開 {r['jobs']} 缺｜應徵 {r['app']}｜推薦 {r['fw']}"})
                     kc['已開職缺'] += 1
         def kpi(items, logs_in):
             return {'companies': len(items),
@@ -269,10 +377,12 @@ def bd_view(bd, recruit_rows, ws, we):
                     'interested': sum(1 for i in items if i['stage'] in STAGE_ORDER[4:]),
                     'hot': sum(1 for i in items if i['hot'])}
         wlogs = [l for i in wk for l in i['logs']]
+        tot = lambda f, n: sum(i[f][n] for i in lst)
         out[tab] = {
-            'cum': {'kpi': kpi(lst, None), 'stages': {k: kc.get(k, 0) for k in STAGE_ORDER},
+            'cum': {'kpi': {**kpi(lst, None), 'mails': tot('mails', 0), 'calls': tot('calls', 0),
+                            'cands': sum(1 for i in lst if i['cands'])}, 'stages': {k: kc.get(k, 0) for k in STAGE_ORDER},
                     'list': sorted(lst, key=lambda i: (-(STAGE_ORDER.index(i['stage']) if i['stage'] in STAGE_ORDER else 0), not i['hot'], i['company']))},
-            'new': {'kpi': {'companies': len(wk), 'calls': sum(1 for t in wlogs if ' 電話' in t), 'mails': sum(1 for t in wlogs if ' 寄信' in t),
+            'new': {'kpi': {'companies': len(wk), 'calls': tot('calls', 1), 'mails': tot('mails', 1),
                             'interested': sum(1 for t in wlogs if '有興趣' in t)},
                     'list': sorted(wk, key=lambda i: -len(i['logs']))}}
     return out
