@@ -3845,14 +3845,17 @@ async function handleLineEvent(env, ev) {
         // ⚠️ 2026-09-09 加：職缺被顧問關閉之後，社群舊貼文還在外面流傳，
         // 人選照樣點得進來。原本完全不看 status，會熱情地推一個已經徵到人的
         // 職缺的應徵連結給他——比不回話還糟。關閉的一律誠實講，並導去列表。
-        if (!binding && click.job_title && click.job_status === 'closed') {
+        // ⚠️ 2026-10-21 修：原本只回「全新候選人」，已經綁定過的人（以前應徵過、加過好友）
+        // 點社群貼文帶 [LC906] 來問「我想了解這個職缺」，系統一個字都沒回（Jacky 自己實測撞到）。
+        // 帶著職缺代碼來問＝明確想了解這個職缺，新舊候選人都要回；話題貼文一樣不回。
+        if (click.job_title && click.job_status === 'closed') {
           const closed = await env.DB.prepare(
             `SELECT slug, title, company_id, service_line FROM jobs WHERE slug=?`
           ).bind(click.job_slug).first();
           return lineReplyMessages(env, replyToken,
             await closedJobMessages(env, closed || { slug: click.job_slug, title: click.job_title }));
         }
-        if (!binding && click.job_title) {
+        if (click.job_title) {
           // 2026-10-01 加 utm_content=q<queue_id>：這個人是從哪一則貼文的
           // [LC代碼] 進來的，這裡已經查得到 queue_id，順手帶給應徵表單，
           // 表單送出時就能直接記進 applications.source_queue_id——這是目前
