@@ -1775,6 +1775,86 @@ def skill(section, job=None):
     return t
 
 
+# ── 外語人選模式（2026-10-21）──────────────────────────────────
+# 從印尼文／越南文職缺頁（/id/、/vi/）來的人選：開場先用他的語言講一則歡迎＋說明，
+# 之後整場用中文談，並在面談中自然地看他的中文程度（客戶要求中文流利）。
+# 怎麼認：表單送出時帶 lang，Worker 在 note 寫一行「應徵頁語言：印尼文（id）」；
+#        舊資料或沒帶 lang 的，退回看 utm_medium=job_page_id／job_page_vi。
+# ⚠️ 只在認得出 id／vi 時才動作。中文人選的 prompt、開場、報告一個字都不變。
+FOREIGN_LANG_NAME = {'id': '印尼文', 'vi': '越南文'}
+_FOREIGN_NOTE_RE = re.compile(r'應徵頁語言：[^\n（(]*[（(](id|vi)[）)]')
+# 固定文字，不交給 AI 現場寫：外語寫錯沒人看得出來，固定稿才能事先檢查。
+FOREIGN_GREETING = {
+    'id': ('Halo, selamat datang dan terima kasih sudah melamar! '
+           'Pekerjaan ini membutuhkan komunikasi bahasa Mandarin yang lancar setiap hari, '
+           'jadi wawancara selanjutnya akan dilakukan dalam bahasa Mandarin. '
+           'Kalau ada pertanyaan yang kurang dimengerti, bilang saja, nanti saya tanyakan lagi '
+           'dengan bahasa Mandarin yang lebih sederhana.'),
+    'vi': ('Xin chào, chào mừng bạn và cảm ơn bạn đã ứng tuyển! '
+           'Công việc này cần giao tiếp lưu loát bằng tiếng Trung (tiếng Hoa) hằng ngày, '
+           'nên buổi phỏng vấn tiếp theo sẽ dùng tiếng Trung. '
+           'Nếu có câu hỏi nào chưa hiểu, bạn cứ nói, mình sẽ hỏi lại bằng tiếng Trung đơn giản hơn.'),
+}
+FOREIGN_GREETING_ZH = ('您好，歡迎，也謝謝您來應徵！這份工作每天都需要用中文流利溝通，'
+                       '所以接下來的面談會用中文進行。如果有聽不懂的問題，直接跟我說，'
+                       '我會用更簡單的中文再問一次。')
+# 他用外語回答時，中文提醒後面接的那一句（只講一次）
+FOREIGN_PLEASE_ZH = {
+    'id': 'Mohon dijawab dalam bahasa Mandarin ya, jawaban sederhana juga tidak apa-apa.',
+    'vi': 'Bạn vui lòng trả lời bằng tiếng Trung nhé, nói đơn giản cũng không sao.',
+}
+FOREIGN_PLEASE_ZH_MEANING = '請用中文回答，簡單講也沒關係。'
+CHINESE_LEVELS = ('流利', '可日常溝通', '勉強', '不足')
+
+
+def foreign_lang(app):
+    """回 'id'／'vi'／None。只看應徵頁語言，不是國籍（國籍不問、不判斷）。"""
+    app = app or {}
+    m = _FOREIGN_NOTE_RE.search(str(app.get('note') or ''))
+    if m:
+        return m.group(1)
+    um = str(app.get('utm_medium') or '').strip().lower()
+    if um in ('job_page_id', 'job_page_vi'):
+        return um[-2:]
+    return None
+
+
+def _foreign_prompt_lines(fl):
+    name = FOREIGN_LANG_NAME[fl]
+    L = [f'\n─────────  這位人選是從{name}職缺頁應徵的（外語人選模式）  ─────────',
+         f'  ・系統在你開場之前，已經用{name}替你送出一則歡迎訊息，中文意思是：「{FOREIGN_GREETING_ZH}」',
+         f'    所以你這一則開始**一律用繁體中文**；不要再用{name}或英文打招呼，也不要把那段說明再講一次。',
+         '  ・這份工作客戶要求「中文流利，日常溝通都用中文」。用詞簡單、句子短、一次只問一件事；'
+         '不要用成語、俚語、台語、英文縮寫，也不要一句塞很多條件。',
+         '  ・他說聽不懂、或明顯答非所問：用更簡單的中文換句話再問一次（短句、常用字），'
+         f'**不要改用{name}或英文來問**。',
+         f'  ・他用{name}、其他外語或英文回答時：**只提醒一次**——先用中文禮貌地請他用中文回答，'
+         f'後面接這一句{name}：「{FOREIGN_PLEASE_ZH[fl]}」（意思：{FOREIGN_PLEASE_ZH_MEANING}）。'
+         '提醒過之後他還是沒辦法用中文，就**不要再要求**，照常溫和地把必問清單問完、正常收尾；'
+         '不要突然結束、不要表現出不耐煩。他用外語講的內容一樣記下來。',
+         '  ・中文能力是融進面談裡看的，**不是考試**——不要說「現在測你的中文」，也不要評論他的中文好不好。'
+         '下面兩題一定要問到，請他用中文回答（打字或語音都可以，可以鼓勵他用語音講）：',
+         '     ① 用中文介紹一下你之前做過的工作，或是念的科系。',
+         '     ② 如果主管交代你修改一張圖，你會怎麼跟他確認細節？',
+         '    兩題都要等他自己回答，不要先替他舉例、也不要給選項讓他選。',
+         '  ・工作許可身分（必問，用中文問，當成跟工作有關的事實確認）：問法例如'
+         '「想跟您確認一下，您目前在台灣工作的身分是哪一種？例如台灣籍配偶、永久居留、在台灣的大學畢業，或是其他？」'
+         '照他的原話記下來；他說「其他」就請他說是哪一種居留或工作許可，不要自己判斷有沒有資格。',
+         '    🚫 只問這一題身分類別。**絕對不要問、也不要評論**他的國籍、來自哪裡、年齡、性別、宗教、婚姻或家庭狀況，'
+         '也不要說「外籍」「外國人」「哪一國人」這類字眼。',
+         ]
+    return L
+
+
+def _foreign_opening(ctx, msgs):
+    """外語人選模式：開場那一輪，在阿財的中文開場前面先放一則固定的外語歡迎（見 FOREIGN_GREETING）。
+    不是開場（已經有阿財講過的話）或不是外語人選，原樣回傳。"""
+    fl = foreign_lang((ctx or {}).get('application'))
+    if not fl or any(m.get('role') == 'assistant' for m in ((ctx or {}).get('conversation') or [])):
+        return msgs
+    return [FOREIGN_GREETING[fl]] + list(msgs)
+
+
 def build_prompt(ctx, skill_md):
     app = ctx['application']
     job = ctx.get('job') or {}
@@ -2433,6 +2513,11 @@ def build_prompt(ctx, skill_md):
         pass
     _ex = ctx.get('expertise') or {}
     _must += [f'專業程度：{t.get("name")}' for t in ((_ex.get('ladder') or {}).get('topics') or []) if t.get('name')]
+    _fl = foreign_lang(app)
+    if _fl:      # 外語人選模式（中文人選這段不會跑，必問清單完全不變）
+        _must += ['中文能力題①：用中文介紹之前做過的工作或念的科系',
+                  '中文能力題②：主管交代修改一張圖，你會怎麼跟他確認細節',
+                  '工作許可身分（台灣籍配偶／永久居留／在台灣大學畢業／其他）']
     lines.append('\n✅ 必問清單（這場面談結束前每一項都要問到、拿到具體回答；履歷或表單已經寫清楚的，用一句話確認即可；意思重複的幾項合併成一題問）：')
     for _i, _m in enumerate(dict.fromkeys(_must), 1):
         lines.append(f'  {_i}. {_m}')
@@ -2445,6 +2530,8 @@ def build_prompt(ctx, skill_md):
     if str(app.get('note') or '').startswith('【快速應徵'):
         lines.append('⏱ 這位是快速應徵進來的，頁面上跟他說「約 20 分鐘」。開場說時間時講「大概聊 15 到 25 分鐘」，'
                      '不要說 30 到 40 分鐘；閒聊少一點，但必問清單一定要問完。')
+    if _fl:
+        lines.extend(_foreign_prompt_lines(_fl))
     lines.append('\n─────────  輸出格式  ─────────')
     lines.append(SCHEMA_HINT)
     return '\n'.join(lines)
@@ -3289,6 +3376,35 @@ def _normalize_report_json(obj, name='', job=None):
          'note': s(f.get('note'))}
         for f in arr(obj.get('expertise_findings')) if isinstance(f, dict)]
 
+    # 2026-10-21 外語人選模式：中文能力。只有模型給了這欄（外語人選的 prompt 才會要）才處理，中文人選完全不碰。
+    # 客戶要求中文流利：程度「勉強／不足」→ 結論由程式固定改成硬條件不符＋「中文不足、不建議推薦」，不交給模型自由判斷。
+    _ca = obj.get('chinese_ability') if isinstance(obj.get('chinese_ability'), dict) else None
+    if _ca is not None:
+        lvl = s(_ca.get('level')).strip()
+        lvl = lvl if lvl in CHINESE_LEVELS else '不足' if not lvl else next((x for x in CHINESE_LEVELS if x in lvl), '勉強')
+        out['chinese_ability'] = {
+            'level': lvl,
+            'evidence': [s(x) for x in arr(_ca.get('evidence')) if s(x)][:3],
+            'basis': s(_ca.get('basis')),
+            'reminded': s(_ca.get('reminded')),
+            'work_permit': s(_ca.get('work_permit')) or '人選未說明',
+            'audio_check': s(_ca.get('audio_check')),
+        }
+        if lvl in ('勉強', '不足'):
+            out['verdict'] = '硬條件不符'
+            if '中文不足' not in out['one_liner']:
+                out['one_liner'] = '中文不足、不建議推薦。' + out['one_liner']
+            if '中文' not in out['top_risk']:
+                out['top_risk'] = f'中文程度「{lvl}」，客戶要求流利。' + out['top_risk']
+        elif lvl == '可日常溝通' and '流利' not in out['top_risk']:
+            out['top_risk'] = '客戶要求中文流利，目前只到可日常溝通，推薦前要先確認。' + out['top_risk']
+        if not any('中文' in i['requirement'] for i in out['job_match']['items']):
+            out['job_match']['items'].append({
+                'requirement': '中文流利溝通（客戶要求）',
+                'verdict': {'流利': '符合', '可日常溝通': '部分符合'}.get(lvl, '缺'),
+                'basis': f'面談中文程度：{lvl}',
+                'evidence': '；'.join(out['chinese_ability']['evidence'][:2])})
+
     # 2026-09-07 加：職缺要求外語時，這欄是「有沒有真的驗過」的唯一結構化依據。
     # ⚠️ 這個欄位存在的理由：finish() 會直接讀這裡的 verdict 決定要不要把
     # applications.lang_verified_at 標記成已驗證——欄位名/值域改了，finish()
@@ -3551,6 +3667,7 @@ def report_to_json(report, ctx, name='', app_id=None, attempt=0):
         #    2026-08-11 這個漏送在 finish() 的報告 prompt 出過一次，這裡是第二次。
         + ('\n\n【履歷全文】\n' + (ctx.get('resume_text') or '')[:20000]
            if (ctx.get('resume_text') or '').strip() else '\n\n【履歷】無可讀的履歷檔案')
+        + _foreign_json_block(ctx)
         + '\n\n【初篩報告全文】\n' + report
         + '\n\n只輸出那一個 JSON 物件，不要有任何其他文字、不要包程式碼區塊。')
     _before_files = _snapshot_session_files()
@@ -3698,6 +3815,47 @@ NOT_COVERED_MD_RULE = (
     '很短但事實都齊的算清楚。')
 
 
+def _foreign_report_block(ctx):
+    """外語人選模式的報告規則（中文人選回空字串，報告 prompt 完全不變）。"""
+    fl = foreign_lang((ctx or {}).get('application'))
+    if not fl:
+        return ''
+    name = FOREIGN_LANG_NAME[fl]
+    return (
+        f'\n\n🗣️ 這位人選是從{name}職缺頁應徵的。開場第一則{name}歡迎訊息是系統固定稿，不是人選說的，不要拿來判斷。'
+        '這個職缺客戶要求「中文流利，日常溝通都用中文」。報告一定要有一段「## 中文能力」，照這個格式寫：\n'
+        '- 程度：流利／可日常溝通／勉強／不足（四選一，照下面固定標準判）\n'
+        '  流利＝每一題都聽得懂，用中文完整回答、有細節，用詞夠用，幾乎不用換句話說；\n'
+        '  可日常溝通＝大部分聽得懂，能用簡單中文講出重點，偶爾要換句話說或用字有限；\n'
+        '  勉強＝常常要換句話說，回答只有片段或幾個詞，常夾外語；\n'
+        '  不足＝多數聽不懂，或沒辦法用中文回答、主要用外語作答。\n'
+        '- 判斷依據：聽不聽得懂（理解）、講得順不順、完不完整（流暢與完整度）、用詞夠不夠（詞彙）各寫一句。\n'
+        '- 原話佐證：2～3 句他的中文原話，照逐字稿原文加引號，標明是語音還是打字；'
+        '最好包含「介紹之前的工作或科系」和「怎麼跟主管確認改圖細節」這兩題的回答。\n'
+        '- 有沒有被提醒改用中文：沒有需要／提醒後改用中文／提醒後仍用外語。\n'
+        '- 工作許可身分：照他的原話寫（例如「我是台灣籍配偶」「永久居留」「在台灣念大學畢業」）。\n'
+        '- 語音回覆是系統轉寫的，口音可能被聽錯；轉寫看起來怪、跟上下文對不起來時，寫「建議顧問聽原始錄音確認」，不要拿它扣分。\n'
+        '結論規則（固定，不准自己變通）：\n'
+        '- 程度是「勉強」或「不足」→ 結論一律是「硬條件不符」，一句話結論開頭寫「中文不足、不建議推薦」，最大風險寫中文程度。\n'
+        '- 程度是「可日常溝通」→ 最大風險寫「客戶要求中文流利，目前只到可日常溝通，推薦前要先確認」。\n'
+        '- 「職缺條件逐條比對」要多一列「中文流利溝通（客戶要求）」：流利＝符合、可日常溝通＝部分符合、勉強或不足＝缺。\n'
+        '🚫 報告裡不准出現國籍、來自哪裡、年齡、性別、宗教、婚姻家庭的判斷或推測；工作許可身分只照他自己講的寫。')
+
+
+def _foreign_json_block(ctx):
+    """外語人選模式：結構化報告多一個 chinese_ability 欄位（中文人選回空字串）。"""
+    if not foreign_lang((ctx or {}).get('application')):
+        return ''
+    return (
+        '\n\n【這位是外語人選，JSON 最外層多加這一欄（照報告「中文能力」那一段搬，不要重新判斷）】\n'
+        '"chinese_ability": {"level": "流利|可日常溝通|勉強|不足", '
+        '"evidence": ["他的中文原話1", "原話2", "原話3（2～3 句）"], '
+        '"basis": "理解、流暢與完整度、詞彙各一句，合成一段", '
+        '"reminded": "沒有需要|提醒後改用中文|提醒後仍用外語", '
+        '"work_permit": "他自己講的工作許可身分原話", '
+        '"audio_check": "需要顧問聽原始錄音確認就寫原因，不需要就空字串"}\n')
+
+
 def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered=True):
     """組顧問版初篩報告的 prompt（E17-3 從 finish() 原封不動抽出來，才能對同一場做改前／改後比較）。
     with_not_covered=False 就是改動前的 prompt。"""
@@ -3763,6 +3921,7 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
            if abandoned else '')
         + (_not_covered_block(ctx) if with_not_covered else '')
         + _blockers_report_block(ctx)
+        + _foreign_report_block(ctx)
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     return prompt
 
@@ -4386,6 +4545,7 @@ def handle(app):
                f'職缺：{app.get("job_slug")}　·　這通常代表職缺資料裡混進了用人單位的歧視性偏好，'
                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
+        msgs = _foreign_opening(ctx, msgs)      # 外語人選：開場前先放固定的外語歡迎（中文人選不動）
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in msgs)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
@@ -5025,6 +5185,7 @@ def do_prewarm(app):
         # E24：預熱的開場白是 Worker 進房時直接貼給候選人的，Worker 不會清標點，所以存進去之前就要清好
         msgs = [_clean_out(m) for m in (result.get('messages') or []) if str(m).strip()][:3]
         if msgs:
+            msgs = _foreign_opening(ctx, msgs)      # 外語人選：開場前先放固定的外語歡迎（最多變 4 則）
             now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             # E23b：人已經進房了才算好 → 不存（handle 早就自己現場生成了，存了也沒用）
             meta = d1_raw(f"UPDATE applications SET prewarmed_opening={q(json.dumps(msgs, ensure_ascii=False))}, "
@@ -5055,7 +5216,7 @@ def _post_prewarmed_opening(app_id, name):
     if not rows:
         return False
     try:
-        msgs = [str(m).strip() for m in json.loads(rows[0]['prewarmed_opening']) if str(m).strip()][:3]
+        msgs = [str(m).strip() for m in json.loads(rows[0]['prewarmed_opening']) if str(m).strip()][:4]   # 外語人選多一則歡迎
     except (ValueError, TypeError):
         return False
     if not msgs or any(law5_hits(m) for m in msgs):

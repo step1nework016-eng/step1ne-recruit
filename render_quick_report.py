@@ -60,6 +60,20 @@ def render(app_id):
     fc = d.get('for_client') or {}
     dirs = d.get('career_directions') or []
     vcls = 'ok' if '推' in str(d.get('verdict')) and '不' not in str(d.get('verdict')) else ('bad' if '不符' in str(d.get('verdict')) else 'wa')
+    ca = d.get('chinese_ability') or None   # 外語人選模式才有（印尼文／越南文職缺頁來的）
+    ca_html = ''
+    if ca:
+        lv = ca.get('level') or ''
+        ccls = {'流利': 'ok', '可日常溝通': 'wa'}.get(lv, 'bad')
+        warn = '<p class="cn-warn">中文不足、不建議推薦（客戶要求中文流利）</p>' if lv in ('勉強', '不足') else (
+            '<p class="cn-note">客戶要求中文流利，目前只到可日常溝通，推薦前要先確認</p>' if lv == '可日常溝通' else '')
+        ca_html = (f'<section class="card cn"><h2>中文能力</h2><p><span class="pill {ccls}">{E(lv)}</span></p>{warn}'
+                   f'<table class="kv"><tr><th>判斷依據</th><td>{E(ca.get("basis") or "—")}</td></tr>'
+                   f'<tr><th>原話佐證</th><td><ul>{"".join(f"<li>{E(x)}</li>" for x in ca.get("evidence") or []) or "<li>—</li>"}</ul></td></tr>'
+                   f'<tr><th>提醒改用中文</th><td>{E(ca.get("reminded") or "—")}</td></tr>'
+                   f'<tr><th>工作許可身分</th><td>{E(ca.get("work_permit") or "—")}（人選自述）</td></tr>'
+                   + (f'<tr><th>錄音</th><td>{E(ca.get("audio_check"))}</td></tr>' if ca.get('audio_check') else '')
+                   + '</table><p class="foot">程度分四級：流利／可日常溝通／勉強／不足。勉強或不足一律判「硬條件不符」。</p></section>')
     css = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'quick_report.css'), encoding='utf-8').read() if False else CSS
     return f'''<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>初篩報告 {E(a["name"])}</title><style>{css}</style></head><body><div class="w">
@@ -70,6 +84,7 @@ def render(app_id):
 <div class="two"><div><b>最大亮點</b><p>{E(d.get("top_selling_point"))}</p></div><div><b>最大風險</b><p>{E(d.get("top_risk"))}</p></div></div>
 <p class="route">系統分流：{E(route.get("label"))}（{E(route.get("reason"))}）</p></section>
 
+{ca_html}
 <div class="grid">
 <section class="card"><h2>快速應徵資料</h2><table class="kv">{rows_basic}</table></section>
 <section class="card"><h2>顧問要補問</h2><ol class="chk">{"".join(f"<li>{E(x)}</li>" for x in follow) or "<li>無</li>"}</ol></section>
@@ -125,6 +140,7 @@ ol.chk,ul{margin:0;padding-left:20px;font-size:14px}ol.chk li,ul li{margin:4px 0
 .dirs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 .dir{border:1px solid var(--ln);border-radius:10px;padding:10px 12px}.dir h3{font-size:14.5px;margin:0 0 6px}
 .dir p{margin:4px 0;font-size:13.5px}.dir b{display:block;font-size:12px;color:var(--mu)}
+.cn-warn{margin:6px 0 10px;font-weight:800;color:var(--bad)}.cn-note{margin:6px 0 10px;font-weight:700;color:var(--wa)}
 @media (max-width:720px){.grid,.two{grid-template-columns:1fr}}
 @media print{body{background:#fff}.card,.hero{break-inside:avoid}}
 '''
