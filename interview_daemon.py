@@ -3915,6 +3915,10 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
            f'必要時我可以把報告內容貼進這個對話讓你手動處理。')
         taskboard('報告存檔失敗', f'{name}（{job_slug}）報告有產出但沒存進資料庫', 'ERROR')
+    try:  # 2026-10-21 人才標籤：只排一筆 ai_jobs（candidate_tagging），AI 由 ai_worker 跑，不拖慢這裡
+        rid and __import__('recommendation_service').queue_candidate_tagging(app_id, rid)
+    except Exception as e:
+        log(f'{name}：排人才標籤失敗（不影響報告）：{e}')
 
     _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
     if not ((_qa[0].get('origin') == 'quick_apply') or str(_qa[0].get('note') or '').startswith('【快速應徵')):

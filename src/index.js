@@ -6806,6 +6806,42 @@ export default {
         }
       }
 
+      // ── AI 配對「📧 寄推薦信」（2026-10-21 人才標籤＋自動推薦）──
+      // 高適配的配對卡片每位人選一顆。只有 Jacky／Phoebe（BD_APPROVERS）能按；按了才寄。
+      // 實際寄信交給後台同一支 /admin/ai-matches/:id/email-send（AI 配對分頁的「寄 Email」也是這支），
+      // 那支會再擋：未簽約職缺、沒 Email、給人選看的那句話不合格、24 小時內收過邀請、已寄過、兩人同時按。
+      {
+        const mq = update.callback_query;
+        const md = mq ? String(mq.data || '') : '';
+        if (mq && md.startsWith('am_mail:')) {
+          const u = String((mq.from && mq.from.username) || '').toLowerCase();
+          const answer = (text, alert) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: mq.id, show_alert: !!alert, text: String(text).slice(0, 190) }) }).catch(() => {});
+          if (!BD_APPROVERS.includes(u)) { await answer('⛔ 只有 Jacky、Phoebe 可以按寄推薦信', true); return new Response('ok'); }
+          const who = u === 'behe10' ? 'Phoebe' : 'Jacky';
+          const rid = md.slice('am_mail:'.length);
+          let j = {};
+          if (env.BACKOFFICE && env.ADMIN_TOKEN) {
+            const r = await env.BACKOFFICE.fetch(`https://backoffice/admin/ai-matches/${encodeURIComponent(rid)}/email-send`, {
+              method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}`, 'user-agent': 'step1ne-recruit' },
+              body: JSON.stringify({ by: who }) }).catch(() => null);
+            j = r ? await r.json().catch(() => ({})) : {};
+          } else j = { ok: false, error: '系統設定缺少後台連線' };
+          const row = await env.DB.prepare(`SELECT a.name, j.title FROM candidate_job_recommendations c LEFT JOIN applications a ON a.id=c.application_id LEFT JOIN jobs j ON j.slug=c.recommended_job_slug WHERE c.id=?`).bind(rid).first().catch(() => null);
+          const label = `${(row && row.name) || '人選'}（${(row && row.title) || '職缺'}）`;
+          await answer(j.ok ? `已寄推薦信給 ${label}` : `沒有寄出：${j.error || '後台沒有回應'}`, !j.ok);
+          if (j.ok && mq.message) {
+            const kb = ((mq.message.reply_markup && mq.message.reply_markup.inline_keyboard) || [])
+              .map((rowBtns) => rowBtns.filter((b) => b.callback_data !== md)).filter((rowBtns) => rowBtns.length);
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: mq.message.chat.id, message_id: mq.message.message_id,
+                text: `${String(mq.message.text || '').slice(0, 3800)}\n📧 ${who} 已寄推薦信給 ${label}（${nowTaipei().slice(5, 16)}）`,
+                ...(kb.length ? { reply_markup: { inline_keyboard: kb } } : {}) }) }).catch(() => {});
+          }
+          return new Response('ok');
+        }
+      }
+
       // ── 面談前改談其他職缺「↩️ 取消改談」（2026-10-07 Jacky）──
       // job_switch.py 自動改談後發到人選群組主題 7 的通知，附這顆按鈕。任何顧問都能按（不限 BD_APPROVERS）。
       // 實際還原交給後台同一支 /admin/application/job-switch/cancel（人選卡片的按鈕也是這支），這裡只負責回覆＋改訊息。
