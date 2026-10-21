@@ -1,3 +1,4 @@
+import { applyLaterTick } from './apply_later.js';
 /**
  * Step1ne 招募表單 API。
  *
@@ -8880,6 +8881,8 @@ export default {
   async scheduled(_evt, env) {
     // 2026-10-21 Jacky：LINE 問了職缺（帶 [LC] 代碼）卻 24 小時沒應徵 → 自動補一則提醒，只補一次。
     try { await lineClickNudge(env); } catch (e) { console.error('lineClickNudge', String(e)); }
+    // 2026-10-21「先送出，晚點再聊」：隔天 10:00 提醒一次（LINE 卡片／沒綁寄信）＋滿 7 天標「沒完成面談」（src/apply_later.js）
+    try { await applyLaterTick(env, { nowTaipei, linePushMessages, notify, uid, THREAD }); } catch (e) { console.error('applyLaterTick', String(e)); }
 
     // 2026-09-02 拆分Phase 1：這裡原本有4段社群發文／LinkedIn相關的背景排程
     // （排程行事曆轉發文、LinkedIn權杖續期、發文成效回填、Threads貼文卡住對帳），
