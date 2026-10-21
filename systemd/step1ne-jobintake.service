@@ -1,0 +1,17 @@
+[Unit]
+Description=Step1ne 職缺收件單常駐（jobintake/tick.py 每 60 秒；E41；含 approved 上架段，Mac 停掉且網站 repo 修好之前不要啟動）
+
+[Service]
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit/jobintake
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=JOBINTAKE_STAGES=new,rewrite,approved
+Environment=PATH=%h/.nvm/versions/node/v22.22.0/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'while :; do /usr/bin/python3 tick.py; sleep 60; done'
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/aijob-automation/logs/jobintake.log
+StandardError=append:%h/aijob-automation/logs/jobintake.log
+
+[Install]
+WantedBy=default.target

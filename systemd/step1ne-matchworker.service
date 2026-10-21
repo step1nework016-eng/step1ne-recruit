@@ -1,0 +1,16 @@
+[Unit]
+Description=Step1ne 職缺配對引擎（match_worker.py，E41；Mac 停掉之前不要啟動）
+
+[Service]
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.nvm/versions/node/v22.22.0/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -u match_worker.py
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/aijob-automation/logs/matchworker.log
+StandardError=append:%h/aijob-automation/logs/matchworker.log
+
+[Install]
+WantedBy=default.target
