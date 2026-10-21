@@ -6,6 +6,8 @@ Mac 這邊 10/22 已經停掉你這台早就在跑的 3 個重複程式：checku
 
 ⚠️ 順便說明之前為什麼「Mac 停了又跑回來」：9/30、10/5 用 `launchctl bootout` 停掉的程式，plist 還留在 `~/Library/LaunchAgents/`，Mac 一重開機就全部自動載回來。這次改成**把 plist 改名**才算真的停用。
 
+⚠️ 更新（10/22）：crawler 不用搬了——Jacky 決定停用（8/21 後就沒在找人，已被 AI 找人取代），Mac 已停。**你只要裝 jobintake、matchworker 兩個**。
+
 剩下 3 個只有 Mac 在跑，請你這台裝起來。你回報裝好、跑過一輪，Mac 才停自己那份。
 
 ## 要裝的 3 個（先 `git pull`）
