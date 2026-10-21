@@ -2253,6 +2253,15 @@ def build_prompt(ctx, skill_md):
                          '一視同仁地問，不要用不同的語氣或當成年齡的替代篩選。')
 
     lines.append('\n【履歷】')
+    # 2026-10-21 Jacky：快速應徵（測試版）本來就不要求履歷——人選是用點選題（經驗／軟體／證照／機車／城市）應徵的。
+    # 測試時阿財開口就說「您的履歷我這邊目前看不到內容」，像在怪他沒交。這裡講清楚：不提履歷，直接用表單資料開場。
+    quick = str(app.get('note') or '').startswith('【快速應徵')
+    if quick and not ctx.get('resume_readable'):
+        lines.append('  這位是「快速應徵」進來的，本來就不需要先交履歷，他在【應徵表單】的備註裡點選了經驗、軟體、證照等基本資料。')
+        lines.append('  🚫 不要說「看不到履歷」「履歷沒有內容」「請補履歷」這類話，也不要暗示他少交了東西。')
+        lines.append('  ✅ 開場直接從他點選的資料切入（例：「看到你會 Revit、也有機車駕照，我們就從你做過的東西開始聊」），'
+                     '再請他用兩三句話介紹學經歷、做過的作品或專題、軟體大概會到什麼程度。')
+        lines.append('  學經歷問清楚之後，再照職缺條件往下問。')
     if ctx.get('resume_readable'):
         lines.append(f'  來源：{ctx.get("resume_source")}')
         lines.append(ctx['resume_text'][:12000])
@@ -2322,7 +2331,7 @@ def build_prompt(ctx, skill_md):
     # 顧問要推件給客戶時沒有東西可以附。
     # 所以改成在快結束時把「補履歷」當成必辦事項，並給 LINE OA 讓他接得上真人顧問。
     # 放在 prompt 最後面，因為越後面的指令越不會被前面那一大段規範蓋過去。
-    if not ctx.get('resume_readable'):
+    if not ctx.get('resume_readable') and not str(app.get('note') or '').startswith('【快速應徵'):
         near_end = (len(conv) >= MAX_TURNS - 12) or (mins is not None and mins >= SOFT_TARGET_MIN - 12)
         lines.append('\n─────────  這場沒有履歷，收尾前一定要做的事  ─────────')
         lines.append(f'  這位候選人沒有可讀的履歷（原因：{ctx.get("resume_note") or "未提供"}）。')
