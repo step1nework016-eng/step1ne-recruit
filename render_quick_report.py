@@ -50,7 +50,11 @@ def render(app_id):
     rows_ladder = ''.join(
         f'<tr><td>{E(t.get("topic"))}</td><td><div class="lv">' + ''.join(f'<i class="{"on" if (t.get("level") or 0) >= n else ""}{" exp" if n == exp_lv else ""}"></i>' for n in range(1, 6))
         + f'</div></td><td>{E(t.get("level_name") or ("沒問到" if not t.get("level") else ""))}</td></tr>' for t in (sk.get('topics') or []))
-    follow = list(dict.fromkeys((d.get('consultant_followups') or []) + [f'{x.get("item")}（{x.get("kind")}）' for x in (d.get('not_covered') or [])]))
+    follow = list(d.get('consultant_followups') or [])
+    for x in (d.get('not_covered') or []):   # 沒問到的項目補進來，但跟上面重複的不再列一次
+        it = str(x.get('item') or '').strip()
+        if it and not any(it in f or f.split('（')[0] in it for f in follow):
+            follow.append(f'{it}（{x.get("kind")}）')
     fc = d.get('for_client') or {}
     dirs = d.get('career_directions') or []
     vcls = 'ok' if '推' in str(d.get('verdict')) and '不' not in str(d.get('verdict')) else ('bad' if '不符' in str(d.get('verdict')) else 'wa')
