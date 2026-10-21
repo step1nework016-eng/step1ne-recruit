@@ -53,7 +53,9 @@ def render(app_id):
     follow = list(d.get('consultant_followups') or [])
     for x in (d.get('not_covered') or []):   # 沒問到的項目補進來，但跟上面重複的不再列一次
         it = str(x.get('item') or '').strip()
-        if it and not any(it in f or f.split('（')[0] in it for f in follow):
+        bi = lambda t: {t[i:i + 2] for i in range(len(t) - 1)}
+        sim = lambda a_, b_: len(bi(a_) & bi(b_)) / max(1, min(len(bi(a_)), len(bi(b_))))
+        if it and not any(it in f or f.split('（')[0] in it or sim(it, f.split('（')[0]) >= 0.5 for f in follow):
             follow.append(f'{it}（{x.get("kind")}）')
     fc = d.get('for_client') or {}
     dirs = d.get('career_directions') or []
