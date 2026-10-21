@@ -3855,6 +3855,18 @@ async function handleLineEvent(env, ev) {
           return lineReplyMessages(env, replyToken,
             await closedJobMessages(env, closed || { slug: click.job_slug, title: click.job_title }));
         }
+        // 2026-10-21 Jacky：「只發社群」的職缺（還沒簽約、不收網站應徵）原本照樣丟應徵連結，
+        // 人選填完整份表才被 /apply 擋下（job_social_only）。改成請人選直接在 LINE 留資料、通知顧問接手。
+        if (click.job_title && click.job_status === 'social_only') {
+          const msg = `嗨嗨 👋 謝謝你對「${click.job_title}」有興趣！\n\n`
+            + `這個職缺由顧問一對一協助，不用填網路表單 🙌\n\n`
+            + `麻煩直接在這裡回覆：\n① 你的名字\n② 方便聯絡的電話\n③ 目前住哪個縣市\n\n`
+            + `顧問會盡快跟你聯繫 📞`;
+          const okReply = await lineReply(env, replyToken, msg);
+          if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+          await notify(env, `📩 LINE 有人問「只發社群」的職缺：${click.job_title}\n已請對方在 LINE 回覆姓名、電話、縣市，請到 LINE 官方帳號接手（點擊代碼 LC${click.id}）`);
+          return;
+        }
         if (click.job_title) {
           // 2026-10-01 加 utm_content=q<queue_id>：這個人是從哪一則貼文的
           // [LC代碼] 進來的，這裡已經查得到 queue_id，順手帶給應徵表單，
