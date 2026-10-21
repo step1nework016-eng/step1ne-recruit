@@ -3701,6 +3701,10 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
         '🚨 報告一律使用台灣繁體中文，不可以有任何簡體字。\n\n'
         + skill('report')
         + JOB_MATCH_MD_RULE
+        # 2026-10-21 Jacky：「他問了什麼」被寫成「詢問寄送信箱（口述 mail）」——其實他說的是「沒有」被轉錯。
+        + ('\n\n🚫「他問了什麼」只列他**具體、明確**提出的問題；沒有就直接寫「沒有提問」，不要推測、不要湊。'
+           '語音轉寫很短（3 秒內）、意思不明或跟上下文對不起來的片段，當成轉寫錯誤，不要解讀成提問，也不要拿來下判斷。'
+           '人選回答「沒有」「沒有了」這類，就是沒有問題。')
         + CAREER_DIRECTIONS_MD_RULE
         + (CAREER_DIRECTIONS_UNSPECIFIED if job_slug == 'unspecified' else '')
         # 2026-10-21 Jacky：快速應徵面談前本來就不做測驗，報告不准寫「disc_primary 未填寫／無法做 DISC 對照」
