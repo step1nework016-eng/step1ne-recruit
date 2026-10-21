@@ -2262,6 +2262,21 @@ def build_prompt(ctx, skill_md):
         lines.append('  ✅ 開場直接從他點選的資料切入（例：「看到你會 Revit、也有機車駕照，我們就從你做過的東西開始聊」），'
                      '再請他用兩三句話介紹學經歷、做過的作品或專題、軟體大概會到什麼程度。')
         lines.append('  學經歷問清楚之後，再照職缺條件往下問。')
+        # 2026-10-21 Jacky：收尾時問他要不要讓顧問推薦；要的話直接給補履歷連結，顧問不用再另外收履歷
+        _m = None
+        try:
+            _m = int((datetime.datetime.now() - datetime.datetime.strptime(app.get('interview_started_at') or '', '%Y-%m-%d %H:%M:%S')).total_seconds() / 60)
+        except Exception:
+            _m = None
+        _near = (len(conv) >= MAX_TURNS - 12) or (_m is not None and _m >= 12)
+        _tk = app.get('chat_token') or ((d1(f"SELECT chat_token FROM applications WHERE id={q(app.get('id'))}") or [{}])[0].get('chat_token'))
+        if _near and _tk:
+            lines.append('  ⏰ 已經接近收尾。收尾前一定要問他：「今天聊下來，想不想讓顧問幫你推薦給企業？」')
+            lines.append(f'     - 他說想：請他用這個連結上傳履歷（手機拍照、截圖、PDF、Word 都可以），顧問收到就會開始幫他安排：'
+                         f'https://step1ne.com/resume/?t={_tk}')
+            lines.append('       講清楚為什麼要履歷：推薦給企業時，企業一定會要書面資料；沒有正式履歷也沒關係，拍照或截圖就可以。')
+            lines.append('     - 他說還要考慮：告訴他不急，顧問看完今天的內容也會再跟他聯繫。')
+            lines.append('     - 不要用責備語氣，也不要說「你沒交履歷」。')
     if ctx.get('resume_readable'):
         lines.append(f'  來源：{ctx.get("resume_source")}')
         lines.append(ctx['resume_text'][:12000])
@@ -3701,7 +3716,7 @@ def invite_assessment_after_interview(app_id):
     """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
     面談結束（含中途離開）就寄一封測驗連結，只寄一次；已經做過測驗的不寄。
     信放進 mail_outbox，由 mail_outbox_send.py 從 official@ 寄出（跟其他一對一信件同一條路）。"""
-    r = d1(f"SELECT id, name, email, job_title, job_slug, chat_token, note, origin FROM applications WHERE id={q(app_id)}")
+    r = d1(f"SELECT id, name, email, job_title, job_slug, chat_token, note, origin, (resume_file_id IS NOT NULL OR COALESCE(resume_url,'')<>'') AS has_resume FROM applications WHERE id={q(app_id)}")
     if not r:
         return
     a = r[0]
@@ -3719,7 +3734,9 @@ def invite_assessment_after_interview(app_id):
             "最後還有一份工作風格測驗，大約 5 到 7 分鐘，沒有標準答案，照直覺選就好。"
             "做完會馬上看到一份您個人的工作風格報告，也會提供給負責的顧問參考：\n"
             f"{url}\n\n"
-            "顧問看完面談內容後，會再跟您聯繫後續安排。\n\n"
+            + (("如果想讓顧問幫您推薦給企業，也麻煩用這個連結補上履歷（手機拍照、截圖都可以）：\n"
+                f"https://step1ne.com/resume/?t={a['chat_token']}\n\n") if not a.get('has_resume') else '')
+            + "顧問看完面談內容後，會再跟您聯繫後續安排。\n\n"
             "Step1ne 德仁管理顧問\nEmail：official@step1ne.com\n就業服務許可證：北市就服字第 0363 號")
     import uuid as _uuid
     d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
