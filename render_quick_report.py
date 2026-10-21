@@ -45,7 +45,7 @@ def render(app_id):
               ('機車駕照', q.get('機車駕照')), ('期望工作城市', q.get('期望工作城市') or q.get('居住縣市')),
               ('期望待遇', (mot.get('salary_gap') or '').split('，')[0] or '—'), ('可到職', mot.get('notice_period') or '—')]
     rows_basic = ''.join(f'<tr><th>{E(k)}</th><td>{E(v or "—")}</td></tr>' for k, v in basics)
-    rows_match = ''.join(f'<tr><td>{E(i.get("requirement"))}</td><td>{pill(i.get("verdict"))}</td><td>{E(i.get("evidence"))}</td></tr>' for i in jm)
+    rows_match = ''.join(f'<tr><td>{E(i.get("requirement"))}</td><td class="vd">{pill(i.get("verdict"))}</td><td>{E(i.get("evidence"))}</td></tr>' for i in jm)
     exp_lv = sk.get('expected') or 0
     rows_ladder = ''.join(
         f'<tr><td>{E(t.get("topic"))}</td><td><div class="lv">' + ''.join(f'<i class="{"on" if (t.get("level") or 0) >= n else ""}{" exp" if n == exp_lv else ""}"></i>' for n in range(1, 6))
@@ -83,7 +83,7 @@ def render(app_id):
 <section class="card"><h2>推之前要先講的風險</h2><ul>{"".join(f"<li>{E(x)}</li>" for x in fc.get("risks_to_disclose") or [])}</ul></section>
 </div>
 
-<section class="card"><h2>適合的職務方向</h2><div class="tw"><table class="tb"><tr><th>方向</th><th>為什麼</th><th>要注意</th></tr>{"".join(f"<tr><td>{E(x.get('direction'))}</td><td>{E(x.get('why'))}</td><td>{E(x.get('watch_out'))}</td></tr>" for x in dirs)}</table></div></section>
+<section class="card"><h2>適合的職務方向</h2><div class="dirs">{"".join(f"<div class='dir'><h3>{E(x.get('direction'))}</h3><p><b>為什麼</b>{E(x.get('why'))}</p><p><b>要注意</b>{E(x.get('watch_out'))}</p></div>" for x in dirs) or "<p>無</p>"}</div></section>
 
 <section class="card"><h2>面談觀察</h2><p>{E((d.get("observations") or {}).get("communication_style"))}</p><p>{E((d.get("observations") or {}).get("engagement"))}</p></section>
 <p class="foot">資料來源：快速應徵表單＋AI 阿財面談（{E(r["created_at"][:16])} 產出）。判定標準：每項條件拆小項，全部有證據＝符合、部分有＝部分符合、明確沒有＝不符、沒問到＝未確認。</p>
@@ -111,11 +111,14 @@ h1{font-size:24px;margin:4px 0 0}.sub{color:var(--mu);margin:2px 0 0;font-size:1
 .card h2{font-size:15px;margin:0 0 10px;color:var(--ac)}
 .tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
 .tb th,.tb td{border-bottom:1px solid var(--ln);padding:8px 8px;text-align:left;vertical-align:top}.tb th{font-size:12.5px;color:var(--mu);font-weight:600}
-.tb td:nth-child(2){white-space:nowrap}
+.tb td.vd{white-space:nowrap}
 .kv th{width:34%;text-align:left;font-size:13px;color:var(--mu);font-weight:600;padding:6px 8px 6px 0;vertical-align:top}.kv td{padding:6px 0;border-bottom:1px solid var(--ln)}
 .lv{display:flex;gap:4px}.lv i{width:22px;height:10px;border-radius:3px;background:var(--mub);display:block}.lv i.on{background:var(--ac)}.lv i.exp{outline:2px solid var(--wa);outline-offset:1px}
 ol.chk,ul{margin:0;padding-left:20px;font-size:14px}ol.chk li,ul li{margin:4px 0}
 .foot{font-size:12.5px;color:var(--mu)}
+.dirs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.dir{border:1px solid var(--ln);border-radius:10px;padding:10px 12px}.dir h3{font-size:14.5px;margin:0 0 6px}
+.dir p{margin:4px 0;font-size:13.5px}.dir b{display:block;font-size:12px;color:var(--mu)}
 @media (max-width:720px){.grid,.two{grid-template-columns:1fr}}
 @media print{body{background:#fff}.card,.hero{break-inside:avoid}}
 '''
