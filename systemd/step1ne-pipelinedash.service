@@ -1,0 +1,13 @@
+[Unit]
+Description=Step1ne 帶案儀表板每天更新（只更新 D1 pipeline_weekly，不部署）
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/claude-projects/工作流程技能包/step1ne-recruit
+Environment=TZ=Asia/Taipei
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 pipeline_dash/build.py
+TimeoutStartSec=900
+StandardOutput=append:%h/aijob-automation/logs/pipelinedash.log
+StandardError=append:%h/aijob-automation/logs/pipelinedash.log
