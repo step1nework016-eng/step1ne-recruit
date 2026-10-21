@@ -673,6 +673,24 @@ def release_lock(app_id):
     d1(f"UPDATE applications SET lock_expires_at=NULL WHERE id={q(app_id)}")
 
 
+def _is_quick_app(app):
+    """快速應徵（origin＝quick_apply，或舊資料 note 開頭【快速應徵】）。"""
+    app = app or {}
+    return app.get('origin') == 'quick_apply' or str(app.get('note') or '').startswith('【快速應徵')
+
+
+def _resume_upload_url(app):
+    """快速應徵專用的補履歷連結（跟結束畫面時間軸、面談後感謝信同一個）。拿不到 chat_token 回 None。"""
+    app = app or {}
+    tk = app.get('chat_token')
+    if not tk and app.get('id'):
+        try:
+            tk = (d1(f"SELECT chat_token FROM applications WHERE id={q(app['id'])}") or [{}])[0].get('chat_token')
+        except Exception:
+            tk = None
+    return f'https://step1ne.com/resume/?t={tk}' if tk else None
+
+
 def _recs_email_lines(recs):
     try:
         import acai_job_recs as AJR
@@ -2014,10 +2032,15 @@ def build_prompt(ctx, skill_md):
         lines.append('')
 
     lines.append('【應徵表單】')
+    # 2026-10-21 Jacky 測試2：快速應徵表單的「最快什麼時候可以上班」存在 available_date、「期望工作城市」存在 location_ok，
+    # 原本只用英文欄位名列出來（available_date：再看看），阿財沒當成已知、照樣問到職日。改成中文標籤＋講清楚是他自己填的。
+    _FORM_LABEL = {'name': '姓名', 'job_title': '應徵職缺', 'expected_salary': '期望待遇（表單填的）',
+                   'available_date': '最快可到職（表單填的）', 'location_ok': '期望工作地點（表單填的）',
+                   'note': '表單備註', 'created_at': '應徵時間'}
     for k in ('name', 'job_title', 'expected_salary', 'available_date',
               'location_ok', 'note', 'created_at'):
         if app.get(k):
-            lines.append(f'  {k}：{app[k]}')
+            lines.append(f'  {_FORM_LABEL[k]}：{app[k]}')
 
     if app.get('disc_primary'):
         lines.append(
@@ -2429,9 +2452,25 @@ def build_prompt(ctx, skill_md):
             pass
     # 2026-10-05 Sanders 事件：人選問「履歷寄到哪」，阿財沒有信箱可給，最後還說「寄到我剛才留的信箱」——
     # 其實從頭到尾沒給過。給它一個真的信箱（official@ 已接自動收信，附件會自動進人選資料），並禁止捏造「剛才說過」。
-    lines.append(f'\n※ 人選問履歷、作品集或任何資料要寄到哪：Email 寄 {RESUME_MAILBOX}（主旨寫姓名＋應徵職缺），'
-                 f'或傳到 LINE 官方帳號 {LINE_OA_URL}。'
-                 '絕對不要說「我剛才留的信箱／我剛剛給的連結」，除非這場對話裡你真的已經給過；沒給過就直接給。')
+    # 2026-10-21 Jacky 測試2：人選說「停了停了 我不想要面試了」，阿財收尾叫他把履歷寄 official@ 或傳 LINE——
+    # 快速應徵講好的是專用上傳連結（/resume/?t=…，跟結束畫面、感謝信同一個）。原本只有「接近收尾」那段才給連結，
+    # 提早喊停、逾時都會掉到這句通用的信箱說法。改成：快速應徵一律給上傳連結；已經有履歷的不叫他再寄。
+    _up = _resume_upload_url(app) if _is_quick_app(app) else None
+    _has_cv = bool(ctx.get('resume_readable') or str(app.get('resume_url') or '').strip() or app.get('resume_file_id'))
+    if _up and not _has_cv:
+        lines.append(f'\n※ 補履歷（快速應徵）：不管是正常收尾、他中途說不想談了要停、還是時間到，'
+                     f'只要提到履歷／想讓顧問推薦，**一律給這個上傳連結**：{_up}（手機拍照、截圖、PDF、Word 都可以）。'
+                     f'🚫 不要叫他寄 Email 到 {RESUME_MAILBOX}、也不要叫他把履歷傳到 LINE。'
+                     '他喊停時，收尾那一則就附上這個連結，一句話講「想讓顧問幫忙推薦的話，從這裡上傳履歷就可以」，不要再追問題目。'
+                     '絕對不要說「我剛才給的連結」，除非這場對話裡你真的已經給過。')
+    elif _has_cv:
+        lines.append('\n※ 履歷：這位的履歷我們已經有了，收尾時（包含他中途喊停、時間到）**不要叫他再寄履歷**，'
+                     f'也不要給 {RESUME_MAILBOX} 要他寄資料。他自己問「作品集或其他資料要寄到哪」才給：'
+                     f'Email 寄 {RESUME_MAILBOX}（主旨寫姓名＋應徵職缺），或傳到 LINE 官方帳號 {LINE_OA_URL}。')
+    else:
+        lines.append(f'\n※ 人選問履歷、作品集或任何資料要寄到哪：Email 寄 {RESUME_MAILBOX}（主旨寫姓名＋應徵職缺），'
+                     f'或傳到 LINE 官方帳號 {LINE_OA_URL}。'
+                     '絕對不要說「我剛才留的信箱／我剛剛給的連結」，除非這場對話裡你真的已經給過；沒給過就直接給。')
 
     # ── 讀不到履歷時的收尾交代 ──
     # 2026-08-07 加。顧問的決定：**沒履歷不擋面談，照樣談完**，
@@ -2529,7 +2568,7 @@ def build_prompt(ctx, skill_md):
                   '工作許可身分（台灣籍配偶／永久居留／在台灣大學畢業／其他）']
     lines.append('\n✅ 必問清單（這場面談結束前每一項都要問到、拿到具體回答；履歷或表單已經寫清楚的，用一句話確認即可；意思重複的幾項合併成一題問）：')
     for _i, _m in enumerate(dict.fromkeys(_must), 1):
-        lines.append(f'  {_i}. {_m}{_implied_mark(_m, ctx)}')
+        lines.append(f'  {_i}. {_m}{_implied_mark(_m, ctx) or _form_known_mark(_m, app)}')
     lines.append('  🚫 清單裡還有任何一項沒問到，就**不准輸出 "end": true**，接著問下一項；時間超過也要問完（閒聊、延伸題可以省，必問項不能省）。'
                  '專業程度每個主題都至少要量出一個級數，不能空著。報告裡不可以出現「沒問到」「資訊不足」。')
     lines.append('  唯一可以留給顧問的：人選問你、你答不出來的事（例如薪資結構、福利細節、升遷制度、客戶內部資訊），'
@@ -3981,50 +4020,68 @@ def _recs_only_mail(a, recs):
     log(f"{a.get('name')}：面談後推薦職缺信已排寄")
 
 
-def invite_assessment_after_interview(app_id, recs=None):
+def _saved_recs(app_id):
+    try:
+        import acai_job_recs as AJR
+        return [d for d, _ in AJR.fetch_saved(app_id)]
+    except Exception:
+        return []
+
+
+def _queue_thanks_mail(a, kind, *, has_resume, show_assessment, recs, done_label='剛剛'):
+    """組 HTML＋純文字感謝信（interview_thanks_mail.build）放進 mail_outbox，由 mail_outbox_send.py 用 multipart/alternative 寄。"""
+    import interview_thanks_mail as ITM
+    import uuid as _uuid
+    subject, text, html = ITM.build(name=a.get('name'), job_title=a.get('job_title') or a.get('job_slug') or '',
+                                    token=a['chat_token'], has_resume=has_resume, show_assessment=show_assessment,
+                                    recs=recs, done_label=done_label)
+    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, html, ref_table, ref_id, status, created_at) VALUES ("
+       f"{q(str(_uuid.uuid4()))}, {q(kind)}, {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
+       f"{q(subject)}, {q(text)}, {q(html)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
+
+
+def invite_assessment_after_interview(app_id, recs=None, done_label='剛剛'):
     """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
-    面談結束（含中途離開）就寄一封測驗連結，只寄一次；已經做過測驗的不寄。
+    ⚠️ 只在面談「真的結束」（房間關了：正常收尾，或 paused 保留期滿 close_paused）才呼叫——
+    paused 當下不寄（2026-10-21 測試：上一場測試 paused 時寄出的感謝信，被當成這一場面談中途寄來的）。
+    只寄一次；已經寄過、這次才有推薦職缺 → 推薦職缺單獨寄一封短信。
+    2026-10-21 起信件是 HTML 設計版＋純文字版（interview_thanks_mail.py），已做過測驗的不放測驗那步。
     信放進 mail_outbox，由 mail_outbox_send.py 從 official@ 寄出（跟其他一對一信件同一條路）。"""
     r = d1(f"SELECT id, name, email, job_title, job_slug, chat_token, note, origin, (resume_file_id IS NOT NULL OR COALESCE(resume_url,'')<>'') AS has_resume FROM applications WHERE id={q(app_id)}")
     if not r:
         return
     a = r[0]
-    quick = (a.get('origin') == 'quick_apply') or str(a.get('note') or '').startswith('【快速應徵')
-    if not quick or not a.get('email') or not a.get('chat_token'):
+    if not _is_quick_app(a) or not a.get('email') or not a.get('chat_token'):
         return
-    if d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"):
-        _recs_only_mail(a, recs)   # 測驗已做、不寄邀請信 → 推薦職缺單獨寄一封短信（有推薦才寄）
-        return
+    if recs is None:
+        recs = _saved_recs(app_id)
     if d1(f"SELECT 1 FROM mail_outbox WHERE kind='assessment_invite' AND ref_id={q(app_id)} LIMIT 1"):
+        # 感謝信已經寄過（例如中途離開後又回來談完）→ 這次才產出的推薦職缺單獨寄一封短信（沒推薦就不寄）
+        _recs_only_mail(a, recs)
         return
-    assess_url = f"https://step1ne.com/assessment/?t={a['chat_token']}&after=1"
-    resume_url = f"https://step1ne.com/resume/?t={a['chat_token']}"
-    job = a.get('job_title') or a.get('job_slug') or ''
-    # 2026-10-21 Jacky 定的寫法：先謝謝他來面談，再請有意願的人上傳履歷讓顧問推薦；測驗放後面當選填
-    parts = [f"{a.get('name') or ''} 您好，", '',
-             f"感謝您今天撥空參加「{job}」的線上面談。", '']
-    if a.get('has_resume'):
-        parts += ['您的履歷我們已經收到了。', '']
-    else:
-        parts += ['如果您有意願讓顧問進一步幫您推薦給企業，請點下面的連結上傳履歷（手機拍照、截圖、PDF、Word 都可以）：',
-                  resume_url, '']
-    parts += ['另外還有一份工作風格測驗，大約 5 分鐘，做完可以看到您個人的工作風格報告，也會提供給顧問參考（選填）：',
-              assess_url, '']
-    _rl = _recs_email_lines(recs)   # 2026-10-21 阿財推薦職缺（開關沒開就是空的）
-    if _rl:
-        parts += _rl + ['']
-    parts += [
-              '顧問看完今天的面談內容後，會再跟您聯繫。謝謝您！', '',
-              'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號']
-    text = '\n'.join(parts)
-    subject = f'感謝您參加「{job}」線上面談' + ('｜上傳履歷讓顧問幫您推薦' if not a.get('has_resume') else '')
-    import uuid as _uuid
-    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
-       f"{q(str(_uuid.uuid4()))}, 'assessment_invite', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
-       f"{q(subject)}, {q(text)}, 'applications', {q(app_id)}, 'pending', "
-       f"datetime('now','+8 hours'))")
-    funnel_event(app_id, 'assessment_invited', {'via': 'after_interview'})
-    log(f"{a.get('name')}：快速應徵，面談後已排寄工作風格測驗連結")
+    did_test = bool(d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"))
+    _queue_thanks_mail(a, 'assessment_invite', has_resume=bool(a.get('has_resume')), show_assessment=not did_test,
+                       recs=recs, done_label=done_label)
+    if not did_test:
+        funnel_event(app_id, 'assessment_invited', {'via': 'after_interview'})
+    log(f"{a.get('name')}：快速應徵，面談後感謝信（HTML）已排寄")
+
+
+def send_normal_thanks(app_id, recs=None):
+    """原本流程（非快速應徵）正常談完的感謝信——取代後台 /admin/interview-done 那封純文字「面談紀錄已收到」，
+    內容同一件事（謝謝＋下一步），改成跟快速應徵同一個設計。中途離開那封（請他回來接著談）不在這裡，照舊走 notify_candidate。
+    回傳 True＝已排寄（或已經寄過）；False＝排不進去，呼叫端退回舊的 notify_candidate。"""
+    r = d1(f"SELECT id, name, email, job_title, job_slug, chat_token, (resume_file_id IS NOT NULL OR COALESCE(resume_url,'')<>'') AS has_resume FROM applications WHERE id={q(app_id)}")
+    if not r or not r[0].get('email') or not r[0].get('chat_token'):
+        return False
+    a = r[0]
+    if d1(f"SELECT 1 FROM mail_outbox WHERE kind='interview_thanks' AND ref_id={q(app_id)} LIMIT 1"):
+        return True
+    did_test = bool(d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"))
+    _queue_thanks_mail(a, 'interview_thanks', has_resume=bool(a.get('has_resume')), show_assessment=not did_test,
+                       recs=recs if recs is not None else _saved_recs(app_id))
+    log(f"{a.get('name')}：面談後感謝信（HTML）已排寄")
+    return True
 
 
 def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
@@ -4060,6 +4117,28 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
             acai_recs = AJR.generate(app_id, ctx, lambda pr: run_claude(pr, first_try=90, total=150))
         except Exception as e:
             log(f'{name}：推薦職缺失敗（不影響報告）：{e}')
+
+    # 2026-10-21 Jacky 測試：面談後感謝信（含補履歷連結／測驗／推薦職缺）只在「房間真的關了」才寄。
+    # paused（候選人離開、房間留著給他回來）不寄——那時寄「感謝您參加面談」，他人可能還在面談頁、或明天回來接著談。
+    # paused 的人要等 close_paused() 真的關房才寄；中途回來談完的，在正常收尾這裡寄。
+    # 放在產報告「之前」：報告要跑好幾分鐘（測試2 這場報告晚了 10 分鐘），信不必等它。
+    _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
+    _is_q = _is_quick_app(_qa[0])
+    if close and _is_q:
+        try:
+            invite_assessment_after_interview(app_id, recs=acai_recs)
+        except Exception as e:
+            log(f'{name}：面談後感謝信失敗（不影響報告）：{e}')
+    elif not _is_q:
+        # 原本流程：正常談完 → HTML 感謝信（mail_outbox）；中途離開 → 照舊走後台那封「可以回來接著談」。
+        _sent = False
+        if close and not abandoned:
+            try:
+                _sent = send_normal_thanks(app_id, recs=acai_recs)
+            except Exception as e:
+                log(f'{name}：面談後感謝信（HTML）失敗，改寄舊版：{e}')
+        if not _sent:
+            notify_candidate(app_id, abandoned, extra_lines=_recs_email_lines(acai_recs))
 
     prompt = build_report_prompt(app_id, ctx, job_slug, abandoned)
     _before_files = _snapshot_session_files()
@@ -4137,13 +4216,6 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     except Exception as e:
         log(f'{name}：排人才標籤失敗（不影響報告）：{e}')
 
-    _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
-    if not ((_qa[0].get('origin') == 'quick_apply') or str(_qa[0].get('note') or '').startswith('【快速應徵')):
-        notify_candidate(app_id, abandoned, extra_lines=_recs_email_lines(acai_recs))
-    try:
-        invite_assessment_after_interview(app_id, recs=acai_recs)
-    except Exception as e:
-        log(f'{name}：面談後補測驗邀請失敗（不影響報告）：{e}')
 
     head = '⚠️ 面談中斷（候選人未收尾）' if abandoned else '✅ 面談完成'
     rec = ''
@@ -4230,6 +4302,19 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
        THREAD_POOL)
 
 
+def _quick_resume_bye_line(app_id):
+    """逾時／時間到的道別訊息：快速應徵、還沒附履歷的人，附上補履歷上傳連結（2026-10-21 Jacky 測試2）。其他人回 None。"""
+    try:
+        r = d1(f"SELECT id, origin, note, chat_token, resume_file_id, resume_url FROM applications WHERE id={q(app_id)}")
+        a = r[0] if r else None
+        if not a or not _is_quick_app(a) or a.get('resume_file_id') or str(a.get('resume_url') or '').strip():
+            return None
+        url = _resume_upload_url(a)
+        return f'想讓顧問幫忙推薦給企業的話，可以從這裡上傳履歷（手機拍照、截圖、PDF、Word 都可以）：{url}' if url else None
+    except Exception:
+        return None
+
+
 def wrap_up(app):
     """逾時收尾。
 
@@ -4249,6 +4334,9 @@ def wrap_up(app):
             f'隨時回來都可以接著談，不用重頭開始。',
             '想直接跟真人顧問聊也沒問題，透過下方的 LINE 告訴我們就可以。謝謝您今天撥出時間 🙏',
         ]
+        _rb = _quick_resume_bye_line(app_id)
+        if _rb:
+            bye.insert(2, _rb)
         vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in bye)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
         finish(app_id, name, app['job_slug'], context_for(app_id),
@@ -4276,6 +4364,9 @@ def timeout_close(app):
             '不好意思，我們今天的面談時間到了，先在這裡跟您告一段落。',
             '目前談到的內容我都會整理給顧問，不管有沒有下一步都會通知您，謝謝您今天撥空 🙏',
         ]
+        _rb = _quick_resume_bye_line(app_id)
+        if _rb:
+            bye.insert(1, _rb)
         vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in bye)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
         finish(app_id, name, app['job_slug'], context_for(app_id),
@@ -4993,7 +5084,8 @@ def _stop_after_question(msgs):
 
 
 _TECH_TOPICS = {
-    '預告期／到職時間': r'預告期|離職.{0,4}(通知|交接)|多久.{0,3}(到職|能到|可以到)|何時.{0,3}到職|最快.{0,4}到職|到職時間',
+    # 2026-10-21 測試2：「最快什麼時候可以到職呢」（最快 和 到職 中間隔 6 字）原本沒被算成問過，阿財下一輪又問一次
+    '預告期／到職時間': r'預告期|離職.{0,4}(通知|交接)|多久.{0,3}(到職|能到|可以到|上班)|何時.{0,3}(到職|上班)|最快.{0,8}(到職|上班|報到)|什麼時候.{0,4}(到職|上班|報到)|到職(時間|日)',
     '競業禁止': r'競業|不得招攬|競爭條款',
     '出差／外派': r'出差|外派|派駐',
     '搬遷／通勤': r'搬(回|過來|到|遷)|回台灣|通勤|住在|居住|遷居|常駐.{0,6}(台北|台灣)',
@@ -5090,6 +5182,27 @@ def _implied_facts(ctx):
     """從人選講過的話推得出來的事實（程式判斷）。回傳給 prompt／必問清單看的短句。"""
     k = _implied_kinds(ctx)
     return [fact for _pat, kind, fact in _IMPLIED_RULES if k.get(kind)]
+
+
+_VAGUE_START = re.compile(r'再看看|不確定|未定|看情況|再說|再談|面議')
+
+
+def _form_known_mark(item, app):
+    """必問清單某一項，表單已經填了 → 回傳標註（2026-10-21 Jacky 測試2：表單填了到職時間，阿財還問兩次）。
+    明確的答案（馬上／2 週內／1 個月內／指定日期）算已確認不用問；「再看看」這種模糊的只准用一句話確認一次。"""
+    app = app or {}
+    if re.search(r'到職|上班', str(item)):
+        v = str(app.get('available_date') or '').strip()
+        if v:
+            if _VAGUE_START.search(v):
+                return (f'　📝 表單選了「{v}」：只用一句確認語氣問一次（例：「表單您選了{v}，大概抓多久可以上班呢？」），'
+                        '他回答了就算確認，不要再問第二次')
+            return f'　✅ 表單已填：{v}，算已確認，不用再問'
+    if re.search(r'期望待遇|薪資', str(item)):
+        v = str(app.get('expected_salary') or '').strip()
+        if v and v not in ('依職缺薪資', '依公司規定', '面議'):
+            return f'　✅ 表單已填：{v}，用一句話確認即可'
+    return ''
 
 
 def _implied_mark(item, ctx):
@@ -5525,6 +5638,11 @@ def close_paused(app):
         d1(f"UPDATE applications SET interview_state='done', interview_ended_at='{now}' "
            f"WHERE id={q(app_id)} AND interview_state='paused'")
         log(f'{name}：保留 {STALE_HOLD_MIN} 分鐘仍未回來，關閉面談室')
+        try:   # 房間真的關了才寄面談後感謝信（快速應徵；paused 當下刻意不寄，見 finish()）
+            if (d1(f"SELECT interview_state FROM applications WHERE id={q(app_id)}") or [{}])[0].get('interview_state') == 'done':
+                invite_assessment_after_interview(app_id, done_label='已完成')
+        except Exception as e:
+            log(f'{name}：關房後感謝信失敗：{e}')
     except Exception as e:
         log(f'❌ {name} 關閉保留中的面談室失敗：{e}')
     finally:
