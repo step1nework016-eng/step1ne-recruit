@@ -673,7 +673,15 @@ def release_lock(app_id):
     d1(f"UPDATE applications SET lock_expires_at=NULL WHERE id={q(app_id)}")
 
 
-def notify_candidate(app_id, abandoned):
+def _recs_email_lines(recs):
+    try:
+        import acai_job_recs as AJR
+        return AJR.email_lines(recs)
+    except Exception:
+        return []
+
+
+def notify_candidate(app_id, abandoned, extra_lines=None):
     """請 Worker 寄面談結束通知給候選人。
 
     為什麼繞一圈走 Worker：Resend 金鑰只放在 Cloudflare 的 secret 裡，
@@ -688,7 +696,8 @@ def notify_candidate(app_id, abandoned):
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過候選人通知信')
         req = urllib.request.Request(
             'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/interview-done',
-            data=json.dumps({'id': app_id, 'abandoned': bool(abandoned)}).encode(),
+            data=json.dumps({'id': app_id, 'abandoned': bool(abandoned),
+                             **({'extra_lines': extra_lines} if extra_lines else {})}).encode(),
             headers={'content-type': 'application/json', 'authorization': f'Bearer {tok}',
                      # Cloudflare 會擋掉 Python-urllib 的預設 UA，一定要換掉
                      'user-agent': 'step1ne-interview-daemon/1.0'})
@@ -2786,7 +2795,7 @@ REPORT_JSON_SPEC = r'''
 {
   "verdict": "值得轉給顧問|資訊不足建議補問|硬條件不符|待顧問判斷",
   "basics": {
-    "residence": "居住地，縣市＋區。履歷或表單沒寫就填 null",
+    "residence": "居住地，縣市＋區。履歷或表單沒寫、但人選在面談中自己講了住哪，就照他講的填；都沒有才填 null",
     "commute_note": "從居住地到職缺地點的距離／通勤可行性，一句話。算不出來就 null",
     "age": "年齡，例如「41 歲（1985/2 生）」。⚠️ 只抄履歷上寫的，不准從畢業年份推算，沒寫填 null",
     "gender": "性別，只抄履歷／表單上他自己填的，沒寫填 null",
@@ -2934,6 +2943,7 @@ REPORT_JSON_RULES = (
     '5. 報告裡沒有的資訊就留空字串或空陣列，**不要自己補**。\n'
     '6. ⚠️ `basics` 是唯一的例外：它的來源是【履歷全文】與【應徵表單】，\n'
     '   **不是報告本文**。報告沒寫沒關係，直接從履歷／表單抄進來。\n'
+    '   例外：`residence` 履歷／表單沒寫時，用人選在逐字稿裡自己講的居住地（縣市＋區）；`commute_note` 也可引用他講的通勤方式／搬遷意願。\n'
     '   `commute_note` 要自己算：拿 basics.residence 跟職缺的 locations 比，\n'
     '   寫成「距離約 X 公里／同縣市／人已在當地」這種一句話。算不出來才填 null。\n'
     '7. `fit_scores` 的七個維度**名稱與順序固定**，不可增刪改名。每一維：\n'
@@ -3943,7 +3953,24 @@ def funnel_event(app_id, event, props=None):
         log(f'漏斗事件 {event} 寫入失敗（不影響面談）：{e}')
 
 
-def invite_assessment_after_interview(app_id):
+def _recs_only_mail(a, recs):
+    lines = _recs_email_lines(recs)
+    if not lines or not a.get('email'):
+        return
+    if d1(f"SELECT 1 FROM mail_outbox WHERE kind='acai_job_recs' AND ref_id={q(a['id'])} LIMIT 1"):
+        return
+    job = a.get('job_title') or a.get('job_slug') or ''
+    text = '\n'.join([f"{a.get('name') or ''} 您好，", '', f"感謝您今天撥空參加「{job}」的線上面談。", '']
+                     + lines + ['', '顧問看完今天的面談內容後，會再跟您聯繫。謝謝您！', '',
+                                'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號'])
+    import uuid as _uuid
+    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
+       f"{q(str(_uuid.uuid4()))}, 'acai_job_recs', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
+       f"{q(f'感謝您參加「{job}」線上面談')}, {q(text)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
+    log(f"{a.get('name')}：面談後推薦職缺信已排寄")
+
+
+def invite_assessment_after_interview(app_id, recs=None):
     """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
     面談結束（含中途離開）就寄一封測驗連結，只寄一次；已經做過測驗的不寄。
     信放進 mail_outbox，由 mail_outbox_send.py 從 official@ 寄出（跟其他一對一信件同一條路）。"""
@@ -3955,6 +3982,7 @@ def invite_assessment_after_interview(app_id):
     if not quick or not a.get('email') or not a.get('chat_token'):
         return
     if d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"):
+        _recs_only_mail(a, recs)   # 測驗已做、不寄邀請信 → 推薦職缺單獨寄一封短信（有推薦才寄）
         return
     if d1(f"SELECT 1 FROM mail_outbox WHERE kind='assessment_invite' AND ref_id={q(app_id)} LIMIT 1"):
         return
@@ -3970,7 +3998,11 @@ def invite_assessment_after_interview(app_id):
         parts += ['如果您有意願讓顧問進一步幫您推薦給企業，請點下面的連結上傳履歷（手機拍照、截圖、PDF、Word 都可以）：',
                   resume_url, '']
     parts += ['另外還有一份工作風格測驗，大約 5 分鐘，做完可以看到您個人的工作風格報告，也會提供給顧問參考（選填）：',
-              assess_url, '',
+              assess_url, '']
+    _rl = _recs_email_lines(recs)   # 2026-10-21 阿財推薦職缺（開關沒開就是空的）
+    if _rl:
+        parts += _rl + ['']
+    parts += [
               '顧問看完今天的面談內容後，會再跟您聯繫。謝謝您！', '',
               'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號']
     text = '\n'.join(parts)
@@ -4007,6 +4039,16 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         d1(f"UPDATE applications SET interview_state='paused', "
            f"status='interviewed' WHERE id={q(app_id)}")
     funnel_event(app_id, 'interview_done', {'abandoned': bool(abandoned), 'closed': bool(close)})
+
+    # 2026-10-21 阿財推薦職缺：正常收尾才做（中途離開的人不在畫面前），先於報告產生，卡片才不用等報告。
+    # 開關在 D1 site_settings 'acai_job_recs'（off／test／on）；任何失敗都只記 log，不影響報告。
+    acai_recs = []
+    if not abandoned:
+        try:
+            import acai_job_recs as AJR
+            acai_recs = AJR.generate(app_id, ctx, lambda pr: run_claude(pr, first_try=90, total=150))
+        except Exception as e:
+            log(f'{name}：推薦職缺失敗（不影響報告）：{e}')
 
     prompt = build_report_prompt(app_id, ctx, job_slug, abandoned)
     _before_files = _snapshot_session_files()
@@ -4069,6 +4111,11 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     except Exception as ex:
         log(f'（寫入 lang_verified_at 失敗，不影響交付：{ex}）')
 
+    if acai_recs:   # 報告純文字附上「阿財跟他提過的職缺」（結構化 JSON 已經轉完，不影響它）
+        try:
+            report = report + '\n' + AJR.report_md(acai_recs)
+        except Exception:
+            pass
     rid = save_report(app_id, report, report_json)
     if not rid:
         tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
@@ -4081,9 +4128,9 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
 
     _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
     if not ((_qa[0].get('origin') == 'quick_apply') or str(_qa[0].get('note') or '').startswith('【快速應徵')):
-        notify_candidate(app_id, abandoned)
+        notify_candidate(app_id, abandoned, extra_lines=_recs_email_lines(acai_recs))
     try:
-        invite_assessment_after_interview(app_id)
+        invite_assessment_after_interview(app_id, recs=acai_recs)
     except Exception as e:
         log(f'{name}：面談後補測驗邀請失敗（不影響報告）：{e}')
 
@@ -4954,6 +5001,38 @@ def _is_negative(text):
     return bool(t) and len(t) <= 12 and bool(_NEG_REPLY.match(t))
 
 
+_COUNTY_RE = re.compile(r'台北|臺北|新北|基隆|桃園|新竹|苗栗|台中|臺中|彰化|南投|雲林|嘉義|台南|臺南|高雄|屏東|宜蘭|花蓮|台東|臺東|澎湖|金門|馬祖|海外|國外')
+_CROSS_COUNTY_RE = re.compile(r'跨縣市|跨區|調派|派駐|輪調|依專案.{0,4}(調|派)')
+
+
+def _residence_known(ctx):
+    """人選住哪我們知不知道：履歷有縣市、表單寫了居住縣市，或他在對話裡自己講過住哪。"""
+    if _COUNTY_RE.search((ctx.get('resume_text') or '')[:20000]):
+        return True
+    app = ctx.get('application') or {}
+    for line in str(app.get('note') or '').split('\n'):
+        if line.startswith(('居住縣市', '居住地', '現居')) and line.split('：', 1)[-1].strip():
+            return True
+    for m in ctx.get('conversation') or []:
+        c = str(m.get('content') or '')
+        if m.get('role') == 'candidate' and re.search(r'住', c) and _COUNTY_RE.search(c):
+            return True
+    return False
+
+
+def _job_loc_text(ctx):
+    loc = str((ctx.get('job') or {}).get('locations') or '').strip()
+    if loc.startswith('['):
+        loc = '、'.join(x.strip(" '\"") for x in loc.strip('[]').split(',') if x.strip(" '\""))
+    loc = re.sub(r'[（(][^）)]*[）)]', '', loc)
+    loc = re.sub(r'[\u4e00-\u9fff]{1,8}(?:路|街|大道)\S*', '', loc).strip('、，, ')
+    return loc[:24]
+
+
+def _cross_county_job(ctx):
+    return bool(_CROSS_COUNTY_RE.search(str((ctx.get('job') or {}).get('client_screen_conditions') or '')))
+
+
 def _technique_hints(ctx):
     conv = ctx.get('conversation') or []
     asked, neg, last_topics = {}, {}, []
@@ -5003,8 +5082,17 @@ def _technique_hints(ctx):
         if asked.get('離職原因／動機', 0) == 0:
             todo.append('**離職原因／動機**：至少問一題「為什麼想換」；在職的追問一句推力（現在哪裡想離開）＋拉力（這個職缺哪裡吸引）')
         if asked.get('搬遷／通勤', 0) == 0:
-            todo.append('**搬遷可行性**：如果履歷或表單顯示他的居住地跟職缺地點不同（人在海外、外縣市），必問「能不能搬過來／多久可以過來」；'
-                        '居住地跟職缺同一區就問通勤即可')
+            if not _residence_known(ctx):
+                # 2026-10-21 Jacky：快速應徵沒履歷，阿財常常不知道人選住哪——不知道就一定要問一次（自然的一句）
+                _loc = _job_loc_text(ctx) or '這個職缺的地點'
+                todo.append(f'**居住地＋通勤（目前不知道他住哪）**：履歷、表單都沒有居住地，他也還沒講過。'
+                            f'用一句自然的話問：「您目前住在哪個縣市／區？到{_loc}上班的話怎麼通勤，或需要搬過去嗎？」，'
+                            '記下他的回答（報告的居住地、通勤判斷就用這句）'
+                            + ('；這個職缺客戶有跨縣市調派的條件，**同一題順便問能不能配合跨縣市調派**，之後不要再另外問一次'
+                               if _cross_county_job(ctx) else ''))
+            else:
+                todo.append('**搬遷可行性**：如果履歷或表單顯示他的居住地跟職缺地點不同（人在海外、外縣市），必問「能不能搬過來／多久可以過來」；'
+                            '居住地跟職缺同一區就問通勤即可')
         if todo:
             out.append('【還沒問到的必問項（程式數的）】' + '；'.join(todo)
                        + '。**時間不夠時，這兩題優先於「專業分級往上追問」。**')
