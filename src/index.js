@@ -3875,7 +3875,7 @@ async function handleLineEvent(env, ev) {
           const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
             + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`
             + (click.queue_id ? `&utm_content=${encodeURIComponent('q' + click.queue_id)}` : '');
-          const msg = await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
+          const msg = traineeWelcome(click.job_slug, applyUrl) || await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
           const okReply = await lineReply(env, replyToken, msg);
           // 2026-10-12 YY又瑜 21:33 帶 [LC691] 進來只收到官方帳號自動回覆、沒收到這則歡迎訊息：
           // 回覆沒成功就改用推播補送（人選主動來問，不能晾著）
@@ -3903,6 +3903,22 @@ async function handleLineEvent(env, ev) {
         text = text.replace(lcMatch[0], '').trim();
       }
     } catch { /* 歸因失敗不能擋掉候選人原本的對話 */ }
+  }
+
+  // 2026-10-21：培訓職缺模板寫「回覆『想了解』讓顧問先幫你確認」——這裡接住，不能讓這句被後面的核對流程當成答案吃掉。
+  if (/^(我)?想了解/.test(String(text || '').trim()) && !/\[LC\d+\]/.test(text)) {
+    const last = await env.DB.prepare(
+      `SELECT lc.job_slug, COALESCE(j.title, lc.job_slug) AS title FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug
+        WHERE lc.line_user_id = ? AND lc.clicked_at >= datetime('now','+8 hours','-14 days') ORDER BY lc.clicked_at DESC LIMIT 1`
+    ).bind(userId).first().catch(() => null);
+    if (last) {
+      const msg = `收到 🙌 顧問會在上班時間盡快用 LINE 回覆你，先幫你確認「${last.title}」的工作內容和基本條件。\n\n`
+        + `方便的話，可以先在這裡告訴我們：\n① 你的名字\n② 目前住哪個縣市\n③ 有沒有用過 AutoCAD 或 Revit`;
+      const okReply = await lineReply(env, replyToken, msg);
+      if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+      await notify(env, `🙋 LINE 有人回覆「想了解」：${last.title}\n請到 LINE 官方帳號接手（還沒應徵，先確認工作內容與基本條件）`);
+      return;
+    }
   }
 
   // ⚠️ 2026-08-17 修：三步驟核對卡在 ask_name/ask_email/ask_phone 時，
@@ -5400,6 +5416,41 @@ async function mentionsClientName(env, text) {
   } catch { return true; }   // 查不到客戶名單就保守處理：不放介紹
   return false;
 }
+// 2026-10-21 Jacky 模板：無經驗／培訓 BIM、繪圖職缺的 LINE 自動回覆。
+// 每一行都對過 jobs 表（locations、salary、work_hours、education_level、main_duties、required_conditions），
+// 沒有資料的不寫（例如 bim-engineer-houli 沒填學歷就不寫學歷）。改職缺資料時這裡要一起看。
+const TRAINEE_LINE = {
+  'bim-mep-drafting-engineer-hsinchu': {
+    head: '半導體廠繪圖師｜無經驗可培訓', loc: '新竹半導體廠區', pay: '月薪約 4.1～5 萬元', time: '08:30–17:30 白天班',
+    what: '從 AutoCAD 2D 工程繪圖開始學習，再逐步接觸 Revit 3D 建模，參與半導體廠房的工程專案。',
+    ticks: ['科系不限，大學以上', '沒有相關經驗也可以接受培訓', '需要機車駕照（要騎車到廠區）'] },
+  'semiconductor-bim-mep-drafting-trainee-hsinchu': {
+    head: 'BIM 工程師｜無經驗可培訓', loc: '新竹科學園區', pay: '月薪約 4.1～5 萬元', time: '08:30–17:30 白天班',
+    what: '從 AutoCAD 2D 工程繪圖開始學習，再逐步接觸 Revit 3D 建模，參與半導體廠房機電、管線的 BIM 模型建置。',
+    ticks: ['科系不限，大學以上', '沒有相關經驗也可以接受培訓', '需要機車駕照（要騎車到廠區）'] },
+  'bim-engineer-houli': {
+    head: 'BIM 工程師｜無經驗可培訓', loc: '台中后里', pay: '月薪約 4.1～5 萬元', time: '08:30–17:30、週休二日、不輪班',
+    what: '公司會先培訓，之後負責 BIM 模型建置與修正、模型整合與圖面檢討，也會到工地現場視勘，使用 AutoCAD、Revit。',
+    ticks: ['沒有相關經驗也可以接受培訓', '有 AutoCAD／Revit 基礎更好'] },
+  'trainee-engineering-design-engineer': {
+    head: '工程設計工程師｜儲備培訓', loc: '桃竹苗、台中、雲林（依專案派駐，外縣市提供宿舍）', pay: '月薪約 3.5～4.5 萬元', time: '08:30–17:30',
+    what: '負責高科技廠各系統的工程電腦繪圖，並協助現場視勘，確認圖面與現場一致；公司提供完整的軟體培訓。',
+    ticks: ['專科以上，工業設計、土木營建、建築／室內設計相關科系', '會基本的 AutoCAD 或 Revit、看得懂工程圖', '有 AutoCAD／Revit 國際認證更加分', '需要普通重機車駕照'] },
+};
+function traineeWelcome(slug, applyUrl) {
+  const t = TRAINEE_LINE[slug];
+  if (!t) return null;
+  return ['嗨嗨 👋 謝謝你對這個職缺有興趣！', '', `📌 ${t.head}`, '',
+    `📍 工作地點：${t.loc}`, `💰 ${t.pay}`, `🕐 ${t.time}`, '',
+    '這份工作主要做什麼？', t.what, '', ...t.ticks.map((x) => `✅ ${x}`), '',
+    '還不確定自己適不適合嗎？',
+    '可以直接回覆「想了解」，讓顧問先幫你確認工作內容與基本條件，不需要立即面試。', '',
+    '📄 詳細職缺：', `https://step1ne.com/jobs/${slug}/`, '',
+    '如果已經確定想應徵，也可以直接填表，後續會進行工作風格測驗及 AI 初步面談。', '',
+    '📝 應徵入口：', applyUrl, '',
+    '有任何問題，都歡迎直接在這裡問我們 😊'].join('\n');
+}
+
 async function jobWelcomeMessage(env, slug, title, applyUrl) {
   let j = null;
   try {
