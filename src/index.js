@@ -1,4 +1,5 @@
 import { applyLaterTick } from './apply_later.js';
+import { ensureLineEventsTable, claimLineEvent, markLineReplySent, finishLineEvent, purgeOldLineEvents, isInvalidReplyToken } from './line_dedupe.js';
 import { mailV2For, renderSendMailV2, renderTextMailV2, renderMailV2 } from './mail_v2.js';
 /**
  * Step1ne 招募表單 API。
@@ -1429,6 +1430,32 @@ async function closedJobMessages(env, job) {
   return [head, flex];
 }
 
+// ── LINE 回覆追蹤（2026-10-21，配合 src/line_dedupe.js）──
+// webhook 處理每個事件時，把 replyToken 對到「這是誰、哪個 webhookEventId」。
+// 回覆成功 → 在去重紀錄標 reply_sent=1（之後重送一律不再處理）。
+// 回覆失敗且 LINE 說 reply token 無效（重送／逾時）→ 這則確定沒送出，改用推播補送一次。
+// key 是 replyToken（每則都不同），同一個 isolate 同時處理多個請求也不會互相蓋到。
+const LINE_REPLY_CTX = new Map();
+
+async function lineReplyDelivered(env, replyToken) {
+  const c = LINE_REPLY_CTX.get(replyToken);
+  if (!c) return;
+  c.sent = true;
+  try { await markLineReplySent(env.DB, c.eventId, nowTaipei()); } catch { /* ignore */ }
+}
+
+async function lineReplyFallback(env, replyToken, status, errTxt, messages) {
+  const c = LINE_REPLY_CTX.get(replyToken);
+  if (!c || !c.userId || !isInvalidReplyToken(status, errTxt)) return false;
+  const pushed = await linePushMessages(env, c.userId, messages);
+  try {
+    await env.DB.prepare(`INSERT INTO line_reply_log (created_at, ok, status, detail) VALUES (?,?,?,?)`)
+      .bind(nowTaipei(), pushed ? 1 : 0, pushed ? 200 : 0, `push_fallback ${pushed ? 'ok' : 'failed'} event=${c.eventId || '-'} user=${c.userId}`).run();
+  } catch { /* ignore */ }
+  if (pushed) await lineReplyDelivered(env, replyToken);
+  return pushed;
+}
+
 async function lineReply(env, replyToken, text) {
   if (!env.LINE_CHANNEL_ACCESS_TOKEN || !replyToken) return false;
   try {
@@ -1452,8 +1479,9 @@ async function lineReply(env, replyToken, text) {
         await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_reply_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, ok INTEGER, status INTEGER, detail TEXT)`).run();
         await env.DB.prepare(`INSERT INTO line_reply_log (created_at, ok, status, detail) VALUES (?,0,?,?)`).bind(nowTaipei(), r.status, errTxt.slice(0, 300)).run();
       } catch { /* 記不到就算了 */ }
-      return false;
+      return lineReplyFallback(env, replyToken, r.status, errTxt, [{ type: 'text', text }]);
     }
+    await lineReplyDelivered(env, replyToken);
     return true;
   } catch (e) {
     console.error('lineReply threw', String(e));
@@ -1555,8 +1583,13 @@ async function lineReplyMessages(env, replyToken, messages) {
     });
     // ⚠️ 2026-08-14 補：同 lineReply——之前完全沒 log，Flex 卡片格式錯或
     // replyToken 過期時候選人完全收不到訊息、後台也看不出原因。
-    if (!r.ok) console.error('lineReplyMessages failed', r.status, await r.text());
-    return r.ok;
+    if (!r.ok) {
+      const errTxt = await r.text();
+      console.error('lineReplyMessages failed', r.status, errTxt);
+      return lineReplyFallback(env, replyToken, r.status, errTxt, messages);
+    }
+    await lineReplyDelivered(env, replyToken);
+    return true;
   } catch (e) {
     console.error('lineReplyMessages threw', String(e));
     return false;
@@ -3443,6 +3476,71 @@ async function pushResumeUnreadable(env, appId, dry) {
     await env.DB.prepare(`UPDATE resume_read_checks SET line_notified_at=? WHERE application_id=?`).bind(nowTaipei(), appId).run();
   }
   return { ok: true, pushed };
+}
+
+// LINE webhook 的實際處理（2026-10-21 從 /line-webhook 路由搬出來，改在 ctx.waitUntil 背景跑）。
+// 每個事件先用 webhookEventId 搶號：重送的（同一個 id）直接略過，所以入站紀錄、關鍵字卡片、
+// 「想了解」節流、TG 通知都只會跑一次。
+let _lineEventsTableReady = false;
+async function processLineWebhookEvents(env, events) {
+  if (!_lineEventsTableReady) {
+    try { await ensureLineEventsTable(env.DB); _lineEventsTableReady = true; } catch (e) { console.error('line_webhook_events ddl', String(e)); }
+  }
+  for (const ev of events) {
+    let claim = { action: 'process', id: null };
+    try { claim = await claimLineEvent(env.DB, ev, nowTaipei()); }
+    catch (e) { console.error('claimLineEvent', String(e)); }   // 去重表壞了寧可照常處理，不能讓人選石沉大海
+    if (claim.action === 'skip') {
+      console.log('line webhook duplicate skipped', claim.id);
+      continue;
+    }
+    const replyToken = ev && ev.replyToken;
+    if (replyToken) LINE_REPLY_CTX.set(replyToken, { userId: (ev.source && ev.source.userId) || null, eventId: claim.id, sent: false });
+    let ok = true;
+    try {
+      // 2026-09-29 Jacky：社群轉化要看「加入 LINE 之後有沒有詢問」。原本只有綁定過的人
+      // 訊息才會進 line_messages，其他人傳給官方帳號的話系統完全沒留，算不出來。
+      // 這裡每一則使用者傳來的訊息都記一筆（只記，不影響後面的處理）。
+      if (ev && ev.type === 'message' && ev.source && ev.source.userId) {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO line_inbound_log (line_user_id, msg_type, text, created_at) VALUES (?,?,?,?)`
+          ).bind(ev.source.userId, (ev.message && ev.message.type) || null,
+                 String((ev.message && ev.message.text) || '').slice(0, 500), nowTaipei()).run();
+        } catch { /* 記不到就算了，不能擋到回覆 */ }
+      }
+      // 2026-10-07：先綁查進度表單、後來才傳訊息／加好友的人，在這裡補對應
+      if (ev && (ev.type === 'message' || ev.type === 'follow') && ev.source && ev.source.userId) {
+        try {
+          const uid = ev.source.userId;
+          const known = await env.DB.prepare(`SELECT 1 FROM line_bindings WHERE line_user_id=?`).bind(uid).first();
+          if (!known) {
+            const { results: liff } = await env.DB.prepare(
+              `SELECT b.* FROM line_bindings b WHERE b.source='liff_progress' AND b.state='bound'
+                 AND b.created_at > datetime('now','+8 hours','-30 days') AND b.display_name IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM line_bindings t WHERE t.application_ids=b.application_ids AND t.line_user_id<>b.line_user_id)`).all();
+            if ((liff || []).length) {
+              const pf = await lineBotProfile(env, uid);
+              const same = pf ? (liff || []).filter((b) => b.display_name === pf.displayName) : [];
+              if (same.length === 1 && !(await lineBotProfile(env, same[0].line_user_id))) {
+                await addOaTwinBinding(env, same[0], uid, '對方傳訊息給官方帳號時比對暱稱');
+              }
+            }
+          }
+        } catch { /* 對應失敗不能擋到回覆 */ }
+      }
+      try {
+        await handleLineEvent(env, ev);
+      } catch (e) {
+        ok = false;   // 標 failed：重送時若確定沒送出回覆，可以再處理一次（改推播）
+        await notify(env, `⚠️ LINE 事件處理失敗：${String(e && e.message || e).slice(0, 200)}`,
+          { message_thread_id: THREAD.system });
+      }
+    } finally {
+      if (replyToken) LINE_REPLY_CTX.delete(replyToken);
+      try { await finishLineEvent(env.DB, claim.id, ok, nowTaipei()); } catch { /* ignore */ }
+    }
+  }
 }
 
 async function handleLineEvent(env, ev) {
@@ -5638,7 +5736,7 @@ async function lineClickNudge(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const p = url.pathname;
 
@@ -6539,45 +6637,10 @@ export default {
       let body;
       try { body = JSON.parse(rawBody); } catch { return new Response('ok'); }
       const events = Array.isArray(body.events) ? body.events : [];
-      for (const ev of events) {
-        // 2026-09-29 Jacky：社群轉化要看「加入 LINE 之後有沒有詢問」。原本只有綁定過的人
-        // 訊息才會進 line_messages，其他人傳給官方帳號的話系統完全沒留，算不出來。
-        // 這裡每一則使用者傳來的訊息都記一筆（只記，不影響後面的處理）。
-        if (ev && ev.type === 'message' && ev.source && ev.source.userId) {
-          try {
-            await env.DB.prepare(
-              `INSERT INTO line_inbound_log (line_user_id, msg_type, text, created_at) VALUES (?,?,?,?)`
-            ).bind(ev.source.userId, (ev.message && ev.message.type) || null,
-                   String((ev.message && ev.message.text) || '').slice(0, 500), nowTaipei()).run();
-          } catch { /* 記不到就算了，不能擋到回覆 */ }
-        }
-        // 2026-10-07：先綁查進度表單、後來才傳訊息／加好友的人，在這裡補對應
-        if (ev && (ev.type === 'message' || ev.type === 'follow') && ev.source && ev.source.userId) {
-          try {
-            const uid = ev.source.userId;
-            const known = await env.DB.prepare(`SELECT 1 FROM line_bindings WHERE line_user_id=?`).bind(uid).first();
-            if (!known) {
-              const { results: liff } = await env.DB.prepare(
-                `SELECT b.* FROM line_bindings b WHERE b.source='liff_progress' AND b.state='bound'
-                   AND b.created_at > datetime('now','+8 hours','-30 days') AND b.display_name IS NOT NULL
-                   AND NOT EXISTS (SELECT 1 FROM line_bindings t WHERE t.application_ids=b.application_ids AND t.line_user_id<>b.line_user_id)`).all();
-              if ((liff || []).length) {
-                const pf = await lineBotProfile(env, uid);
-                const same = pf ? (liff || []).filter((b) => b.display_name === pf.displayName) : [];
-                if (same.length === 1 && !(await lineBotProfile(env, same[0].line_user_id))) {
-                  await addOaTwinBinding(env, same[0], uid, '對方傳訊息給官方帳號時比對暱稱');
-                }
-              }
-            }
-          } catch { /* 對應失敗不能擋到回覆 */ }
-        }
-        try {
-          await handleLineEvent(env, ev);
-        } catch (e) {
-          await notify(env, `⚠️ LINE 事件處理失敗：${String(e && e.message || e).slice(0, 200)}`,
-            { message_thread_id: THREAD.system });
-        }
-      }
+      // 2026-10-21：先回 200、事情丟到背景做。以前全部做完才回，LINE 等不及就用同一個事件一直重送
+      // （U7c99… 一則訊息被收 8 次、回兩種不同訊息、TG 通知兩次）。去重見 src/line_dedupe.js。
+      const work = processLineWebhookEvents(env, events);
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(work); else await work;
       // LINE 只要求 200，內容不重要
       return new Response('ok');
     }
@@ -8892,6 +8955,8 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
+    // 2026-10-21：LINE webhook 去重紀錄只留 2 天（src/line_dedupe.js）
+    try { await purgeOldLineEvents(env.DB); } catch (e) { console.error('purgeOldLineEvents', String(e)); }
     // 2026-10-21 Jacky：LINE 問了職缺（帶 [LC] 代碼）卻 24 小時沒應徵 → 自動補一則提醒，只補一次。
     try { await lineClickNudge(env); } catch (e) { console.error('lineClickNudge', String(e)); }
     // 2026-10-21「先送出，晚點再聊」：隔天 10:00 提醒一次（LINE 卡片／沒綁寄信）＋滿 7 天標「沒完成面談」（src/apply_later.js）
