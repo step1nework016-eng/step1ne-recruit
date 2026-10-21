@@ -3744,21 +3744,27 @@ def invite_assessment_after_interview(app_id):
         return
     if d1(f"SELECT 1 FROM mail_outbox WHERE kind='assessment_invite' AND ref_id={q(app_id)} LIMIT 1"):
         return
-    url = f"https://step1ne.com/assessment/?t={a['chat_token']}&after=1"
+    assess_url = f"https://step1ne.com/assessment/?t={a['chat_token']}&after=1"
+    resume_url = f"https://step1ne.com/resume/?t={a['chat_token']}"
     job = a.get('job_title') or a.get('job_slug') or ''
-    text = (f"{a.get('name') or ''} 您好，\n\n"
-            f"謝謝您今天跟 AI 顧問「阿財」聊「{job}」這個職缺。\n\n"
-            "最後還有一份工作風格測驗，大約 5 到 7 分鐘，沒有標準答案，照直覺選就好。"
-            "做完會馬上看到一份您個人的工作風格報告，也會提供給負責的顧問參考：\n"
-            f"{url}\n\n"
-            + (("如果想讓顧問幫您推薦給企業，也麻煩用這個連結補上履歷（手機拍照、截圖都可以）：\n"
-                f"https://step1ne.com/resume/?t={a['chat_token']}\n\n") if not a.get('has_resume') else '')
-            + "顧問看完面談內容後，會再跟您聯繫後續安排。\n\n"
-            "Step1ne 德仁管理顧問\nEmail：official@step1ne.com\n就業服務許可證：北市就服字第 0363 號")
+    # 2026-10-21 Jacky 定的寫法：先謝謝他來面談，再請有意願的人上傳履歷讓顧問推薦；測驗放後面當選填
+    parts = [f"{a.get('name') or ''} 您好，", '',
+             f"感謝您今天撥空參加「{job}」的線上面談。", '']
+    if a.get('has_resume'):
+        parts += ['您的履歷我們已經收到了。', '']
+    else:
+        parts += ['如果您有意願讓顧問進一步幫您推薦給企業，請點下面的連結上傳履歷（手機拍照、截圖、PDF、Word 都可以）：',
+                  resume_url, '']
+    parts += ['另外還有一份工作風格測驗，大約 5 分鐘，做完可以看到您個人的工作風格報告，也會提供給顧問參考（選填）：',
+              assess_url, '',
+              '顧問看完今天的面談內容後，會再跟您聯繫。謝謝您！', '',
+              'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號']
+    text = '\n'.join(parts)
+    subject = f'感謝您參加「{job}」線上面談' + ('｜上傳履歷讓顧問幫您推薦' if not a.get('has_resume') else '')
     import uuid as _uuid
     d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
        f"{q(str(_uuid.uuid4()))}, 'assessment_invite', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
-       f"{q('最後一步：工作風格測驗（約 5 分鐘）｜' + job)}, {q(text)}, 'applications', {q(app_id)}, 'pending', "
+       f"{q(subject)}, {q(text)}, 'applications', {q(app_id)}, 'pending', "
        f"datetime('now','+8 hours'))")
     funnel_event(app_id, 'assessment_invited', {'via': 'after_interview'})
     log(f"{a.get('name')}：快速應徵，面談後已排寄工作風格測驗連結")
@@ -3855,7 +3861,9 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
            f'必要時我可以把報告內容貼進這個對話讓你手動處理。')
         taskboard('報告存檔失敗', f'{name}（{job_slug}）報告有產出但沒存進資料庫', 'ERROR')
 
-    notify_candidate(app_id, abandoned)
+    _qa = d1(f"SELECT origin, note FROM applications WHERE id={q(app_id)}") or [{}]
+    if not ((_qa[0].get('origin') == 'quick_apply') or str(_qa[0].get('note') or '').startswith('【快速應徵')):
+        notify_candidate(app_id, abandoned)
     try:
         invite_assessment_after_interview(app_id)
     except Exception as e:
