@@ -3915,12 +3915,46 @@ async function handleLineEvent(env, ev) {
     } catch { /* 歸因失敗不能擋掉候選人原本的對話 */ }
   }
 
+  // 2026-10-21 Jacky：顧問用 LINE 預設訊息回人選（人選常只傳截圖、沒有職缺代碼）時，
+  // 預設訊息裡放「點這裡看職缺卡片」的 oaMessage 連結，人選一點就會送出「看培訓職缺」→ 這裡回 4 張職缺卡片。
+  // 另外：沒綁定的人自己打字提到職缺／BIM／繪圖／應徵，也回同一組卡片，並通知顧問（24 小時內只回一次，不打擾手動聊天）。
+  {
+    const t0 = String(text || '').trim();
+    const explicit = /^(看)?(培訓)?職缺(卡片)?$|^看培訓職缺|^看職缺/.test(t0);
+    const keyword = !explicit && /職缺|工作機會|BIM|繪圖|應徵|培訓/i.test(t0) && t0.length <= 60 && (!binding || binding.state !== 'bound');
+    if (explicit || keyword) {
+      let recent = null;
+      if (keyword) {
+        recent = await env.DB.prepare(`SELECT 1 FROM line_kw_replies WHERE line_user_id = ? AND at >= datetime('now','+8 hours','-1 day') LIMIT 1`)
+          .bind(userId).first().catch(() => null);
+      }
+      if (explicit || !recent) {
+        const slugs = Object.keys(TRAINEE_LINE);
+        const bubbles = slugs.map((sl) => {
+          const card = traineeWelcomeFlex(sl, `https://step1ne.com/apply-quick/?job=${sl}&utm_source=line_${explicit ? 'preset' : 'keyword'}&utm_medium=line`);
+          return card && card.contents;
+        }).filter(Boolean);
+        const msgs = [{ type: 'text', text: '這幾個是目前「無經驗可、公司培訓」的職缺 👇 往左滑可以看更多，有興趣的直接按「快速應徵」，或按「想了解」讓顧問先跟你說明 😊' },
+          { type: 'flex', altText: '培訓職缺：半導體廠繪圖師、BIM 工程師、工程設計工程師', contents: { type: 'carousel', contents: bubbles } }];
+        const ok = await lineReplyMessages(env, replyToken, msgs);
+        if (!ok) { try { await linePushMessages(env, userId, msgs); } catch { /* ignore */ } }
+        try {
+          await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_kw_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, line_user_id TEXT, kind TEXT, text TEXT, at TEXT)`).run();
+          await env.DB.prepare(`INSERT INTO line_kw_replies (line_user_id, kind, text, at) VALUES (?,?,?,?)`)
+            .bind(userId, explicit ? 'preset' : 'keyword', t0.slice(0, 60), now).run();
+        } catch { /* 記不到不影響回覆 */ }
+        if (keyword) await notify(env, `💬 LINE 有人沒帶職缺代碼問職缺：「${t0.slice(0, 40)}」\n已自動回培訓職缺卡片，請到 LINE 官方帳號看一下要不要接手`);
+        return;
+      }
+    }
+  }
+
   // 2026-10-21：培訓職缺模板寫「回覆『想了解』讓顧問先幫你確認」——這裡接住，不能讓這句被後面的核對流程當成答案吃掉。
   if (/^(我)?想了解/.test(String(text || '').trim()) && !/\[LC\d+\]/.test(text)) {
     const last = await env.DB.prepare(
       `SELECT lc.job_slug, COALESCE(j.title, lc.job_slug) AS title FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug
         WHERE lc.line_user_id = ? AND lc.clicked_at >= datetime('now','+8 hours','-14 days') ORDER BY lc.clicked_at DESC LIMIT 1`
-    ).bind(userId).first().catch(() => null);
+    ).bind(userId).first().catch(() => null) || { title: '培訓職缺' };   // 從預設訊息／關鍵字卡片按的，沒有點擊紀錄也要回
     if (last) {
       const msg = `收到 🙌 顧問會在上班時間盡快用 LINE 回覆你，先幫你確認「${last.title}」的工作內容和基本條件。\n\n`
         + `方便的話，可以先在這裡告訴我們：\n① 你的名字\n② 目前住哪個縣市\n③ 有沒有用過 AutoCAD 或 Revit`;
