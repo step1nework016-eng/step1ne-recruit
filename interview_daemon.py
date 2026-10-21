@@ -3697,6 +3697,38 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
     return prompt
 
 
+def invite_assessment_after_interview(app_id):
+    """2026-10-21 Jacky：快速應徵改成「先面談、面談後再補工作風格測驗」。
+    面談結束（含中途離開）就寄一封測驗連結，只寄一次；已經做過測驗的不寄。
+    信放進 mail_outbox，由 mail_outbox_send.py 從 official@ 寄出（跟其他一對一信件同一條路）。"""
+    r = d1(f"SELECT id, name, email, job_title, job_slug, chat_token, note, origin FROM applications WHERE id={q(app_id)}")
+    if not r:
+        return
+    a = r[0]
+    quick = (a.get('origin') == 'quick_apply') or str(a.get('note') or '').startswith('【快速應徵')
+    if not quick or not a.get('email') or not a.get('chat_token'):
+        return
+    if d1(f"SELECT 1 FROM assessments WHERE application_id={q(app_id)} LIMIT 1"):
+        return
+    if d1(f"SELECT 1 FROM mail_outbox WHERE kind='assessment_invite' AND ref_id={q(app_id)} LIMIT 1"):
+        return
+    url = f"https://step1ne.com/assessment/?t={a['chat_token']}&after=1"
+    job = a.get('job_title') or a.get('job_slug') or ''
+    text = (f"{a.get('name') or ''} 您好，\n\n"
+            f"謝謝您今天跟 AI 顧問「阿財」聊「{job}」這個職缺。\n\n"
+            "最後還有一份工作風格測驗，大約 5 到 7 分鐘，沒有標準答案，照直覺選就好。"
+            "做完會馬上看到一份您個人的工作風格報告，也會提供給負責的顧問參考：\n"
+            f"{url}\n\n"
+            "顧問看完面談內容後，會再跟您聯繫後續安排。\n\n"
+            "Step1ne 德仁管理顧問\nEmail：official@step1ne.com\n就業服務許可證：北市就服字第 0363 號")
+    import uuid as _uuid
+    d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, ref_table, ref_id, status, created_at) VALUES ("
+       f"{q(str(_uuid.uuid4()))}, 'assessment_invite', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
+       f"{q('最後一步：工作風格測驗（約 5 分鐘）｜' + job)}, {q(text)}, 'applications', {q(app_id)}, 'pending', "
+       f"datetime('now','+8 hours'))")
+    log(f"{a.get('name')}：快速應徵，面談後已排寄工作風格測驗連結")
+
+
 def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     """面談結束：產報告、寫回 D1、通知顧問。
 
@@ -3788,6 +3820,10 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
         taskboard('報告存檔失敗', f'{name}（{job_slug}）報告有產出但沒存進資料庫', 'ERROR')
 
     notify_candidate(app_id, abandoned)
+    try:
+        invite_assessment_after_interview(app_id)
+    except Exception as e:
+        log(f'{name}：面談後補測驗邀請失敗（不影響報告）：{e}')
 
     head = '⚠️ 面談中斷（候選人未收尾）' if abandoned else '✅ 面談完成'
     rec = ''

@@ -322,6 +322,10 @@ def build_draft_text(name, synth):
     if synth.get('_gate'):
         import client_gate
         lines += client_gate.format_block(synth['_gate'])
+    if synth.get('_resume_warn'):
+        lines += [synth['_resume_warn'], '']
+    if synth.get('_assess_warn'):
+        lines += [synth['_assess_warn'], '']
     if synth.get('_anon_warn'):
         lines += [synth['_anon_warn'], '']
     if synth.get('_worker_id'):
@@ -469,6 +473,22 @@ def promote_synthesized():
                     draft_synth['_gate'] = client_gate.check(co, job, client_gate.profile_from_synth(synth))
                 except Exception as e:
                     print(f'[推薦門檻] 檢查失敗（不影響草稿）：{e}', file=sys.stderr)
+                # 2026-10-21 Jacky：快速應徵可以不附履歷就面談，推給客戶前一定要補——草稿最上面講白
+                try:
+                    ar = D.d1(f"SELECT resume_file_id, resume_url, note, origin FROM applications WHERE id={D.q(row['application_id'])}")
+                    if ar:
+                        a0 = ar[0]
+                        quick = (a0.get('origin') == 'quick_apply') or str(a0.get('note') or '').startswith('【快速應徵')
+                        if quick and not a0.get('resume_file_id') and not str(a0.get('resume_url') or '').strip():
+                            draft_synth['_resume_warn'] = ('📎 這位是快速應徵進來的，還沒交履歷。推給客戶前請先請他補：'
+                                                           'PDF／Word 寄到 official@step1ne.com，或傳到 LINE 官方帳號。'
+                                                           '目前這份草稿只根據面談內容整理。')
+                        if quick:
+                            asm = D.d1(f"SELECT 1 FROM assessments WHERE application_id={D.q(row['application_id'])} LIMIT 1")
+                            if not asm:
+                                draft_synth['_assess_warn'] = '🧩 工作風格測驗：還沒做（面談後已寄連結請他補做）'
+                except Exception as e:
+                    print(f'[補履歷提醒] 檢查失敗（不影響草稿）：{e}', file=sys.stderr)
             send_confirm_draft(row['id'], name, draft_synth)
         elif j['status'] == 'failed':
             D.d1(f"UPDATE client_report_requests SET status='error', "
