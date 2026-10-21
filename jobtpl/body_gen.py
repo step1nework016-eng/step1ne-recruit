@@ -28,7 +28,10 @@ def build_body(j):
     """j 是一份職缺資料 dict。缺的區塊自動略過，不要為了填滿而編。"""
     E = lambda x: (x or '')
     tags = ''.join(f'<span class="tag">{t}</span>' for t in j.get('tags', []))
-    apply_url = (f"/apply/?job={j['slug']}&title={j['title_enc']}"
+    import importlib.util as _iu, os as _os
+    _sp = _iu.spec_from_file_location('quick_apply', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'quick_apply.py'))
+    _qa = _iu.module_from_spec(_sp); _sp.loader.exec_module(_qa); apply_path = _qa.apply_path
+    apply_url = (f"{apply_path(j['slug'])}?job={j['slug']}&title={j['title_enc']}"
                  f"&utm_source=website&utm_medium=job_page&utm_campaign={j['slug']}")
 
     duties = ''

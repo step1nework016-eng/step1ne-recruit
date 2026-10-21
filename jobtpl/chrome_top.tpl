@@ -105,7 +105,7 @@ ul.duties li{margin-bottom:10px;}
       <a href="/talent/ai-tools/" style="color:#4a4d55;">AI求職工具</a>
       <a href="/about/" style="color:#4a4d55;">關於我們</a>
     </div>
-    <a href="/apply/?job={slug}&title={title_enc}&utm_source=website&utm_medium=job_page&utm_campaign={slug}" class="s1ne-hide-m" style="background:linear-gradient(135deg,#c9a049,#a67c3d);color:#fff;font-weight:700;font-size:13.5px;padding:9px 18px;border-radius:999px;white-space:nowrap;">我要應徵</a>
+    <a href="{apply_path}?job={slug}&title={title_enc}&utm_source=website&utm_medium=job_page&utm_campaign={slug}" class="s1ne-hide-m" style="background:linear-gradient(135deg,#c9a049,#a67c3d);color:#fff;font-weight:700;font-size:13.5px;padding:9px 18px;border-radius:999px;white-space:nowrap;">我要應徵</a>
     <button type="button" class="s1ne-show-m" onclick="document.getElementById('s1ne-mmenu').classList.toggle('is-open')" aria-label="開啟選單" style="align-items:center;justify-content:center;width:40px;height:40px;border:1px solid #e6dfd1;border-radius:10px;background:#fff;flex-shrink:0;">
       <span style="display:block;width:18px;height:2px;background:#23262d;box-shadow:0 6px 0 #23262d,0 -6px 0 #23262d;"></span>
     </button>

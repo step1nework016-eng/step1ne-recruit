@@ -107,6 +107,12 @@ def jsonld(j):
     return json.dumps(d, ensure_ascii=False, indent=2)
 
 
+def _quick_apply_path(slug):
+    spec = importlib.util.spec_from_file_location('quick_apply', os.path.join(HERE, 'jobtpl', 'quick_apply.py'))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m.apply_path(slug)
+
+
 def render_page(j):
     tpl = open(os.path.join(HERE, 'jobtpl', 'chrome_top.tpl'), encoding='utf-8').read()
     bot = open(os.path.join(HERE, 'jobtpl', 'chrome_bot.html'), encoding='utf-8').read()
@@ -120,6 +126,7 @@ def render_page(j):
         'og_title': j.get('og_title') or j['page_title'],
         'og_desc': j.get('og_desc') or j['description'],
         'title_enc': urllib.parse.quote(j['title']), 'jsonld': ld,
+        'apply_path': _quick_apply_path(j['slug']),
     }
     top = tpl
     for k, v in vals.items():
