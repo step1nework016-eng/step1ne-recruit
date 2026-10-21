@@ -2529,13 +2529,20 @@ def build_prompt(ctx, skill_md):
                   '工作許可身分（台灣籍配偶／永久居留／在台灣大學畢業／其他）']
     lines.append('\n✅ 必問清單（這場面談結束前每一項都要問到、拿到具體回答；履歷或表單已經寫清楚的，用一句話確認即可；意思重複的幾項合併成一題問）：')
     for _i, _m in enumerate(dict.fromkeys(_must), 1):
-        lines.append(f'  {_i}. {_m}')
+        lines.append(f'  {_i}. {_m}{_implied_mark(_m, ctx)}')
     lines.append('  🚫 清單裡還有任何一項沒問到，就**不准輸出 "end": true**，接著問下一項；時間超過也要問完（閒聊、延伸題可以省，必問項不能省）。'
                  '專業程度每個主題都至少要量出一個級數，不能空著。報告裡不可以出現「沒問到」「資訊不足」。')
     lines.append('  唯一可以留給顧問的：人選問你、你答不出來的事（例如薪資結構、福利細節、升遷制度、客戶內部資訊），'
                  '就說「這個我請顧問跟你說明」，然後繼續問清單。')
     lines.append('\n🚫 同一件事已經問過、他也回答了（例如調派、加班、通勤），不要換個說法再問一次；'
                  '真的還有疑慮，就針對他的回答追問具體細節（例：「你說可以接受，那一個月加班 20 小時左右 OK 嗎？」）。')
+    # 2026-10-21 Jacky 實測（騎機車通勤還被問有沒有機車駕照、住哪被整題重問）
+    lines.append('✅ 推得出來的答案就算問到了：他前面講的話已經合理證明某一項（騎機車上班→有機車駕照；住在職缺同一區→通勤沒問題；'
+                 '土木系畢業→相關科系；現在天天用 AutoCAD 畫圖→會 AutoCAD 基礎），那一項就算確認，**不要再問**，'
+                 '報告寫「由回答推得：…」。只有真的不清楚、或法律／合約一定要本人親口確認又推不出來的，才明問。')
+    lines.append('✂️ 他只答了一半：只補問缺的那一半，一句話（例：問了住哪＋怎麼通勤，他只說「機車」→「了解，您住在哪一區呢？」），'
+                 '不要把整題重講一次。')
+    lines.append('💬 開場之後一輪只發一則訊息：要接話又要問，寫在同一則裡；不要另外再發一個氣泡補問「另外…」。')
     if str(app.get('note') or '').startswith('【快速應徵'):
         lines.append('⏱ 這位是快速應徵進來的，頁面上跟他說「約 20 分鐘」。開場說時間時講「大概聊 15 到 25 分鐘」，'
                      '不要說 30 到 40 分鐘；閒聊少一點，但必問清單一定要問完。')
@@ -2830,8 +2837,8 @@ REPORT_JSON_SPEC = r'''
      "explanation": "他的說明，沒問到就空字串", "status": "已確認|待釐清"}
   ],
   "hard_conditions": [
-    {"item": "", "verdict": "符合|不符|待確認", "detail": "",
-     "evidence_source": "履歷|應徵表單|他親口說|未確認"}
+    {"item": "", "verdict": "符合|不符|待確認", "detail": "從他回答推得的寫「由回答推得：…」（例：由回答推得：每天騎機車通勤，有機車駕照）",
+     "evidence_source": "履歷|應徵表單|他親口說|由回答推得|未確認"}
   ],
   "blocker_findings": [
     {"item": "到職障礙名稱（照題目給的）",
@@ -4520,6 +4527,8 @@ def handle(app):
         talk_prompt = build_prompt(ctx, talk_skill(ctx))
         talk_prompt += _pace_hints(ctx)      # E24：起手式重複／問題預算（程式數出來的提示）
         talk_prompt += _technique_hints(ctx)  # E32：不重問、兩次否定換題、動機與搬遷必問、薪資最多兩次、英文結論句
+        talk_prompt += _implied_hints(ctx)    # 2026-10-21：推得出來的不再問、只答一半只補問缺的那一半
+        talk_prompt += _quick_hint(app)       # 2026-10-21 快速回覆按鈕（開關 acai_quick_replies；沒開就是空字串，prompt 不變）
         # ⚠️ 2026-09-21 加：面談已經收過尾（報告已產）之後，候選人還是可以繼續
         # 問——但阿財不該當作面談還在進行、繼續深挖新題目。
         #
@@ -4566,6 +4575,10 @@ def handle(app):
         msgs, _cut = _stop_after_question(msgs)      # E32-F：問了就等回答，後面「假設對方答案」的氣泡丟掉
         if _cut:
             log(f'✂️ {name}：問句後面有 {_cut} 則在替對方答，已丟掉（問了要等回答）')
+        _n0 = len(msgs)
+        msgs = _one_message(msgs, ctx)      # 2026-10-21 Jacky：開場之後一輪一則；推得出來的問題（騎機車還問駕照）拿掉
+        if _n0 > len(msgs):
+            log(f'🧩 {name}：{_n0} 則併成一則')
         if not msgs:
             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
 
@@ -4593,6 +4606,9 @@ def handle(app):
                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
         msgs = _foreign_opening(ctx, msgs)      # 外語人選：開場前先放固定的外語歡迎（中文人選不動）
+        # 2026-10-21 快速回覆按鈕：一定要在寫入阿財訊息「之前」存（after_id＝目前最後一則），
+        # 面談頁看到阿財這輪訊息時按鈕已經在了。任何失敗都只記 log，不影響回覆。
+        _save_quick_replies(app, result, msgs, already_reported)
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         vals = ','.join(f"({q(app_id)},'assistant',{q(_clean_out(m))},'{now}')" for m in msgs)
         d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES {vals}")
@@ -5033,6 +5049,100 @@ def _cross_county_job(ctx):
     return bool(_CROSS_COUNTY_RE.search(str((ctx.get('job') or {}).get('client_screen_conditions') or '')))
 
 
+# ── 2026-10-21 Jacky 實測：推得出來的答案不要再問、只答一半只補問缺的那一半、一輪一則 ──
+# 阿財問「住哪個縣市？到后里怎麼通勤？」→ 人選答「機車」→ 阿財整題重問一次，又多一個氣泡「另外您有機車駕照嗎？」。
+# 騎機車上班的人當然有駕照。程式端先把「從他講過的話推得出來」的事列出來（下面的表），必問清單那一項直接標成已確認；
+# 表以外的（同一區→通勤沒問題、土木系畢業→相關科系、現職天天用 AutoCAD→會 AutoCAD）寫進 prompt 通則讓阿財自己判斷。
+_NO_SCOOTER = re.compile(r'(沒有|沒|無|還沒考|不會騎|不能騎)[^，。,]{0,4}(機車|駕照|騎)|無照|腳踏車|單車|自行車|[Uu]-?[Bb]ike|公車|捷運|火車|客運|搭')
+_SCOOTER = re.compile(r'機車|摩托車|重機|騎車')
+_NO_CAR = re.compile(r'(沒有|沒|無|還沒考)[^，。,]{0,4}(汽車|駕照)|無照|家人載|別人載|載我|搭')
+_CAR = re.compile(r'開車|自己開|汽車通勤|開汽車')
+# (必問項關鍵字, 推得的事實的偵測)：只列「答案本身就證明了條件」的組合
+_IMPLIED_RULES = [
+    (re.compile(r'機車.{0,4}駕照|重機.{0,4}駕照|機車駕駛執照'), 'scooter', '有機車駕照（他說通勤騎機車）'),
+    (re.compile(r'汽車.{0,4}駕照|小型車.{0,4}駕照|普通小客車'), 'car', '有汽車駕照（他說自己開車通勤）'),
+]
+_RESIDENCE_Q = re.compile(r'住(在)?(哪|那)(個|一|裡|邊)?|居住(地|在|縣市)|住的地方')
+_PLACE = re.compile(r'[一-鿿]{1,4}(區|鄉|鎮|市|縣|村|里)|附近|隔壁|同一區|本地|當地')
+
+
+def _cand_said(ctx):
+    return [str(m.get('content') or '') for m in (ctx.get('conversation') or [])
+            if m.get('role') == 'candidate' and '候選人已進入' not in str(m.get('content') or '')]
+
+
+def _implied_kinds(ctx):
+    kinds = {}
+    for c in _cand_said(ctx):
+        if _SCOOTER.search(c) and not _NO_SCOOTER.search(c):
+            kinds['scooter'] = True
+        if _CAR.search(c) and not _NO_CAR.search(c):
+            kinds['car'] = True
+    return kinds
+
+
+def _implied_facts(ctx):
+    """從人選講過的話推得出來的事實（程式判斷）。回傳給 prompt／必問清單看的短句。"""
+    k = _implied_kinds(ctx)
+    return [fact for _pat, kind, fact in _IMPLIED_RULES if k.get(kind)]
+
+
+def _implied_mark(item, ctx):
+    """必問清單某一項如果已經推得出來，回傳要接在後面的標註；否則空字串。"""
+    k = _implied_kinds(ctx)
+    for pat, kind, fact in _IMPLIED_RULES:
+        if k.get(kind) and pat.search(str(item)):
+            return f'　✅ 由回答推得：{fact}，算已確認，不用再問'
+    return ''
+
+
+def _implied_hints(ctx):
+    """每輪附在 prompt 後面：推得的事實＋「只答一半」的補問提示。沒有就回空字串。"""
+    conv = [m for m in (ctx.get('conversation') or []) if '候選人已進入' not in str(m.get('content') or '')]
+    out = []
+    facts = _implied_facts(ctx)
+    if facts:
+        out.append('【由回答推得、不用再問（程式判斷）】' + '；'.join(facts)
+                   + '。必問清單對應的那一項算已確認，**不要再問**，報告寫「由回答推得：…」。')
+    # 最後一則是人選、前一則阿財問了住哪 → 看他有沒有講到地點
+    if len(conv) >= 2 and conv[-1].get('role') == 'candidate' and conv[-2].get('role') == 'assistant':
+        q_, a_ = str(conv[-2].get('content') or ''), str(conv[-1].get('content') or '')
+        if _RESIDENCE_Q.search(q_) and not (_COUNTY_RE.search(a_) or _PLACE.search(a_)):
+            out.append(f'【他只答了一半（程式判斷）】你問了住哪＋怎麼通勤，他只回「{a_[:20]}」，沒講住哪。'
+                       '**只補問缺的那一半，一句話就好**，例如「了解，您住在哪一區呢？」；不要把整題重講一次，也不要再問他已經答的部分。')
+    return ('\n\n' + '\n'.join(out)) if out else ''
+
+
+def _asks_implied(sentence, kinds):
+    """這句是不是在問「已經推得出來的事」（例：他說騎機車上班，這句問有沒有機車駕照）。"""
+    if not re.search(r'[?？]', sentence):
+        return False
+    if kinds.get('scooter') and re.search(r'駕照|駕駛執照', sentence) and not re.search(r'汽車|小型車|小客車|職業', sentence):
+        return True
+    if kinds.get('car') and re.search(r'汽車.{0,4}駕照|小型車.{0,4}駕照', sentence):
+        return True
+    return False
+
+
+def _one_message(msgs, ctx):
+    """開場之後一輪只發一則：多個氣泡併成一則（換行接起來）。併之前，問「已經推得出來的事」的那句先拿掉（只剩那句就不動）。
+    開場那輪（阿財還沒講過話）不動——歡迎＋第一題本來就是分開的。"""
+    msgs = [str(m).strip() for m in msgs if str(m).strip()]
+    if not any(m.get('role') == 'assistant' for m in (ctx.get('conversation') or [])):
+        return msgs
+    k = _implied_kinds(ctx)
+    keep = []
+    for m in msgs:
+        parts = re.split(r'(?<=[。！？?!])', m)
+        kept = [p for p in parts if not _asks_implied(p, k)]
+        t = ''.join(kept).strip()
+        if t:
+            keep.append(t)
+    if not keep:
+        keep = msgs
+    return ['\n'.join(keep)] if len(keep) > 1 else keep
+
+
 def _technique_hints(ctx):
     conv = ctx.get('conversation') or []
     asked, neg, last_topics = {}, {}, []
@@ -5293,6 +5403,67 @@ def do_prewarm(app):
         clear_static_cache(app_id)
         with _lock:
             _prewarm_busy.discard(app_id)
+
+
+# ── 2026-10-21 快速回覆按鈕（acai_quick_replies.py 檔頭有完整說明）──
+_QR_GUARD = {'g': None, 't': 0.0}
+
+
+def _qr_guard():
+    """客戶名守門員（跟推薦職缺同一套），快取 10 分鐘；讀不到回 None（呼叫端就不給按鈕）。"""
+    if _QR_GUARD['g'] is not None and time.time() - _QR_GUARD['t'] < 600:
+        return _QR_GUARD['g']
+    try:
+        import acai_job_recs as AJR
+        _QR_GUARD.update({'g': AJR.ClientGuard.from_d1(), 't': time.time()})
+    except Exception as e:
+        log(f'快速回覆：客戶名名單讀不到，這輪不給按鈕：{str(e)[:80]}')
+        return None
+    return _QR_GUARD['g']
+
+
+def _quick_on(app):
+    try:
+        import acai_quick_replies as AQR
+        return AQR.eligible(AQR.get_flag(), (app or {}).get('name'))
+    except Exception:
+        return False
+
+
+def _quick_hint(app):
+    """開關有開（test＝姓名含「測試」）才在 prompt 加按鈕說明；沒開回空字串，prompt 逐字不變。"""
+    if not _quick_on(app):
+        return ''
+    import acai_quick_replies as AQR
+    return AQR.PROMPT_HINT
+
+
+def _save_quick_replies(app, result, msgs, already_reported):
+    """把這輪的按鈕存起來，回傳存了幾個（0＝沒給）。面談收尾那輪、收尾後追問、訊息被安全句換掉都不給。"""
+    try:
+        import acai_quick_replies as AQR
+        if already_reported or not msgs or not isinstance(result, dict) or result.get('end'):
+            return 0
+        if not _quick_on(app):
+            return 0
+        raw_msgs = [str(m).strip() for m in (result.get('messages') or []) if str(m).strip()]
+        last = str(msgs[-1])
+        if not any(r in last or last in r for r in raw_msgs):      # 最後一則不是 AI 原本講的（被換成安全句）
+            return 0
+        opts, why = AQR.sanitize(AQR.extract(result), last, _qr_guard())
+        if not opts:
+            if AQR.extract(result):
+                log(f'快速回覆：{app.get("name")} 這輪不給按鈕（{why}）')
+            return 0
+        after = _max_msg_id(app['id'])
+        if after is None:
+            return 0
+        AQR.save(app['id'], after, opts, d1)
+        log(f'快速回覆：{app.get("name")} 給 {len(opts)} 個按鈕 {opts}')
+        return len(opts)
+    except Exception as e:
+        log(f'快速回覆存檔失敗（不影響回覆）：{str(e)[:120]}')
+        return 0
 
 
 def _post_prewarmed_opening(app_id, name):
