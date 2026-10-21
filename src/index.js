@@ -5575,6 +5575,45 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   return lines.join('\n');
 }
 
+// 2026-10-21 Jacky：LINE 問了職缺、24 小時內沒應徵 → 補一則提醒（每個 LINE 帳號每個職缺只補一次）。
+// 判斷「沒應徵」：LINE 綁定還沒有這個職缺、點擊之後建立的應徵。沒綁定的人網頁應徵我們對不上，所以訊息寫「已經應徵可以忽略」。
+// 培訓職缺給快速應徵連結；其他職缺給原本應徵連結。關閉／只發社群的職缺不提醒。紀錄在 line_click_nudges（不動 followup_pinged_at，那是 TG 提醒自己的狀態）。
+async function lineClickNudge(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS line_click_nudges (click_id INTEGER PRIMARY KEY, line_user_id TEXT, job_slug TEXT, sent_at TEXT, ok INTEGER)`).run();
+  const { results } = await env.DB.prepare(
+    `SELECT lc.id, lc.line_user_id, lc.job_slug, j.title, j.status
+       FROM link_clicks lc JOIN jobs j ON j.slug = lc.job_slug
+      WHERE lc.line_user_id IS NOT NULL
+        AND lc.attributed_at <= datetime('now','+8 hours','-24 hours')
+        AND lc.attributed_at >= datetime('now','+8 hours','-48 hours')
+        AND j.status = 'open'
+        AND NOT EXISTS (SELECT 1 FROM line_click_nudges n WHERE n.line_user_id = lc.line_user_id AND n.job_slug = lc.job_slug)
+      ORDER BY lc.attributed_at LIMIT 10`).all();
+  const now = nowTaipei();
+  for (const r of results || []) {
+    const b = await env.DB.prepare(`SELECT state, application_ids, phone FROM line_bindings WHERE line_user_id = ?`).bind(r.line_user_id).first();
+    if (b && String(b.phone || '') === '0912345678') continue;   // 測試帳號
+    let applied = false;
+    for (const id of safeJsonArray(b && b.application_ids)) {
+      const a = await env.DB.prepare(`SELECT 1 FROM applications WHERE id = ? AND job_slug = ? LIMIT 1`).bind(id, r.job_slug).first();
+      if (a) { applied = true; break; }
+    }
+    await env.DB.prepare(`INSERT OR IGNORE INTO line_click_nudges (click_id, line_user_id, job_slug, sent_at, ok) VALUES (?,?,?,?,0)`)
+      .bind(r.id, r.line_user_id, r.job_slug, now).run();
+    if (applied) continue;
+    const quick = !!TRAINEE_LINE[r.job_slug];
+    const url = quick
+      ? `https://step1ne.com/apply-quick/?job=${encodeURIComponent(r.job_slug)}&utm_source=line_nudge&utm_medium=line`
+      : `https://step1ne.com/apply/?job=${encodeURIComponent(r.job_slug)}&title=${encodeURIComponent(r.title || '')}&utm_source=line_nudge&utm_medium=line`;
+    const text = `嗨～昨天你問了「${r.title}」這個職缺，還有興趣嗎？\n\n`
+      + (quick ? `應徵只要 1 分鐘、不用先準備履歷 👇\n${url}\n\n` : `應徵入口在這裡 👇\n${url}\n\n`)
+      + `還不確定的話，直接回「想了解」，顧問先幫你確認工作內容 🙌\n（如果已經應徵了，可以忽略這則）`;
+    let ok = false;
+    try { ok = !!(await linePushMessages(env, r.line_user_id, [{ type: 'text', text }])); } catch (e) { console.error('nudge push', String(e)); }
+    await env.DB.prepare(`UPDATE line_click_nudges SET ok = ? WHERE click_id = ?`).bind(ok ? 1 : 0, r.id).run();
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -8794,6 +8833,9 @@ export default {
 
   /** 排程：到了候選人自己選的時間就提醒他回來完成面談。 */
   async scheduled(_evt, env) {
+    // 2026-10-21 Jacky：LINE 問了職缺（帶 [LC] 代碼）卻 24 小時沒應徵 → 自動補一則提醒，只補一次。
+    try { await lineClickNudge(env); } catch (e) { console.error('lineClickNudge', String(e)); }
+
     // 2026-09-02 拆分Phase 1：這裡原本有4段社群發文／LinkedIn相關的背景排程
     // （排程行事曆轉發文、LinkedIn權杖續期、發文成效回填、Threads貼文卡住對帳），
     // 已經搬到獨立的 step1ne-social-worker 專案，用它自己的cron跑，共用同一個D1。
