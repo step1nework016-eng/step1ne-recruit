@@ -172,8 +172,11 @@ def main():
                       "WHERE status='pending' ORDER BY created_at LIMIT 3")
             for req in rows:
                 # 先搶下來，避免同時跑兩個實例時重複處理
-                d1(f"UPDATE match_requests SET status='working' "
-                   f"WHERE id={q(req['id'])} AND status='pending'")
+                # 2026-10-22：用 RETURNING 確認真的搶到才做（WSL2 E41 回報：沒檢查就處理，兩台同跑會重複）
+                got = d1(f"UPDATE match_requests SET status='working' "
+                         f"WHERE id={q(req['id'])} AND status='pending' RETURNING id")
+                if not got:
+                    continue
                 try:
                     handle(req)
                 except Exception as e:

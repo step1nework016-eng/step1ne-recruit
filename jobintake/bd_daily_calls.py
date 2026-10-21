@@ -37,7 +37,9 @@ def env_file(name):
 
 
 def dashboard():
-    tok = env_file('recruit.env').get('RECRUIT_ADMIN_TOKEN') or os.environ.get('RECRUIT_ADMIN_TOKEN', '')
+    # 2026-10-22：WSL2 沒有 recruit.env（金鑰在 tokens.env，欄位同名），10/18～10/21 連續 401
+    tok = (env_file('recruit.env').get('RECRUIT_ADMIN_TOKEN') or env_file('tokens.env').get('RECRUIT_ADMIN_TOKEN')
+           or os.environ.get('RECRUIT_ADMIN_TOKEN', ''))
     req = urllib.request.Request(f'{API}/admin/bd/dashboard?fresh=1', headers={'Authorization': f'Bearer {tok}', 'User-Agent': 'step1ne-bd-daily-calls/1.0'})
     return json.load(urllib.request.urlopen(req, timeout=90))['rows']
 
