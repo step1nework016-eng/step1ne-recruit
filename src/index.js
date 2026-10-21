@@ -1542,8 +1542,10 @@ async function lineReplyMessages(env, replyToken, messages) {
     // ⚠️ 2026-08-14 補：同 lineReply——之前完全沒 log，Flex 卡片格式錯或
     // replyToken 過期時候選人完全收不到訊息、後台也看不出原因。
     if (!r.ok) console.error('lineReplyMessages failed', r.status, await r.text());
+    return r.ok;
   } catch (e) {
     console.error('lineReplyMessages threw', String(e));
+    return false;
   }
 }
 
@@ -3875,7 +3877,15 @@ async function handleLineEvent(env, ev) {
           const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(click.job_slug)}`
             + `&title=${encodeURIComponent(click.job_title)}&utm_source=line_click&utm_medium=line`
             + (click.queue_id ? `&utm_content=${encodeURIComponent('q' + click.queue_id)}` : '');
-          const msg = traineeWelcome(click.job_slug, applyUrl) || await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
+          // 培訓職缺：卡片＋按鈕，應徵走快速應徵（2026-10-21）
+          const quickUrl = applyUrl.replace('https://step1ne.com/apply/?', 'https://step1ne.com/apply-quick/?');
+          const card = traineeWelcomeFlex(click.job_slug, quickUrl);
+          if (card) {
+            const okCard = await lineReplyMessages(env, replyToken, [card]);
+            if (!okCard) { try { await linePushMessages(env, userId, [card]); } catch { /* ignore */ } }
+            return;
+          }
+          const msg = traineeWelcome(click.job_slug, quickUrl) || await jobWelcomeMessage(env, click.job_slug, click.job_title, applyUrl);
           const okReply = await lineReply(env, replyToken, msg);
           // 2026-10-12 YY又瑜 21:33 帶 [LC691] 進來只收到官方帳號自動回覆、沒收到這則歡迎訊息：
           // 回覆沒成功就改用推播補送（人選主動來問，不能晾著）
@@ -5446,9 +5456,37 @@ function traineeWelcome(slug, applyUrl) {
     '還不確定自己適不適合嗎？',
     '可以直接回覆「想了解」，讓顧問先幫你確認工作內容與基本條件，不需要立即面試。', '',
     '📄 詳細職缺：', `https://step1ne.com/jobs/${slug}/`, '',
-    '如果已經確定想應徵，也可以直接填表，後續會進行工作風格測驗及 AI 初步面談。', '',
-    '📝 應徵入口：', applyUrl, '',
+    '已經確定想應徵的話，填表只要 1 分鐘、不用先準備履歷，填完就能直接跟 AI 顧問線上聊聊。', '',
+    '📝 快速應徵：', applyUrl, '',
     '有任何問題，都歡迎直接在這裡問我們 😊'].join('\n');
+}
+
+// 2026-10-21 Jacky：培訓職缺的 LINE 回覆改成卡片＋按鈕（快速應徵／想了解／看詳細職缺）。內容跟 traineeWelcome 同一份資料。
+function traineeWelcomeFlex(slug, quickUrl) {
+  const t = TRAINEE_LINE[slug];
+  if (!t) return null;
+  const row = (label, value) => ({ type: 'box', layout: 'baseline', spacing: 'sm', contents: [
+    { type: 'text', text: label, size: 'sm', color: '#5d6878', flex: 0 },
+    { type: 'text', text: value, size: 'sm', color: '#16202e', wrap: true, flex: 1 } ] });
+  return { type: 'flex', altText: `職缺：${t.head}｜${t.pay}｜${t.loc}`.slice(0, 380), contents: {
+    type: 'bubble', size: 'mega',
+    body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [
+      { type: 'text', text: '嗨嗨 👋 謝謝你對這個職缺有興趣！', size: 'xs', color: '#5d6878', wrap: true },
+      { type: 'text', text: t.head, weight: 'bold', size: 'lg', color: '#16202e', wrap: true },
+      { type: 'box', layout: 'vertical', spacing: 'xs', contents: [row('📍', t.loc), row('💰', t.pay), row('🕐', t.time)] },
+      { type: 'separator', margin: 'md' },
+      { type: 'text', text: '這份工作主要做什麼？', weight: 'bold', size: 'sm', margin: 'md' },
+      { type: 'text', text: t.what, size: 'sm', color: '#16202e', wrap: true },
+      { type: 'box', layout: 'vertical', spacing: 'xs', margin: 'sm', contents: t.ticks.map((x) => row('✅', x)) },
+      { type: 'separator', margin: 'md' },
+      { type: 'text', text: '還不確定適不適合？按「想了解」，顧問先幫你確認工作內容與條件，不用馬上面試。', size: 'xs', color: '#5d6878', wrap: true, margin: 'md' },
+    ] },
+    footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+      { type: 'button', style: 'primary', color: '#2f5fd8', height: 'sm', action: { type: 'uri', label: '快速應徵（1 分鐘、免履歷）', uri: quickUrl } },
+      { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '想了解', text: '想了解' } },
+      { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '看詳細職缺', uri: `https://step1ne.com/jobs/${slug}/` } },
+    ] },
+  } };
 }
 
 async function jobWelcomeMessage(env, slug, title, applyUrl) {
