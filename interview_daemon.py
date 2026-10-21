@@ -2411,9 +2411,29 @@ def build_prompt(ctx, skill_md):
         _must += [re.sub(r'^\d+[.、)]\s*', '', x.strip(' 　・-')) for x in re.split(r'[\n；;]|\s(?=\d+[.、])', _rc) if len(x.strip()) >= 4][:8]
     except Exception:
         pass
+    # 客戶自己講過的篩選條件（jobs.client_screen_conditions）＋推薦門檻（site_settings.client_push_gates），
+    # 一樣列進必問清單——快速應徵、原本應徵都一樣。年齡／性別／婚姻這類不准列（就服法）。
+    _ban = re.compile(r'年齡|歲|性別|男性|女性|婚姻|已婚|未婚|懷孕|生育|國籍')
+    try:
+        for _x in re.split(r'[\n；;]|\s(?=\d+[.、])', str(job.get('client_screen_conditions') or '')):
+            _x = re.sub(r'^\d+[.、)]\s*', '', _x.strip(' 　・-'))
+            if len(_x) >= 4 and not _x.startswith('【') and not _ban.search(_x):
+                _must.append(f'客戶條件：{_x}')
+    except Exception:
+        pass
+    try:
+        _cid = job.get('company_id') or ((d1(f"SELECT company_id FROM jobs WHERE slug={q(job.get('slug'))}") or [{}])[0].get('company_id'))
+        _g = d1("SELECT value FROM site_settings WHERE key='client_push_gates'")
+        if _cid and _g:
+            _gg = (json.loads(_g[0]['value']) or {}).get(_cid) or {}
+            for _x in list((_gg.get('rules') or {}).get('*', [])) + list((_gg.get('rules') or {}).get(job.get('slug') or '', [])):
+                if _x and not _ban.search(_x):
+                    _must.append(f'客戶推薦門檻：{_x}')
+    except Exception:
+        pass
     _ex = ctx.get('expertise') or {}
     _must += [f'專業程度：{t.get("name")}' for t in ((_ex.get('ladder') or {}).get('topics') or []) if t.get('name')]
-    lines.append('\n✅ 必問清單（這場面談結束前每一項都要問到、拿到具體回答；履歷或表單已經寫清楚的，用一句話確認即可）：')
+    lines.append('\n✅ 必問清單（這場面談結束前每一項都要問到、拿到具體回答；履歷或表單已經寫清楚的，用一句話確認即可；意思重複的幾項合併成一題問）：')
     for _i, _m in enumerate(dict.fromkeys(_must), 1):
         lines.append(f'  {_i}. {_m}')
     lines.append('  🚫 清單裡還有任何一項沒問到，就**不准輸出 "end": true**，接著問下一項；時間超過也要問完（閒聊、延伸題可以省，必問項不能省）。'
