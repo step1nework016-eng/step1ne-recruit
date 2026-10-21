@@ -1092,9 +1092,12 @@ def prompt_post_interview_rematch(p):
 {{"explicit_rejections":[{{"code":"簡短英文代碼，例如 night_shift、solo_overseas_assignment、location_miaoli","label":"給顧問看的中文一句話，例如「不接受夜班」","evidence":"候選人講過的原話，沒有原話就不要列這一項"}}],
 "minimum_salary_monthly":"候選人**明確講出口的最低可接受月薪**（純數字，例如 55000）；只有年薪就換算成月薪；**沒有明確講就一定要填 null**",
 "follow_up":{{"certainty":"exact|range|vague|none","due_at":"只有 certainty=exact 或 range 才填日期（YYYY-MM-DD，range 填區間的第一天），其餘一律 null","reason":"為什麼要之後再聯絡，一句話","evidence":"候選人的原話，逐字，不可改寫"}},
-"recommendations":[{{"job_slug":"必須完全照抄下面清單裡的 job_slug","job_title":"","match_status":"MATCH_CANDIDATE|POSSIBLE_MATCH|INSUFFICIENT_DATA|NOT_MATCH","confidence":"high|medium|low","reasons":["最多3個，每個都要具體到可以被查證，不可以寫「背景相符」這種空話"],"blockers":["最多2個，這個職缺對他明顯的阻礙"],"missing_information":["還需要跟他確認什麼才能確定，沒有就空陣列"],"evidence":["每個理由對應的依據：履歷或逐字稿裡真的出現過的片段，不是你自己重新描述的話"]}}]}}
+"recommendations":[{{"job_slug":"必須完全照抄下面清單裡的 job_slug","job_title":"","match_status":"MATCH_CANDIDATE|POSSIBLE_MATCH|INSUFFICIENT_DATA|NOT_MATCH","confidence":"high|medium|low","reasons":["最多3個，每個都要具體到可以被查證，不可以寫「背景相符」這種空話"],"blockers":["最多2個，這個職缺對他明顯的阻礙"],"missing_information":["還需要跟他確認什麼才能確定，沒有就空陣列"],"evidence":["每個理由對應的依據：履歷或逐字稿裡真的出現過的片段，不是你自己重新描述的話"],"candidate_why":"給人選本人看的一句話（見規則），沒把握就給空字串"}}]}}
 
 規則：
+- candidate_why 會**原封不動出現在發給人選本人的 Email 裡**（「為什麼想到您：」後面接這句）：對著他本人說、
+  從他做過的事或會的東西講起，15～60 字；**不准**提待業、空窗、離職原因、穩定度、薪資、缺什麼經驗；
+  **不准**出現任何公司名稱、「客戶」兩個字，不用「我們」「顧問」當主詞；不准提年齡、性別、婚育、國籍、外貌。
 - **只能從下面的清單裡選職缺**，job_slug 完全照抄。清單以外的職缺一律不准提，就算你覺得有更好的也不行。
 - 🚫 **先看「他想去哪裡」，再看「他會什麼」。技能吻合不等於該推薦。**
   推薦任何一個職缺之前，先問自己：**這個職缺是不是正好是他想離開的那個方向？**
@@ -1745,6 +1748,11 @@ def process(job):
     # 2026-10-01 反向配對：職缺開出來回頭找人才庫，整條自己跑完（同 rematch）
     if kind == 'job_reverse_match':
         return _run_reverse_match_job(payload)
+    # 2026-10-21 人才標籤：阿財報告 → 職務類別＋等級；職缺 → 職務類別（整條在下面 _run_*_tagging 跑完）
+    if kind in ('candidate_tagging', 'candidate_tagging_backfill'):
+        return _run_candidate_tagging(payload)
+    if kind == 'job_tagging':
+        return _run_job_tagging(payload)
     if kind == 'cand_bd':
         return _run_cand_bd(payload)
     if kind == 'sourced_verify':
@@ -1991,6 +1999,15 @@ def _run_rematch(payload):
     jobs = rs.list_matchable_jobs(exclude_slug=snapshot.get('applied_job_slug'))
     if not jobs:
         return json.dumps({'skipped': 'no_matchable_jobs'}, ensure_ascii=False)
+    # 2026-10-21 人才標籤：打過標籤的人先用標籤篩掉明顯不相干的職缺（類別沒交集／等級差兩級／
+    # 期望薪資遠高於上限／明確不去的地區），剩下的才給 AI。沒標籤的人＝原清單，行為不變。
+    tag_excluded = []
+    if payload.get('tag_prefilter', True):
+        jobs, tag_excluded = rs.tag_prefilter_jobs(app_id, jobs)
+        if tag_excluded:
+            log(f'  🏷️ {snapshot.get("name")}：標籤先篩掉 {len(tag_excluded)} 個不相干職缺，剩 {len(jobs)} 個給 AI')
+        if not jobs:
+            return json.dumps({'skipped': 'no_jobs_after_tag_filter', 'tag_excluded': tag_excluded}, ensure_ascii=False)
 
     job_payload = dict(payload, candidate_snapshot=snapshot, matchable_jobs=jobs)
     out = run_claude(prompt_post_interview_rematch(job_payload), want_json=True)
@@ -2004,6 +2021,15 @@ def _run_rematch(payload):
         ai_data.get('recommendations') or [], snapshot, ai_data, jobs_by_slug, existing)
     # 只把「真的可能適合」的推給顧問；NOT_MATCH 就算 AI 列出來也不通知
     kept = [r for r in kept if r.get('match_status') in ('MATCH_CANDIDATE', 'POSSIBLE_MATCH')]
+    # 2026-10-21：candidate_why 會進寄給人選的信——跟反向配對一樣，出現職缺所屬公司名稱就清掉
+    if kept:
+        _cn = {r['slug']: r.get('client_name') for r in (d1_http.query(
+            'SELECT slug, client_name FROM jobs WHERE slug IN ('
+            + ', '.join(q(r.get('job_slug')) for r in kept) + ')')['results'] or [])}
+        for r in kept:
+            r['candidate_why'] = str(r.get('candidate_why') or '').strip()
+            _scrub_client_names(r, rs.client_name_tokens(_cn.get(r.get('job_slug'))))
+            r['job_status'] = (jobs_by_slug.get(r.get('job_slug')) or {}).get('status')
 
     saved = rs.save_recommendations(
         app_id, snapshot.get('applied_job_slug'), report['id'], kept,
@@ -2290,6 +2316,12 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
     if not job:
         return {'skipped': 'job_not_matchable', 'job_slug': job_slug}
     pool_rows = rs.list_talent_pool(job_slug)
+    # 2026-10-21 人才標籤：先用標籤篩掉明顯不相干的人，人才庫越長越需要（提示詞變短、AI 比較不會看漏）。
+    # 職缺沒標籤就當場補打一次；補打失敗就整包放行（跟上線前一樣）。沒標籤的人一律放行。
+    job_tags = _ensure_job_tags(job_slug)
+    pool_rows, tag_excluded = rs.tag_prefilter_pool(job, job_tags, pool_rows)
+    if tag_excluded:
+        log(f"  🏷️ 「{job.get('title')}」標籤先篩掉 {len(tag_excluded)} 位不相干的人，剩 {len(pool_rows)} 位給 AI")
     snaps = {}
     for row in pool_rows:
         snap, report = rs.build_candidate_snapshot(row['application_id'])
@@ -2305,7 +2337,8 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
             snap['career_directions'] = []
         snaps[row['application_id']] = (snap, report, row)
     if not snaps:
-        return {'skipped': 'empty_pool', 'job_slug': job_slug, 'pool_size': 0}
+        return {'skipped': 'empty_pool', 'job_slug': job_slug, 'pool_size': 0,
+                'tag_excluded': len(tag_excluded)}
 
     # 給 AI 的職缺資料不帶公司名稱（client_name），避免它把公司名寫進理由
     job_for_ai = {k: v for k, v in job.items() if k != 'client_name'}
@@ -2336,6 +2369,7 @@ def run_reverse_match(job_slug, run_id=None, dry_run=False, top_n=None):
 
     result = {'job_slug': job_slug, 'job_title': job.get('title'), 'pool_size': len(snaps),
               'ai_suggested': len(data['matches']), 'dropped': dropped_all,
+              'job_tags': job_tags or {}, 'tag_excluded': tag_excluded,
               'kept': [{'application_id': k['application_id'], 'name': s.get('name'),
                         'match_status': k.get('match_status'), 'confidence': k.get('confidence'),
                         'candidate_why': k.get('candidate_why'), 'reasons': k.get('reasons'), 'blockers': k.get('blockers'),
@@ -2455,6 +2489,113 @@ def seed_reverse_baseline():
 
 # HANDLERS 在檔案前面就定義了，這支的提示詞在後面，所以在這裡補登記
 HANDLERS['job_reverse_match'] = (prompt_reverse_match, True)
+
+
+# ── 2026-10-21 人才標籤＋自動推薦 ───────────────────────────────────────
+# 類別表、提示詞、存檔、篩選都在 recommendation_service（全系統唯一的推薦服務）；
+# 這裡只負責呼叫 claude 跟排程。AI 看不到年齡／性別／婚育／國籍（輸入是白名單組的）。
+
+TAG_SCAN_EVERY_SEC = 600
+TAG_SCAN_LOOKBACK_HOURS = 6
+_last_tag_scan = 0.0
+
+
+def tag_candidate(application_id, report_id=None, source='ai_interview', dry_run=False):
+    inp = rs.build_candidate_tagging_input(application_id, report_id)
+    if not inp:
+        return {'skipped': 'no_structured_report', 'application_id': application_id}
+    out = rs.validate_tagging(json.loads(run_claude(rs.prompt_candidate_tagging(inp), want_json=True, timeout=300)))
+    if dry_run:
+        return {'application_id': application_id, 'report_id': inp['report_id'], 'output': out}
+    saved = rs.save_candidate_tags(application_id, inp['report_id'], out, inp, source)
+    return {'application_id': application_id, 'report_id': inp['report_id'], 'saved': saved}
+
+
+def _job_for_tagging(job_slug):
+    rows = d1_http.query(
+        'SELECT slug, title, status, seniority, years_min, locations, required_conditions, must_skills, '
+        f'main_duties, updated_at FROM jobs WHERE slug={q(job_slug)}')['results']
+    return rows[0] if rows else None
+
+
+def tag_job(job_slug, dry_run=False):
+    job = _job_for_tagging(job_slug)
+    if not job:
+        return {'skipped': 'job_not_found', 'job_slug': job_slug}
+    out = rs.validate_tagging(json.loads(run_claude(rs.prompt_job_tagging(job), want_json=True, timeout=300)), for_job=True)
+    if not dry_run:
+        rs.save_job_tags(job_slug, out, job.get('updated_at'))
+    return {'job_slug': job_slug, 'title': job.get('title'), 'tags': out['tags']}
+
+
+def _ensure_job_tags(job_slug):
+    """回傳 {tag: level}。已經有、而且職缺打完標籤後沒再改過就直接用；否則當場補打一次。"""
+    try:
+        have = rs.get_job_tags_bulk([job_slug]).get(job_slug)
+        job = _job_for_tagging(job_slug) or {}
+        if have and str(have.get('job_updated_at') or '') >= str(job.get('updated_at') or ''):
+            return have['tags']
+        res = tag_job(job_slug)
+        return {t['tag']: t['level'] for t in (res.get('tags') or [])} or (have or {}).get('tags')
+    except Exception as e:
+        log(f'  ⚠️ 職缺 {job_slug} 打標籤失敗，這次不用標籤篩（整包人才庫照舊給 AI）：{str(e)[:150]}')
+        return None
+
+
+def _run_candidate_tagging(payload):
+    app_id, report_id = payload.get('application_id'), payload.get('report_id')
+    res = tag_candidate(app_id, report_id, source=payload.get('source') or 'ai_interview')
+    log(f"  🏷️ 人選標籤 {app_id[:8] if app_id else '?'}："
+        + ('、'.join(f"{t['tag']}（{t['level']}）" for t in (res.get('saved') or {}).get('tags') or []) or str(res.get('skipped'))))
+    # 新面談的人：標籤打完，排一次「拿去比現有開著的職缺」（沿用 P3-A 的 post_interview_rematch，
+    # 帶 tag_prefilter 先用標籤篩職缺）。用固定 id，同一份報告只會排一次；backfill 不排。
+    if payload.get('match_after') and rs.TAG_MATCH_ENABLED and res.get('saved'):
+        rid = res.get('report_id') or report_id
+        done = d1_http.query(
+            "SELECT 1 AS x FROM ai_jobs WHERE kind='post_interview_rematch' "
+            f"AND payload_json LIKE {q('%' + str(rid) + '%')} LIMIT 1")['results']
+        if not done:
+            res['rematch_queued'] = rs._queue_ai_job(
+                f'rematch:{rid}', 'post_interview_rematch',
+                {'application_id': app_id, 'report_id': rid, 'target': 'candidate_job_recommendations',
+                 'tag_prefilter': True})
+    return json.dumps(res, ensure_ascii=False)
+
+
+def _run_job_tagging(payload):
+    res = tag_job(payload.get('job_slug'))
+    log(f"  🏷️ 職缺標籤 {payload.get('job_slug')}：" + '、'.join(f"{t['tag']}（{t['level']}）" for t in res.get('tags') or []))
+    return json.dumps(res, ensure_ascii=False)
+
+
+def scan_candidate_tagging(force=False):
+    """保險網：最近 TAG_SCAN_LOOKBACK_HOURS 小時內存的報告、還沒排過標籤的，補排（match_after=True）。
+    正常情況 interview_daemon.finish() 已經排了；固定 id（ctag:<report_id>）保證不會重複。"""
+    global _last_tag_scan
+    now = time.time()
+    if not force and now - _last_tag_scan < TAG_SCAN_EVERY_SEC:
+        return 0
+    _last_tag_scan = now
+    rows = d1_http.query(
+        'SELECT r.id AS report_id, r.application_id FROM reports r '
+        "  JOIN applications a ON a.id = r.application_id "
+        " WHERE r.content_json IS NOT NULL AND a.superseded_by IS NULL "
+        "   AND COALESCE(a.status,'') NOT IN ('duplicate','rejected','declined','closed') "
+        f"   AND r.created_at >= datetime('now','+8 hours','-{int(TAG_SCAN_LOOKBACK_HOURS)} hours') "
+        "   AND NOT EXISTS (SELECT 1 FROM ai_jobs aj WHERE aj.id = 'ctag:' || r.id) "
+        ' ORDER BY r.created_at DESC LIMIT 5')['results'] or []
+    n = 0
+    for r in rows:
+        if rs.queue_candidate_tagging(r['application_id'], r['report_id'], match_after=True):
+            n += 1
+    if n:
+        log(f'  📌 補排 {n} 份新報告的人才標籤')
+    return n
+
+
+HANDLERS.setdefault('candidate_tagging', (lambda p: '', True))
+HANDLERS.setdefault('candidate_tagging_backfill', (lambda p: '', True))
+HANDLERS.setdefault('job_tagging', (lambda p: '', True))
 
 # ── 2026-10-02 人選敲門：拿一位人選去開發客戶 ─────────────────────────────
 # Jacky：「人選卡片上面加一個把此人選履歷反向開發客戶」。AI 找到的公司只放「人選敲門名單」
@@ -3050,6 +3191,12 @@ def tick():
         scan_rematch_candidates()
     except Exception as e:
         log(f'  ⚠️ 替代職缺掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
+    # 2026-10-21 人才標籤：保險網——最近 6 小時的新報告如果沒排過標籤（例如報告不是從
+    # interview_daemon.finish() 存的），補排。每 10 分鐘最多查一次。
+    try:
+        scan_candidate_tagging()
+    except Exception as e:
+        log(f'  ⚠️ 人才標籤掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
     # 2026-10-01 反向配對：新開／重開的職缺回頭找人才庫（每 10 分鐘最多查一次）
     try:
         scan_reverse_match_jobs()
@@ -3098,7 +3245,7 @@ def tick():
          # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
          # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
          "ORDER BY CASE WHEN kind IN (" + ','.join(q(k) for k in URGENT_KINDS) + ") THEN 0 "
-         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match') THEN 2 ELSE 1 END, created_at LIMIT %d")
+         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match','candidate_tagging_backfill','job_tagging') THEN 2 ELSE 1 END, created_at LIMIT %d")
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
