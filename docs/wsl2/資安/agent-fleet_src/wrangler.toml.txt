@@ -1,0 +1,29 @@
+name = "step1ne-agent-fleet"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# 獨立出來的 AI agent 領取站——2026-09-10 加。刻意跟 step1ne-backoffice-worker
+# 完全分開部署、分開網址、分開金鑰（FLEET_TOKEN 不等於 RECRUIT_ADMIN_TOKEN），
+# 這裡外洩不會牽連顧問後台，顧問後台外洩也不會牽連這裡拿得到的機密。
+# 讀 D1 只是為了顯示「現在幾台裝置在跑」這種統計數字，不寫入任何業務資料。
+[[d1_databases]]
+binding = "DB"
+database_name = "step1ne-recruit"
+database_id = "67077b4b-42d9-4086-8d04-b3658a89cffd"
+
+# 存放各 agent 腳本檔案本體（不含任何金鑰）。跟其他 Worker 的 R2 桶分開，
+# 純粹只放這裡會發的程式碼。
+[[r2_buckets]]
+binding = "FLEET_FILES"
+bucket_name = "step1ne-agent-fleet-files"
+
+# 2026-10-22（資安 F006）：這個 Worker 只剩 FLEET_TOKEN／GENERIC_FLEET_TOKEN
+# 兩把「進站門檻」secret。原本放在這裡轉發的 CF／TG／RECRUIT_ADMIN_TOKEN／AIJOB_*
+# 金鑰已全部刪除，領取站不再發任何金鑰值，不要再 wrangler secret put 回來。
+
+# 2026-09-16 加：KOC/KOL 這兩個值本來就不是機密（後端只認 workspace header，
+# 沒有 API 金鑰這回事，見 koc-kol-matching 那邊的 MOVE_TO_NEW_DEVICE.md），
+# 直接當一般環境變數放，不用 wrangler secret put、不用假裝它是機密。
+[vars]
+KOCKOL_BACKEND_URL = "https://koc-kol-backend.lizkockol1688.workers.dev/api/v1"
+KOCKOL_WORKSPACE_ID = "ws_ebefed43f04b4a77bd853af696897be2"
