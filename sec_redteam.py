@@ -32,6 +32,7 @@ SITE = os.path.expanduser('~/claude-projects/step1ne-stopgap-site')
 CFG = os.path.expanduser('~/.config/workflow-os')
 SSH = os.path.expanduser('~/.ssh')
 SECRET_NAME = re.compile(r'(token|secret|password|passwd|api[_-]?key|private[_-]?key|auth|credential)', re.I)
+FAKE_MARK = re.compile(r'(TESTKEY|FAKE|EXAMPLE|DUMMY|PLACEHOLDER|XXXXXX)', re.I)
 SECRET_VALUE = re.compile(r'(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|xox[bap]-[A-Za-z0-9-]{20,}|'
                           r'-----BEGIN [A-Z ]*PRIVATE KEY-----|\b\d{8,10}:[A-Za-z0-9_-]{35}\b)')
 
@@ -92,7 +93,9 @@ def check_f1():
                     continue
                 for i, line in enumerate(open(p, encoding='utf-8', errors='ignore'), 1):
                     m = SECRET_VALUE.search(line)
-                    if m:
+                    # 2026-10-22（E44）：測試用假金鑰（TESTKEY／FAKE／EXAMPLE…）不算寫死金鑰，
+                    # 否則每週一都會把 tests/ 裡的假字串重新當成高風險寫進 sec_findings。
+                    if m and not FAKE_MARK.search(m.group(0)):
                         kind = 'TG機器人金鑰樣式' if re.fullmatch(r'\d{8,10}:[A-Za-z0-9_-]{35}', m.group(0)) else ('私鑰區塊' if 'PRIVATE KEY' in m.group(0) else '疑似金鑰字串')
                         hits.append(f'{t}:{i} ({kind})')
                         if len(hits) >= 25:
