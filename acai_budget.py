@@ -55,6 +55,10 @@ def _write_json(path, obj):
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
+    try:
+        os.chmod(tmp, 0o600)  # 資安 E44：設定檔只給本人讀
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
