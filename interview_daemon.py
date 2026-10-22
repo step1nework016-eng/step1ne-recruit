@@ -1680,6 +1680,21 @@ def _fetch_static(app_id):
         static['other_jobs'] = oj
     except Exception as e:
         log(f'⚠️ 其他在辦職缺清單載入失敗（面談照常，只是少了跨職缺簡答功能）：{e}')
+    # 2026-10-22 無經驗通用面談（先聊再選職缺，測試版）：應徵掛在空殼職缺 entry-general-match、
+    # 開關（site_settings entry_general_match）允許這個人時，換成「無經驗職缺清單」，
+    # 不讀空殼職缺的題庫／到職障礙／其他職缺清單。其他面談完全不經過這段（is_general 先比對職缺代號）。
+    try:
+        import entry_general_match as GM
+        _ap = static.get('application') or {}
+        if GM.is_general({'job_slug': _ap.get('job_slug') or job_slug_for_ctx, 'name': _ap.get('name')}):
+            static['general_match'] = {'brief': GM.pool_brief(GM.load_pool())}
+            static['other_jobs'] = []
+            static['blockers'] = []
+            static.pop('expertise', None)
+            static.pop('job_card_summary', None)
+            static['acai_v2'] = False
+    except Exception as e:
+        log(f'⚠️ 無經驗通用面談資料載入失敗（照一般流程面談）：{e}')
     return static
 
 
@@ -2099,7 +2114,7 @@ def build_prompt(ctx, skill_md):
     lines.append('\n【職缺與客戶（內部資料，可依規範對候選人說明）】')
     lines.append('  ⚠️ 用詞：對候選人絕對不要說「客戶」（包括「客戶名稱」「客戶端」「客戶那邊」），'
                  '一律說「用人公司」「這間公司」「用人主管」。這段標題的「客戶」只是內部用語。')
-    if job:
+    if job and not ctx.get('general_match'):
         # 🚨 服務線一定要送進去，而且要放在最前面。
         #    2026-08-11 呂書帆（主管特助・中高階）中途退出面談，說
         #    「問的都有履歷上面寫過的問題很沒效率」，改成直接跟顧問談。
@@ -2230,6 +2245,10 @@ def build_prompt(ctx, skill_md):
 
         if job.get('notes'):
             lines.append(f'  （顧問備註，不要對候選人講）：{job["notes"]}')
+    elif ctx.get('general_match'):
+        # 2026-10-22 無經驗通用面談：沒有單一職缺，改給「要問的面向＋無經驗職缺清單」（entry_general_match.py）
+        import entry_general_match as GM
+        lines.extend(GM.prompt_lines(ctx))
     else:
         lines.append('  （這個職缺在 jobs 表裡沒有資料，公司相關問題一律說會由顧問說明）')
 
@@ -3916,6 +3935,18 @@ def _foreign_json_block(ctx):
         '"audio_check": "需要顧問聽原始錄音確認就寫原因，不需要就空字串"}\n')
 
 
+def _general_report_block(ctx):
+    """無經驗通用面談的報告補充說明（不是通用模式就回空字串）。"""
+    if not ctx.get('general_match'):
+        return ''
+    try:
+        import entry_general_match as GM
+        return GM.report_prompt_block(ctx)
+    except Exception as e:
+        log(f'（通用面談報告補充失敗，不影響報告：{e}）')
+        return ''
+
+
 def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered=True):
     """組顧問版初篩報告的 prompt（E17-3 從 finish() 原封不動抽出來，才能對同一場做改前／改後比較）。
     with_not_covered=False 就是改動前的 prompt。"""
@@ -3982,6 +4013,7 @@ def build_report_prompt(app_id, ctx, job_slug, abandoned=False, with_not_covered
         + (_not_covered_block(ctx) if with_not_covered else '')
         + _blockers_report_block(ctx)
         + _foreign_report_block(ctx)
+        + _general_report_block(ctx)
         + '\n\n只輸出報告本文（Markdown），不要有其他說明。')
     return prompt
 
@@ -4121,10 +4153,15 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     # 2026-10-21 阿財推薦職缺：正常收尾才做（中途離開的人不在畫面前），先於報告產生，卡片才不用等報告。
     # 開關在 D1 site_settings 'acai_job_recs'（off／test／on）；任何失敗都只記 log，不影響報告。
     acai_recs = []
+    _gm = bool(ctx.get('general_match'))   # 2026-10-22 無經驗通用面談：改挑 2～4 個無經驗職缺給他自己選
     if not abandoned:
         try:
-            import acai_job_recs as AJR
-            acai_recs = AJR.generate(app_id, ctx, lambda pr: run_claude(pr, first_try=90, total=150))
+            if _gm:
+                import entry_general_match as GM
+                acai_recs = GM.generate(app_id, ctx, lambda pr: run_claude(pr, first_try=90, total=150))
+            else:
+                import acai_job_recs as AJR
+                acai_recs = AJR.generate(app_id, ctx, lambda pr: run_claude(pr, first_try=90, total=150))
         except Exception as e:
             log(f'{name}：推薦職缺失敗（不影響報告）：{e}')
 
@@ -4211,12 +4248,24 @@ def finish(app_id, name, job_slug, ctx, abandoned=False, close=True):
     except Exception as ex:
         log(f'（寫入 lang_verified_at 失敗，不影響交付：{ex}）')
 
-    if acai_recs:   # 報告純文字附上「阿財跟他提過的職缺」（結構化 JSON 已經轉完，不影響它）
+    if _gm:   # 無經驗通用面談：附上挑的職缺＋人選選了哪幾個（沒挑到也要寫，顧問才知道這場是通用面談）
+        try:
+            import entry_general_match as GM
+            report = report + '\n' + GM.report_md(app_id, acai_recs)
+        except Exception:
+            pass
+    elif acai_recs:   # 報告純文字附上「阿財跟他提過的職缺」（結構化 JSON 已經轉完，不影響它）
         try:
             report = report + '\n' + AJR.report_md(acai_recs)
         except Exception:
             pass
     rid = save_report(app_id, report, report_json)
+    if _gm and rid:   # 報告產生前就選了職缺的，新應徵還沒有報告——補複製過去
+        try:
+            import entry_general_match as GM
+            GM.sync_linked_reports(app_id)
+        except Exception as e:
+            log(f'{name}：通用面談報告複製失敗（不影響報告）：{e}')
     if not rid:
         tg(f'⚠️ {name} 的初篩報告產生了，但存進資料庫失敗——請直接跟顧問確認，'
            f'必要時我可以把報告內容貼進這個對話讓你手動處理。')
