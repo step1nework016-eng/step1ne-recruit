@@ -706,7 +706,7 @@ def format_job_requirement(job):
     return mask_client_names('\n'.join(lines)) if lines else '（這個職缺目前結構化資料很少，請顧問補充後再產文案，或直接手動撰寫）'
 
 
-def run_claude(prompt):
+def _run_claude_once(prompt):
     r = subprocess.run(
         ['claude', '-p', sanitize(prompt), '--model', POST_MODEL,
          '--disallowed-tools', 'Task,Bash,Glob,Grep,Read,Edit,Write,NotebookEdit,WebFetch,WebSearch,'
@@ -718,6 +718,29 @@ def run_claude(prompt):
     if r.returncode != 0:
         raise RuntimeError(f'claude exit={r.returncode}：{(r.stderr or r.stdout)[-300:]}')
     return r.stdout.strip()
+
+
+def run_claude(prompt, retries=2, wait=20):
+    """呼叫 claude -p；碰到「找不到 claude」或逾時就等 wait 秒重試（最多 retries 次）。
+
+    2026-10-22（DR 文案沒產出來）：Claude Code 會自己更新，更新那 2～4 秒 `claude` 執行檔暫時不存在，
+    同時開的 3 則草稿一起報 [Errno 2] No such file or directory: 'claude'，之後留在「認領中」要等
+    30 分鐘才被回收。改成短暫重試就能直接度過更新那幾秒；逾時（180 秒）也再試，
+    實測同一個職缺連續逾時後常常第 2、3 次就成功。其他錯誤（claude 回非 0）照舊直接丟出，不重試。
+    """
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            return _run_claude_once(prompt)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            last = e
+            kind = '找不到 claude（可能正在更新）' if isinstance(e, FileNotFoundError) else f'逾時 {CLAUDE_TIMEOUT} 秒'
+            if attempt < retries:
+                log(f'⏳ claude 呼叫{kind}，{wait} 秒後第 {attempt + 2}／{retries + 1} 次重試')
+                time.sleep(wait)
+            else:
+                log(f'⛔ claude 呼叫{kind}，重試 {retries} 次仍失敗')
+    raise last
 
 
 # ── 發文前的 AI 審稿（2026-09-21 加）────────────────────────────────
