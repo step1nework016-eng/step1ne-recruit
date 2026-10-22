@@ -676,7 +676,9 @@ def release_lock(app_id):
 def _is_quick_app(app):
     """快速應徵（origin＝quick_apply，或舊資料 note 開頭【快速應徵】）。"""
     app = app or {}
-    return app.get('origin') == 'quick_apply' or str(app.get('note') or '').startswith('【快速應徵')
+    # 2026-10-22 無經驗通用面談（origin general_match）比照快速應徵：面談後才請他補履歷／測驗
+    return (app.get('origin') in ('quick_apply', 'general_match') or str(app.get('note') or '').startswith('【快速應徵')
+            or str(app.get('note') or '').startswith('【無經驗通用面談'))
 
 
 def _resume_upload_url(app):
