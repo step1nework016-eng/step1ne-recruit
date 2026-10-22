@@ -81,6 +81,14 @@ SUBJECTS = [
 ]
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import sys as _sys_f002, os as _os_f002
+    _sys_f002.path.insert(0, _os_f002.path.dirname(_os_f002.path.dirname(_os_f002.path.abspath(__file__))))
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def q(v):
     return 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
 
@@ -116,6 +124,10 @@ def admin_token():
                 if k in ('ADMIN_TOKEN', 'RECRUIT_ADMIN_TOKEN') and v:
                     return v.strip('"\'')
     raise SystemExit('找不到後台 token')
+
+
+if _api_token:
+    admin_token = _api_token.wrap(admin_token)
 
 
 def decide_send(bid):

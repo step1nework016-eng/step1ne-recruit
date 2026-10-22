@@ -56,6 +56,12 @@ FREE_DOMAINS = {'gmail.com', 'yahoo.com', 'yahoo.com.tw', 'hotmail.com', 'hotmai
                 'aol.com', 'gmx.com', 'mail.com', 'yandex.com', 'step1ne.com', 'aijob.com.tw'}
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def log(m):
     print(f'[{time.strftime("%m-%d %H:%M:%S")}] {m}', flush=True)
 
@@ -71,6 +77,10 @@ def env_file(path):
 
 def admin_token():
     return env_file('recruit.env')['RECRUIT_ADMIN_TOKEN']
+
+
+if _api_token:
+    admin_token = _api_token.wrap(admin_token)
 
 
 def boxes():

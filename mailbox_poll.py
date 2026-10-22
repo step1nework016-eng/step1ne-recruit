@@ -40,6 +40,12 @@ DOC = re.compile(r'\.(pdf|docx?)$', re.I)
 MAX_ATT = 8 * 1024 * 1024
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _env(path):
     e = {}
     for l in open(os.path.expanduser(path), encoding='utf-8'):
@@ -133,7 +139,7 @@ def main():
     else:
         box = _env('~/.config/workflow-os/step1ne-mailbox.env')
     rec = _env('~/.config/workflow-os/recruit.env')
-    api, token = rec.get('RECRUIT_API_URL'), rec.get('RECRUIT_ADMIN_TOKEN')
+    api, token = rec.get('RECRUIT_API_URL'), ((_api_token.new() if _api_token else None) or rec.get('RECRUIT_ADMIN_TOKEN'))
     state = {}
     try:
         state = json.load(open(STATE))

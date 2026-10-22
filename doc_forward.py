@@ -49,6 +49,12 @@ from client_name_check import client_name_errors  # noqa: E402
 # 起因：丁以岡回傳的 GAHR04 工作經歷只寫到 2021（漏了現職），16:33 被原封不動轉給美德，
 # 信上還寫「填寫完成」。Jacky：不完整就先停下來發 TG 問，不要直接轉出。
 # 只檢查「看得出是人事資料表」的檔案（有「工作經歷」字樣）；圖片讀不到字，一律先停下來給人看。
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def att_text(fn, data):
     import io
     low = fn.lower()
@@ -195,7 +201,7 @@ def cmd_send_forms(args):
     files = [f for f in files if any(k in (f['title'] or '') for k in args.only)]
     if not files:
         sys.exit('找不到符合 --only 的表單')
-    tok = envf('~/.config/workflow-os/recruit.env')['RECRUIT_ADMIN_TOKEN']
+    tok = (_api_token.new() if _api_token else None) or envf('~/.config/workflow-os/recruit.env')['RECRUIT_ADMIN_TOKEN']
     msg = email.message.EmailMessage()
     msg['From'] = 'Jacky Chen <official@step1ne.com>'
     msg['To'] = a['email']

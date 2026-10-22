@@ -1,4 +1,5 @@
 import { applyLaterTick } from './apply_later.js';
+import { apiCaller, auditCaller } from './api_auth.js';
 import { ensureLineEventsTable, claimLineEvent, markLineReplySent, finishLineEvent, purgeOldLineEvents, isInvalidReplyToken } from './line_dedupe.js';
 import { mailV2For, renderSendMailV2, renderTextMailV2, renderMailV2 } from './mail_v2.js';
 /**
@@ -6009,20 +6010,23 @@ export default {
     // Mac 上的 mailbox_poll.py 每 5 分鐘用 IMAP 唯讀撈新信送到這裡，比對規則跟 Resend 收信那段一樣：
     // 約電話回信 → 開發信回信 → 其他人選來信 → 客戶來信。同一封信兩邊都收到時用 Message-ID 去重。
     if (p === '/internal/mailbox-ingest' && request.method === 'POST') {
-      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      // 2026-10-23 F002：舊 ADMIN_TOKEN 或具名權杖（API_TOKENS_JSON）都可以，並記下是誰
+      { const who = await apiCaller(env, request.headers.get('authorization')); if (!who) return json(request, { ok: false }, 401); auditCaller(env, ctx, who, request, p, 'recruit'); }
       const b = await request.json().catch(() => ({}));
       return json(request, await ingestMailboxMessage(env, b));
     }
     // 2026-10-12：截圖／照片履歷 OCR 後字太少（看不清楚）→ parse_resumes.py 呼叫這裡，
     // 用 LINE 推一則請他再截一次。只推給「這筆應徵的履歷是從 LINE 傳來」的人；網頁上傳的在表單上提示。
     if (p === '/internal/resume-unreadable' && request.method === 'POST') {
-      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      // 2026-10-23 F002：舊 ADMIN_TOKEN 或具名權杖（API_TOKENS_JSON）都可以，並記下是誰
+      { const who = await apiCaller(env, request.headers.get('authorization')); if (!who) return json(request, { ok: false }, 401); auditCaller(env, ctx, who, request, p, 'recruit'); }
       const b = await request.json().catch(() => ({}));
       return json(request, await pushResumeUnreadable(env, String(b.application_id || ''), !!b.dry_run));
     }
     // 補抓：功能上線前已經收到的回信附件（總指揮手動用，需要 ADMIN_TOKEN）
     if (p === '/internal/reply-resume' && request.method === 'POST') {
-      if ((request.headers.get('authorization') || '') !== `Bearer ${env.ADMIN_TOKEN}`) return json(request, { ok: false }, 401);
+      // 2026-10-23 F002：舊 ADMIN_TOKEN 或具名權杖（API_TOKENS_JSON）都可以，並記下是誰
+      { const who = await apiCaller(env, request.headers.get('authorization')); if (!who) return json(request, { ok: false }, 401); auditCaller(env, ctx, who, request, p, 'recruit'); }
       const b = await request.json().catch(() => ({}));
       const files = await saveReplyResumes(env, String(b.email_id || ''), String(b.application_id || ''));
       return json(request, { ok: true, saved: files });
@@ -6236,7 +6240,9 @@ export default {
         ? p.slice('/hiring-mode'.length)
         : p.slice('/assessment'.length)) || '/';
       const auth = request.headers.get('authorization') || '';
-      const isConsultant = !!env.ADMIN_TOKEN && safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`);
+      const hmWho = await apiCaller(env, auth);   // 2026-10-23 F002：舊鑰匙或具名權杖
+      const isConsultant = !!hmWho;
+      if (hmWho) auditCaller(env, ctx, hmWho, request, p, 'recruit');
 
       // 前端啟動時打這支決定資料要存正式後端還是退回瀏覽器本機。
       // 表沒建起來就誠實回 d1:false，讓前端顯示 localStorage——不假裝有後端。

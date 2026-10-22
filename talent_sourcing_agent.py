@@ -47,6 +47,12 @@ import sourcing_quality as Q  # noqa: E402  10/8：個人頁關卡＋逐條對�
 from ai_lockdown import NO_TOOLS, web_only  # noqa: E402  10/8 資安：背景 AI 統一上鎖
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def skill_docs(*names):
     """2026-10-08 資安：AI 只開 WebSearch／WebFetch，不能再自己 Read 技能包檔案，
     所以把要讀的規範全文直接放進提示詞（內容一樣，只是換成我們讀好交給它）。"""
@@ -582,6 +588,8 @@ def push_tg_review_cards(dry):
                     tok = line.strip().split('=', 1)[1]
         except OSError:
             pass
+    if _api_token:
+        tok = _api_token.new() or tok
     if not tok:
         log('（沒有 RECRUIT_ADMIN_TOKEN，略過 TG 待判斷卡推送）')
         return

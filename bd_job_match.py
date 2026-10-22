@@ -30,6 +30,12 @@ import d1_http as D  # noqa: E402
 BASE = 'https://step1ne-backoffice-worker.aiagentg888.workers.dev'
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def q(v):
     return 'NULL' if v is None else "'" + str(v).replace("'", "''") + "'"
 
@@ -43,6 +49,10 @@ def _token():
         except Exception:
             continue
     return None
+
+
+if _api_token:
+    _token = _api_token.wrap(_token)
 
 
 def _post(path, body):

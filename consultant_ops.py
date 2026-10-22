@@ -38,6 +38,12 @@ CALL_TOPICS = {'will': '意願與想了解的地方', 'pay': '期望待遇、到
 BANNED = re.compile(r'客戶|年齡|\d+\s*歲|歲以[上下]|性別|男性|女性|男生|女生|已婚|未婚|懷孕|生育|小孩|外貌|身高|體重|國籍|宗教|政治')
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _env(path):
     out = {}
     try:
@@ -93,7 +99,7 @@ def rows(sql, params=None):
 
 # ── 後台 API ──
 def bo(path, body=None, method=None):
-    tok = _TOK.get('RECRUIT_ADMIN_TOKEN')
+    tok = (_api_token.new() if _api_token else None) or _TOK.get('RECRUIT_ADMIN_TOKEN')
     if not tok:
         die('找不到後台金鑰設定')
     data = json.dumps(body).encode() if body is not None else None

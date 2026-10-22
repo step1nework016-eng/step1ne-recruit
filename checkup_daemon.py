@@ -70,6 +70,12 @@ RATE_LIMIT_NOTIFY_COOLDOWN_SEC = 1800  # 同一次額度事故只提醒 Jacky �
 _rate_limit_notified_at = 0.0
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _is_rate_limit_error(e):
     s = str(e).lower()
     return 'hit your limit' in s or 'usage limit' in s
@@ -519,6 +525,8 @@ def upload_report_pdf(cid, name, pdf_path):
         for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
             if l.startswith('RECRUIT_ADMIN_TOKEN='):
                 tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if _api_token:
+            tok = _api_token.new() or tok
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告 PDF 上傳')
         pdf_b64 = base64.b64encode(open(pdf_path, 'rb').read()).decode('ascii')
@@ -542,6 +550,8 @@ def notify_candidate_system_error(cid):
         for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
             if l.startswith('RECRUIT_ADMIN_TOKEN='):
                 tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if _api_token:
+            tok = _api_token.new() or tok
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過系統錯誤道歉信')
         req = urllib.request.Request(
@@ -563,6 +573,8 @@ def notify_candidate_checkup(cid):
         for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
             if l.startswith('RECRUIT_ADMIN_TOKEN='):
                 tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if _api_token:
+            tok = _api_token.new() or tok
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過健檢報告通知信')
         req = urllib.request.Request(

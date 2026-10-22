@@ -46,6 +46,12 @@ NO_TOOLS = ['--disallowed-tools', _BAN, '--strict-mcp-config',
             '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '']
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def log(m):
     print(f'[{datetime.datetime.now():%H:%M:%S}] {m}', flush=True)
 
@@ -74,6 +80,10 @@ def admin_token():
             if line.startswith(('RECRUIT_ADMIN_TOKEN=', 'ADMIN_TOKEN=')):
                 return line.strip().split('=', 1)[1].strip().strip('"\'')
     raise RuntimeError('找不到後台權杖（RECRUIT_ADMIN_TOKEN）')
+
+
+if _api_token:
+    admin_token = _api_token.wrap(admin_token)
 
 
 def pdf_text(path):

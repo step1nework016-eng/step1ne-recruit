@@ -25,6 +25,14 @@ CONSULTANTS = ['Jacky', 'Phoebe']
 ACT = {'call': '📞 打電話', 'mail': '✉️ 寄信', 'wait': '⏳ 等回覆', 'meet': '🤝 約見面'}
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import sys as _sys_f002, os as _os_f002
+    _sys_f002.path.insert(0, _os_f002.path.dirname(_os_f002.path.dirname(_os_f002.path.abspath(__file__))))
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def env_file(name):
     out = {}
     p = os.path.expanduser(f'~/.config/workflow-os/{name}')
@@ -38,7 +46,7 @@ def env_file(name):
 
 def dashboard():
     # 2026-10-22：WSL2 沒有 recruit.env（金鑰在 tokens.env，欄位同名），10/18～10/21 連續 401
-    tok = (env_file('recruit.env').get('RECRUIT_ADMIN_TOKEN') or env_file('tokens.env').get('RECRUIT_ADMIN_TOKEN')
+    tok = ((_api_token.new() if _api_token else None) or env_file('recruit.env').get('RECRUIT_ADMIN_TOKEN') or env_file('tokens.env').get('RECRUIT_ADMIN_TOKEN')
            or os.environ.get('RECRUIT_ADMIN_TOKEN', ''))
     req = urllib.request.Request(f'{API}/admin/bd/dashboard?fresh=1', headers={'Authorization': f'Bearer {tok}', 'User-Agent': 'step1ne-bd-daily-calls/1.0'})
     return json.load(urllib.request.urlopen(req, timeout=90))['rows']

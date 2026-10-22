@@ -35,6 +35,12 @@ from client_name_check import client_name_errors  # noqa: E402
 SMTP_HOST = 'smtpout.secureserver.net'
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _env(path):
     e = {}
     for l in open(os.path.expanduser(path), encoding='utf-8'):
@@ -67,6 +73,8 @@ def _fetch_file(file_id):
             continue
         if tok:
             break
+    if _api_token:
+        tok = _api_token.new() or tok
     if not tok:
         raise RuntimeError('沒有後台金鑰')
     req = urllib.request.Request(f'{BACKOFFICE}/admin/file/{urllib.parse.quote(file_id)}',

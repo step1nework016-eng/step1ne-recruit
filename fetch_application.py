@@ -23,6 +23,12 @@ DB = 'step1ne-recruit'
 NPX_BIN = shutil.which('npx') or 'npx'
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _admin_token():
     try:
         for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
@@ -31,6 +37,10 @@ def _admin_token():
     except Exception:
         return None
     return None
+
+
+if _api_token:
+    _admin_token = _api_token.wrap(_admin_token)
 
 
 def _fetch_r2_b64(file_id):

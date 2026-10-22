@@ -29,6 +29,12 @@ NPX_BIN = shutil.which('npx') or 'npx'
 MAX_CHARS = 12000   # 履歷再長也不會超過這個；超過通常是抽到雜訊
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _rm_chat_thread(chat, thread):
     """2026-10-02：人選通知搬到「step1ne人選」群組——舊群組主題對應到新群組（D1 tg_routes remap:*）。查不到就原樣。"""
     try:
@@ -150,6 +156,10 @@ def _admin_token():
     except Exception:
         return None
     return None
+
+
+if _api_token:
+    _admin_token = _api_token.wrap(_admin_token)
 
 
 def _fetch_r2_b64(file_id):
@@ -521,7 +531,7 @@ def _recruit_api():
                     conf.setdefault(k, v.strip().strip("'\""))
         except Exception:
             pass
-    return (conf.get('RECRUIT_API_URL') or 'https://step1ne-recruit-api.aiagentg888.workers.dev'), conf.get('RECRUIT_ADMIN_TOKEN')
+    return (conf.get('RECRUIT_API_URL') or 'https://step1ne-recruit-api.aiagentg888.workers.dev'), ((_api_token.new() if _api_token else None) or conf.get('RECRUIT_ADMIN_TOKEN'))
 
 
 def _push_unreadable(app_id):

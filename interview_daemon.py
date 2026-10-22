@@ -183,6 +183,12 @@ PLAN_MAX_ATTEMPTS = 8
 _plan_fails = {}        # application_id -> 累計失敗次數（記憶體；重啟清掉）
 
 
+try:  # 2026-10-23 F002：具名權杖優先（STEP1NE_API_TOKEN），沒有就照舊讀 RECRUIT_ADMIN_TOKEN
+    import api_token as _api_token
+except Exception:
+    _api_token = None
+
+
 def _plan_mark_failed(app_id, name=''):
     n = _plan_fails.get(app_id, 0) + 1
     _plan_fails[app_id] = n
@@ -712,6 +718,8 @@ def notify_candidate(app_id, abandoned, extra_lines=None):
         for l in open(os.path.expanduser('~/.config/workflow-os/tokens.env'), encoding='utf-8'):
             if l.startswith('RECRUIT_ADMIN_TOKEN='):
                 tok = l.strip().split('=', 1)[1].strip().strip("'\"")
+        if _api_token:
+            tok = _api_token.new(('STEP1NE_ACAI_TOKEN',)) or tok
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過候選人通知信')
         req = urllib.request.Request(
@@ -732,6 +740,10 @@ def _admin_token():
         if l.startswith('RECRUIT_ADMIN_TOKEN='):
             return l.strip().split('=', 1)[1].strip().strip("'\"")
     return None
+
+
+if _api_token:
+    _admin_token = _api_token.wrap(_admin_token, prefer=('STEP1NE_ACAI_TOKEN',))
 
 
 def _trad(text):
