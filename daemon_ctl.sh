@@ -12,6 +12,8 @@
 set -u
 # ↓↓ 與 crontab 第一行 PATH 完全相同（nvm 的 node 必須在最前面，不能混進 /mnt/c 的 Windows 路徑）
 export PATH="$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# 2026-10-22：不讓 Claude 在背景自己更新（更新那幾秒 claude 執行檔不存在，呼叫它的程式會失敗）。要更新請手動 claude update
+export DISABLE_AUTOUPDATER=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$HOME/aijob-automation/logs"
 
