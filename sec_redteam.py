@@ -279,21 +279,65 @@ SEC_GROUP, SEC_THREAD = '-1003231629634', '7421'
 JACKY_TG = '8365775688'
 
 
+def _sec_route():
+    """資安群組主題：優先讀 D1 tg_routes key='security'（Mac／WSL2 共用），讀不到退回寫死的值。"""
+    try:
+        import d1_http
+        r = d1_http.query("SELECT chat_id, thread_id FROM tg_routes WHERE key='security'").get('results') or []
+        if r and r[0].get('chat_id'):
+            return str(r[0]['chat_id']), r[0].get('thread_id')
+    except Exception:
+        pass
+    return SEC_GROUP, SEC_THREAD
+
+
 def tg(text, group=False):
-    """預設只私訊 Jacky；group=True 才發到資安群組（需要環境變數 SEC_TG_GROUP=1，Jacky 看過第一份週報同意後才開）。
+    """一律私訊 Jacky；group=True（週報）另外發到 TG 資安主題（tg_routes key='security'）。
+    2026-10-22（E44 第 6 點）：Jacky 核准週報發到資安主題，不再需要 SEC_TG_GROUP=1 才發群組。
     訊息只放白話結論，不放攻擊步驟／金鑰／真實資料。"""
     import urllib.parse
     import urllib.request
     e = dict(l.strip().split('=', 1) for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
              if '=' in l and not l.startswith('#'))
-    data = {'chat_id': JACKY_TG, 'text': text, 'disable_web_page_preview': 'true'}
-    if group and os.environ.get('SEC_TG_GROUP') == '1':
-        data = {'chat_id': SEC_GROUP, 'message_thread_id': SEC_THREAD, 'text': text, 'disable_web_page_preview': 'true'}
-    elif group:
-        data['text'] = '（尚未開放發到資安群組，先私訊你）\n' + text
-    r = json.loads(urllib.request.urlopen(f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
-                                          data=urllib.parse.urlencode(data).encode(), timeout=20).read())
-    return bool(r.get('ok'))
+
+    def send(chat_id, thread_id=None):
+        data = {'chat_id': chat_id, 'text': text, 'disable_web_page_preview': 'true'}
+        if thread_id:
+            data['message_thread_id'] = thread_id
+        r = json.loads(urllib.request.urlopen(f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
+                                              data=urllib.parse.urlencode(data).encode(), timeout=20).read())
+        return bool(r.get('ok'))
+
+    ok = send(JACKY_TG)
+    if group:
+        try:
+            cid, th = _sec_route()
+            ok = send(cid, th) and ok
+        except Exception as ex:
+            print('發到資安主題失敗：', str(ex)[:120])
+            ok = False
+    return ok
+
+
+CHECKS = 8   # 紅隊在這台自我檢查的項目數（與週報一致）
+
+
+def log_run(mode, new):
+    """E44 第 5 點：每次紅隊跑都留一筆 sec_events（team=red, kind=run），就算沒找到新問題也記，
+    才分得出「沒跑」還是「跑了沒找到」（10/12 那週沒有任何紀錄的教訓）。"""
+    try:
+        import d1_http
+        now = tw_now()
+        high = sum(1 for f in F if f['severity'] == 'high')
+        text = (f'紅隊自我檢查（{mode}）：這台檢查 {CHECKS} 項，目前仍成立的發現 {len(F)} 個（高 {high}），'
+                f'本次新寫入 {len(new)} 個' + ('，沒有新發現' if not new else ''))
+        d1_http.query(
+            "INSERT INTO sec_events (id,team,kind,finding_id,text,created_at) VALUES "
+            f"({q(str(uuid.uuid4()))},'red','run',NULL,{q(text)},{q(now.strftime('%Y-%m-%d %H:%M:%S'))})")
+        return True
+    except Exception as ex:
+        print('紅隊執行紀錄寫入失敗：', str(ex)[:120])
+        return False
 
 
 def board():
@@ -370,8 +414,11 @@ def main():
         if a.send and (passed or still):
             tg('🔵 資安複測（這台 WSL2）\n' + (f'確認已修好 {len(passed)} 個：' + '、'.join(r['title'] for r in passed) + '\n' if passed else '') +
                (f'仍未修好 {len(still)} 個。' if still else '') + '\n狀態改成「已驗證」需要 Mac 的 sec_update.py，這裡只列名單。', group=True)
+    if a.insert or a.weekly or a.retest:
+        mode = '+'.join(x for x, on in (('insert', a.insert), ('weekly', a.weekly), ('retest', a.retest)) if on)
+        print('已留執行紀錄 sec_events(run)' if log_run(mode, new) else '執行紀錄沒寫成')
     if a.weekly:
-        msg = week_msg({'checks': 8, 'new': len(new)})
+        msg = week_msg({'checks': CHECKS, 'new': len(new)})
         print('\n--- 週報 ---\n' + msg)
         if a.send:
             print('TG 已送出' if tg(msg, group=True) else 'TG 送出失敗')
