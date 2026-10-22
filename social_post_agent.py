@@ -1335,18 +1335,28 @@ def brand_slot(account_id):
     return BRAND_SLOT_BY_ACCOUNT.get(aid) or ['body', 'intro', 'cta', 'title'][aid % 4]
 
 
+# 2026-10-22 Jacky：「我是全民獵才的獵頭顧問 📍新竹」很怪（地點黏在自我介紹後面，像在說顧問人在新竹）；
+# 貼文是給求職者看的，不能寫「客戶」（候選人文字三條硬規則）。
+WORDING_RULE = ('\n\n✍️ **用字硬規則**：①自我介紹那一句要完整、單獨一句，後面不要接 📍 或地名；'
+                '工作地點寫在介紹職缺的那一行（例如「📍 工作地點：新竹」）。'
+                '②不要寫「客戶」兩個字，改寫「企業」「用人單位」或「這家公司」（例如「最近在幫企業找…」）。\n')
+
+
 def brand_rule(account_id):
     if brand_slot(account_id) == 'auto':
-        return f'\n\n🏷️ {BRAND_SLOTS["auto"]}。\n'
+        return f'\n\n🏷️ {BRAND_SLOTS["auto"]}。\n' + WORDING_RULE
     return (f'\n\n🏷️ **品牌名「{BRAND}」：整篇剛好出現一次，不能沒有、也不能出現第二次。**'
             f'這個帳號的位置：{BRAND_SLOTS[brand_slot(account_id)]}。要讀起來自然，不要硬塞；'
-            f'其他地方要指自己就用「我」，不要再寫一次{BRAND}。\n')
+            f'其他地方要指自己就用「我」，不要再寫一次{BRAND}。\n' + WORDING_RULE)
 
 
 def brand_fix(post):
     """輸出端保底：拿掉阿財、全民獵才超過一次就只留第一次。少了不硬補（交給審核的人看）。"""
     if not post:
         return post
+    # 2026-10-22：自我介紹後面黏 📍地名 → 拿掉（地點另在職缺行）；「幫客戶」→「幫企業」
+    post = re.sub(r'^(我是[^\n]{0,20}?顧問)[ \t]*📍[^\n]*$', r'\1', post, flags=re.M)
+    post = post.replace('幫客戶', '幫企業').replace('客戶開的', '企業開的').replace('客戶要的', '企業要的')
     lines = post.split('\n')
     if any('阿財' in l for l in lines):
         lines = [l for l in lines if '阿財' not in l]
