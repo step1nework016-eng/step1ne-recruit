@@ -1350,6 +1350,29 @@ def brand_rule(account_id):
             f'其他地方要指自己就用「我」，不要再寫一次{BRAND}。\n' + WORDING_RULE)
 
 
+# 2026-10-22 Jacky 核准：顧問排稿時可選填「今天想搭的話題／關鍵字」（例：颱風天看職缺），
+# 存在 social_post_queue.topic_hook，重新產一次也會沿用。空的＝跟以前一模一樣（回空字串）。
+# 只當開頭的情境鉤子用，不准編造那件事的任何事實（時間、數字、新聞、停班停課…）。
+def clean_topic_hook(v):
+    t = re.sub(r'\s+', ' ', sanitize(str(v or ''))).strip()
+    return t[:40]
+
+
+def topic_hook_rule(hook):
+    hook = clean_topic_hook(hook)
+    if not hook:
+        return ''
+    return ('\n\n🌀 **今天想搭的話題：「' + hook + '」**（顧問指定，選填項目）\n'
+            '・把這個話題自然地織進這篇，通常放在開頭一兩句當鉤子，再順順接到後面的主要內容；不要硬拗、不要整篇繞著它寫。\n'
+            '・🚨 只能當「情境、氣氛」用，**不准編造任何跟這件事有關的事實**：不寫時間、日期、數字、地點、路徑、'
+            '新聞內容、官方公告、停班停課與否、災情、統計；你沒辦法確定的細節一律不寫。'
+            '可以用「這種天氣」「這幾天」「最近大家在聊的」這種不需要查證的說法。\n'
+            '・不要拿災害、意外、傷亡開玩笑或當賣點。\n'
+            '・如果這個話題跟內容實在接不起來，就只在開頭輕輕帶一句。\n'
+            '・結構、結尾、連結照上面的公式；口吻照上面的語氣卡；上面和下面所有硬規則'
+            '（用字、品牌名、薪資只寫區間、不寫地址、不寫「客戶」、不提阿財）全部照舊，這個話題不會蓋過任何一條。\n')
+
+
 def brand_fix(post):
     """輸出端保底：拿掉阿財、全民獵才超過一次就只留第一次。少了不硬補（交給審核的人看）。"""
     if not post:
@@ -1372,8 +1395,9 @@ def brand_fix(post):
     return out
 
 
-def generate_draft(job, account_id):
-    prompt = skill(account_id) + '\n\n' + format_job_requirement(job) + brand_rule(account_id) + WRAP_INSTRUCTION
+def generate_draft(job, account_id, hook=None):
+    prompt = (skill(account_id) + '\n\n' + format_job_requirement(job) + brand_rule(account_id)
+              + topic_hook_rule(hook) + WRAP_INSTRUCTION)
     raw = run_claude(prompt)
     post = brand_fix(extract_post(raw)) if raw else None
     # 輸出端再擋一次完整地址——來源端（format_job_requirement）已經擋過，
@@ -1391,7 +1415,7 @@ def generate_draft(job, account_id):
 # CTA_KEYWORD 目前還沒有職缺專屬的關鍵字欄位（下一步才接），先讓模型自己
 # 挑一個好記、跟這個職缺有關的詞（通常是地點或職稱關鍵字），不要空著或
 # 留下未替換的 {{CTA_KEYWORD}} 字樣。
-def generate_draft_job_styled(job, style_row, account_id=None):
+def generate_draft_job_styled(job, style_row, account_id=None, hook=None):
     """套寫作公式產職缺文。
 
     ⚠️ 2026-09-21 改：把顧問自己的風格提示詞疊進來。
@@ -1430,6 +1454,7 @@ def generate_draft_job_styled(job, style_row, account_id=None):
           '不用照抄成清單格式，也不用全部用到】\n' + facts
         + voice_tail(account_id)
         + brand_rule(account_id)
+        + topic_hook_rule(hook)
         + WRAP_INSTRUCTION
     )
     raw = run_claude(prompt)
@@ -1581,11 +1606,12 @@ def format_topic_requirement(topic, style_row):
     return '\n\n'.join(parts)
 
 
-def generate_draft_topic(topic, style_row, account_id=None):
+def generate_draft_topic(topic, style_row, account_id=None, hook=None):
     # 2026-09-24：話題文以前完全沒帶顧問的語氣（選了公式就只剩公式），補上語氣卡。
     # 同日改：有手寫的話題語氣卡就用話題卡，沒有才沿用招募語氣卡（見 topic_voice_tail）
     prompt = (TOPIC_BASE_PROMPT + '\n\n' + format_topic_requirement(topic, style_row)
-              + topic_voice_tail(account_id) + brand_rule(account_id) + WRAP_INSTRUCTION)
+              + topic_voice_tail(account_id) + brand_rule(account_id)
+              + topic_hook_rule(hook) + WRAP_INSTRUCTION)
     raw = run_claude(prompt)
     post = brand_fix(extract_post(raw)) if raw else None
     return raw, strip_address_numbers(post) if post else None
@@ -1669,9 +1695,10 @@ def process_topic(queue_row, topic):
     style_row = picked or _consultant_style_for_topic(account_id)
     # 2026-09-24：TG 草稿內部資訊區顯示這篇實際用了哪一層，一眼看出是哪一層沒吃到
     style_src = '這次指定' if picked else ('顧問預設話題公式' if style_row else '')
+    hook = clean_topic_hook(queue_row.get('topic_hook'))   # 2026-10-22 今天想搭的話題（沒有就空字串）
     try:
         log(f'{title}（話題）：產生貼文草稿中…')
-        raw, post = generate_draft_topic(topic, style_row, account_id)
+        raw, post = generate_draft_topic(topic, style_row, account_id, hook)
         if not raw or not post:
             # 2026-09-11 加：同 process_job() 的修法——不再靜默，也不再讓
             # AI 的「缺素材」說明被誤標成「以下會被公開發布」的草稿。
@@ -1692,7 +1719,7 @@ def process_topic(queue_row, topic):
         while hits and retry < MAX_REGEN_RETRIES:
             retry += 1
             log(f'⚠️ {title}：草稿出現客戶名稱 {hits}，自動重產第 {retry} 次')
-            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id, hook)
             hits2 = audit_client_names(post2 or '')
             if post2:
                 raw, post, hits = raw2, post2, hits2
@@ -1717,7 +1744,7 @@ def process_topic(queue_row, topic):
         while leak and retry < MAX_REGEN_RETRIES:
             retry += 1
             log(f'⚠️ 匿名人選文出現可辨識字眼 {leak}，自動重產第 {retry} 次')
-            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id, hook)
             if post2:
                 raw, post, leak = raw2, post2, _fb(post2)
         if leak:
@@ -1735,7 +1762,7 @@ def process_topic(queue_row, topic):
         while law5 and retry < MAX_REGEN_RETRIES:
             retry += 1
             log(f'⚠️ {title}（話題）：草稿出現禁刊字眼 {law5}，自動重產第 {retry} 次')
-            raw2, post2 = generate_draft_topic(topic, style_row, account_id)
+            raw2, post2 = generate_draft_topic(topic, style_row, account_id, hook)
             law5_2 = audit_law5(post2 or '')
             if post2:
                 raw, post, law5 = raw2, post2, law5_2
@@ -1786,6 +1813,7 @@ def process_topic(queue_row, topic):
             f"帳號：{acct_label or '（未指定帳號）'}\n"
             f"{'人選' if topic.get('category') == 'anon' else '話題'}：{topic.get('_label') or title}\n"
             + (f"風格：{style_row['name']}\n" if style_row else '')
+            + (f"🌀 搭的話題：{hook}\n" if hook else '')
             + f"\n── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n"
             f"公式｜{style_row['name'] + '（' + style_src + '）' if style_row else '沒有公式（用話題基礎規則）'}\n"
@@ -1825,9 +1853,11 @@ def process_job(queue_row, job, repost=False):
     style_id = queue_row.get('style_id')
     style_row = _style_by_id(style_id) if style_id else None
 
+    hook = clean_topic_hook(queue_row.get('topic_hook'))   # 2026-10-22 今天想搭的話題（沒有就空字串）
+
     def gen():
-        return (generate_draft_job_styled(job, style_row, account_id) if style_row
-                else generate_draft(job, account_id))
+        return (generate_draft_job_styled(job, style_row, account_id, hook) if style_row
+                else generate_draft(job, account_id, hook))
 
     try:
         log(f'{title}（{slug}）：產生貼文草稿中…' + (f'（套用「{style_row["name"]}」）' if style_row else ''))
@@ -1985,6 +2015,7 @@ def process_job(queue_row, job, repost=False):
             + f"帳號：{acct_label or '（未指定帳號）'}\n"
             f"職缺：{title}{'　（重新產出）' if repost else ''}\n"
             + (f"公式：{style_row['name']}\n" if style_row else '')
+            + (f"🌀 搭的話題：{hook}\n" if hook else '')
             + pay_block
             + f"\n── 以下會被公開發布 ──\n{post}\n\n"
             f"── 以下只有你看得到，不會發布 ──\n{analysis or '（無額外分析）'}",
