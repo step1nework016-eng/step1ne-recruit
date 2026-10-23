@@ -1699,6 +1699,10 @@ def process(job):
     if kind == 'channel_call_summary':
         import channel_call_summary
         return channel_call_summary.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-10-23：特殊職缺檢查卡（只對 site_settings special_check_jobs 清單內的職缺；整條在 special_check.py，不推 TG）
+    if kind == 'special_check':
+        import special_check
+        return special_check.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
     if kind == 'company_research':
         import company_research
         return company_research.run(json.loads(job.get('payload_json') or '{}'))
@@ -3129,6 +3133,8 @@ RECOVERABLE_KINDS = (
     'call_transcript_review',
     # E21：重跑最多多貼一張確認卡，按「寫進卡片」才會寫入，不會重複寫資料；暫存的錄音檔每次重跑都是新的資料夾
     'call_audio',
+    # (a) 特殊職缺檢查卡：UPSERT special_check_cards 同一列，重跑只是覆蓋
+    'special_check',
 )
 # 不回收（需要人工判斷）：
 #   call_notes_summary            → 會 INSERT candidate_notes，重跑產生重複紀錄
@@ -3197,6 +3203,12 @@ def tick():
         scan_candidate_tagging()
     except Exception as e:
         log(f'  ⚠️ 人才標籤掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
+    # 2026-10-23 特殊職缺檢查卡：清單內職缺的人選有履歷／記了出席／面談結束 → 排 special_check（每分鐘最多查一次）
+    try:
+        import special_check
+        special_check.scan()
+    except Exception as e:
+        log(f'  ⚠️ 特殊職缺檢查卡掃描這輪出錯（不影響其他工作）：{str(e)[:150]}')
     # 2026-10-01 反向配對：新開／重開的職缺回頭找人才庫（每 10 分鐘最多查一次）
     try:
         scan_reverse_match_jobs()
@@ -3245,7 +3257,7 @@ def tick():
          # 2026-10-06：顧問在畫面前等的排最前，背景雜事（自動核對履歷、人選敲門、反向配對）排最後。
          # LEON L／蘇駿杰的電洽結果排在 5 筆 Cake 自動核對後面，面談中只開 1 個名額，顧問等了 5 分鐘以上還在轉。
          "ORDER BY CASE WHEN kind IN (" + ','.join(q(k) for k in URGENT_KINDS) + ") THEN 0 "
-         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match','candidate_tagging_backfill','job_tagging') THEN 2 ELSE 1 END, created_at LIMIT %d")
+         "WHEN kind IN ('sourced_verify','cand_bd','job_reverse_match','candidate_tagging_backfill','job_tagging','special_check') THEN 2 ELSE 1 END, created_at LIMIT %d")
         % (MAX_ATTEMPTS, free))['results']
     if not rows:
         return 0
