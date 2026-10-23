@@ -63,6 +63,21 @@ def _ready_text(file_id):
     return rows[0] if rows else {}
 
 
+def link_text(url):
+    """履歷連結 → (文字, 說明)。分流照 parse_resumes.parse_urls()。"""
+    import urllib.parse
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+        if host in PR.FILE_HOSTS:
+            raw, fname, err = PR.fetch_from_url(url)
+            if not raw:
+                return None, err
+            return extract(raw, fname, None)
+        return PR.fetch_webpage(url)
+    except Exception as e:
+        return None, f'抓履歷連結例外：{str(e)[:120]}'
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     force = '--force' in sys.argv
@@ -84,6 +99,24 @@ def main():
                 "LEFT JOIN files f ON f.id=cf.file_id "
                 f"WHERE cf.checkup_id='{cid}' AND cf.kind='resume' ORDER BY cf.created_at ASC LIMIT 1")
         if not fs:
+            # 2026-10-23 新版表單（測試版）：沒有檔案、但貼了「履歷連結」→ 用 parse_resumes.py 既有的
+            # 抓法（雲端硬碟當檔案下載、其他網站當網頁抓），跟阿財 parse_urls() 同一套分流，不另寫。
+            # 舊表單不會有 label='履歷連結' 的連結，這段不會走到。
+            lk = d1("SELECT url FROM checkup_links WHERE checkup_id='" + cid + "' AND label='履歷連結' "
+                    "ORDER BY idx ASC LIMIT 1")
+            if lk:
+                text, note = link_text(lk[0]['url'])
+                if text:
+                    text = ''.join(ch for ch in text if ch in '\n\t' or ord(ch) >= 32)
+                d1(f"UPDATE checkups SET resume_text={q(text)}, resume_note={q(note)}, "
+                   f"resume_readable={1 if text else 0}, parsed_at='{now}', "
+                   f"status=CASE WHEN status='new' THEN 'parsed' ELSE status END, "
+                   f"updated_at='{now}' WHERE id='{cid}'")
+                d1(f"UPDATE checkup_links SET fetched_at='{now}', fetch_note={q(note or 'ok')} "
+                   f"WHERE checkup_id='{cid}' AND label='履歷連結'")
+                print(f"  {'✅' if text else '⚠️'} {c['name']}　履歷連結　"
+                      + (f'{len(text)} 字' if text else str(note)))
+                continue
             d1(f"UPDATE checkups SET parsed_at='{now}', resume_readable=0, "
                f"resume_note='沒有上傳履歷檔（只有連結或作品集）', "
                f"status=CASE WHEN status='new' THEN 'parsed' ELSE status END, "

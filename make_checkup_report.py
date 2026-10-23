@@ -34,7 +34,9 @@
   "s5_directions": {"items":[{"title","body"}], "note"},
   "s6_next": {"items":[{"title","body"}], "note"},
   "quoted_facts": ["他親口說的數字，逐句列"],
-  "anon_card": {...}   // 見 --anon-card
+  "anon_card": {...},  // 見 --anon-card
+  "job_recs": [{"title","location","employment","salary","duty","why","confirm","url","apply_url"}]
+                       // 2026-10-23 選填：第七段「跟你方向接近的職缺」，由 afu_job_recs.py 產生；空的就整段不出現
 }
 """
 import argparse, html, json, os, re, subprocess, sys, tempfile, urllib.parse
@@ -143,6 +145,17 @@ th{color:var(--ink3);font-size:12.5px;font-weight:700}
 .q span{font-size:12.5px;color:var(--ink3)}
 .note{font-size:12.5px;color:var(--ink3);line-height:1.8;margin:12px 0 0}
 .foot{font-size:12px;color:var(--ink3);text-align:center;line-height:1.9;margin-top:22px}
+/* 2026-10-23 最後一段「跟你方向接近的職缺」：跟前面的健檢建議分開，用細框卡片＋一鍵應徵按鈕 */
+.jobs .lead2{font-size:13.5px;color:var(--ink2);margin:-6px 0 14px;line-height:1.75}
+.job{border:1px solid var(--line);border-radius:12px;padding:15px 16px;margin-bottom:10px}
+.job>b{display:block;font-size:15.5px;line-height:1.5}
+.job .meta{font-size:12.5px;color:var(--ink3);margin:2px 0 8px}
+.job p{margin:0 0 4px;font-size:13.5px;color:var(--ink2);line-height:1.7}
+.job p span{color:var(--ink3);font-size:12px;font-weight:700;margin-right:6px}
+.job .acts{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:10px}
+.job a.apply{display:inline-block;background:var(--brand);color:#fff;text-decoration:none;font-weight:700;
+ font-size:14px;border-radius:999px;padding:9px 20px;min-height:40px}
+.job a.more{color:var(--brand);font-size:13px}
 /* 列印：卡片不要被切成兩半，那會讓「現在寫的 vs 可以改成」的對照跨頁 */
 @page{margin:12mm 10mm}
 @media print{body{background:#fff;padding:0}
@@ -150,7 +163,35 @@ th{color:var(--ink3);font-size:12.5px;font-weight:700}
 """
 
 
-def render(spec):
+def render_jobs(recs):
+    """七、跟你方向接近的職缺。獨立一段，不混進前面的健檢建議；沒有就整段不出現。
+
+    內容由 afu_job_recs.py 產生（沿用阿財 acai_job_recs.py 的白名單與把關）：
+    職稱／地點（縣市區）／類型／職缺頁公開的薪資說明／工作內容／為什麼可能適合／還要確認。
+    不寫公司名，不放顧問內部欄位。"""
+    recs = [r for r in (recs or []) if isinstance(r, dict) and r.get('title') and r.get('apply_url')][:3]
+    if not recs:
+        return ''
+    cards = ''
+    for r in recs:
+        meta = '｜'.join(x for x in (r.get('location'), r.get('employment')) if x)
+        rows = ''.join(f'<p><span>{k}</span>{E(r.get(f))}</p>' for k, f in
+                       (('薪資', 'salary'), ('做什麼', 'duty'), ('為什麼可能適合', 'why'), ('還要確認', 'confirm'))
+                       if r.get(f))
+        more = (f'<a class="more" href="{E(r["url"])}" target="_blank" rel="noopener">看職缺介紹</a>'
+                if r.get('url') else '')
+        cards += (f'<div class="job"><b>{E(r.get("title"))}</b>'
+                  + (f'<div class="meta">{E(meta)}</div>' if meta else '')
+                  + rows
+                  + f'<div class="acts"><a class="apply" href="{E(r["apply_url"])}" target="_blank" rel="noopener">一鍵應徵</a>{more}</div>'
+                  + '</div>')
+    return ('<div class="card jobs"><h2>七、跟你方向接近的職缺</h2>'
+            '<p class="lead2">依你填的方向與今天聊的內容，從目前公開中的職缺挑出比較接近的。'
+            '這是參考，不代表一定適合；有興趣就按「一鍵應徵」，顧問會再跟你確認。</p>'
+            + cards + '</div>')
+
+
+def render(spec, include_jobs=True):
     h = spec.get('header', {})
     nums = ''.join(f'<div>{E(n.get("k"))}<b>{E(n.get("v"))}</b></div>' for n in h.get('nums', []))
     P = [f'''<!doctype html>
@@ -223,6 +264,9 @@ def render(spec):
                     for i in nx.get('items', []))
     P.append('<div class="card"><h2>六、下一步</h2>' + items
              + (f'<p class="note">{rich(nx.get("note"))}</p>' if nx.get('note') else '') + '</div>')
+
+    if include_jobs:
+        P.append(render_jobs(spec.get('job_recs')))
 
     P.append('<p class="foot">這份健檢僅依據你提供的資料產出，不構成錄用承諾或薪資保證。<br>'
              '你的資料不會對外公開，僅供我們內部顧問查閱。<br>'
@@ -306,7 +350,8 @@ def main():
 
     doc = render(spec)
 
-    hits = salary_hits(re.sub('<[^>]+>', '', doc), spec.get('quoted_facts', []))
+    # 薪資把關只掃阿福寫的六段；第七段的職缺薪資是職缺頁公開的範圍（白名單欄位），不是阿福估的
+    hits = salary_hits(re.sub('<[^>]+>', '', render(spec, include_jobs=False)), spec.get('quoted_facts', []))
     if hits and not a.no_strict:
         print('❌ 報告裡出現薪資形狀的數字，拒絕產出：', file=sys.stderr)
         for h in hits:

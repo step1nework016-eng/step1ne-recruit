@@ -449,6 +449,11 @@ def parse_pending():
 SENTINEL = '（本人已進入健檢對談室）'
 
 
+V2_FIELDS = (('want_job_types', '想找的工作（本人在表單點選）'), ('want_locations', '期望地點（表單點選）'),
+             ('expected_salary', '期望薪資（表單下拉，本人自填的期望，不是你的估價）'),
+             ('education_level', '最高學歷（表單下拉）'))
+
+
 def build_talk_prompt(ctx):
     c = ctx['checkup']
     conv = ctx.get('messages') or []
@@ -461,6 +466,10 @@ def build_talk_prompt(ctx):
     for k in ('name', 'current_title', 'current_industry', 'note'):
         if c.get(k):
             lines.append(f'  {k}：{c[k]}')
+    # 2026-10-23 新版表單（測試版 /checkup-beta/）多問的四格。舊表單這四格是空的，prompt 一個字都不變。
+    for k, label in V2_FIELDS:
+        if c.get(k):
+            lines.append(f'  {label}：{c[k]}')
     lines.append('  三個關鍵數字目前狀態（NULL 代表還沒問到，是你這場的重點）：')
     lines.append(f"    led_headcount（帶過幾人）：{c.get('led_headcount') or '未取得'}")
     lines.append(f"    budget_scale（預算/營收規模）：{c.get('budget_scale') or '未取得'}")
@@ -506,7 +515,11 @@ def build_report_prompt(ctx, transcript, abandoned):
         + skill('report')
         + '\n\n【基本資料】\n' + json.dumps({
             k: c.get(k) for k in ('name', 'current_title', 'current_industry', 'note')
+            + tuple(k for k, _ in V2_FIELDS if c.get(k))
         }, ensure_ascii=False)
+        + (('\n（expected_salary 是本人在表單下拉選的期望，報告若要提到只能逐字照抄那個選項，'
+            '不准改寫、不准延伸出任何你自己估的數字；want_job_types／want_locations／education_level '
+            '是本人點選的方向，可以拿來對照建議方向。）') if c.get('form_version') == 'v2' else '')
         + resume_block
         + '\n\n【對談逐字稿】\n' + transcript
         + (('\n\n⚠️ 這場對談沒有正式收尾（本人閒置過久或房間逾時），'
@@ -621,6 +634,27 @@ def finish(cid, name, ctx, abandoned=False):
     spec.setdefault('name', name)
     numbers = spec.get('extracted_numbers') or {}
 
+    # 2026-10-23 新版表單才做：報告最後加「跟你方向接近的職缺」（afu_job_recs.py，沿用阿財的比對與把關）。
+    # 沒有合適的就整段不出現；失敗也不影響報告。中途離開的場次不做（資料不完整，不硬推）。
+    recs_detail = None
+    spec.pop('job_recs', None)
+    # 本人自己在表單選的期望薪資＝他自己的陳述，不是我們估的，列進 quoted_facts 讓薪資把關放行原文
+    exp_sal = str((ctx.get('checkup') or {}).get('expected_salary') or '').strip()
+    if exp_sal and isinstance(spec.get('quoted_facts', []), list):
+        spec.setdefault('quoted_facts', []).append(exp_sal)
+    if not abandoned and (ctx.get('checkup') or {}).get('form_version') == 'v2':
+        try:
+            import afu_job_recs
+            ctx_full = dict(ctx)
+            ctx_full['messages'] = [{'role': m['role'], 'content': m['content']} for m in msgs]
+            recs, recs_detail = afu_job_recs.generate(
+                cid, ctx_full,
+                lambda p: extract_json(run_claude(p, REPORT_MODEL, checkup_id=cid, call_type='checkup_job_recs')))
+            if recs:
+                spec['job_recs'] = recs
+        except Exception as e:
+            log(f'⚠️ {name} 推薦職缺略過（不影響報告）：{e}')
+
     # 把 spec 寫進暫存檔，交給既有的 make_checkup_report.py 排版——
     # 這支腳本已經有薪資數字把關與去識別化檢查，不要重新發明。
     out_dir = os.path.join(HERE, 'checkup_reports')
@@ -679,6 +713,8 @@ def finish(cid, name, ctx, abandoned=False):
               f"budget_scale={q(numbers.get('budget_scale'))}",
               f"crowdfunding_raised={q(numbers.get('crowdfunding_raised'))}",
               f"updated_at='{now}'"]
+    if recs_detail is not None:
+        fields.append(f"job_recs_json={q(json.dumps(recs_detail, ensure_ascii=False))}")
     if anon_ok and anon_json:
         fields.append(f"anon_card_json={q(anon_json)}")
         fields.append(f"anon_card_at='{now}'")
@@ -816,6 +852,45 @@ def expired(rows):
     return out
 
 
+# ── 2026-10-23 快速回覆按鈕（比照阿財 acai_quick_replies.py：同一份提示詞與把關，存自己的表）──
+# 開關 site_settings afu_quick_replies：off／test／on。test＝新版表單（form_version='v2'）或姓名含「測試」。
+# 開關沒開，prompt 一個字都不變。按鈕不寫進訊息本文，逐字稿與報告都看不到。
+import acai_quick_replies as AQ
+AFU_QR_KEY = 'afu_quick_replies'
+_afu_qr_flag = {'v': None, 't': 0.0}
+
+
+def quick_eligible(c):
+    if _afu_qr_flag['v'] is None or time.time() - _afu_qr_flag['t'] > 60:
+        v = 'off'
+        try:
+            r = d1(f"SELECT value FROM site_settings WHERE key={q(AFU_QR_KEY)}")
+            v = str((r[0].get('value') if r else '') or '').strip().lower()
+            v = v if v in ('off', 'test', 'on') else 'off'
+        except Exception:
+            v = 'off'
+        _afu_qr_flag.update({'v': v, 't': time.time()})
+    flag = _afu_qr_flag['v']
+    if flag == 'on':
+        return True
+    if flag == 'test':
+        return c.get('form_version') == 'v2' or '測試' in str(c.get('name') or '')
+    return False
+
+
+def save_quick(cid, name, after_id, options, question):
+    try:
+        opts, why = AQ.sanitize(options, question)
+        if not opts:
+            return
+        d1("INSERT OR REPLACE INTO afu_quick_replies (checkup_id, after_id, options_json, created_at) VALUES "
+           f"({q(cid)}, {int(after_id)}, {q(json.dumps(opts, ensure_ascii=False))}, "
+           f"'{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}')")
+        log(f'{name}：快速回覆按鈕 {opts}')
+    except Exception as e:
+        log(f'⚠️ {name} 快速回覆按鈕存檔失敗（不影響對談）：{e}')
+
+
 def handle(c):
     cid, name = c['id'], c['name']
     rate_limited = False
@@ -823,7 +898,9 @@ def handle(c):
         ctx = fetch_checkup(cid)
         conv = ctx.get('messages') or []
         n = len([m for m in conv if m.get('content') != SENTINEL])
-        raw = run_claude(build_talk_prompt(ctx), TALK_MODEL,
+        use_qr = quick_eligible(ctx.get('checkup') or {})
+        prompt = build_talk_prompt(ctx) + (AQ.PROMPT_HINT if use_qr else '')
+        raw = run_claude(prompt, TALK_MODEL,
                          checkup_id=cid, call_type='checkup_talk')
         result = extract_json(raw)
         if not result:
@@ -834,9 +911,18 @@ def handle(c):
             msgs = ['不好意思，我這邊剛剛沒接上，方便再說一次嗎？']
 
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        after_id = None
+        if use_qr:
+            try:
+                r0 = d1(f"SELECT COALESCE(MAX(id),0) AS m FROM checkup_messages WHERE checkup_id={q(cid)}")
+                after_id = int((r0[0] if r0 else {}).get('m') or 0)
+            except Exception:
+                after_id = None
         vals = ','.join(f"({q(cid)},'afu',{q(m)},'{now}')" for m in msgs)
         d1(f"INSERT INTO checkup_messages (checkup_id, role, content, created_at) VALUES {vals}")
         log(f'{name}：回了 {len(msgs)} 則')
+        if use_qr and after_id is not None and not (result.get('end') or n >= MAX_TURNS):
+            save_quick(cid, name, after_id, AQ.extract(result), msgs[-1])
 
         if result.get('end') or n >= MAX_TURNS:
             finish(cid, name, ctx)
