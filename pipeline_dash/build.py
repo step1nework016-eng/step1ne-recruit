@@ -126,6 +126,43 @@ def fw_label(f, ovr):
     return n, ovr.get(n, lab)
 
 
+APS = {'new': '已應徵，還沒面談', 'pending_screen': '已應徵，還沒面談', 'pending_assessment': '等人選做測驗',
+       'scheduled': '已約阿財面談', 'ready': '已約阿財面談', 'interviewed': '面談完成，還沒推薦',
+       'reported': '面談完成，還沒推薦', 'passed': '面談完成，還沒推薦', 'rejected': '面談後不適合', 'closed': '已結案'}
+
+
+def md(ts):
+    return f"{int(ts[5:7])}/{int(ts[8:10])}" if ts and len(ts) >= 10 else ''
+
+
+def person_status(apps, fws, ovr, jobmap):
+    """每個職缺底下每位人選「現在卡在哪」：{slug: {姓名: [狀況, 最近更新 M/D]}}"""
+    P = defaultdict(dict)
+    aj = {a['id']: a['job_slug'] for a in apps}
+    other = {}
+    for a in apps:
+        ts = max(filter(None, [a['created_at'], a['interview_ended_at']]), default='')
+        P[a['job_slug']][nm(a['name'])] = [APS.get(a['status'], '已應徵'), md(ts)]
+    for f in fws:
+        n, lab = fw_label(f, ovr)
+        if f['nr']:
+            lab = '顧問不推'
+        elif not f['st'] and not (f['r'] or f['w']):
+            lab = '已推薦，' + lab
+        ts = max(filter(None, [f['fat'], f['sat'], f['r'], f['nr'], f['w']]), default='')
+        P[f['js']][n] = [lab, md(ts)]
+        hop = aj.get(f['application_id'])
+        if hop and hop != f['js']:   # 轉推到別的職缺：應徵的那個職缺底下也要看得到
+            t = (jobmap.get(f['js']) or {}).get('t', f['js'])
+            other.setdefault((hop, n), []).append((ts, f'已推到「{t}」，' + lab.replace('已推薦，', '')))
+    for (slug, n), xs in other.items():
+        if any(f['js'] == slug and nm(f['name']) == n for f in fws):
+            continue
+        xs.sort()
+        P[slug][n] = ['；'.join(x[1] for x in xs), md(xs[-1][0])]
+    return P
+
+
 def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
     """mode='cum'：開放中職缺＋已關閉但有錄取的職缺，全部歷史；
        mode='new'：只算日期落在 [ws, we) 的事件（新應徵、面談完成、推薦、客戶面試／錄取／到職）。"""
@@ -140,6 +177,7 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
     else:
         scope = set(jobmap)
     signed = {j['g'] for j in jobmap.values() if j['rel'] in ('signed', 'private')}
+    PS = person_status(apps, fws, ovr, jobmap)
     out = {}
     for tab, flt in TABS:
         D = defaultdict(dict)
@@ -175,7 +213,7 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
                     x['of'].append(f'{n}（{lab}）')
                 if f['st'] == 'onboard':
                     x['on'].append(n)
-        det = {g: [{'slug': s, **v} for s, v in sorted(js.items(), key=lambda kv: (not kv[1]['open'], -len(kv[1]['app'])))]
+        det = {g: [{'slug': s, 'ps': PS.get(s, {}), **v} for s, v in sorted(js.items(), key=lambda kv: (not kv[1]['open'], -len(kv[1]['app'])))]
                for g, js in D.items()}
         rows = [{'client': g, 'signed': g in signed, 'jobs': sum(1 for j in js if j['open']), **{k: sum(len(j[k]) for j in js) for k in KEYS}}
                 for g, js in det.items()]

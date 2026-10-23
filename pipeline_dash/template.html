@@ -45,7 +45,7 @@ li small{color:var(--muted)}
 .lk:hover{background:var(--accent-soft);color:var(--accent)}.lk:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .lk.cl{font-weight:700;text-decoration-color:var(--accent)}
 .lk[disabled]{text-decoration:none;cursor:default;color:var(--muted);background:none}
-dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);padding:0;width:min(760px,calc(100vw - 32px));max-height:min(80vh,720px)}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);padding:0;width:min(1320px,calc(100vw - 48px));max-height:94vh}
 dialog::backdrop{background:rgba(10,20,25,.45)}
 .dh{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface)}
 .dh h3{margin:0;font-size:17px;flex:1}
@@ -58,6 +58,7 @@ dialog::backdrop{background:rgba(10,20,25,.45)}
 .rts span{display:flex;flex-direction:column;align-items:center;background:var(--accent-soft);border-radius:8px;padding:4px 6px}
 .rts small{font-size:11px;color:var(--muted);font-weight:400}.rts b{font-family:var(--f-num);font-size:14px;color:var(--accent)}
 .db>.rts span{padding:8px 6px}.db>.rts b{font-size:18px}
+@media (min-width:641px){.db td,.db th{padding:7px 10px;font-size:14px}.db .tw{overflow-x:visible}.db table{min-width:0}.db td{white-space:normal}}
 @media (max-width:760px){.funnel{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
 @media (max-width:640px){
 h1{font-size:22px}.tabs{gap:6px}.tabs button{flex:1;padding:0 8px}
@@ -114,6 +115,7 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .stg{display:flex;flex-wrap:wrap;gap:6px}
 .stg span{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--surface)}
 .stg b{font-family:var(--f-num);margin-left:4px;color:var(--accent)}
+.wk{display:block;font-size:11.5px;color:var(--muted)}
 .bdl{background:var(--surface);border:1px solid var(--line);border-radius:12px}
 .bdi{padding:12px 16px;border-bottom:1px solid var(--line);display:grid;gap:3px}
 .bdi:last-child{border-bottom:0}
@@ -133,6 +135,10 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .st-已開職缺,.st-談需求{background:var(--ok-soft);color:var(--ok)}.st-有興趣{background:var(--warn-soft);color:var(--warn)}
 .st-已寄資料,.st-拿到窗口,.st-已聯繫{background:var(--accent-soft);color:var(--accent)}.st-未聯繫{background:var(--bg);color:var(--muted)}
 @media (max-width:640px){.bdi{padding:12px 4px}.bdl{background:none;border:0;border-radius:0;border-top:1px solid var(--line)}.bh small{margin-left:0;width:100%}}
+.clp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.clp.cut{cursor:pointer}.clp.cut:hover{color:var(--accent)}.clp.open{display:block;-webkit-line-clamp:unset;overflow:visible}
+@media (min-width:641px){.bdt table{table-layout:fixed;width:100%;min-width:0}.bdt th,.bdt td{padding:9px 8px;font-size:14px;white-space:normal;overflow-wrap:anywhere}.bdt th:nth-child(1){width:15%}.bdt th:nth-child(2){width:9%}.bdt th:nth-child(3){width:10%}.bdt th:nth-child(4){width:14%}.bdt th:nth-child(5){width:12%}.bdt th:nth-child(6){width:18%}.bdt th:nth-child(7){width:15%}.bdt th:nth-child(8){width:7%}.bdt .lk.cl{white-space:normal;text-align:left}}
+.bdt td{vertical-align:top}
+.db .pst{min-width:0}.db .pst td:first-child{font-weight:700;white-space:nowrap}
 [hidden]{display:none!important}
 @media (max-width:640px){
 /* 每一格固定在哪一行：名稱／球在誰＝第1行、人數＝第2行、比率＝第3行、說明＝第4行（舊週沒有「球在誰」也不會往上擠） */
@@ -141,6 +147,14 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .cards tbody td.pct,.cards tfoot td.pct{grid-row:3}
 .cards tbody td.note{grid-row:4}
 .db .cards td.rtd{grid-row:3}
+.bdt.cards tbody tr{grid-template-columns:repeat(6,minmax(0,1fr));gap:6px 0}
+.bdt.cards tbody td{grid-row:auto;grid-column:1/-1;flex-direction:row;align-items:baseline;justify-content:flex-start;text-align:left;gap:8px;font-size:14px;font-weight:400;line-height:1.5}
+.bdt.cards tbody td::before{flex:0 0 5.5em;font-size:12px}
+.bdt.cards tbody td:first-child{grid-row:1;grid-column:1/5;font-size:16px;font-weight:700}
+.bdt.cards tbody td:has(.chip){grid-row:1;grid-column:5/7;justify-content:flex-end}
+.bdt.cards tbody td:is([data-label="寄信"],[data-label="電話"]){grid-column:span 3;flex-direction:column-reverse;align-items:center;text-align:center;gap:0;font-size:17px;font-weight:700;background:var(--accent-soft);padding:6px 2px;border-left:2px solid var(--surface)}
+.bdt.cards tbody td:is([data-label="寄信"],[data-label="電話"])::before{flex:none}
+
 }
 </style></head><body>
 <div class="wrap">
@@ -226,6 +240,7 @@ const IC_M='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-wi
 function tchip(i){if(!i.mails)return'';const w=n=>`<i class="${n?'on':''}">這週 ${n}</i>`;return `<div class="tch"><span>${IC_M}寄信 <b>${i.mails[0]}</b>${w(i.mails[1])}</span><span>${IC_C}電話 <b>${i.calls[0]}</b>${w(i.calls[1])}</span></div>`}
 function cline(i){if(!i.cands||!i.cands.length)return'';const c=i.cands.map(x=>x.code),sh=c.slice(0,6).join('、')+(c.length>6?` 等 ${c.length} 位`:'');return `<div class="cdl">給過的人選：<b>${esc(sh)}</b>｜對方回覆：${esc(i.resp||'—')}</div>`}
 let BDL=[];
+const clp=t=>`<span class="clp" title="${esc(t)}">${esc(t)}</span>`;
 function renderBD(w,prev,same){const B=w.bd&&w.bd[st.tab];if(!B){$('bdbox').innerHTML='<p class="fine">這週沒有開發資料</p>';return}
  const isCum=st.view==='cum'&&w.cum&&B.cum;const V=isCum?B.cum:B.new;
  let P=null;if(!isCum){P=same?(w.bd_prev_same||{})[st.tab]:(prev&&prev.bd&&prev.bd[st.tab]?prev.bd[st.tab].new.kpi:null)}else if(prev&&prev.bd&&prev.bd[st.tab]&&prev.bd[st.tab].cum){P=prev.bd[st.tab].cum.kpi}
@@ -236,9 +251,14 @@ function renderBD(w,prev,same){const B=w.bd&&w.bd[st.tab];if(!B){$('bdbox').inne
  if(isCum)h+=`<div class="stg" style="margin-top:12px">${Object.entries(B.cum.stages).map(([s,n])=>`<span>${s}<b>${n}</b></span>`).join('')}</div>`;
  if(isCum&&k.mails!=null)h+=`<div class="stg" style="margin-top:6px"><span>累計寄信<b>${k.mails}</b></span><span>累計電話<b>${k.calls}</b></span><span>給過人選的公司<b>${k.cands}</b></span></div>`;
  BDL=V.list;
- h+=`<h2 style="margin:16px 0 8px">${isCum?'所有開發中公司（依進度排序）':'這週有動作的公司'}</h2><div class="bdl">${V.list.map((i,n)=>`<div class="bdi"><div class="bh"><button class="lk cl" data-bd="${n}">${esc(i.company)}</button><span class="chip st-${esc(i.stage)}">${esc(i.stage)}</span>${i.hot?'<span class="hot">HOT</span>':''}<small>${i.owner?'負責 '+esc(i.owner):''}</small></div>${tchip(i)}${cline(i)}${isCum?(i.last?`<div class="bl">最近：${esc(i.last)}</div>`:''):i.logs.map(l=>`<div class="bl">${esc(l)}</div>`).join('')}${i.next?`<div class="bn"><b>下一步</b>　${esc(i.next)}${i.due?`（${esc(i.due)}）`:''}</div>`:''}${i.recruit?`<div class="bl">招募：${esc(i.recruit)}</div>`:''}</div>`).join('')||'<div class="bdi"><span class="bl">沒有資料</span></div>'}</div>`;
+ h+=`<h2 style="margin:16px 0 8px">${isCum?'所有開發中公司（依進度排序）':'這週有動作的公司'}</h2><div class="tw cards bdt"><table><thead><tr><th class="l">公司</th><th class="l">進度</th><th class="l">寄信｜電話</th><th class="l">給過的人選</th><th class="l">對方回覆</th><th class="l">${isCum?'最近動作':'這週動作'}</th><th class="l">下一步</th><th class="l">負責</th></tr></thead><tbody>${V.list.map((i,n)=>{const cs=(i.cands||[]).map(x=>x.code);return `<tr><td class="l"><button class="lk cl" data-bd="${n}">${esc(i.company)}</button>${i.hot?' <span class="hot">HOT</span>':''}</td><td class="l"><span class="chip st-${esc(i.stage)}">${esc(i.stage)}</span></td><td class="l"><b>${i.mails?i.mails[0]:0}</b> 封｜<b>${i.calls?i.calls[0]:0}</b> 通<small class="wk">這週 ${i.mails?i.mails[1]:0}｜${i.calls?i.calls[1]:0}</small></td><td class="l">${clp(cs.length?cs.slice(0,2).join('、')+(cs.length>2?` 等 ${cs.length} 位`:''):'—')}</td><td class="l">${clp(cs.length?(i.resp||'—'):'—')}</td><td class="l">${clp(isCum?(i.last||'—'):((i.logs||[])[0]||'—'))}</td><td class="l">${clp(i.next?i.next+(i.due?`（${i.due}）`:''):'—')}</td><td class="l">${esc(i.owner||'—')}</td></tr>`}).join('')||'<tr><td class="l" colspan="9">沒有資料</td></tr>'}</tbody></table></div>`;
  h+=`<p class="fine">${isCum?'開發中＝顧問在開發看板上追蹤、沒有暫停的公司。':'這週有動作＝這週在開發看板上記過電話、寄信或其他紀錄。'}寄信＝系統寄出的開發信、追信、推薦信，加上顧問手動記的寄信（同一家同一天的手動紀錄算 1 封）；電話＝顧問記的每一通電話。點公司名稱看完整聯繫紀錄與給過的人選。已開職缺＝還沒簽約，但已經先開職缺在找人。</p>`;
- $('bdbox').innerHTML=h}
+ $('bdbox').innerHTML=h;lab($('bdbox'));markCut()}
+function markCut(){document.querySelectorAll('#bdbox .clp').forEach(x=>{if(x.scrollHeight>x.clientHeight+1){x.classList.add('cut');x.tabIndex=0;x.setAttribute('role','button');x.setAttribute('aria-expanded','false')}})}
+document.addEventListener('click',e=>{const x=e.target.closest('#bdbox .clp');if(!x)return;if(!x.classList.contains('open')&&x.scrollHeight<=x.clientHeight+1)return;const o=x.classList.toggle('open');x.classList.add('cut');x.setAttribute('aria-expanded',o)});
+document.addEventListener('click',e=>{if(e.target.closest('.tabs button,[id^=s-]'))setTimeout(markCut,50)});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches&&e.target.matches('.clp.cut'))e.target.click()});
+addEventListener('resize',()=>{clearTimeout(window._mc);window._mc=setTimeout(markCut,200)});
 $('wk').innerHTML=W.map((w,i)=>`<option value="${i}">${wkLabel(w,i)}</option>`).join('');
 $('wk').onchange=e=>{st.wi=+e.target.value;render()};
 $('s-sig').onclick=()=>{st.sec='sig';render()};$('s-bd').onclick=()=>{st.sec='bd';render()};
@@ -253,7 +273,7 @@ function jobsView(c){const js=DET()[c]||[];const n=j=>Object.fromEntries(K.map(k
  const rows=js.map(j=>`<tr><td>${esc(j.t)}</td>${K.map(k=>`<td><button class="lk" data-c="${esc(c)}" data-j="${j.slug}" data-k="${k}" ${j[k].length?'':'disabled'}>${j[k].length}</button></td>`).join('')}<td class="rtd">${rates(n(j))}</td></tr>`).join('');
  return `<p class="jt">整體（${TN[st.tab]}｜${st.view==='new'?'這週新增':'累計'}）</p>${rates(t)}<div class="tw cards" style="margin-top:14px"><table><thead><tr><th class="l">職缺</th>${K.map(k=>`<th>${KN[k]}</th>`).join('')}<th class="l">比率</th></tr></thead><tbody>${rows}</tbody></table></div><p class="fine">點數字看是哪些人選｜有些人選是從別的職缺轉推過來，所以比率最高只算到 100%</p>`}
 function namesView(c,k,slug){const js=(DET()[c]||[]).filter(j=>!slug||j.slug===slug).filter(j=>j[k].length);
- return js.map(j=>`<p class="jt">${esc(j.t)}（${j[k].length}）</p><ol>${j[k].map(n=>`<li>${esc(n)}</li>`).join('')}</ol>`).join('')||'<p class="fine">沒有人選</p>'}
+ return js.map(j=>`<p class="jt">${esc(j.t)}（${j[k].length}）</p><div class="tw"><table class="pst"><thead><tr><th class="l">人選</th><th class="l">目前狀況</th><th>最近更新</th></tr></thead><tbody>${j[k].map(x=>{const ps=j.ps||{};const n=ps[x]?x:x.replace(/（[^（）]*）$/,'');const p=ps[n]||['—',''];return `<tr><td class="l">${esc(n)}</td><td class="l">${esc(p[0])}</td><td>${esc(p[1]||'—')}</td></tr>`}).join('')}</tbody></table></div>`).join('')||'<p class="fine">沒有人選</p>'}
 document.addEventListener('click',e=>{const b=e.target.closest('.lk');if(!b||b.disabled)return;
  if(b.dataset.bd!=null){const i=BDL[+b.dataset.bd];const hasJ=(DET()[i.company]||[]).length;hist=[];show(`${i.company}｜開發紀錄`,`<p class="bl">進度：${esc(i.stage)}${i.owner?'｜負責 '+esc(i.owner):''}</p>${i.next?`<p class="bn"><b>下一步</b>　${esc(i.next)}${i.due?`（${esc(i.due)}）`:''}</p>`:''}${i.recruit?`<p class="bl">招募：${esc(i.recruit)}${hasJ?` <button class="lk" data-c="${esc(i.company)}" data-k="jobs">看職缺與人選 ›</button>`:''}</p>`:''}${i.mails?`<p class="bl">寄信 ${i.mails[0]} 封（這週 ${i.mails[1]}）｜電話 ${i.calls[0]} 通（這週 ${i.calls[1]}）</p>`:''}${i.cands?`<p class="jt">給過的人選</p>${i.cands.length?`<ol>${i.cands.map(x=>`<li>${esc(x.code)}｜${esc(x.d)} 寄出（${esc(x.via)}）</li>`).join('')}</ol><p class="bl">對方回覆：${esc(i.resp||'—')}（這是整家公司給人選之後的最新回應，看不出是針對哪一位人選）</p>`:'<p class="bl">—（系統裡沒有寄過匿名人選的紀錄）</p>'}`:''}<p class="jt">聯繫紀錄（新到舊）</p><ol>${(i.logs.length?i.logs:['還沒有紀錄']).map(l=>`<li>${esc(l)}</li>`).join('')}</ol>`,false);return}
  const c=b.dataset.c,k=b.dataset.k,j=b.dataset.j;
