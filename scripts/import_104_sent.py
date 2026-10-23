@@ -26,6 +26,7 @@
 import argparse
 import base64
 import csv
+import datetime
 import json
 import os
 import re
@@ -129,11 +130,12 @@ def post(path, body, tok):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pdf-dir', required=True)
-    ap.add_argument('--sent-dir', action='append', required=True, help='含 ab_tracking.csv 的資料夾，可給多次')
+    ap.add_argument('--sent-dir', action='append', default=[], help='含 ab_tracking.csv 的資料夾，可給多次')
     ap.add_argument('--job', required=True, help='職缺 slug')
     ap.add_argument('--mail-label', default='職缺', help='備註裡寫「已寄 ___ 信」')
     ap.add_argument('--by', default=None, help='寫進 handled_by（選填）')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--not-sent', action='store_true', help='還沒寄信的批次：不需要寄信紀錄，備註寫「尚未寄信」（2026-10-23）')
     a = ap.parse_args()
 
     sent = load_sent(a.sent_dir)
@@ -143,13 +145,17 @@ def main():
     for f in pdfs:
         name = os.path.splitext(f)[0].strip()
         s = sent.get(name)
-        if not s:
+        if not s and not a.not_sent:
             skipped.append((name, '寄信紀錄裡找不到這個人'))
             continue
         info = pdf_fields(os.path.join(pdf_dir, f))
-        email = s['email'] or info['email']
-        ver = f"{s['version']} 版" if s['version'] else '版本未記'
-        note = f"{NOTE_TAG}{mmdd(s['sent_at'])} 已寄 {a.mail_label}（{ver}），尚未電話聯繫"
+        if a.not_sent and not s:
+            email = info['email']
+            note = f"{NOTE_TAG}{datetime.date.today().strftime('%m/%d').lstrip('0')} 匯入（{a.mail_label}），尚未寄信、尚未電話聯繫"
+        else:
+            email = s['email'] or info['email']
+            ver = f"{s['version']} 版" if s['version'] else '版本未記'
+            note = f"{NOTE_TAG}{mmdd(s['sent_at'])} 已寄 {a.mail_label}（{ver}），尚未電話聯繫"
         people.append({'name': name, 'file': f, 'email': email, 'note': note, **info})
 
     existing = find_existing([p['email'] for p in people if p['email']], [p['name'] for p in people])
