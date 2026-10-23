@@ -182,8 +182,8 @@ def _seeker_filters():
 
 def funnel_seeker(c, a, b):
     steps = [{'k': n, 'n': _users(c, a, b, f), 'src': 'ga'} for n, f in _seeker_filters()]
-    # 系統紀錄：只算網站實際送進來的（排除測試、顧問自己加的、AI 找人、LinkedIn 手動匯入）
-    ok = "origin NOT IN ('測試','顧問加入','AI 找人','LinkedIn')"
+    # 系統紀錄：只算網站實際送進來的（排除測試、顧問自己加的、AI 找人、LinkedIn 手動匯入、104 下載匯入）
+    ok = "origin NOT IN ('測試','顧問加入','AI 找人','LinkedIn','104')"
     r = _d1(f"SELECT COUNT(*) n, SUM(interview_started_at IS NOT NULL) st FROM applications "
             f"WHERE created_at>=? AND created_at<? AND {ok}", [a, _next_day(b)])
     steps.append({'k': '系統收到應徵', 'n': int(r[0]['n']) if r else None, 'src': 'db'})
