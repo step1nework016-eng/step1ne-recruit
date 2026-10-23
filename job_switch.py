@@ -273,6 +273,8 @@ def scan_fit():
            AND a.created_at >= datetime('now','+8 hours','-2 days')
            AND COALESCE(a.interview_state,'not_started') = 'not_started'
            AND a.superseded_by IS NULL
+           AND COALESCE(a.origin,'') != '104'   -- 2026-10-23 Jacky：104 匯入的人不做改談判斷、不推 TG
+           AND COALESCE(a.status,'') != 'new'   -- 「新進件」＝顧問建卡先不面談，不碰
            AND COALESCE(a.interview_mode,'') != 'consultant_call'
            AND COALESCE(a.status,'') NOT IN ('redirected','duplicate','rejected','declined','closed','interviewed')
            AND COALESCE(a.job_slug,'unspecified') != 'unspecified'
