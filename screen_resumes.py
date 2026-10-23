@@ -97,6 +97,9 @@ def build_prompt(app, job, resume_text):
 - **不要美化，也不要苛刻。** 履歷沒寫的就是沒寫，不要腦補成有。
 - 分數要能跟別人比。同一個職缺、同樣條件的人，這次給 85 下次不能給 60。
 - 判斷依據只能來自履歷與 JD，不要引用外部對這家公司或這個人的印象。
+- **不准寫年齡、出生年、性別、婚育、外貌、國籍**，也不能拿來推論或扣分（就業服務法第 5 條）。summary、risks、questions 都不能出現「XX 歲」。
+- **身心障礙、健康狀況不能當成扣分或「不建議」的理由**；履歷上本人有寫，只能在 questions 中性地問「工作環境有沒有需要配合調整的地方」。
+- **JD 寫「科系不限」「無經驗可」的職缺，不准因為科系不同、沒有相關經驗就判不符或寫「不建議推薦」**；科系相關性只會影響核薪級距，寫進 risks 就好，不要降 fit_score。求職意向不同屬於動機，照第 4 點寫進 risks／questions。
 
 ## 職缺
 {job.get('title') or app.get('job_title') or ''}
@@ -177,6 +180,10 @@ def notify(app, c):
     """
     if D.d1(f"SELECT 1 FROM placements WHERE application_id={D.q(app['id'])} LIMIT 1"):
         return '已送件→不通知'
+    # 2026-10-23 Jacky：一次匯入的 104 人選（還沒跟阿財談）不推 TG，分數只寫資料庫；
+    # 推的話也要一眼看得出「這是履歷初評、還沒面談」，跟阿財面談完的通知區分開。
+    if (app.get('origin') or '') == '104':
+        return '104匯入→只寫資料庫'
     score = int(c.get('fit_score') or 0)
     hard = (c.get('hard_fail') or '').strip()
     head = f"{app['name']}　{(app.get('job_title') or app['job_slug'])[:24]}"
@@ -185,7 +192,8 @@ def notify(app, c):
 
     if score >= HIGH and not hard:
         sug = f"　→ 建議送 {c['suggest_client']}" if c.get('suggest_client') else ''
-        text = (f"⭐ 初篩高分 {score}／100{sug}\n{head}\n\n"
+        text = ("🗂 履歷初評（還沒跟阿財面談）\n"
+                f"⭐ 初篩高分 {score}／100{sug}\n{head}\n\n"
                 f"{c.get('summary') or ''}\n\n"
                 f"強項\n" + '\n'.join(f'・{x}' for x in (c.get('strengths') or [])[:3]) +
                 (f"\n\n要問的\n{qs}" if qs else ''))
@@ -195,13 +203,15 @@ def notify(app, c):
     # 但沒人通知他的話，他根本不知道該打。2026-08-05 呂皓宇就是這種：
     # 70 分、四項門檻過了兩項、另外兩項只是表單沒填。
     if score >= MID and (c.get('blocker') == 'missing_info'):
-        text = (f"🔔 打一通電話就能決定　{score}／100\n{head}\n\n"
+        text = ("🗂 履歷初評（還沒跟阿財面談）\n"
+                f"🔔 打一通電話就能決定　{score}／100\n{head}\n\n"
                 f"{c.get('summary') or ''}\n\n"
                 f"要問的：{c.get('one_call') or '確認缺的那幾項'}")
         D.tg(text)
         return '待確認→顧問窗口'
     if score < MID or hard:
-        text = (f"📥 進履歷池　{score}／100\n{head}\n\n"
+        text = ("🗂 履歷初評（還沒跟阿財面談）\n"
+                f"📥 進履歷池　{score}／100\n{head}\n\n"
                 f"{c.get('summary') or ''}"
                 + (f"\n\n🚨 硬性不符：{hard}" if hard else '')
                 + (f"\n\n缺口\n{risks}" if risks else ''))
@@ -233,11 +243,11 @@ def main():
 
     if a.who:
         apps = D.d1(f"SELECT id,name,job_slug,job_title,resume_file_id,resume_url_text,"
-                    f"expected_salary,available_date,location_ok FROM applications "
+                    f"expected_salary,available_date,location_ok,origin FROM applications "
                     f"WHERE id={D.q(a.who)} OR name={D.q(a.who)} LIMIT 1")
     else:
         apps = D.d1("SELECT id,name,job_slug,job_title,resume_file_id,resume_url_text,"
-                    "expected_salary,available_date,location_ok FROM applications a "
+                    "expected_salary,available_date,location_ok,origin FROM applications a "
                     "WHERE NOT EXISTS (SELECT 1 FROM screenings s WHERE s.application_id=a.id) "
                     # 2026-10-01 加：初篩是「面談前」的關卡。這支從 9/2 停到 10/1 才又跑起來，
                     # 一口氣把一個月的舊應徵全篩了一輪、每個都推「進履歷池」，連早就面談完的人
