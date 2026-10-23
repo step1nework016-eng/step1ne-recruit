@@ -2705,7 +2705,7 @@ BG_FIRST_TRY_SEC = 210
 BG_TOTAL_SEC = 330
 
 
-def run_claude(prompt, first_try=None, total=None):
+def run_claude(prompt, first_try=None, total=None, model=None):
     # prompt 當 argv 傳在 Windows 上會撞到命令列長度上限（WinError 206，
     # 逐字稿長一點就炸），改成用 stdin 餵給 claude -p（不給 prompt 參數時
     # 它會自己讀 stdin，macOS/Linux 行為不變）。
@@ -2737,6 +2737,9 @@ def run_claude(prompt, first_try=None, total=None):
     # 由來：謝佳恩 01:07～01:19，API 第 1 次掛 120 秒、第 2、3 次回空字串（「回覆裡沒有 JSON：」後面是空的），
     # 3 次都打同一個 API，全數落空就對候選人道歉；同一時段 CLI 與直接打 API 都正常。
     api_bad = False
+    # 2026-10-24：model 只有「AI 卡住、改用備用模型重試」那一次會傳（見 _talk_budget），其餘照舊。
+    _api_model = model or API_MODEL
+    _cli_model = model or TALK_MODEL
     for attempt in range(3):
         remaining = _total - (time.time() - t0)
         if attempt > 0 and remaining < 30:
@@ -2747,7 +2750,7 @@ def run_claude(prompt, first_try=None, total=None):
         if claude_api.use_api() and not api_bad:
             # E27：走 API。不能用（額度／金鑰／連線）就這一輪改走 CLI，面談不中斷。
             try:
-                res = claude_api.call(sanitize(prompt), API_MODEL, budget, max_tokens=API_MAX_TOKENS)
+                res = claude_api.call(sanitize(prompt), _api_model, budget, max_tokens=API_MAX_TOKENS)
                 _api_meta(res, prompt, t1)
                 if not (res.get('text') or '').strip():
                     log(f'⚠️ API 第 {attempt + 1} 次回空字串（stop_reason={res.get("stop_reason")}），這一輪剩下的改走 CLI')
@@ -2765,7 +2768,7 @@ def run_claude(prompt, first_try=None, total=None):
         if r is None:
             try:
                 r = subprocess.run(
-                    [CLAUDE_BIN, '-p', '--model', TALK_MODEL,
+                    [CLAUDE_BIN, '-p', '--model', _cli_model,
                      *NO_TOOLS, '--output-format', 'json'],
                     input=sanitize(prompt),
                     capture_output=True, text=True, env=env_with_cf(), timeout=budget)
@@ -2787,7 +2790,8 @@ def run_claude(prompt, first_try=None, total=None):
         except json.JSONDecodeError as e:
             last_err = e
             continue
-        log(f'claude 回覆耗時 {time.time() - t1:.0f} 秒（第 {attempt + 1} 次嘗試）')
+        log(f'claude 回覆耗時 {time.time() - t1:.0f} 秒（第 {attempt + 1} 次嘗試）'
+            + (f'｜備用模型 {model}' if model else ''))
         return res
     raise RuntimeError(f'claude 呼叫連續失敗（逾時或回覆不是合法 JSON），放棄這輪：{last_err}')
 
@@ -4724,9 +4728,145 @@ class _Transition:
             t.cancel()
 
 
+# ── AI 卡住時：背景重試、不急著道歉（2026-10-24，謝佳恩事件，Jacky 核准）────────────
+# 由來：10/24 01:07～01:19 claude 連續逾時（WSL2 回空、Mac 120 秒×2），每失敗一輪就對人選送一次
+# 「系統出了點狀況、顧問會聯繫」——4 分鐘內送了 3 次，TG 也跳兩則「面談出錯」；AI 恢復後阿財又若無其事接著問。
+# 為什麼會重複：道歉句被當成「不算回覆」（MK.APOLOGY_TEXTS，王偉恩 10/16 的修正），人選還是「在等」，
+# 下一次輪詢（兩台都可能）又失敗、又道歉。
+#
+# 新規則（狀態全部放 D1，所以主力機／備援機輪流重試也一致）：
+#   ・一輪＝上一則真正的阿財回覆之後，人選講的第一則開始算（_round_info）。
+#   ・失敗了不道歉：把這場的鎖設成 N 秒後到期（30→60→120，依人選已等多久），下次輪詢誰先搶到誰重試。
+#     等待過渡語照舊由 _Transition 送，SQL 守衛保證一輪最多一句。
+#   ・這一輪第一次失敗 → TG 推一次「已在背景重試，還不用接手」（notify_throttle 去重，兩台也只一則）。
+#   ・重試時第一次換備用模型（FALLBACK_TALK_MODEL）跑一次，之後回主模型。
+#   ・人選等滿約 AI_STUCK_GIVEUP_SEC 還接不上 → 才送道歉句；整場面談最多一次（SQL 守衛：這場送過就不再寫）。
+#     真的寫進去了才推 TG「需要顧問接手」。之後仍每 2 分鐘在背景試，接上了第一句先說「抱歉讓您久等了」。
+AI_STUCK_GIVEUP_SEC = 600
+FALLBACK_TALK_MODEL = os.environ.get('ACAI_FALLBACK_MODEL') or 'claude-haiku-5-5'   # 10/24 Mac CLI 實測可用
+APOLOGY_TEXT = MK.APOLOGY_TEXTS[0]
+RESUME_PREFIX = '抱歉讓您久等了，我們繼續。'
+
+
+def _stuck_key(kind, app_id, round_id):
+    return f'acai_{kind}:{app_id}:{round_id}'
+
+
+def _mark_once(key):
+    """D1 上原子性地記一次（notify_throttle 主鍵）。這次才記進去回 True；已經有人記過回 False。"""
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    meta = d1_raw(f"INSERT OR IGNORE INTO notify_throttle (key, last_at) VALUES ({q(key)}, {q(now)})").get('meta', {})
+    return bool(meta.get('changes'))
+
+
+def _round_info(app_id):
+    """這一輪的起點與狀態：{'id','wait','stuck','fb','apology'}。查不到回 None（呼叫端照舊處理）。"""
+    try:
+        real = MK.sql_not_transition('content')
+        rows = d1(
+            f"SELECT m.id, m.created_at, "
+            f"(SELECT 1 FROM notify_throttle WHERE key = 'acai_stuck:' || m.application_id || ':' || m.id) AS stuck, "
+            f"(SELECT 1 FROM notify_throttle WHERE key = 'acai_fallback:' || m.application_id || ':' || m.id) AS fb, "
+            f"(SELECT 1 FROM messages x WHERE x.application_id = m.application_id AND x.id > m.id "
+            f"AND x.content = {q(APOLOGY_TEXT)} LIMIT 1) AS apology "
+            f"FROM messages m WHERE m.application_id = {q(app_id)} AND m.role = 'candidate' "
+            f"AND m.id > COALESCE((SELECT MAX(id) FROM messages WHERE application_id = {q(app_id)} "
+            f"AND role = 'assistant' AND {real}), 0) ORDER BY m.id LIMIT 1")
+        if not rows:
+            return None
+        r = rows[0]
+        t = datetime.datetime.strptime(str(r['created_at'])[:19], '%Y-%m-%d %H:%M:%S')
+        return {'id': r['id'], 'wait': (datetime.datetime.now() - t).total_seconds(),
+                'stuck': bool(r.get('stuck')), 'fb': bool(r.get('fb')), 'apology': bool(r.get('apology'))}
+    except Exception as e:
+        log(f'⚠️ 讀這一輪狀態失敗（照一般流程走）：{str(e)[:120]}')
+        return None
+
+
+def _talk_budget(app_id, name, rnd):
+    """這一輪是重試（之前失敗過）時：第一次換備用模型；時間預算不超過「剩下的 10 分鐘」。回 (first_try, total, model)。"""
+    if not rnd or not rnd.get('stuck'):
+        return None, None, None
+    model = None
+    try:
+        if not rnd.get('fb') and _mark_once(_stuck_key('fallback', app_id, rnd['id'])):
+            model = FALLBACK_TALK_MODEL
+            log(f'🔁 {name}：這輪主模型接不上，改用備用模型 {model} 重試一次')
+    except Exception as e:
+        log(f'⚠️ {name}：記錄備用模型失敗（照主模型重試）：{str(e)[:120]}')
+    left = AI_STUCK_GIVEUP_SEC - rnd['wait']
+    if left <= 0:
+        return None, None, model       # 已經道歉過、背景續試：給完整時間
+    total = max(60, min(CLAUDE_TIMEOUT, left))
+    return min(FIRST_TRY_TIMEOUT, total), total, model
+
+
+def _stuck_backoff(wait):
+    return 30 if wait < 300 else (60 if wait < 480 else 120)
+
+
+def _on_talk_failure(app, e, rnd):
+    """AI 這輪接不上（不是額度問題）。回傳「幾秒後再試」（鎖設到那時才到期）。"""
+    app_id, name = app['id'], app['name']
+    rnd = _round_info(app_id) or rnd      # 重讀：handle 開頭讀的「已等幾秒」少算了這次呼叫花掉的時間
+    if rnd is None:       # 讀不到這一輪（D1 也有問題）：不道歉、不推 TG，1 分鐘後再試
+        log(f'⏳ {name}：AI 接不上、這一輪狀態也讀不到，1 分鐘後再試（不送任何訊息）')
+        return 60
+    wait = rnd['wait']
+    first = False
+    try:
+        first = _mark_once(_stuck_key('stuck', app_id, rnd['id']))
+    except Exception:
+        pass
+    if wait < AI_STUCK_GIVEUP_SEC - 90:
+        sec = _stuck_backoff(wait)
+        log(f'⏳ {name}：AI 這輪接不上，人選已等 {wait:.0f} 秒，{sec} 秒後背景重試（不送道歉）：{str(e)[:160]}')
+        if first:
+            tg(f'⚠️ 面談出錯：{name}（{app_id}）\nAI 暫時沒回應，已在背景重試（最多約 10 分鐘）。'
+               f'人選那邊只會看到一句「稍等我一下」，還不用接手；真的接不上會再通知一次。\n'
+               f'原因：{str(e)[:200]}', THREAD_DECIDE)
+        return sec
+    # 等滿了：整場只道歉一次（SQL 守衛：這場送過就不寫；最後一則已是真正的回覆也不寫）
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    real = MK.sql_not_transition('content')
+    try:
+        meta = d1_raw(
+            f"INSERT INTO messages (application_id, role, content, created_at) "
+            f"SELECT {q(app_id)}, 'assistant', {q(APOLOGY_TEXT)}, {q(now)} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM messages WHERE application_id = {q(app_id)} AND content = {q(APOLOGY_TEXT)}) "
+            f"AND (SELECT role FROM messages WHERE application_id = {q(app_id)} AND {real} "
+            f"ORDER BY id DESC LIMIT 1) = 'candidate'").get('meta', {})
+        sent = bool(meta.get('changes'))
+    except Exception as e2:
+        sent = False
+        log(f'⚠️ {name}：寫道歉句失敗：{str(e2)[:120]}')
+    if sent:
+        log(f'🆘 {name}：AI 背景重試 {wait / 60:.0f} 分鐘仍接不上，已跟人選說顧問會聯繫（整場只說這一次），之後仍每 2 分鐘背景重試')
+        tg(f'🆘 面談需要顧問接手：{name}（{app_id}）\nAI 在背景重試約 {wait / 60:.0f} 分鐘仍接不上，'
+           f'已跟人選說「顧問會直接與您聯繫」（整場只說這一次）。\n'
+           f'阿財之後仍會在背景試，接上了會先跟人選說「抱歉讓您久等了」再繼續。\n原因：{str(e)[:200]}',
+           THREAD_DECIDE)
+    else:
+        log(f'⏳ {name}：AI 仍接不上（已等 {wait / 60:.0f} 分鐘；這場已道歉過或已被回過，不再送任何訊息），2 分鐘後再試')
+    return 120
+
+
+def _resume_after_stuck(app, msgs, rnd):
+    """這一輪曾經卡住（背景重試過／道歉過），接上後第一句先說抱歉久等，不假裝沒事。"""
+    if not rnd or not (rnd.get('stuck') or rnd.get('apology')) or not msgs:
+        return msgs
+    if any(k in msgs[0] for k in ('久等', '讓您等', '讓你等')):
+        return msgs
+    if foreign_lang(app):        # 外語人選：前綴是中文不適合，交給提示詞（見 handle）
+        return msgs
+    return [RESUME_PREFIX + '\n' + msgs[0]] + list(msgs[1:])
+
+
 def handle(app):
     app_id, name = app['id'], app['name']
     rate_limited = False
+    retry_after = 0      # 2026-10-24：AI 卡住時不道歉，鎖設成這麼多秒後到期，讓下次輪詢（任一台）背景重試
+    rnd = None
     _mark_host(app_id, name)
     _trans = _Transition(app_id, name, _waited_sec(app))
     _trans.start()
@@ -4743,6 +4883,7 @@ def handle(app):
             log(f'↩️ {name}：他已經被回過了（輪詢到的待回清單是過時的），這輪略過，不重複回')
             return
         _start_max_id = _max_msg_id(app_id)      # 這輪回覆「看得到」的最後一則（見上方 _stale_discards 的說明）
+        rnd = _round_info(app_id)                # 2026-10-24：這一輪之前卡住過嗎（背景重試／道歉過）
         ctx = context_for(app_id)
         n = len(ctx.get('conversation') or [])
         # E32-F②：候選人說要改面談時間／現在不方便 → 不硬接精簡版，直接回一句、停止提問、通知顧問約時間
@@ -4791,8 +4932,12 @@ def handle(app):
                 '・如果他補充了跟面談有關的新資訊，謝謝他並說會一起轉給顧問，'
                 '不要當場評價。\n'
                 '・語氣照常，簡短就好，不用再導回面談流程。')
+        if rnd and (rnd.get('stuck') or rnd.get('apology')) and foreign_lang(ctx.get('application')):
+            talk_prompt += ('\n\n---\n\n⚠️ 系統剛剛卡住，人選已經等了好幾分鐘。'
+                            '這一輪第一句先用人選的語言自然地說「抱歉讓您久等了，我們繼續」，再接著談。')
+        _ft, _tt, _fm = _talk_budget(app_id, name, rnd)
         _before_files = _snapshot_session_files()
-        result = run_claude(talk_prompt)
+        result = run_claude(talk_prompt, first_try=_ft, total=_tt, model=_fm)
         log_token_usage(app_id, 'talk', talk_prompt, _before_files)
 
         _newer = _newer_candidate_msgs(app_id, _start_max_id)
@@ -4839,6 +4984,16 @@ def handle(app):
                f'職缺：{app.get("job_slug")}　·　這通常代表職缺資料裡混進了用人單位的歧視性偏好，'
                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
+        msgs = _resume_after_stuck(ctx.get('application') or app, msgs, rnd)   # 2026-10-24：卡住後接上，先說抱歉久等
+        if rnd and (rnd.get('stuck') or rnd.get('apology')):
+            log(f'✅ {name}：這輪卡住後接上了（人選等了 {rnd["wait"] / 60:.1f} 分鐘）')
+            if rnd.get('apology'):
+                try:
+                    if _mark_once(_stuck_key('resumed', app_id, rnd['id'])):
+                        tg(f'✅ 阿財已重新接上：{name}（{app_id}）\n剛剛 AI 卡住、已跟人選說顧問會聯繫；'
+                           f'現在接上了，已先跟人選說「抱歉讓您久等了」再繼續面談。顧問可視情況再聯絡他。', THREAD_DECIDE)
+                except Exception:
+                    pass
         msgs = _foreign_opening(ctx, msgs)      # 外語人選：開場前先放固定的外語歡迎（中文人選不動）
         # 2026-10-21 快速回覆按鈕：一定要在寫入阿財訊息「之前」存（after_id＝目前最後一則），
         # 面談頁看到阿財這輪訊息時按鈕已經在了。任何失敗都只記 log，不影響回覆。
@@ -4883,24 +5038,22 @@ def handle(app):
                     return
             except Exception:
                 pass
+            # ⚠️ 2026-10-24 改：不再每失敗一輪就道歉＋推 TG（謝佳恩 4 分鐘收到 3 次「系統出了點狀況」）。
+            # 改成背景重試，等滿約 10 分鐘才道歉、整場一次。見 _on_talk_failure。
             try:
-                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                d1(f"INSERT INTO messages (application_id, role, content, created_at) VALUES "
-                   f"({q(app_id)},'assistant',"
-                   f"{q('不好意思，我這邊系統出了點狀況。我們的顧問會直接與您聯繫，很抱歉耽誤您的時間。')},"
-                   f"'{now}')")
-            except Exception:
-                pass
-            tg(f'⚠️ 面談出錯：{name}（{app_id}）\n{str(e)[:400]}\n候選人已被告知顧問會聯繫，請接手。',
-               THREAD_DECIDE)
+                retry_after = _on_talk_failure(app, e, rnd)
+            except Exception as e3:
+                log(f'⚠️ {name}：處理 AI 卡住時又出錯（不送任何訊息，1 分鐘後再試）：{str(e3)[:120]}')
+                retry_after = 60
     finally:
         _trans.close()
         # 額度打滿：不釋放鎖，改成延長鎖到 RATE_LIMIT_RETRY_SEC 之後才能再搶——
         # 節流用，不要每 8 秒就打一次注定失敗的 claude。一般錯誤照舊立刻放鎖。
-        if rate_limited:
+        if rate_limited or retry_after:
             try:
                 expires = (datetime.datetime.now()
-                           + datetime.timedelta(seconds=RATE_LIMIT_RETRY_SEC)).strftime('%Y-%m-%d %H:%M:%S')
+                           + datetime.timedelta(seconds=RATE_LIMIT_RETRY_SEC if rate_limited else retry_after)
+                           ).strftime('%Y-%m-%d %H:%M:%S')
                 d1(f"UPDATE applications SET lock_expires_at={q(expires)} WHERE id={q(app_id)}")
             except Exception:
                 pass
