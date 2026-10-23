@@ -2733,6 +2733,10 @@ def run_claude(prompt, first_try=None, total=None):
     t0 = time.time()
     _first = first_try or FIRST_TRY_TIMEOUT
     _total = total or CLAUDE_TIMEOUT
+    # 2026-10-24：API 逾時或回空字串之後，同一輪剩下的嘗試改走 CLI。
+    # 由來：謝佳恩 01:07～01:19，API 第 1 次掛 120 秒、第 2、3 次回空字串（「回覆裡沒有 JSON：」後面是空的），
+    # 3 次都打同一個 API，全數落空就對候選人道歉；同一時段 CLI 與直接打 API 都正常。
+    api_bad = False
     for attempt in range(3):
         remaining = _total - (time.time() - t0)
         if attempt > 0 and remaining < 30:
@@ -2740,15 +2744,21 @@ def run_claude(prompt, first_try=None, total=None):
         budget = min(_first, remaining) if attempt == 0 else remaining
         t1 = time.time()
         r = None
-        if claude_api.use_api():
+        if claude_api.use_api() and not api_bad:
             # E27：走 API。不能用（額度／金鑰／連線）就這一輪改走 CLI，面談不中斷。
             try:
                 res = claude_api.call(sanitize(prompt), API_MODEL, budget, max_tokens=API_MAX_TOKENS)
                 _api_meta(res, prompt, t1)
+                if not (res.get('text') or '').strip():
+                    log(f'⚠️ API 第 {attempt + 1} 次回空字串（stop_reason={res.get("stop_reason")}），這一輪剩下的改走 CLI')
+                    api_bad = True
+                    last_err = RuntimeError('API 回空字串')
+                    continue
                 r = types.SimpleNamespace(returncode=0, stdout=res['text'], stderr='')
             except claude_api.ApiTimeout as e:
                 last_err = e
-                log(f'⏱️ API 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，重跑')
+                api_bad = True
+                log(f'⏱️ API 第 {attempt + 1} 次呼叫 {budget:.0f} 秒沒回應，這一輪剩下的改走 CLI')
                 continue
             except claude_api.ApiFallback as e:
                 log(f'⚠️ API 這一輪不能用（{e}），改走 CLI')
