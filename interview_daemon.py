@@ -687,6 +687,21 @@ def _is_quick_app(app):
             or str(app.get('note') or '').startswith('【無經驗通用面談'))
 
 
+# 2026-10-23 電洽先行→阿財接手（測試版；Worker cfCreate 建的應徵）：origin='call_first'，或 note 開頭【電洽後接手（雙保險）
+CF_UNSPEC_SLUG = 'call-first-unspecified'
+
+
+def _is_call_first(app):
+    app = app or {}
+    return app.get('origin') == 'call_first' or str(app.get('note') or '').startswith('【電洽後接手')
+
+
+def _call_sig(text):
+    """電洽摘要的指紋：題目計畫記下擬題當下讀到的版本，之後摘要被改／補了就知道要重擬。"""
+    import hashlib
+    return hashlib.sha1(str(text or '').strip().encode('utf-8')).hexdigest()[:12]
+
+
 def _resume_upload_url(app):
     """快速應徵專用的補履歷連結（跟結束畫面時間軸、面談後感謝信同一個）。拿不到 chat_token 回 None。"""
     app = app or {}
@@ -1709,6 +1724,26 @@ def _fetch_static(app_id):
             static['acai_v2'] = False
     except Exception as e:
         log(f'⚠️ 無經驗通用面談資料載入失敗（照一般流程面談）：{e}')
+    # 2026-10-23 電洽先行→阿財接手：讀顧問那通電話的逐字稿與「已經問過的事」（call_first_flow），
+    # 不限職缺的人選不套空殼職缺的題庫／到職障礙。其他面談完全不經過這段（_is_call_first 先比對）。
+    try:
+        _ap = static.get('application') or {}
+        if _is_call_first(_ap):
+            r = d1(f"SELECT transcript, asked_json, job_mode FROM call_first_flow WHERE application_id={q(app_id)}")
+            cf = r[0] if r else {}
+            try:
+                asked = json.loads(cf.get('asked_json') or '[]')
+            except Exception:
+                asked = []
+            any_job = (_ap.get('job_slug') == CF_UNSPEC_SLUG)
+            static['call_first'] = {'transcript': str(cf.get('transcript') or '')[-8000:], 'asked': asked, 'any_job': any_job}
+            if any_job:
+                static['blockers'] = []
+                static.pop('expertise', None)
+                static.pop('job_card_summary', None)
+                static['acai_v2'] = False
+    except Exception as e:
+        log(f'⚠️ 電洽後接手資料載入失敗（照一般流程面談，電洽摘要照樣讀得到）：{e}')
     return static
 
 
@@ -2089,6 +2124,26 @@ def build_prompt(ctx, skill_md):
     if app.get('pre_interview_note'):
         lines.append('\n【面談前筆記（讀完履歷自動產生，是你這場要特別追問的方向，不要照唸給候選人聽）】')
         lines.append(str(app['pre_interview_note'])[:2000])
+
+    # 2026-10-23 電洽先行→阿財接手（測試版）：顧問先打過電話，阿財接後半段
+    _cf = ctx.get('call_first')
+    if _cf:
+        lines.append('\n【🚨 電洽後接手：已經有人先跟這位候選人電話聊過，你接的是後半段】')
+        lines.append('  - 上面的「顧問電洽摘要」和下面的電話逐字稿裡已經問過、他已經回答的事，一律不要再問；'
+                     '要用到就用確認語氣一句帶過（例：「電話裡您提到想留在台中，這點我記下了」），不算一題。')
+        if _cf.get('asked'):
+            lines.append('  - 電話裡已經問到的事：' + '、'.join(str(x) for x in _cf['asked'][:8]))
+        lines.append('  - 開場：簡短說明是接續今天電話裡聊的內容，請他放心、不用從頭自我介紹；不要把面談流程整套重講一遍。')
+        lines.append('  - 重點放在履歷：挑履歷上最關鍵的 2～3 段經歷往下深聊（實際怎麼做、自己負責哪一段、成果怎麼算），'
+                     '先具體肯定做得好的地方再追問，讓他感覺履歷有被認真讀過，建立信任。')
+        lines.append('  - 不要亂問：電話和履歷都沒有線索的題目不要硬問；同一件事不要換句話再問一次。')
+        if _cf.get('any_job'):
+            lines.append('  - 這位候選人沒有指定職缺（不限職缺）：不要套任何單一職缺的必要條件逐條核對，也不要說他在應徵某個職缺。'
+                         '用通用方式聊清楚：想走的方向、核心技能深度、想要的工作條件（地點／薪資／到職時間，電話裡沒問到才問）。'
+                         '收尾時系統會依今天聊的內容推薦職缺給他看，你不要自己承諾會推薦哪個職缺或一定錄取。')
+        if _cf.get('transcript'):
+            lines.append('  【電話逐字稿（內部資料：用來知道哪些已經問過，不要照唸、不要引用原句給候選人）】')
+            lines.append(str(_cf['transcript'])[:6000])
 
     # ── 人格測驗（Big Five ＋ Grit）──
     # 2026-08-07 加。用途是**對照**，不是評分：看他自己填的樣子跟他講話的樣子是不是同一個人。
@@ -4956,6 +5011,11 @@ def plan_candidates():
               AND (COALESCE(j.seniority, 'mid') = 'senior'
                    OR EXISTS(SELECT 1 FROM assessments s WHERE s.application_id = a.id)))
              OR a.interview_state = 'active'
+             -- 2026-10-23 電洽先行→阿財接手：不做測驗，履歷讀完（parse_resumes 寫了 parsed_at／連結解析完）就擬
+             OR (a.origin = 'call_first' AND a.status = 'ready'
+              AND (a.interview_state IS NULL OR a.interview_state = 'not_started')
+              AND (EXISTS(SELECT 1 FROM files f WHERE f.id = a.resume_file_id AND f.parsed_at IS NOT NULL)
+                   OR a.resume_url_parsed_at IS NOT NULL))
            )
          -- Mac 審核加：提早擬的排最後，避免 5 個名額被還沒交卷的人佔滿、擠掉已交卷／面談中的人
          ORDER BY (a.interview_state = 'active') DESC, early ASC, a.created_at DESC LIMIT 5
@@ -4986,6 +5046,8 @@ def do_plan(app):
         plan = {'questions': qs[:_plan_cap(ctx)],
                 'faq': [x for x in (result.get('faq') or []) if isinstance(x, dict) and x.get('q')][:8]}
         plan = CP.deep_fix(plan)      # E24：題目計畫裡的半形標點也清掉（阿財會照抄計畫的題目原句）
+        # 2026-10-23：記下擬題當下讀到的電洽摘要指紋（invalidate_stale_prepared 用來發現「電洽後來補了／改了」）
+        plan['_call_sig'] = _call_sig((ctx.get('application') or {}).get('call_summary_md'))
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         d1(f"UPDATE applications SET interview_plan_json={q(json.dumps(plan, ensure_ascii=False))}, "
            f"interview_plan_at={q(now)} WHERE id={q(app_id)} AND interview_plan_json IS NULL")
@@ -5485,7 +5547,10 @@ def invalidate_stale_prepared():
     rows = d1("""
         SELECT a.id, a.name, a.interview_plan_at, a.prewarmed_at,
                a.pre_interview_note_at, j.updated_at AS job_updated_at, e.edited_at AS expertise_edited_at,
-               (SELECT MAX(s.created_at) FROM screenings s WHERE s.application_id = a.id) AS screening_at
+               (SELECT MAX(s.created_at) FROM screenings s WHERE s.application_id = a.id) AS screening_at,
+               a.call_summary_md, a.interview_plan_json,
+               (SELECT MAX(n.created_at) FROM candidate_notes n
+                 WHERE n.application_id = a.id AND n.type = '電洽紀錄') AS call_note_at
           FROM applications a
           LEFT JOIN jobs j ON j.slug = a.job_slug
           LEFT JOIN job_expertise e ON e.job_slug = a.job_slug
@@ -5501,20 +5566,38 @@ def invalidate_stale_prepared():
         plan_changed = changed
         if PLAN_REDO_ON_SCREENING and r.get('screening_at'):
             plan_changed = max(changed, r['screening_at'])
-        if not plan_changed:
+        # 2026-10-23：電洽內容在擬好之後才補／改（顧問後台記電洽、TG 整合舊紀錄、電洽後接手流程）也要重擬。
+        # 原本只看職缺／面談前交代／初篩，後補的電洽不會觸發重擬，快取也留著舊的。
+        # 題目計畫有記指紋（_call_sig）就比指紋（連「只改摘要文字」也抓得到）；舊計畫沒有指紋就比「最後一筆電洽紀錄時間」。
+        call_redo_plan = call_redo_open = False
+        _cn = r.get('call_note_at') or ''
+        if r.get('interview_plan_at') and r.get('interview_plan_json'):
+            try:
+                _sig = (json.loads(r['interview_plan_json']) or {}).get('_call_sig')
+            except Exception:
+                _sig = None
+            if _sig is not None:
+                call_redo_plan = _sig != _call_sig(r.get('call_summary_md'))
+            else:
+                call_redo_plan = bool(_cn) and _cn > r['interview_plan_at']
+        if r.get('prewarmed_at') and _cn and _cn > r['prewarmed_at']:
+            call_redo_open = True
+        if call_redo_plan and r.get('prewarmed_at'):
+            call_redo_open = True     # 計畫要重擬，開場白也是用舊電洽寫的，一起重來
+        if not plan_changed and not call_redo_plan and not call_redo_open:
             continue
         app_id, name = r['id'], r['name']
         if _stale_prep_count.get(app_id, 0) >= STALE_PREP_MAX:
             continue
         done = []
-        if r.get('interview_plan_at') and plan_changed > r['interview_plan_at']:
+        if r.get('interview_plan_at') and ((plan_changed and plan_changed > r['interview_plan_at']) or call_redo_plan):
             d1(f"UPDATE applications SET interview_plan_json=NULL, interview_plan_at=NULL "
                f"WHERE id={q(app_id)} AND interview_plan_at={q(r['interview_plan_at'])} "
                f"AND (interview_state IS NULL OR interview_state='not_started')")
             _plan_cooldown.pop(app_id, None)
             _plan_fails.pop(app_id, None)
             done.append('題目計畫')
-        if r.get('prewarmed_at') and changed and changed > r['prewarmed_at']:
+        if r.get('prewarmed_at') and ((changed and changed > r['prewarmed_at']) or call_redo_open):
             d1(f"UPDATE applications SET prewarmed_opening=NULL, prewarmed_at=NULL "
                f"WHERE id={q(app_id)} AND prewarmed_at={q(r['prewarmed_at'])} "
                f"AND (interview_state IS NULL OR interview_state='not_started')")
@@ -5522,7 +5605,7 @@ def invalidate_stale_prepared():
         if done:
             _stale_prep_count[app_id] = _stale_prep_count.get(app_id, 0) + 1
             clear_static_cache(app_id)
-            log(f'♻️ {name}：職缺或面談前交代在擬好之後改過（{changed}），{"、".join(done)}已作廢，會重擬'
+            log(f'♻️ {name}：{"電洽內容" if (call_redo_plan or call_redo_open) else "職缺或面談前交代"}在擬好之後改過（{changed or _cn or "摘要更新"}），{"、".join(done)}已作廢，會重擬'
                 f'（第 {_stale_prep_count[app_id]}/{STALE_PREP_MAX} 次）')
 
 

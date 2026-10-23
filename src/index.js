@@ -1279,6 +1279,300 @@ async function ncAskOwner(env, chatId, threadId, userId, sessData) {
   await ncSend(env, chatId, threadId, '這位人選要指派給哪位顧問？', { inline_keyboard: ownerRows });
 }
 
+// ── 2026-10-23 電洽先行→阿財接手（測試版）──────────────────────────────
+// 顧問先在 LINE 跟新人選電話聊過，在「📞 電洽新增人選」貼逐字稿時多問一題：
+//   「阿財面談完才電洽」＝原本流程（一行都不動）
+//   「阿財還沒面談」　　＝這條新流程：姓名＋Email＋（可不選）職缺 → 建人選（有 chat_token）
+//     → AI 整理卡片回顧問 → 自動寄信給人選（上傳履歷頁＋LINE 綁定）→ 履歷＋電洽都讀完才放行面談。
+// 開關：site_settings call_first_flow＝off（預設，岔路不出現，正式流程零改變）／test／on。
+//   test：岔路只對 Jacky（JACKY_TG_USERNAMES＋site_settings call_first_testers）出現；
+//         人選姓名要含「測試」；自動信只准寄到 CF_TEST_EMAIL，其他信箱一律不寄。
+// 人選面向的頁面在 public-worker（GET/POST /call-first/:token）＋ step1ne.com/resume-upload-call-beta/。
+// 每筆的流程紀錄存在 call_first_flow（applications 已經 95 欄，不加欄）。
+const CF_FLAG_KEY = 'call_first_flow';
+const CF_TEST_EMAIL = 'aiagentg888@gmail.com';
+const CF_UNSPEC = 'call-first-unspecified';
+const CF_NOTE_HEAD = '【電洽後接手（測試版）】';
+const CF_LIFF = 'https://liff.line.me/2011631457-YcRRVX0v?t=';
+const CF_UPLOAD = 'https://step1ne.com/resume-upload-call-beta/?t=';
+
+async function cfFlag(env) {
+  try {
+    const r = await env.DB.prepare(`SELECT value FROM site_settings WHERE key=?`).bind(CF_FLAG_KEY).first();
+    const v = String((r && r.value) || '').trim().toLowerCase();
+    return ['off', 'test', 'on'].includes(v) ? v : 'off';
+  } catch { return 'off'; }
+}
+async function cfIsTester(env, from) {
+  const u = String((from && from.username) || '').toLowerCase();
+  const id = String((from && from.id) || '');
+  const allow = String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
+  try {
+    const r = await env.DB.prepare(`SELECT value FROM site_settings WHERE key='call_first_testers'`).first();
+    String((r && r.value) || '').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean).forEach((x) => allow.push(x));
+  } catch { /* 沒設就只有 Jacky */ }
+  return (u && allow.includes(u)) || (id && allow.includes(id));
+}
+// 岔路要不要出現：off＝永遠不出現（正式流程完全照舊）
+async function cfForkAllowed(env, from) {
+  const f = await cfFlag(env);
+  if (f === 'on') return true;
+  return f === 'test' && await cfIsTester(env, from);
+}
+async function cfSentinelJob(env) {
+  let job = await env.DB.prepare(`SELECT slug, title, status FROM jobs WHERE slug=?`).bind(CF_UNSPEC).first();
+  if (!job) {
+    await env.DB.prepare(`INSERT OR IGNORE INTO jobs (slug, title, updated_at, status, notes) VALUES (?,?,?, 'draft', ?)`)
+      .bind(CF_UNSPEC, '電洽後接手・不限職缺', nowTaipei(),
+        '系統用：電洽先行→阿財接手、顧問沒選職缺的人選掛這裡（阿財用通用方式聊、最後推薦職缺）。不要上架、不要刪。').run();
+    job = { slug: CF_UNSPEC, title: '電洽後接手・不限職缺', status: 'draft' };
+  }
+  return job;
+}
+async function cfEnsureTable(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS call_first_flow (
+      application_id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, created_by TEXT,
+      tg_chat_id TEXT, tg_thread_id INTEGER, transcript TEXT, highlights TEXT,
+      asked_json TEXT, questions_json TEXT, job_mode TEXT, email TEXT,
+      mail_sent_at TEXT, mail_status TEXT, line_bound_at TEXT, line_pushed_at TEXT,
+      resume_notified_at TEXT, flag_mode TEXT)`).run();
+}
+
+// 電洽內容 → 給顧問看的卡片（3～5 句重點、電話裡已問過的、阿財打算問的）。
+// 用 Workers AI（秒級），跟 summarizeCallNotes 同一個模型。失敗就用退路，不擋建檔。
+async function cfCardAI(env, transcript, jobTitle) {
+  const out = { highlights: '', asked: [], questions: [] };
+  if (!transcript) return out;
+  try {
+    const ai = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      max_tokens: 1200,
+      messages: [
+        { role: 'system', content: '你是台灣獵頭顧問的助理。只根據顧問給的電話逐字稿整理，不准新增逐字稿沒提到的事。一律用台灣繁體中文。只輸出一個 JSON 物件，不要任何其他文字。' },
+        { role: 'user', content:
+          `應徵方向：${jobTitle || '還沒指定職缺（之後依面談內容推薦）'}\n\n` +
+          '請輸出 JSON：\n' +
+          '{"highlights":"3～5 句連貫的短段落（不要條列、不要編號），講這位人選現在的狀況、想找什麼、關鍵條件（薪資／地點／到職時間有提到才寫）",\n' +
+          ' "asked":["顧問在電話裡已經問到、人選已經回答的事，每項 6～15 字，最多 8 項"],\n' +
+          ' "questions":["AI 面談助理接下來要問的 4～6 題：電話裡還沒問到、或要看履歷才能深聊的地方；一題只問一件事；口語、對人選說的話；不准問年齡、性別、婚育、國籍、外貌、宗教"]}\n\n' +
+          `電話逐字稿：\n${String(transcript).slice(0, 6000)}` },
+      ],
+    });
+    const raw = String((ai && (ai.response || ai.result)) || '');
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) {
+      const j = JSON.parse(m[0]);
+      out.highlights = String(j.highlights || '').replace(/\s*\n\s*/g, '').trim().slice(0, 600);
+      out.asked = (Array.isArray(j.asked) ? j.asked : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 8);
+      out.questions = (Array.isArray(j.questions) ? j.questions : []).map((x) => String(x).trim())
+        .filter((x) => x && !law5Hits(x).length).slice(0, 6);
+    }
+  } catch (e) { console.error('cfCardAI', e && e.message); }
+  return out;
+}
+
+// 寄給人選的信（不需顧問確認；test 模式只准寄到測試信箱）。回傳 { sent, reason }
+function cfMailContent(app, jobTitle) {
+  const t = app.chat_token;
+  const subject = '接續今天電話聊的內容：上傳履歷後，阿財接著跟您聊';
+  const lines = [
+    `${app.name} 您好，`,
+    '謝謝您今天撥空在電話裡聊了您的經歷和想法。這封信來自全民獵才（Step1ne 德仁管理顧問）。',
+    jobTitle
+      ? `接下來請您上傳一份履歷。AI 面談助理「阿財」會先讀過您的履歷和今天電話裡聊到的內容，再接著聊後半段：電話裡已經說過的事不會再問一次，會依您的經歷聊得更深入，也會更仔細了解您和「${jobTitle}」合不合，最後再依您的情況推薦合適的職缺。`
+      : '接下來請您上傳一份履歷。AI 面談助理「阿財」會先讀過您的履歷和今天電話裡聊到的內容，再接著聊後半段：電話裡已經說過的事不會再問一次，會依您的經歷聊得更深入，最後依您的情況推薦合適的職缺。',
+    '上傳後大約 1～2 分鐘就能開始，用打字的就可以，大約 20～30 分鐘，隨時可以中途休息再回來。',
+  ];
+  const steps = [
+    { title: '第一步・上傳履歷（PDF、Word，或公開的履歷連結都可以）',
+      body: '姓名和 Email 已經幫您填好，只要附上履歷就好。上傳後同一個畫面就能開始面談。',
+      url: CF_UPLOAD + t, text: '上傳履歷' },
+    { title: '用 LINE 接收面談通知（選填）',
+      body: '按一下就好，不用填任何資料。之後面談準備好、或有新進度，會直接傳到您的 LINE。',
+      url: CF_LIFF + t, text: '用 LINE 接收通知' },
+  ];
+  return { subject, lines, steps };
+}
+async function cfSendMail(env, appId) {
+  const flag = await cfFlag(env);
+  const app = await env.DB.prepare(
+    `SELECT a.id, a.name, a.email, a.chat_token, a.job_slug, a.job_title, j.title AS job_full_title
+       FROM applications a LEFT JOIN jobs j ON j.slug=a.job_slug WHERE a.id=?`).bind(appId).first();
+  if (!app || !app.chat_token) return { sent: false, reason: '找不到人選或沒有面談代碼' };
+  const email = String(app.email || '').trim().toLowerCase();
+  let reason = '';
+  if (flag === 'off') reason = '功能開關是關的，沒有寄';
+  else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) reason = 'Email 格式不對，沒有寄';
+  else if (flag === 'test' && email !== CF_TEST_EMAIL) reason = `測試模式只准寄到 ${CF_TEST_EMAIL}，這封沒有寄出`;
+  const now = nowTaipei();
+  if (reason) {
+    await env.DB.prepare(`UPDATE call_first_flow SET mail_status=?, updated_at=? WHERE application_id=?`).bind('blocked: ' + reason, now, appId).run().catch(() => {});
+    return { sent: false, reason };
+  }
+  const jobTitle = app.job_slug === CF_UNSPEC ? '' : (app.job_full_title || app.job_title || '');
+  const m = cfMailContent(app, jobTitle);
+  const ok = await sendMail(env, email, m.subject, m.lines, m.steps, null, { name: app.name });
+  await env.DB.prepare(`UPDATE call_first_flow SET mail_status=?, mail_sent_at=CASE WHEN ? THEN ? ELSE mail_sent_at END, email=?, updated_at=? WHERE application_id=?`)
+    .bind(ok ? 'sent' : 'failed', ok ? 1 : 0, now, email, now, appId).run().catch(() => {});
+  return { sent: !!ok, reason: ok ? '' : '寄信服務回報失敗' };
+}
+
+async function cfTgSend(env, chatId, threadId, html, replyMarkup) {
+  if (threadId != null && String(chatId) !== String(env.TG_CHAT_ID)) {
+    const m = await tgRemapBody(env, { chat_id: env.TG_CHAT_ID, message_thread_id: Number(threadId) });
+    if (String(m.chat_id) === String(chatId)) threadId = m.message_thread_id;
+  }
+  await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_thread_id: threadId, text: html, parse_mode: 'HTML',
+      disable_web_page_preview: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
+  }).catch(() => {});
+}
+
+// 建人選（同 Email 已存在就沿用）＋卡片＋寄信。data：{ transcript, name, email, job_slug|null, owner, owner_name }
+async function cfCreate(env, data, who, chatId, threadId) {
+  await cfEnsureTable(env);
+  const flag = await cfFlag(env);
+  const now = nowTaipei();
+  const email = String(data.email || '').trim().toLowerCase();
+  const name = String(data.name || '').trim();
+  let job = data.job_slug ? await env.DB.prepare(`SELECT slug, title, status FROM jobs WHERE slug=?`).bind(data.job_slug).first() : null;
+  if (!job) job = await cfSentinelJob(env);
+  let unspec = job.slug === CF_UNSPEC;
+  const transcript = String(data.transcript || '').trim();
+
+  const [callSummary, card] = await Promise.all([
+    summarizeCallNotes(env, transcript),
+    cfCardAI(env, transcript, unspec ? '' : job.title),
+  ]);
+
+  // 同一個 Email 已經在系統：同職缺（或這次沒選職缺／舊的是不限職缺）就沿用那一筆，不另建人
+  const { results: exRows } = await env.DB.prepare(
+    `SELECT id, name, job_slug, job_title, chat_token, interview_state, note, call_summary_md FROM applications
+      WHERE lower(email)=? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 10`).bind(email).all();
+  const ex = (exRows || []).find((r) => r.job_slug === job.slug)
+    || (unspec ? (exRows || [])[0] : (exRows || []).find((r) => r.job_slug === CF_UNSPEC)) || null;
+  let appId, mode, extraNote = '';
+  if (ex && ex.interview_state && ex.interview_state !== 'not_started') {
+    // 已經跟阿財談過（或正在談）：這次電洽只整合進舊紀錄，不再寄面談信
+    const merged = ex.call_summary_md ? `${ex.call_summary_md}\n\n---\n（${now} 再次電洽）\n${callSummary || transcript.slice(0, 1500)}` : (callSummary || null);
+    await env.DB.prepare(`UPDATE applications SET call_summary_md=? WHERE id=?`).bind(merged, ex.id).run();
+    await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?, ?, '電洽紀錄', ?, ?, ?)`)
+      .bind(uid(), ex.id, callSummary || transcript.slice(0, 3000), now, who || null).run();
+    return { appId: ex.id, mode: 'interviewed', job, card, mail: { sent: false, reason: '這位人選已經跟阿財面談過（或正在面談），只把這次電洽整合進舊紀錄，沒有再寄面談信' } };
+  }
+  if (ex) {
+    appId = ex.id; mode = 'reused';
+    const token = ex.chat_token || [...crypto.getRandomValues(new Uint8Array(24))].map((x) => x.toString(16).padStart(2, '0')).join('');
+    const merged = ex.call_summary_md ? `${ex.call_summary_md}\n\n---\n（${now} 電洽）\n${callSummary || ''}` : (callSummary || null);
+    const note = String(ex.note || '').startsWith(CF_NOTE_HEAD) ? ex.note : `${CF_NOTE_HEAD}\n${ex.note || ''}`.trim();
+    // 還沒進房：轉成這條流程（舊的題目計畫／開場白作廢，讓阿財用這次電洽重擬）
+    await env.DB.prepare(
+      `UPDATE applications SET chat_token=?, origin='call_first', note=?, status='ready', interview_mode='now',
+              interview_state='not_started', applied_notified_at=COALESCE(applied_notified_at, ?),
+              ready_notified_at=COALESCE(ready_notified_at, ?), call_summary_md=?,
+              interview_plan_json=NULL, interview_plan_at=NULL, prewarmed_opening=NULL, prewarmed_at=NULL,
+              job_slug=CASE WHEN job_slug=? AND ?<>? THEN ? ELSE job_slug END,
+              job_title=CASE WHEN job_slug=? AND ?<>? THEN ? ELSE job_title END,
+              owner=COALESCE(owner, ?)
+        WHERE id=? AND COALESCE(interview_state,'not_started')='not_started'`
+    ).bind(token, note.slice(0, 4000), now, now, merged, CF_UNSPEC, job.slug, CF_UNSPEC, job.slug,
+           CF_UNSPEC, job.slug, CF_UNSPEC, job.title, data.owner || null, appId).run();
+    if (ex.name && ex.name !== name) extraNote = `（系統裡原本的姓名是「${ex.name}」，沒有改動）`;
+    const cur = await env.DB.prepare(`SELECT job_slug, job_title FROM applications WHERE id=?`).bind(appId).first();
+    if (cur && cur.job_slug !== job.slug) {
+      job = (await env.DB.prepare(`SELECT slug, title, status FROM jobs WHERE slug=?`).bind(cur.job_slug).first()) || { slug: cur.job_slug, title: cur.job_title };
+      extraNote = (extraNote ? extraNote + '\n' : '') + `（沿用的那筆原本應徵「${job.title}」，職缺沒有改動）`;
+    }
+  } else {
+    appId = uid(); mode = 'created';
+    const token = [...crypto.getRandomValues(new Uint8Array(24))].map((x) => x.toString(16).padStart(2, '0')).join('');
+    const note = [CF_NOTE_HEAD,
+      '顧問已經先電話聊過（電洽內容在電洽摘要）。阿財接後半段：不重複電話裡問過的，依履歷深聊、最後推薦職缺。',
+      unspec ? '職缺：顧問沒有指定（不限職缺，阿財用通用方式聊）' : `職缺：${job.title}`].join('\n');
+    await env.DB.prepare(
+      `INSERT INTO applications
+         (id, created_at, job_slug, job_title, name, email, note, status, consent_at, interview_mode, chat_token,
+          interview_state, origin, source_channel, utm_source, applied_notified_at, ready_notified_at,
+          handled_by, owner, call_summary_md)
+       VALUES (?,?,?,?,?,?,?, 'ready', ?, 'now', ?, 'not_started', 'call_first', ?, 'consultant', ?, ?, ?, ?, ?)`
+    ).bind(appId, now, job.slug, job.title, name, email, note, now, token,
+           'TG 電洽→阿財接手（測試版）', now, now, who || null, data.owner || null, callSummary || null).run();
+  }
+  await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?, ?, '電洽紀錄', ?, ?, ?)`)
+    .bind(uid(), appId, callSummary || transcript.slice(0, 3000), now, who || null).run();
+  await env.DB.prepare(
+    `INSERT INTO call_first_flow (application_id, created_at, updated_at, created_by, tg_chat_id, tg_thread_id, transcript,
+        highlights, asked_json, questions_json, job_mode, email, flag_mode)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(application_id) DO UPDATE SET updated_at=excluded.updated_at, created_by=excluded.created_by,
+        tg_chat_id=excluded.tg_chat_id, tg_thread_id=excluded.tg_thread_id,
+        transcript=COALESCE(call_first_flow.transcript || char(10) || '---' || char(10), '') || excluded.transcript,
+        highlights=excluded.highlights, asked_json=excluded.asked_json, questions_json=excluded.questions_json,
+        job_mode=excluded.job_mode, email=excluded.email, flag_mode=excluded.flag_mode`
+  ).bind(appId, now, now, who || null, String(chatId), threadId != null ? Number(threadId) : null, transcript.slice(0, 20000),
+         card.highlights || null, JSON.stringify(card.asked || []), JSON.stringify(card.questions || []),
+         job.slug === CF_UNSPEC ? 'any' : 'job', email, flag).run();
+  const mail = await cfSendMail(env, appId);
+  return { appId, mode, job, card, mail, extraNote };
+}
+
+function cfCardHtml(res, data) {
+  const e = escHtml;
+  const unspec = res.job.slug === CF_UNSPEC;
+  const head = res.mode === 'interviewed' ? '📎 已整合進舊紀錄' : (res.mode === 'reused' ? '✅ 已建好（同 Email 已在系統，沿用原本那筆）' : '✅ 已建好');
+  const lines = [`${head}：<b>${e(data.name)}</b>｜${e(unspec ? '不限職缺（阿財最後推薦）' : res.job.title)}${data.owner_name ? `｜指派：${e(data.owner_name)}` : ''}`];
+  if (res.extraNote) lines.push(e(res.extraNote));
+  lines.push('', '<b>📞 電洽重點</b>', e(res.card.highlights || '（AI 這次沒整理出來，電洽摘要會照常出現在人選卡片上）'));
+  if (res.mode !== 'interviewed') {
+    if ((res.card.questions || []).length) {
+      lines.push('', '<b>🤖 阿財打算問</b>（讀完履歷後會再微調；電話裡問過的不會再問）');
+      res.card.questions.forEach((q, i) => lines.push(`${i + 1}. ${e(q)}`));
+    }
+    lines.push('', res.mail.sent ? `✉️ 已寄到 ${e(data.email)}（上傳履歷＋用 LINE 接收通知）` : `⚠️ 信沒有寄出：${e(res.mail.reason)}`);
+    lines.push('', '🔗 綁定LINE＋面談連結（長按複製，貼到 LINE 官方帳號給人選）：', `<code>${e(CF_LIFF + res.token)}</code>`);
+    lines.push('人選上傳履歷、阿財讀完才會放行面談；綁定 LINE 時這裡會通知。');
+  } else {
+    lines.push('', `ℹ️ ${e(res.mail.reason)}`);
+  }
+  return lines.join('\n');
+}
+async function cfSendCard(env, chatId, threadId, res, data) {
+  const tok = await env.DB.prepare(`SELECT chat_token FROM applications WHERE id=?`).bind(res.appId).first();
+  res.token = (tok && tok.chat_token) || '';
+  const kb = res.mode === 'interviewed' ? null
+    : { inline_keyboard: [[{ text: '✏️ 信箱打錯了，改信箱重寄', callback_data: 'nccf_fix:' + res.appId }]] };
+  await cfTgSend(env, chatId, threadId, cfCardHtml(res, data), kb);
+}
+// 問職缺：先選客戶（只列有開放職缺的），或「不限職缺」
+async function cfAskClient(env, chatId, threadId, userId, data) {
+  const { results: companies } = await env.DB.prepare(
+    `SELECT c.id, c.display_name, COUNT(*) AS n FROM jobs j JOIN client_companies c ON c.id=j.company_id
+      WHERE j.status IN ('open','active') GROUP BY c.id ORDER BY c.display_name LIMIT 20`).all();
+  await ncSetSession(env, chatId, userId, 'cf_client', data);
+  const rows = [[{ text: '🌐 不限職缺（阿財聊完再推薦）', callback_data: 'nccf_any' }]];
+  for (let i = 0; i < (companies || []).length; i += 2) {
+    rows.push(companies.slice(i, i + 2).map((c) => ({ text: c.display_name, callback_data: 'nccf_co:' + c.id })));
+  }
+  await ncSend(env, chatId, threadId, '要照哪個職缺聊？選客戶再選職缺；不確定就按「不限職缺」。', { inline_keyboard: rows });
+}
+async function cfAskOwner(env, chatId, threadId, userId, data) {
+  const { results: consultants } = await env.DB.prepare(
+    `SELECT id, display_name FROM consultants WHERE is_active=1 ORDER BY display_name`).all();
+  await ncSetSession(env, chatId, userId, 'cf_owner', data);
+  const rows = (consultants || []).map((c) => ([{ text: c.display_name, callback_data: 'nccf_owner:' + c.id }]));
+  rows.push([{ text: '未指派', callback_data: 'nccf_owner:' }]);
+  await ncSend(env, chatId, threadId, '這位人選要指派給哪位顧問？', { inline_keyboard: rows });
+}
+async function cfFinish(env, chatId, threadId, userId, data, who) {
+  await ncClearSession(env, chatId, userId);
+  try {
+    const res = await cfCreate(env, data, who, chatId, threadId);
+    await cfSendCard(env, chatId, threadId, res, data);
+  } catch (e) {
+    await ncSend(env, chatId, threadId, `❌ 建立失敗：${e && e.message ? e.message : String(e)}\n按「🆕 開始新增人選」重新來一次。`);
+  }
+}
+
 // 待審核通知：附履歷 + 按鈕，讓顧問在 Telegram 上直接核准/婉拒，不用開網頁後台。
 // 回傳送出的 Telegram message_id，之後 callback 要編輯同一則訊息把按鈕拿掉。
 async function notifyScreening(env, app, job) {
@@ -7168,8 +7462,74 @@ export default {
                 }
               }
               sess.data.transcript = transcriptText;
+              // 2026-10-23 電洽先行→阿財接手（測試版）：開關允許才多問這一題，否則一字不差走原本流程
+              if (await cfForkAllowed(env, rm2.from)) {
+                await ncSetSession(env, rm2.chat.id, rm2.from.id, 'cf_fork', sess.data);
+                await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。這位人選跟阿財面談過了嗎？', {
+                  inline_keyboard: [[{ text: '阿財面談完才電洽', callback_data: 'nccf_old' }],
+                                    [{ text: '阿財還沒面談（電洽後交給阿財接手）', callback_data: 'nccf_new' }]],
+                });
+                return new Response('ok');
+              }
               await ncSetSession(env, rm2.chat.id, rm2.from.id, 'name', sess.data);
               await ncSend(env, rm2.chat.id, callIntakeTopic, '收到逐字稿了。這位人選姓名？（先問名字是為了查有沒有舊紀錄，同一個人不會建重複）');
+              return new Response('ok');
+            }
+            // ── 電洽先行→阿財接手（測試版）的打字步驟 ──
+            if (String(sess.step || '').startsWith('cf_')) {
+              const tx = String(rm2.text || '').trim();
+              const who = (rm2.from && (rm2.from.username || rm2.from.first_name)) || '顧問';
+              if (sess.step === 'cf_fork') {
+                // 長逐字稿被 Telegram 拆成好幾則：後面幾則還是逐字稿，安靜併回去
+                if (tx) { sess.data.transcript = (sess.data.transcript || '') + '\n' + tx; await ncSetSession(env, rm2.chat.id, rm2.from.id, 'cf_fork', sess.data); }
+                return new Response('ok');
+              }
+              if (sess.step === 'cf_name' && tx) {
+                if (tx.length > 20 || /[，。！？；]{2,}/.test(tx)) {
+                  sess.data.transcript = (sess.data.transcript || '') + '\n' + tx;
+                  await ncSetSession(env, rm2.chat.id, rm2.from.id, 'cf_name', sess.data);
+                  await ncSend(env, rm2.chat.id, callIntakeTopic, '這段看起來還是逐字稿，已經併回逐字稿了。麻煩單獨打這位人選的姓名就好。');
+                  return new Response('ok');
+                }
+                if ((await cfFlag(env)) === 'test' && !tx.includes('測試')) {
+                  await ncSend(env, rm2.chat.id, callIntakeTopic, '⚠️ 這條新流程還在測試：姓名要含「測試」才會走（真人選請先按原本流程）。請重打姓名，或按「🆕 開始新增人選」重來。');
+                  return new Response('ok');
+                }
+                sess.data.name = tx;
+                await ncSetSession(env, rm2.chat.id, rm2.from.id, 'cf_email', sess.data);
+                await ncSend(env, rm2.chat.id, callIntakeTopic, `人選 Email？（會自動寄「上傳履歷＋用 LINE 接收通知」的信給他${(await cfFlag(env)) === 'test' ? `；測試模式只會寄到 ${CF_TEST_EMAIL}` : ''}）`);
+                return new Response('ok');
+              }
+              if (sess.step === 'cf_email' && tx) {
+                const em = tx.replace(/\s+/g, '').toLowerCase();
+                if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) {
+                  await ncSend(env, rm2.chat.id, callIntakeTopic, 'Email 格式看起來不對，再打一次（例如 name@gmail.com）。');
+                  return new Response('ok');
+                }
+                sess.data.email = em;
+                await cfAskOwner(env, rm2.chat.id, callIntakeTopic, rm2.from.id, sess.data);
+                return new Response('ok');
+              }
+              if (sess.step === 'cf_fixmail' && tx) {
+                const em = tx.replace(/\s+/g, '').toLowerCase();
+                if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) {
+                  await ncSend(env, rm2.chat.id, callIntakeTopic, 'Email 格式看起來不對，再打一次。');
+                  return new Response('ok');
+                }
+                const appId = sess.data.app_id;
+                await ncClearSession(env, rm2.chat.id, rm2.from.id);
+                const a = await env.DB.prepare(`SELECT name, email, interview_state FROM applications WHERE id=?`).bind(appId).first();
+                if (!a) { await ncSend(env, rm2.chat.id, callIntakeTopic, '找不到這位人選了。'); return new Response('ok'); }
+                await env.DB.prepare(`UPDATE applications SET email=? WHERE id=?`).bind(em, appId).run();
+                await env.DB.prepare(`UPDATE call_first_flow SET email=?, updated_at=? WHERE application_id=?`).bind(em, nowTaipei(), appId).run().catch(() => {});
+                await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?, ?, '系統', ?, ?, ?)`)
+                  .bind(uid(), appId, `✏️ ${who} 把 Email 從 ${a.email || '（空）'} 改成 ${em}，並重寄上傳履歷信`, nowTaipei(), who).run().catch(() => {});
+                const m = await cfSendMail(env, appId);
+                await ncSend(env, rm2.chat.id, callIntakeTopic, m.sent
+                  ? `✅ ${a.name} 的 Email 已改成 ${em}，信已重寄。`
+                  : `✏️ ${a.name} 的 Email 已改成 ${em}，但信沒有寄出：${m.reason}`);
+                return new Response('ok');
+              }
               return new Response('ok');
             }
             // 2026-09-01 加：問完姓名先查有沒有同名舊紀錄，避免同一個人被重複
@@ -7256,6 +7616,86 @@ export default {
               return new Response('ok');
             }
           }
+        }
+
+        // ── 電洽先行→阿財接手（測試版）的按鈕 ──
+        if (cq2 && String(cq2.data || '').startsWith('nccf_')) {
+          const ansc = async (t) => {
+            await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: cq2.id, text: t || '' }),
+            }).catch(() => {});
+          };
+          const chatId = cq2.message.chat.id;
+          const threadId = cq2.message.message_thread_id;
+          const d = String(cq2.data);
+          const who = (cq2.from && (cq2.from.username || cq2.from.first_name)) || '顧問';
+          if (d.startsWith('nccf_fix:')) {
+            // 卡片上的「改信箱重寄」：不需要進行中的流程，誰按都開一個小流程
+            if ((await cfFlag(env)) === 'off') { await ansc('這個功能目前關閉'); return new Response('ok'); }
+            await ansc();
+            const appId = d.slice('nccf_fix:'.length);
+            const a = await env.DB.prepare(`SELECT name, email FROM applications WHERE id=?`).bind(appId).first();
+            if (!a) { await ncSend(env, chatId, threadId, '找不到這位人選了。'); return new Response('ok'); }
+            await ncSetSession(env, chatId, cq2.from.id, 'cf_fixmail', { app_id: appId });
+            await ncSend(env, chatId, threadId, `${a.name} 目前的 Email 是 ${a.email || '（空）'}。請打正確的 Email，改好會自動重寄。`);
+            return new Response('ok');
+          }
+          const sess = await ncSession(env, chatId, cq2.from.id);
+          if (!sess) { await ansc('這個流程已經過期了，按「🆕 開始新增人選」重新開始'); return new Response('ok'); }
+          if (d === 'nccf_old') {
+            await ansc();
+            await ncSetSession(env, chatId, cq2.from.id, 'name', sess.data);
+            await ncSend(env, chatId, threadId, '收到逐字稿了。這位人選姓名？（先問名字是為了查有沒有舊紀錄，同一個人不會建重複）');
+            return new Response('ok');
+          }
+          if (d === 'nccf_new') {
+            if (!(await cfForkAllowed(env, cq2.from))) { await ansc('這條新流程目前只開放測試帳號'); return new Response('ok'); }
+            await ansc();
+            await ncSetSession(env, chatId, cq2.from.id, 'cf_name', sess.data);
+            await ncSend(env, chatId, threadId, '好，電洽後交給阿財接手。這位人選姓名？');
+            return new Response('ok');
+          }
+          if (d.startsWith('nccf_owner:')) {
+            await ansc();
+            const ownerId = d.slice('nccf_owner:'.length);
+            sess.data.owner = ownerId || null;
+            sess.data.owner_name = ownerId
+              ? ((await env.DB.prepare(`SELECT display_name FROM consultants WHERE id=?`).bind(ownerId).first()) || {}).display_name || null
+              : '未指派';
+            await cfAskClient(env, chatId, threadId, cq2.from.id, sess.data);
+            return new Response('ok');
+          }
+          if (d === 'nccf_any') {
+            await ansc('處理中…（約 10～20 秒）');
+            await ncSend(env, chatId, threadId, '⏳ 建立中：整理電洽重點、寄信給人選…');
+            sess.data.job_slug = null;
+            await cfFinish(env, chatId, threadId, cq2.from.id, sess.data, who);
+            return new Response('ok');
+          }
+          if (d.startsWith('nccf_co:')) {
+            await ansc();
+            const companyId = d.slice('nccf_co:'.length);
+            const { results: jobs } = await env.DB.prepare(
+              `SELECT slug, title FROM jobs WHERE company_id=? AND status IN ('open','active') ORDER BY title LIMIT 20`).bind(companyId).all();
+            if (!jobs || !jobs.length) {
+              await ncSend(env, chatId, threadId, '這家目前沒有開放中的職缺，換一家或按「不限職缺」。');
+              return new Response('ok');
+            }
+            const rows = jobs.map((j) => [{ text: j.title, callback_data: 'nccf_job:' + j.slug }]);
+            rows.push([{ text: '🌐 不限職缺（阿財聊完再推薦）', callback_data: 'nccf_any' }]);
+            await ncSend(env, chatId, threadId, '哪個職缺？', { inline_keyboard: rows });
+            return new Response('ok');
+          }
+          if (d.startsWith('nccf_job:')) {
+            await ansc('處理中…（約 10～20 秒）');
+            await ncSend(env, chatId, threadId, '⏳ 建立中：整理電洽重點、寄信給人選…');
+            sess.data.job_slug = d.slice('nccf_job:'.length);
+            await cfFinish(env, chatId, threadId, cq2.from.id, sess.data, who);
+            return new Response('ok');
+          }
+          await ansc();
+          return new Response('ok');
         }
 
         if (cq2 && String(cq2.data || '').startsWith('nc_')) {

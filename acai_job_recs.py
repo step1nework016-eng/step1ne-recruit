@@ -37,7 +37,7 @@ CARD_FOOTER = '這是依面談內容初步挑的，不代表一定會推薦；�
 JOB_URL = 'https://step1ne.com/jobs/{slug}/'
 PROMPT_VERSION = 'acai-recs-2026-10-21'
 # 我們自己的佔位職缺，不是真的職缺
-SKIP_SLUGS = ('unspecified',)
+SKIP_SLUGS = ('unspecified', 'call-first-unspecified')
 
 _q = RS._q
 
