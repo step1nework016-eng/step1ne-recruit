@@ -1357,10 +1357,15 @@ async function cfCardAI(env, transcript, jobTitle) {
           `電話逐字稿：\n${String(transcript).slice(0, 6000)}` },
       ],
     });
-    const raw = String((ai && (ai.response || ai.result)) || '');
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) {
-      const j = JSON.parse(m[0]);
+    // Workers AI 碰到 JSON 樣子的輸出，有時直接回物件（response 不是字串）
+    const resp = ai && (ai.response != null ? ai.response : ai.result);
+    let j = (resp && typeof resp === 'object') ? resp : null;
+    if (!j) {
+      const raw = String(resp || '');
+      const m = raw.match(/\{[\s\S]*\}/);
+      try { j = m ? JSON.parse(m[0]) : null; } catch (e) { console.error('cfCardAI parse', raw.slice(0, 300)); }
+    }
+    if (j) {
       out.highlights = String(j.highlights || '').replace(/\s*\n\s*/g, '').trim().slice(0, 600);
       out.asked = (Array.isArray(j.asked) ? j.asked : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 8);
       out.questions = (Array.isArray(j.questions) ? j.questions : []).map((x) => String(x).trim())
@@ -1440,19 +1445,36 @@ async function cfCreate(env, data, who, chatId, threadId) {
   let unspec = job.slug === CF_UNSPEC;
   const transcript = String(data.transcript || '').trim();
 
+  // 同一個 Email 已經在系統 → 沿用，不另建人。但只沿用「安全」的那幾種（2026-10-23 測試撞到：
+  // 顧問手動新增、已送客戶的真人選紀錄剛好填了測試信箱，被整筆改成新流程——已還原）：
+  //   ① 這條流程建的（call_first）、還沒開始面談 → 沿用（補電洽、重寄信）
+  //   ② 同一個職缺、有面談代碼、還沒開始面談、還沒送進客戶流程（placements）→ 轉成這條流程
+  //   ③ 同職缺（或這次不限職缺）已經跟阿財談過／正在談 → 只把電洽整合進去，不寄信
+  //   其他（別的職缺、已送客戶、手動建檔沒有面談代碼…）→ 另建一筆這次的應徵，原本那筆一個字都不動
+  // test 模式只看姓名含「測試」的紀錄，真人選的紀錄碰都不碰。
+  const { results: exAll } = await env.DB.prepare(
+    `SELECT a.id, a.name, a.job_slug, a.job_title, a.chat_token, a.interview_state, a.note, a.origin, a.status, a.call_summary_md,
+            EXISTS(SELECT 1 FROM placements p WHERE p.application_id = a.id) AS in_pipeline
+       FROM applications a WHERE lower(a.email)=? AND a.superseded_by IS NULL ORDER BY a.created_at DESC LIMIT 10`).bind(email).all();
+  const exRows = (exAll || []).filter((r) => flag !== 'test' || String(r.name || '').includes('測試'));
+  const isCf = (r) => r.origin === 'call_first' || String(r.note || '').startsWith(CF_NOTE_HEAD);
+  const notStarted = (r) => !r.interview_state || r.interview_state === 'not_started';
+  const ex = exRows.find((r) => isCf(r) && notStarted(r) && (unspec || r.job_slug === job.slug || r.job_slug === CF_UNSPEC))
+    || exRows.find((r) => !unspec && r.job_slug === job.slug && notStarted(r) && r.chat_token && !r.in_pipeline)
+    || exRows.find((r) => !notStarted(r) && (unspec || r.job_slug === job.slug))
+    || null;
+  // 卡片看「這個人所有通電話」：沿用的那筆之前有電洽逐字稿就一起給 AI
+  let priorTx = '';
+  if (ex) {
+    const pr = await env.DB.prepare(`SELECT transcript FROM call_first_flow WHERE application_id=?`).bind(ex.id).first().catch(() => null);
+    priorTx = (pr && pr.transcript) || '';
+  }
   const [callSummary, card] = await Promise.all([
     summarizeCallNotes(env, transcript),
-    cfCardAI(env, transcript, unspec ? '' : job.title),
+    cfCardAI(env, priorTx ? `${priorTx}\n---（之後又一通電話）---\n${transcript}` : transcript, unspec ? '' : job.title),
   ]);
-
-  // 同一個 Email 已經在系統：同職缺（或這次沒選職缺／舊的是不限職缺）就沿用那一筆，不另建人
-  const { results: exRows } = await env.DB.prepare(
-    `SELECT id, name, job_slug, job_title, chat_token, interview_state, note, call_summary_md FROM applications
-      WHERE lower(email)=? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 10`).bind(email).all();
-  const ex = (exRows || []).find((r) => r.job_slug === job.slug)
-    || (unspec ? (exRows || [])[0] : (exRows || []).find((r) => r.job_slug === CF_UNSPEC)) || null;
   let appId, mode, extraNote = '';
-  if (ex && ex.interview_state && ex.interview_state !== 'not_started') {
+  if (ex && !notStarted(ex)) {
     // 已經跟阿財談過（或正在談）：這次電洽只整合進舊紀錄，不再寄面談信
     const merged = ex.call_summary_md ? `${ex.call_summary_md}\n\n---\n（${now} 再次電洽）\n${callSummary || transcript.slice(0, 1500)}` : (callSummary || null);
     await env.DB.prepare(`UPDATE applications SET call_summary_md=? WHERE id=?`).bind(merged, ex.id).run();
