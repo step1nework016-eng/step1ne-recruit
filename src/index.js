@@ -1323,9 +1323,9 @@ async function cfSentinelJob(env) {
   let job = await env.DB.prepare(`SELECT slug, title, status FROM jobs WHERE slug=?`).bind(CF_UNSPEC).first();
   if (!job) {
     await env.DB.prepare(`INSERT OR IGNORE INTO jobs (slug, title, updated_at, status, notes) VALUES (?,?,?, 'draft', ?)`)
-      .bind(CF_UNSPEC, '電洽後接手・不限職缺', nowTaipei(),
+      .bind(CF_UNSPEC, '職涯面談・不限職缺', nowTaipei(),
         '系統用：電洽先行→阿財接手、顧問沒選職缺的人選掛這裡（阿財用通用方式聊、最後推薦職缺）。不要上架、不要刪。').run();
-    job = { slug: CF_UNSPEC, title: '電洽後接手・不限職缺', status: 'draft' };
+    job = { slug: CF_UNSPEC, title: '職涯面談・不限職缺', status: 'draft' };
   }
   return job;
 }
