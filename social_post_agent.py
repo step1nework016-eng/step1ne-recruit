@@ -1338,7 +1338,7 @@ def job_raw_format_line_suffix(account_id, style_row, job_slug=None, queue_id=No
 
 # ── 品牌名「全民獵才」（2026-10-20 Jacky）──────────────────────────
 # 每篇社群文要出現一次「全民獵才」，而且只出現一次。每個帳號放的位置固定但彼此不同，
-# 同一天幾個顧問發的文才不會長得一樣（例：EYLISE 在標題「全民獵才徵才｜…」，Jacky 在結尾）。
+# 同一天幾個顧問發的文才不會長得一樣（例：EYLISE 在標題「全民獵才徵才｜…」，Jacky 在自我介紹——10/23 Jacky 從結尾改到開頭）。
 BRAND = '全民獵才'
 BRAND_SLOTS = {
     'title': '放在第一行標題：職缺文寫成「全民獵才徵才｜職稱…」；話題文第一行用「全民獵才｜」開頭',
@@ -1347,7 +1347,7 @@ BRAND_SLOTS = {
     'cta': '放在最後邀請互動的那一句，例如「加 LINE 找全民獵才聊聊」「留言或私訊全民獵才」',
     'auto': '這個帳號的結尾會自動附上「全民獵才」LINE 官方帳號連結，所以內文一次都不要寫',
 }
-BRAND_SLOT_BY_ACCOUNT = {2: 'title', 6: 'title', 1: 'cta', 5: 'cta', 3: 'intro', 7: 'intro', 8: 'auto', 28: 'cta'}
+BRAND_SLOT_BY_ACCOUNT = {2: 'title', 6: 'title', 1: 'intro', 5: 'cta', 3: 'intro', 7: 'intro', 8: 'auto', 28: 'cta'}
 
 
 def brand_slot(account_id):
