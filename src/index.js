@@ -2681,7 +2681,7 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by, onl
       let templateLink = null;
       if (form.template_file_id) {
         const tf = await fileB64(env, form.template_file_id);
-        if (tf) { attachments = [{ filename: tf.filename, content: tf.content }]; templateLink = `https://step1ne-recruit-api.aiagentg888.workers.dev/form/template?t=${token}`; }
+        if (tf) { attachments = [{ filename: tf.filename, content: tf.content }]; templateLink = `https://step1ne-public-worker.aiagentg888.workers.dev/form/template?t=${token}`; }
       }
       const cta = templateLink
         ? [
