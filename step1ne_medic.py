@@ -87,6 +87,10 @@ def alert(what, why, todo):
 # ── ① 常駐程序活著嗎 ────────────────────────────────────────────
 def check_daemons(dry):
     for name, script, label in DAEMONS:
+        # 2026-10-23：Mac 上刻意停用（plist 改名 .disabled，交給 WSL2 跑）的常駐程式不要重啟、不要報警
+        if sys.platform == 'darwin' and os.path.exists(os.path.expanduser(f'~/Library/LaunchAgents/{label}.plist.disabled')) \
+                and not os.path.exists(os.path.expanduser(f'~/Library/LaunchAgents/{label}.plist')):
+            continue
         r = subprocess.run(['pgrep', '-f', script], capture_output=True, text=True)
         if r.stdout.strip():
             continue
@@ -155,6 +159,8 @@ def check_schedules(dry):
         if label in loaded:
             continue
         plist = os.path.expanduser(f'~/Library/LaunchAgents/{label}.plist')
+        if not os.path.exists(plist) and os.path.exists(plist + '.disabled'):
+            continue   # 2026-10-23：刻意停用（改名 .disabled、交給 WSL2），不報警
         if not os.path.exists(plist):
             alert(f'{name} 的排程設定檔不見了', f'找不到 {label}.plist',
                   '這支排程等於被刪掉了，要確認是不是刻意停用的')
