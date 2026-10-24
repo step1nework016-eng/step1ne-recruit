@@ -5400,6 +5400,7 @@ _TECH_TOPICS = {
 _NEG_REPLY = re.compile(r'^(沒有|無|沒|不知道|不清楚|不太清楚|不確定|沒做過|沒遇過|沒有做過|沒有遇過|不會|沒什麼|沒有特別|沒有耶|沒喔|沒有喔)')
 _SALARY_EVADE = re.compile(r'面議|看公司|都可以|不一定|依.{0,4}(規定|公司)|不方便|可談|再談|彈性|不確定|看情況')
 _QMARK = re.compile(r'[?？]')
+ENTER_MARK = '（候選人已進入面談室）'
 _ENGLISH_Q = re.compile(r'[A-Za-z][A-Za-z ,\'\-]{25,}')
 TECH_MUST_ASK_AFTER = 3            # 至少問過幾個問題後，才開始提醒「必問但還沒問」
 
@@ -5564,6 +5565,10 @@ def _technique_hints(ctx):
     conv = ctx.get('conversation') or []
     asked, neg, last_topics = {}, {}, []
     missing, q_count, salary_evasive, english = [], 0, False, False
+    # 2026-10-24 謝佳恩：01:19 阿財問薪資，她沒回就離開；02:47 回到面談室，阿財卻說「薪資留給顧問」直接跳過。
+    # 原因：進房標記不是回答，但那題已經被算成「問過第 2 次」→ 撞到「薪資不准第三次」。
+    # 改法：進房標記不算回答；最後一題問了、人選還沒回答就離開又回來 → 那題不算數，提示先再問一次。
+    pending_q, returned = None, False
     for m in conv:
         c = str(m.get('content') or '')
         if m.get('role') == 'assistant':
@@ -5574,7 +5579,13 @@ def _technique_hints(ctx):
                 last_topics = _topics_of(c)
                 for t in last_topics:
                     asked[t] = asked.get(t, 0) + 1
+                pending_q, returned = c, False
             continue
+        if c.strip() == ENTER_MARK:
+            if pending_q:
+                returned = True
+            continue
+        pending_q, returned = None, False
         # 候選人的回覆：對照「上一個問題」的主題
         if not last_topics:
             continue
@@ -5587,9 +5598,17 @@ def _technique_hints(ctx):
             salary_evasive = bool(_SALARY_EVADE.search(c)) and not re.search(r'\d', c)
         last_topics = []
     resched_done = any(m.get('role') == 'assistant' and RESCHED_REPLY[:8] in str(m.get('content') or '') for m in conv)
+    back = ''
+    if returned and pending_q and not resched_done:
+        for t in last_topics:      # 沒回答的那一題不算「問過」，不然會撞到「不准再問」
+            asked[t] = max(0, asked.get(t, 0) - 1)
+        q = re.sub(r'\s+', ' ', pending_q).strip()[-160:]
+        back = ('\n\n【人選中途離開、剛回到面談室（程式偵測）】離開前你問的最後一題他**還沒回答**：「' + q + '」。'
+                '**這一輪先用一句話簡短再問一次這題**（例：「歡迎回來～剛剛問到的是……」），問完就停、等他回答，再往下聊。'
+                '**不要說「這部分留給顧問」跳過**，也不要開新題。')
     if q_count < 2 and not resched_done:
-        return ASK_WAIT_RULE
-    out = []
+        return back + ASK_WAIT_RULE
+    out = [back.strip()] if back else []
     if resched_done:
         out.append('【候選人已表示要改面談時間（程式偵測）】顧問會跟他約時間。**不要開新的面談題目**，只回應他剛說的話、確認他方便的時段即可。')
     # A. 同一題不重問
