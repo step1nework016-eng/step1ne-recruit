@@ -9164,6 +9164,23 @@ export default {
         return new Response('ok');
       }
 
+      // 2026-10-24：「要寄人事資料表嗎」卡片（jf_send／jf_skip），規則在 backoffice-worker /admin/job-forms/tg-action
+      if (cq && cq.data && String(cq.data).startsWith('jf_')) {
+        const ans = async (text, alert) => { await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ callback_query_id: cq.id, text: text || '', show_alert: !!alert }) }).catch(() => {}); };
+        if (!env.BACKOFFICE || !env.ADMIN_TOKEN) { await ans('系統設定缺少後台連線，請通知工程', true); return new Response('ok'); }
+        try {
+          const rr = await env.BACKOFFICE.fetch('https://backoffice/admin/job-forms/tg-action', {
+            method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.ADMIN_TOKEN}` },
+            body: JSON.stringify({ data: cq.data, username: (cq.from && cq.from.username) || '', first_name: (cq.from && cq.from.first_name) || '',
+              chat_id: cq.message && cq.message.chat && cq.message.chat.id, message_id: cq.message && cq.message.message_id }) });
+          const d = await rr.json().catch(() => ({}));
+          await ans(d.answer || (rr.ok ? '' : `處理失敗（${rr.status}）`), !!d.alert || !rr.ok);
+        } catch (e) { await ans('處理失敗，請到人選卡片按「立即寄送」', true); }
+        return new Response('ok');
+      }
+
       if (cq && cq.data && String(cq.data).startsWith('il_take:')) {
         await handleInboundLeadAction(env, cq);
         return new Response('ok');
