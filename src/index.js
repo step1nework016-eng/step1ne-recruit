@@ -3369,7 +3369,11 @@ async function deriveApplicationProgress(env, appId) {
   } else {
     // 🚨 2026-08-13 提醒：這個 switch 裡任何一支文案都不能直接 echo 顧問內部欄位
     // （handled_note 等）——呂皓宇那次事故的教訓，見 feedback_candidate_facing_copy_rules。
-    switch (stageInfo.effective_key) {
+    // 2026-10-24 林宴君：阿財面談已經做完、顧問還沒按推薦，effective_key 停在 screening，
+    // 查進度卻顯示「初審還沒完成、請去找阿財」——跟事實相反。面談結束（或已有報告）就改走 confirm 那支（審閱中）。
+    const _msgKey = (stageInfo.effective_key === 'screening'
+      && (app.interview_state === 'done' || app.interview_ended_at || report)) ? 'confirm' : stageInfo.effective_key;
+    switch (_msgKey) {
       case 'care':
       case 'onboard':
         // 「報到」「到職關懷」這兩關目前共用同一句——候選人角度沒有必要分兩套講法，
