@@ -2910,7 +2910,8 @@ async function doManualForward(env, b) {
        VALUES (?,?,?,?,?,?)`
     ).bind(uid(), appId, job.company_id, b.by || null, now, '顧問手動新增（未透過阿財面談）').run();
     if (cfr.meta && cfr.meta.changes) {
-      await triggerJobForms(env, { applicationId: appId, companyId: job.company_id, jobSlug, by: b.by });
+      // 2026-10-24 Jacky：推薦當下不寄人事資料表，要客戶在 portal 按「推進」才寄（backoffice-worker 那份同步改）
+      // （推薦時一律不寄表單；勾選框也不算數）
     }
     const existingPl = await env.DB.prepare(
       `SELECT id FROM placements WHERE application_id=? AND client_id=? LIMIT 1`
