@@ -225,7 +225,8 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
 
 
 RES = {'gatekeeper': '總機擋下', 'got_contact': '拿到窗口', 'got_email': '拿到信箱', 'interested': '有興趣',
-       'no_answer': '沒接', 'not_hiring': '目前沒在徵', 'not_interested': '沒興趣'}
+       'no_answer': '沒接', 'not_hiring': '目前沒在徵', 'not_interested': '沒興趣',
+       'send_info': '請寄資料', 'callback': '再約時間'}  # 2026-10-27 公司開發名單頁
 KIND = {'call': '電話', 'mail': '寄信', 'other': '其他'}
 STAGE_ORDER = ['未聯繫', '已聯繫', '拿到窗口', '已寄資料', '有興趣', '談需求', '已開職缺']
 
@@ -363,7 +364,7 @@ def derive_stage(s, ls):
         return '有興趣'
     if any(l['kind'] == 'mail' or l['mail_sent'] for l in ls):
         return '已寄資料'
-    if rs & {'got_contact', 'got_email', '拿到窗口', '查到窗口'}:
+    if rs & {'got_contact', 'got_email', 'send_info', 'callback', '拿到窗口', '查到窗口'}:
         return '拿到窗口'
     return '已聯繫' if ls else '未聯繫'
 
