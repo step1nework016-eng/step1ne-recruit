@@ -2065,6 +2065,43 @@ function appointmentFlexCarousel(appt, token) {
 
 // 確認面談時段——網頁版（/appointment/<token>/confirm）跟 LINE 版（postback）
 // 共用同一套邏輯，避免兩邊各寫一份、之後改規則漏改一邊。
+// 2026-10-27 張家昌：應徵「獵頭顧問」、被推薦給律准「半導體專案工程師(儲備培訓)」，
+// 律准按「邀請人選選時段」，人選收到的 Email 標題卻是「獵頭顧問」。
+// 凡是對人選講「哪個職缺」的訊息（面談邀約／時段確認／面試提醒／錄取／報到卡）都走這支：
+// ① 這次是哪家客戶在動作 → 那家客戶那筆推薦的職缺；② 最新一筆還在進行中的推薦；③ 原本應徵的職缺。
+async function jobForCandidate(env, appId, companyId) {
+  const app = await env.DB.prepare(
+    `SELECT a.job_slug, COALESCE(NULLIF(a.job_title, ''), j.title) AS title
+       FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug WHERE a.id = ?`
+  ).bind(appId).first();
+  const own = { slug: (app && app.job_slug) || '', title: (app && (app.title || app.job_slug)) || '' };
+  try {
+    let fw = null;
+    if (companyId) {
+      fw = await env.DB.prepare(
+        `SELECT f.job_slug, j.title FROM candidate_forwards f LEFT JOIN jobs j ON j.slug = f.job_slug
+          WHERE f.application_id = ? AND f.company_id = ? AND f.job_slug IS NOT NULL AND f.job_slug != ''
+          ORDER BY f.forwarded_at DESC LIMIT 1`
+      ).bind(appId, companyId).first();
+    }
+    if (!fw) {
+      fw = await env.DB.prepare(
+        `SELECT f.job_slug, j.title FROM candidate_forwards f LEFT JOIN jobs j ON j.slug = f.job_slug
+          WHERE f.application_id = ? AND f.job_slug IS NOT NULL AND f.job_slug != ''
+            AND f.client_rejected_at IS NULL AND f.advisor_not_recommended_at IS NULL AND f.candidate_withdrawn_at IS NULL
+          ORDER BY f.forwarded_at DESC LIMIT 1`
+      ).bind(appId).first();
+    }
+    if (fw && fw.job_slug && fw.job_slug !== own.slug) return { slug: fw.job_slug, title: fw.title || fw.job_slug };
+  } catch (_) { /* 查不到就用原本應徵的職缺 */ }
+  return own;
+}
+// 面談邀約是哪家客戶發的：客戶自己在 portal 按「邀請人選選時段」時 created_by 會是 client:<公司代碼>
+function apptCompanyId(appt) {
+  const m = /^client:(.+)$/.exec(String((appt && appt.created_by) || ''));
+  return m ? m[1] : null;
+}
+
 async function confirmAppointmentByToken(env, token, slotAt) {
   const appt = await env.DB.prepare(
     `SELECT ia.*, a.name, a.job_title, a.job_slug
@@ -2073,6 +2110,9 @@ async function confirmAppointmentByToken(env, token, slotAt) {
       WHERE ia.token = ?`
   ).bind(token).first();
   if (!appt) return { ok: false, error: '找不到這場面談安排', status: 404 };
+  // 2026-10-27 張家昌事故：職缺名稱改用推薦的職缺（見 jobForCandidate）
+  { const jc = await jobForCandidate(env, appt.application_id, apptCompanyId(appt));
+    appt.job_slug = jc.slug; appt.job_title = jc.title; }
   if (appt.status === 'confirmed') {
     return { ok: false, error: '這場面談時間已經確認過了', confirmed_slot: appt.confirmed_slot, status: 409 };
   }
@@ -2167,7 +2207,7 @@ async function linePush(env, lineUserId, text) {
 // （line_bindings 表，見昨天做的「查詢面試進度」），主動推一則更新給他，
 // 不用等他自己想到要來問。跟 deriveApplicationProgress 共用同一套判斷邏輯，
 // 保證他在 LINE 主動收到的訊息，跟他自己來問時看到的說法一致。
-async function notifyLineProgress(env, applicationId) {
+async function notifyLineProgress(env, applicationId, opts = {}) {
   if (!applicationId) return;
   try {
     const { results } = await env.DB.prepare(
@@ -2178,7 +2218,7 @@ async function notifyLineProgress(env, applicationId) {
       safeJsonArray(b.application_ids).includes(applicationId));
     if (!hits.length) return;   // 這個人選沒綁過 LINE，沒地方可以推
 
-    const prog = await deriveApplicationProgress(env, applicationId);
+    const prog = await deriveApplicationProgress(env, applicationId, opts);
     if (!prog) return;
     // 2026-08-13 從純文字升級成 Flex 卡片——職缺當標題、進度當內文，
     // 底下「查看職缺頁」「聯繫顧問」兩顆按鈕，比純文字更好懂、也能直接互動。
@@ -2197,7 +2237,7 @@ async function notifyLineProgress(env, applicationId) {
 // Jacky 原話：「要改成恭喜等文案要有情緒價值，真心恭喜他們入群」。
 // 另外加「我願意接受／我需要再考慮」按鈕——候選人不管選哪個都要通知顧問，
 // 讓顧問能主動接下去談，不是晾著等他自己回訊息。
-async function notifyOfferFlex(env, applicationId) {
+async function notifyOfferFlex(env, applicationId, opts = {}) {
   if (!applicationId) return;
   try {
     const { results } = await env.DB.prepare(
@@ -2210,6 +2250,9 @@ async function notifyOfferFlex(env, applicationId) {
       `SELECT id, name, job_slug, job_title FROM applications WHERE id = ?`
     ).bind(applicationId).first();
     if (!app) return;
+    // 2026-10-27 張家昌事故：被推薦到別的職缺時，卡片標題要用推薦的職缺
+    { const jc = await jobForCandidate(env, applicationId, opts && opts.companyId);
+      app.job_slug = jc.slug; app.job_title = jc.title; }
 
     const flex = {
       type: 'flex',
@@ -2248,7 +2291,7 @@ async function notifyOfferFlex(env, applicationId) {
 // 2026-08-13 加：報到確認拆兩張卡——這是 Ⓐ，顧問問到企業給的報到日期後發，
 // 不是「已經到職」的恭喜卡（那個併進到職關懷第 1 天，等真的到了那天才發，
 // 見 candidateCareTick）。這裡單純是「這個日期你 OK 嗎」的確認。
-async function notifyOnboardDateFlex(env, applicationId, onboardDate) {
+async function notifyOnboardDateFlex(env, applicationId, onboardDate, opts = {}) {
   if (!applicationId || !onboardDate) return;
   try {
     const { results } = await env.DB.prepare(
@@ -2261,6 +2304,9 @@ async function notifyOnboardDateFlex(env, applicationId, onboardDate) {
       `SELECT id, name, job_slug, job_title FROM applications WHERE id = ?`
     ).bind(applicationId).first();
     if (!app) return;
+    // 2026-10-27 張家昌事故：被推薦到別的職缺時，卡片標題要用推薦的職缺
+    { const jc = await jobForCandidate(env, applicationId, opts && opts.companyId);
+      app.job_slug = jc.slug; app.job_title = jc.title; }
 
     const [d, t] = String(onboardDate).split(' ');
     let dayLabel = d;
@@ -2623,7 +2669,7 @@ async function applyManualStage(env, { application_id, stage, note, by, company_
   }
   // 手動指定可能讓候選人的進度往前跳（例如提前標成錄取），跟其他會改變進度的
   // 動作（decide-report／mark-offer）一樣，順手推播更新，不用等自動資料追上才通知。
-  await notifyLineProgress(env, application_id);
+  await notifyLineProgress(env, application_id, { companyId: company_id });
   return { manual_stage: stage, manual_stage_at: stage ? now : null };
 }
 
@@ -2690,10 +2736,13 @@ async function triggerJobForms(env, { applicationId, companyId, jobSlug, by, onl
           ]
         : { url: link, text: `上傳填完的${form.name}` };
       await sendMail(env, app.email,
-        `請填寫「${form.name}」－ ${job ? job.title : ''}`,
+        `推薦進度｜${job ? job.title : '職缺'}｜${form.name}填寫`,
         [
-          `${app.name || '您好'}：`,
-          `恭喜進入「${company ? company.display_name : '用人單位'}」${job ? job.title : ''}這個職缺的用人單位審核階段，請依下面步驟完成「${form.name}」，請於 2 天內完成，謝謝配合！`,
+          `${app.name ? app.name + ' 您好：' : '您好：'}`,
+          // 2026-10-27 Jacky：填表不等於有面試——只是先給用人單位看，對方有意願才約面談。不寫「恭喜進入」、不寫公司名。
+          `謝謝您對「${job ? job.title : '這個職缺'}」有興趣。為了讓用人單位進一步了解您，麻煩依下面步驟填寫「${form.name}」。`,
+          `填好後，我們會先提供給用人單位評估；用人單位看過、有意願的話，才會再跟您約面談時間。`,
+          `麻煩在 2 天內完成，謝謝！`,
         ],
         cta,
         attachments
@@ -3279,7 +3328,7 @@ function pendingReviewMessage(daysSince, hasAppointment, hasHandledNote) {
     escalated: false,
   };
 }
-async function deriveApplicationProgress(env, appId) {
+async function deriveApplicationProgress(env, appId, opts = {}) {
   const app = await env.DB.prepare(
     `SELECT id, name, job_slug, job_title, interview_state, handled_note,
             interview_started_at, interview_ended_at, created_at,
@@ -3288,6 +3337,20 @@ async function deriveApplicationProgress(env, appId) {
        FROM applications WHERE id = ?`
   ).bind(appId).first();
   if (!app) return null;
+  // 2026-10-27 葉珮伶：應徵弘昌 BIM、推薦給律准「半導體專案工程師」，律准按「邀請選時段」
+  // LINE 進度卡標題卻是弘昌的職缺。有還在進行中的推薦時，以最新那筆推薦的職缺為準。
+  try {
+    const fw = await env.DB.prepare(
+      `SELECT f.job_slug, j.title FROM candidate_forwards f LEFT JOIN jobs j ON j.slug = f.job_slug
+        WHERE f.application_id = ? AND f.job_slug IS NOT NULL AND f.job_slug != ''
+          AND f.client_rejected_at IS NULL AND f.advisor_not_recommended_at IS NULL AND f.candidate_withdrawn_at IS NULL
+        ORDER BY (f.company_id = ?) DESC, f.forwarded_at DESC LIMIT 1`
+    ).bind(appId, (opts && opts.companyId) || '').first();   // 哪家客戶按的就用那家的職缺（同時推給兩家時）
+    if (fw && fw.job_slug && fw.job_slug !== app.job_slug) {
+      app.job_slug = fw.job_slug;
+      app.job_title = fw.title || app.job_title;
+    }
+  } catch (_) { /* 查不到就用原本應徵的職缺 */ }
   let roundLabels = {};
   try { roundLabels = JSON.parse(app.client_interview_labels || '{}'); } catch { roundLabels = {}; }
 
@@ -4294,13 +4357,10 @@ async function handleLineEvent(env, ev) {
         // 2026-10-21 Jacky：「只發社群」的職缺（還沒簽約、不收網站應徵）原本照樣丟應徵連結，
         // 人選填完整份表才被 /apply 擋下（job_social_only）。改成請人選直接在 LINE 留資料、通知顧問接手。
         if (click.job_title && click.job_status === 'social_only') {
-          const msg = `嗨嗨 👋 謝謝你對「${click.job_title}」有興趣！\n\n`
-            + `這個職缺由顧問一對一協助，不用填網路表單 🙌\n\n`
-            + `麻煩直接在這裡回覆：\n① 你的名字\n② 方便聯絡的電話\n③ 目前住哪個縣市\n\n`
-            + `顧問會盡快跟你聯繫 📞`;
+          const msg = await jobWelcomeMessage(env, click.job_slug, click.job_title, '', { socialOnly: true });
           const okReply = await lineReply(env, replyToken, msg);
           if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
-          await notify(env, `📩 LINE 有人問「只發社群」的職缺：${click.job_title}\n已請對方在 LINE 回覆姓名、電話、縣市，請到 LINE 官方帳號接手（點擊代碼 LC${click.id}）`);
+          await notify(env, `📩 LINE 有人問「只發社群」的職缺：${click.job_title}\n已請對方在 LINE 回覆姓名、電話、方便接電話時段、縣市，請到 LINE 官方帳號接手（點擊代碼 LC${click.id}）`);
           return;
         }
         if (click.job_title) {
@@ -5966,7 +6026,9 @@ function traineeWelcomeFlex(slug, quickUrl) {
   } };
 }
 
-async function jobWelcomeMessage(env, slug, title, applyUrl) {
+// 2026-10-28 Jacky：兩種職缺都用同一個開頭（職缺名／薪資／地點），結尾都留「名字＋電話＋方便接電話的時段」讓顧問直接打。
+// socialOnly＝還沒簽約、只發社群的職缺：不給應徵表單，留電話是唯一一條路。
+async function jobWelcomeMessage(env, slug, title, applyUrl, opts = {}) {
   let j = null;
   try {
     j = await env.DB.prepare(`SELECT j.slug, j.title, j.salary_min, j.salary_max, j.salary_unit, j.locations, j.client_intro,
@@ -6004,6 +6066,12 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
   } else if (j && j.industry_line && !(await mentionsClientName(env, j.industry_line))) {
     lines.push(`🌏 ${j.industry_line}`);
   }
+  if (opts.socialOnly) {
+    lines.push('', '這個職缺由顧問一對一協助，不用填網路表單 🙌', '麻煩直接在這裡回覆：',
+      '① 你的名字', '② 方便聯絡的電話', '③ 方便接電話的時段（例如：平日晚上 7 點後）', '④ 目前住哪個縣市',
+      '', '顧問會在你方便的時間打給你 📞');
+    return lines.join('\n');
+  }
   if (j && j.slug) {
     // 有些職缺（保密、剛建好）沒有公開職缺頁，連結會 404——先確認打得開才附
     const pageUrl = `https://step1ne.com/jobs/${encodeURIComponent(j.slug)}/`;
@@ -6014,7 +6082,8 @@ async function jobWelcomeMessage(env, slug, title, applyUrl) {
     '1️⃣ 填表單＋附履歷（手機拍照、截圖也可以）',
     '2️⃣ 跟 AI 阿財聊大約 30 分鐘，隨時都能開始，不用約時間',
     '3️⃣ 條件適合的話，會再安排電話細談',
-    '', `📝 應徵表單：${applyUrl}`, '', '有想先問的，直接在這裡打字就可以 😊');
+    '', `📝 應徵表單：${applyUrl}`, '', '——', '📞 想先跟顧問聊聊？直接在這裡回覆：',
+    '① 你的名字', '② 方便聯絡的電話', '③ 方便接電話的時段（例如：平日晚上 7 點後）', '顧問會在你方便的時間打給你');
   return lines.join('\n');
 }
 
@@ -9319,7 +9388,11 @@ export default {
           `SELECT DISTINCT consultant_name FROM social_accounts WHERE consultant_name IS NOT NULL`
         ).all();
         let consultantName = label;
-        for (const o of others || []) {
+        // 2026-10-28：顧問上工設定的「綁定 LinkedIn」會帶他確切的社群分組名——完全同名的先認，
+        // 才不會被「有共同字」誤併到別人（例：新顧問 Dan Chen 被併進 Dan H）。
+        const exact = (others || []).find((o) => String(o.consultant_name).trim().toLowerCase() === String(label).trim().toLowerCase());
+        if (exact) consultantName = exact.consultant_name;
+        else for (const o of others || []) {
           if (words(o.consultant_name).some((w) => labelWords.includes(w))) { consultantName = o.consultant_name; break; }
         }
 
@@ -9964,7 +10037,7 @@ export default {
       if (tpe2.getUTCHours() === 9 && tpe2.getUTCMinutes() < 15) {
         const tomorrow = new Date(tpe2.getTime() + 24 * 3600 * 1000).toISOString().slice(0, 10);
         const { results: tmr } = await env.DB.prepare(
-          `SELECT ia.id, ia.confirmed_slot, ia.application_id,
+          `SELECT ia.id, ia.confirmed_slot, ia.application_id, ia.created_by,
                   a.name, a.job_title, a.job_slug
              FROM interview_appointments ia
              JOIN applications a ON a.id = ia.application_id
@@ -9972,6 +10045,9 @@ export default {
               AND substr(ia.confirmed_slot, 1, 10) = ?`
         ).bind(tomorrow).all();
         for (const r of (tmr || [])) {
+          // 2026-10-27 張家昌事故：提醒裡的職缺名稱改用推薦的職缺
+          { const jc = await jobForCandidate(env, r.application_id, apptCompanyId(r));
+            r.job_slug = jc.slug; r.job_title = jc.title; }
           const timeStr = (r.confirmed_slot || '').slice(11, 16);
           const { results: hits } = await env.DB.prepare(
             `SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound'`
