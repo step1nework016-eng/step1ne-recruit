@@ -116,7 +116,15 @@ def refresh_one(acc):
     if not new_token:
         return f'{label}：{json.dumps(resp, ensure_ascii=False)[:200]}'
 
-    d1(f"UPDATE social_accounts SET access_token={q(new_token)} WHERE id={acc['id']}")
+    # 2026-10-28：順便更新到期日——顧問上工設定頁會顯示「到期 YYYY-MM-DD」，不更新會一直停在第一次綁定那天
+    exp_sql = ''
+    try:
+        secs = int(resp.get('expires_in') or 0)
+        if secs > 0:
+            exp_sql = f", token_expires_at=datetime('now','+8 hours','+{secs} seconds')"
+    except (TypeError, ValueError):
+        pass
+    d1(f"UPDATE social_accounts SET access_token={q(new_token)}{exp_sql} WHERE id={acc['id']}")
     log(f'✅ {label} 續期成功')
 
     if label == 'Jacky - Threads':
