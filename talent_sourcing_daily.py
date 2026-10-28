@@ -30,6 +30,13 @@ applications.owner 反推出顧問，18 個完全查無歸屬——這代表目�
     python3 talent_sourcing_daily.py                # 依序跑過所有在職顧問
     python3 talent_sourcing_daily.py --dry           # 只印會選哪個職缺，不真的跑
     python3 talent_sourcing_daily.py --consultant phoebe   # 只跑指定顧問這一位
+
+2026-10-28 修（診斷：后里 BIM 連 14 天、家庭司機連 4 天被排到、天天 0 人）：
+  - 「上次找人時間」原本只看有沒有存進人，0 人的那輪等於沒找過 → 隔天又排同一個。
+    改成每跑一輪就在 sourcing_runs 記一筆（不管找到幾人、成功失敗），排班看兩者較晚的那個。
+  - 後台設成「外部找人選：不找」（job_sourcing_settings.mode='off'）的職缺不排；
+    原本會排到、1 秒就退出，那天那位顧問的名額直接浪費。
+  - 一輪不到 90 秒就失敗退出的（例如職缺剛被改成不找），同一位顧問改排下一個職缺，最多換一次。
 """
 import os
 import sys
@@ -84,6 +91,32 @@ def active_consultants():
     return rows or []
 
 
+RUN_TAG = 'daily-scheduler-v1'   # sourcing_runs.search_strategy_version：這支排班記的那幾筆
+
+
+def _now():
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() + 8 * 3600))   # 跟 D1 的 datetime('now','+8 hours') 同格式
+
+
+def record_run(slug, started, rc, seconds):
+    """每跑一輪都記一筆——0 人也算「找過」，排班才不會隔天又排同一個。"""
+    try:
+        n = (D.d1(f"SELECT COUNT(*) AS n FROM sourced_candidates WHERE job_slug={D.q(slug)} "
+                  f"AND created_at >= {D.q(started)}") or [{}])[0].get('n') or 0
+    except Exception:
+        n = 0
+    status = 'DAILY_FAILED' if rc != 0 else ('DAILY_OK' if n else 'DAILY_ZERO')
+    rid = f"DAILY-{slug}-{started.replace(' ', 'T')}"
+    try:
+        D.d1("INSERT OR REPLACE INTO sourcing_runs (sourcing_run_id, target_job, started_at, finished_at, "
+             "search_strategy_version, status, candidates_discovered_count, stop_reason) VALUES ("
+             f"{D.q(rid)}, {D.q(slug)}, {D.q(started)}, {D.q(_now())}, {D.q(RUN_TAG)}, {D.q(status)}, {int(n)}, "
+             f"{D.q(f'exit={rc}，{int(seconds)} 秒')})")
+    except Exception as e:
+        log(f'⚠️ 記錄這一輪失敗（不影響找人）：{str(e)[:160]}')
+    return n, status
+
+
 def _oldest_not_sourced(rows):
     if not rows:
         return None
@@ -93,14 +126,19 @@ def _oldest_not_sourced(rows):
 
 def pick_job_for(consultant_id, exclude_slugs):
     """回傳 (job_or_None, 'explicit'|'derived'|None)。"""
-    exclude_sql = ''
+    # 10/28：後台設成「不找」的職缺不排
+    exclude_sql = " AND j.slug NOT IN (SELECT job_slug FROM job_sourcing_settings WHERE mode = 'off')"
     if exclude_slugs:
         in_list = ','.join(D.q(s) for s in exclude_slugs)
-        exclude_sql = f' AND j.slug NOT IN ({in_list})'
+        exclude_sql += f' AND j.slug NOT IN ({in_list})'
 
+    # 10/28：「上次找人時間」＝存進人的時間、跟「跑過一輪」的時間，取較晚的（0 人那輪也算找過）
     last_sourced_expr = (
-        "(SELECT MAX(sc.created_at) FROM sourced_candidates sc "
-        f" WHERE sc.job_slug = j.slug AND sc.source LIKE '{SOURCE_TAG}%') AS last_sourced"
+        "NULLIF(MAX("
+        "COALESCE((SELECT MAX(sc.created_at) FROM sourced_candidates sc "
+        f" WHERE sc.job_slug = j.slug AND sc.source LIKE '{SOURCE_TAG}%'), ''), "
+        "COALESCE((SELECT MAX(r.started_at) FROM sourcing_runs r WHERE r.target_job = j.slug), '')"
+        "), '') AS last_sourced"
     )
 
     # a) jobs.owner 明確指定
@@ -173,10 +211,27 @@ def main():
 
     try:
         for c, job, how in plan:
-            log(f"開始跑：{c['display_name']} → {job['title']}（{job['slug']}）")
-            cmd = [sys.executable, os.path.join(HERE, 'talent_sourcing_agent.py'), '--job', job['slug']]
-            r = subprocess.run(cmd, cwd=HERE, timeout=3000)
-            log(f"完成，exit code={r.returncode}")
+            for attempt in (1, 2):
+                log(f"開始跑：{c['display_name']} → {job['title']}（{job['slug']}）")
+                started, t0 = _now(), time.time()
+                cmd = [sys.executable, os.path.join(HERE, 'talent_sourcing_agent.py'), '--job', job['slug']]
+                try:
+                    rc = subprocess.run(cmd, cwd=HERE, timeout=3000).returncode
+                except subprocess.TimeoutExpired:
+                    rc = -9
+                secs = time.time() - t0
+                n, status = record_run(job['slug'], started, rc, secs)
+                log(f"完成，exit code={rc}，新增 {n} 人（{status}，已記成「找過」，明天不會再先排它）")
+                if rc == 0 or secs >= 90 or attempt == 2:
+                    break
+                # 不到 90 秒就失敗：名額不浪費，同一位顧問換下一個職缺
+                picked_slugs.append(job['slug'])
+                nxt, _ = pick_job_for(c['id'], picked_slugs)
+                if not nxt:
+                    break
+                picked_slugs.append(nxt['slug'])
+                log(f"{int(secs)} 秒就失敗，{c['display_name']} 改排下一個：{nxt['title']}（{nxt['slug']}）")
+                job = nxt
     finally:
         lock.release()
 

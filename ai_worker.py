@@ -2929,6 +2929,45 @@ HANDLERS['client_call_split'] = (lambda p: '', True)
 # Jacky：「缺一個真的有看過履歷這個環節才能去下判斷」。顧問在 LinkedIn 打開本人頁面按外掛
 # 「送進 Step1ne」（或在後台上傳 PDF），全文存進 sourced_candidates.profile_text，這支照
 # 全文逐條比對職缺條件重新打分，標成已核對。只認履歷原文寫的事，不推測。
+# 2026-10-28 診斷：歷史 346 位 D 裡有 329 位是「抓到 Cake 登入頁／網站選單」或「沒有對應職缺」時
+# 硬核對出來的（AI 自己在備註寫「不是履歷、沒辦法核對」，程式照分數改成 D）。
+# 改成：抓到的不是履歷 → verify_status='fetch_failed'（抓取失敗），等第一律不動。
+# 拿掉 HTML 標籤後字跟字中間會多空白（實際抓到的是「請先 註冊 或 登入 以檢視更多…」），所以都允許空白
+_LOGIN_WALL = re.compile(r'請先\s*註冊\s*或\s*登入|登入\s*以\s*檢視|登入\s*後\s*即可|登入\s*才能|'
+                         r'(log ?in|sign ?in|sign up) to (view|see|continue)', re.I)
+
+
+def _not_resume_reason(text):
+    """抓回來的文字不像履歷就回傳原因（給 verify_note 用），像履歷回傳空字串。
+    ① 有「請先註冊或登入」：Cake 公開頁一定長這樣——網站選單＋本人公開的一小段＋登入牆。
+       只看「選單之後、登入牆之前」本人那一段，少於 300 字＝只抓到選單和幾句自介，不是履歷。
+       （10/28 實測：被誤判成 D 的那批，本人那段多半不到 300 字；寫了長自介的照樣交給 AI，AI 也會再判一次是不是履歷。）
+    ② 沒有登入牆：全文找不到兩個以上的年份＝不像履歷（真履歷一定有任職起訖年）。"""
+    t = str(text or '')
+    m = _LOGIN_WALL.search(t)
+    if m:
+        head = t[:m.start()]
+        cut = max(head.rfind('成功案例'), head.rfind('導入事例'), head.rfind('Success Stories'))
+        own = head[cut + 4:] if cut >= 0 else head[-600:]
+        if len(re.sub(r'\s+', '', own)) < 300:
+            return '抓到的是 Cake 的登入牆頁面（只有網站選單和一句自介，寫著「請先註冊或登入」），工作經歷沒抓到'
+        return ''
+    t = re.sub(r'(©|copyright|\(c\))\s*(19|20)\d{2}', ' ', t, flags=re.I)   # 頁尾版權年份不算
+    if len(re.findall(r'(?<!\d)(19[7-9]\d|20[0-3]\d)(?!\d)', t)) < 2:
+        return '抓到的內容幾乎沒有任職年份，看起來是網站選單／自我介紹，不是履歷'
+    return ''
+
+
+def _mark_fetch_failed(sid, why, status='fetch_failed'):
+    """抓取失敗／無法核對：只記原因，不改等第、不改分數（原本會被改成 D）。"""
+    label = '抓取失敗' if status == 'fetch_failed' else '無法核對'
+    d1_http.query(f"UPDATE sourced_candidates SET verify_status={q(status)}, verified_at=datetime('now','+8 hours'), "
+                  f"verify_note={q(f'⚠️ {label}（等第沒有改）：{why}。要核對請顧問用 LinkedIn／Cake 外掛送全文，或上傳 PDF。')} "
+                  f"WHERE id={q(sid)}")
+    log(f'  履歷核對：{sid} {label}，等第不動（{why[:60]}）')
+    return json.dumps({'ok': False, 'error': label, 'reason': why}, ensure_ascii=False)
+
+
 def _run_sourced_verify(payload):
     sid = str(payload.get('sourced_id') or '')
     rows = d1_http.query(f"SELECT * FROM sourced_candidates WHERE id={q(sid)}")['results']
@@ -2944,6 +2983,8 @@ def _run_sourced_verify(payload):
             try:
                 raw = _ur.urlopen(_ur.Request(str(u).split('#')[0], headers={'User-Agent': 'Mozilla/5.0'}), timeout=30).read().decode('utf-8', 'replace')
                 t2 = _html.unescape(_re.sub(r'\s+', ' ', _re.sub(r'<[^>]+>', ' ', _re.sub(r'(?is)<(script|style).*?</\1>', '', raw))))
+                if len(t2) >= 200 and _not_resume_reason(t2):
+                    return _mark_fetch_failed(sid, _not_resume_reason(t2))   # 10/28：登入牆＋選單也超過 200 字，不能當履歷
                 if len(t2) >= 200:
                     text = t2[:60000]
                     d1_http.query(f"UPDATE sourced_candidates SET profile_text={q(text)}, verified_by='AI（Cake 公開履歷）' WHERE id={q(sid)}")
@@ -2955,6 +2996,12 @@ def _run_sourced_verify(payload):
         return json.dumps({'ok': False, 'error': '履歷內容太少'}, ensure_ascii=False)
     jobs = d1_http.query(f"SELECT title, required_conditions, must_skills, client_screen_conditions, scoring_notes, seniority, years_min, salary_min, salary_max, salary_unit, locations FROM jobs WHERE slug={q(c.get('job_slug'))}")['results']
     j = jobs[0] if jobs else {}
+    # 10/28：沒有對應職缺（舊爬蟲收的人才庫、職缺被刪）就沒有條件可對 → 不核對，不准判 D
+    if not j or not (j.get('required_conditions') or j.get('must_skills')):
+        return _mark_fetch_failed(sid, '這位人選沒有對應的職缺條件可以比對' if not j else '職缺沒填必要條件，沒東西可以比對', status='no_job')
+    # 顧問用外掛送進來的全文也可能只是登入頁（沒登入時按了外掛）
+    if _not_resume_reason(text):
+        return _mark_fetch_failed(sid, _not_resume_reason(text))
     fb = d1_http.query(f"SELECT headline, company, fit, reject_reason FROM sourced_candidates WHERE job_slug={q(c.get('job_slug'))} AND fit IN ('fit','unfit') LIMIT 20")['results']
     prompt = f"""你是台灣獵頭顧問的履歷核對助理。下面是一位人選的「完整履歷原文」（顧問從本人 LinkedIn 頁面或 PDF 送進來的），
 以及他被配對的職缺條件。請**只根據履歷原文**逐條核對，重新判斷他適不適合這個職缺。
@@ -2981,7 +3028,8 @@ def _run_sourced_verify(payload):
 {text[:15000]}
 
 只輸出一個 JSON（不要其他文字）：
-{{"current_title": "現職職稱（照原文）", "current_company": "現職公司（照原文）",
+{{"is_real_resume": true 或 false（上面的「完整履歷原文」是不是真的有工作經歷的履歷；只是網站選單、登入頁、一句自介就填 false）,
+  "current_title": "現職職稱（照原文）", "current_company": "現職公司（照原文）",
   "fit_score": 0到100的整數, "verdict": "符合 或 部分符合 或 不符合",
   "one_line": "一句話結論（白話，顧問一眼看懂）",
   "conditions": [{{"item": "必要條件", "result": "符合/部分符合/不符合/履歷沒寫", "evidence": "履歷原文依據（公司＋職稱＋做的事）"}}],
@@ -2989,6 +3037,8 @@ def _run_sourced_verify(payload):
   "changed_from_ai": "跟 AI 原本判斷差在哪（一句話；沒差就寫「跟原判斷一致」）"}}"""
     out = run_claude(prompt, want_json=True, timeout=600)
     data = json.loads(out[out.find('{'): out.rfind('}') + 1])
+    if data.get('is_real_resume') is False or str(data.get('is_real_resume')).lower() == 'false':
+        return _mark_fetch_failed(sid, 'AI 判斷送進來的不是履歷（' + str(data.get('one_line') or '')[:80] + '）')
     fit = max(0, min(100, int(data.get('fit_score') or 0)))
     grade = 'A' if fit >= 80 else 'B' if fit >= 60 else 'C' if fit >= 40 else 'D'
     lines = [f"✅ 已核對（{c.get('verified_by') or '顧問'}・完整履歷，AI 照原文判斷）：{data.get('verdict') or ''}｜{data.get('one_line') or ''}"]

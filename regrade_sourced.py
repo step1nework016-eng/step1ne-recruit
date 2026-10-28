@@ -24,6 +24,7 @@
     python3 regrade_sourced.py --job <slug> --grades A,B         # 只重評目前是 A/B 的
     python3 regrade_sourced.py --job <slug> --web ...            # 允許打開人選自己的個人頁補證據（只開 WebFetch）
     python3 regrade_sourced.py --apply-report sourcing_runs/regrade_xxx_dry.json [--ids …]  # 把看過的試評結果原樣寫回
+    python3 regrade_sourced.py --restored [--dry-run] [--limit 20]   # 10/28：重評「Cake 登入頁誤判成 D、已還原」的那批（跨職缺）
     加 --dry-run 一律不寫回；報告存在 sourcing_runs/regrade_<slug>_<時間>.json
 """
 import argparse
@@ -51,6 +52,10 @@ TIMEOUT = 240
 CLAUDE = shutil.which('claude') or 'claude'
 ACTIVE = ("status='new' AND fit IS NULL AND owner IS NULL AND converted_application_id IS NULL "
           "AND source LIKE 'AI%'")
+# 2026-10-28：Cake 自動核對抓到登入頁、被誤改成 D 的人，還原後標 raw_json.regrade_pending=1。
+# 這批有些是 Cake 爬蟲收的（source='cake'，不是 AI 開頭），所以不套 source 條件。
+RESTORED = ("json_extract(raw_json,'$.regrade_pending')=1 AND status='new' AND fit IS NULL AND owner IS NULL "
+            "AND converted_application_id IS NULL")
 
 
 def log(m):
@@ -179,7 +184,8 @@ def write_back(r, j, g, score, det, fp):
     note = (note + ('\n舊註記：' + old_note if old_note and not old_note.startswith('舊註記') else ('\n' + old_note if old_note else '')))[:4000]
     q("UPDATE sourced_candidates SET grade=?, score=?, note=?, "
       "raw_json=json_set(CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END, "
-      "'$.grade_jd_fp', ?, '$.grade_rule', 'must-check-v1-regrade', '$.grade_detail', json(?), '$.must_check', json(?)) "
+      "'$.grade_jd_fp', ?, '$.grade_rule', 'must-check-v1-regrade', '$.grade_detail', json(?), '$.must_check', json(?), "
+      "'$.regrade_pending', 0) "
       "WHERE id=? AND status='new' AND fit IS NULL AND owner IS NULL",
       [g, score, note, fp, json.dumps(det, ensure_ascii=False), json.dumps(j.get('must_check') or [], ensure_ascii=False), r['id']])
 
@@ -193,6 +199,9 @@ def cmd_apply(a):
     if fp != rep['fp']:
         sys.exit(f'❌ 職缺條件在試評之後改過（{rep["fp"]} → {fp}），請重跑 --dry-run')
     conds = Q.job_conditions(job)
+    # 10/28：條件切法改過（sourcing_quality 拆硬／軟條件），舊報告的逐條編號會對不上 → 要重跑試評
+    if rep.get('conditions') and [c['text'] for c in rep['conditions']] != [c['text'] for c in conds]:
+        sys.exit('❌ 必要條件的切法在試評之後改過（編號對不上），請重跑 --dry-run')
     want = set(a.ids.split(',')) if a.ids else None
     n = 0
     for p in rep['people']:
@@ -220,7 +229,8 @@ def cmd_regrade(a):
     fp = Q.job_fingerprint(job)
     rows = q(f"SELECT id, name, headline, company, location, skills, bio, note, grade, score, created_at, raw_json, "
              f"verify_status, substr(COALESCE(profile_text,''),1,4000) AS profile_text, linkedin_url, source_url, "
-             f"github_url, other_links FROM sourced_candidates WHERE job_slug=? AND {ACTIVE} ORDER BY created_at", [a.job])
+             f"github_url, other_links FROM sourced_candidates WHERE job_slug=? AND {RESTORED if getattr(a, 'restored', False) else ACTIVE} "
+             f"ORDER BY created_at", [a.job])
     if a.ids:
         want = set(a.ids.split(','))
         rows = [r for r in rows if r['id'] in want]
@@ -262,6 +272,24 @@ def cmd_regrade(a):
     log(f'完成：重評前 {stat_old} → 重評後 {stat_new}；報告：{path}')
 
 
+def cmd_restored(a):
+    """跨職缺跑 --restored：一個職缺一個職缺重評，--limit 是全部加起來的上限。"""
+    slugs = [r['job_slug'] for r in q(f"SELECT job_slug, COUNT(*) n FROM sourced_candidates WHERE {RESTORED} "
+                                      "AND job_slug IN (SELECT slug FROM jobs WHERE status IN ('open','active')) "
+                                      "GROUP BY job_slug ORDER BY n DESC")]
+    if not slugs:
+        return log('沒有待重評的還原人選')
+    left = a.limit
+    for slug in slugs:
+        if left <= 0:
+            break
+        n = q(f"SELECT COUNT(*) n FROM sourced_candidates WHERE job_slug=? AND {RESTORED}", [slug])[0]['n']
+        a.job, a.limit = slug, min(left, n)
+        cmd_regrade(a)
+        left -= a.limit
+    log('還原人選重評跑完' + ('（dry-run，沒寫資料庫，旗標也沒清）' if a.dry_run else ''))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--stale', action='store_true', help='只盤點哪些職缺有過期評等，不叫 AI')
@@ -273,7 +301,10 @@ def main():
     ap.add_argument('--limit', type=int, default=999)
     ap.add_argument('--apply-report', help='把一份 --dry-run 報告的結果原樣寫回（不再叫 AI），可配 --ids 只寫部分人')
     ap.add_argument('--web', action='store_true', help='允許打開人選自己的個人頁補證據（只開 WebFetch；較慢、較貴）')
+    ap.add_argument('--restored', action='store_true', help='10/28：重評 Cake 登入頁誤判 D、已還原的那批（跨職缺，不用給 --job）')
     a = ap.parse_args()
+    if a.restored and not a.job:
+        return cmd_restored(a)
     if a.stale:
         return cmd_stale()
     if a.apply_report:

@@ -108,7 +108,7 @@ def load_existing_pool(slug):
     撞到舊人白撞。實測後果：2026-08-26 第三輪改道到廠務統包商，把 Hsiao Yeh (Sean) Lin
     當成新發現，但他早就是池子裡的 RESET-025。"""
     rows = D.d1(
-        f"SELECT name, company, headline, linkedin_url, source_url, category "
+        f"SELECT name, company, headline, linkedin_url, source_url, category, grade "
         f"FROM sourced_candidates WHERE job_slug={D.q(slug)}"
     )
     return rows or []
@@ -119,7 +119,9 @@ def format_ledger(rows):
         return ('', 0)
     lines = []
     for r in rows:
-        bits = [str(r.get('name') or '').strip()]
+        # 10/28 乙：標出等第，A/B 級的人可以拿來當五人校準樣本
+        g = str(r.get('grade') or '').strip().upper()
+        bits = [str(r.get('name') or '').strip() + (f'［{g}級・可當校準樣本］' if g in ('A', 'B') else '')]
         for k in ('company', 'headline'):
             v = (r.get(k) or '').strip()
             if v:
@@ -193,6 +195,8 @@ def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_
   username、時間線）就記 CROSS_SOURCE_DUPLICATE 並跳過，不要重建、不要寫進 candidates 陣列。
 - 同名但錨點不足，記 UNVERIFIED_SAME_NAME，也不要寫進 candidates。
 - 只有 NEW_UNIQUE_RAW_LEAD（確定不在下面這份名單裡的新身分）才可以放進 candidates 陣列。
+- 例外（2026-10-28 Jacky 核准）：標「可當校準樣本」的 A/B 級，可以直接拿來當五人校準的樣本（記 KNOWN_SAMPLE），
+  這樣就不用為了校準硬找 5 個新的人；但他們一樣不能放進 candidates 陣列、不算新產出。
 - 這份名單可以當「去哪裡找」的線索：拆解其中 B 級以上的人「做過什麼工作」（產業×工作內容×工具×專案），
   反推還有哪些公司會養出同樣經歷的人，再去那些公司找**做同一種工作**的人。
 - ⚠️ 不能反過來用公司推能力（2026-10-08 修）：同事、同公司其他成員、同專案名單上的人，
@@ -213,12 +217,17 @@ def build_prompt(job, sample_only, prior_learnings=None, ledger_text='', ledger_
             "或 ROUTE_CALIBRATION_FAILED。candidates 陣列這次就是這 5 位樣本。"
         )
     else:
+        # 2026-10-28 乙（Jacky 核准）：校準沒過不再整輪交白卷。原本 58/101 輪校準沒過、50 輪 0 人——
+        # 規則要 AI 去找「不存在的 5 個新樣本」（后里 BIM 的公開人口已經 100% 收進後台）。
+        # 改成：已在名單的 A/B 級可以當樣本；沒過也照找，但這輪最多 10 位、程式會標「方向待確認」給顧問滑卡淘汰。
         scope = (
-            "先完成 Archetype Lock 跟五人校準；校準通過（4/5 以上）才繼續正式批量搜尋，"
-            "最多找 20 位新候選人（寧缺勿濫：必要條件對不上的不要為了湊數放進來，少交沒關係），"
+            "先完成 Archetype Lock 跟五人校準（樣本可以用上面名單裡標「可當校準樣本」的 A/B 級，不一定要新的人）。"
+            "校準通過（4/5 以上）：繼續正式批量搜尋，最多找 20 位新候選人。"
+            "校準沒通過（ROUTE_CALIBRATION_FAILED）：**照樣做正式搜尋，但這輪最多 10 位**，"
+            "calibration_result 照實寫 ROUTE_CALIBRATION_FAILED，run_summary 寫清楚假陽性模式跟你修正後的方向"
+            "（這條覆蓋技能包裡「未通過 4/5 不得批量搜尋／深查聯絡」的寫法，以 job-route-calibration-v1.md 的 Step1ne 覆寫段為準）。"
+            "兩種情況都寧缺勿濫：必要條件對不上的不要為了湊數放進來，少交沒關係；"
             "並對其中判定為 Qualified 的人選做公開聯絡資料查找。"
-            "如果校準沒通過（ROUTE_CALIBRATION_FAILED），就不要往下做正式搜尋，"
-            "candidates 陣列留空，在 run_summary 說明失敗原因。"
         )
     return f'''你是 Step1ne 獵頭公司的 AI Talent Intelligence & Sourcing Agent。
 
@@ -339,8 +348,25 @@ def record_no_profile(job_slug, people, source):
                                ensure_ascii=False) + '\n')
 
 
-def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員', job=None, leads=None):
+CALIB_FAIL_CAP = 10   # 10/28 乙：校準沒過的那輪最多收 10 位
+CALIB_FAIL_TAG = '方向待確認（這輪五人校準沒過，請顧問滑卡確認方向對不對）'
+
+
+def calibration_failed(parsed):
+    return 'FAILED' in str((parsed or {}).get('calibration_result') or '').upper()
+
+
+def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員', job=None, leads=None, direction_unconfirmed=False):
     saved = 0
+    if direction_unconfirmed and len(candidates) > CALIB_FAIL_CAP:
+        def _fs(c):
+            try:
+                return float(c.get('fit_score') or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        candidates = sorted(candidates, key=_fs, reverse=True)
+        log(f'校準沒過：這輪只收分數最高的 {CALIB_FAIL_CAP} 位（AI 交了 {len(candidates)} 位）')
+        candidates = candidates[:CALIB_FAIL_CAP]
     job = job or (D.d1(f"SELECT * FROM jobs WHERE slug={D.q(job_slug)}") or [{}])[0]
     conds = Q.job_conditions(job)
     fp = Q.job_fingerprint(job)
@@ -406,6 +432,9 @@ def save_candidates(job_slug, candidates, dry, source='AI獵頭顧問專員', jo
         c['grade_jd_fp'] = fp
         c['grade_rule'] = 'must-check-v1'
         c['grade_detail'] = det
+        if direction_unconfirmed:
+            c['direction_unconfirmed'] = True
+            note = f'{note}｜{CALIB_FAIL_TAG}' if note else CALIB_FAIL_TAG
         note = Q.grade_note(c, grade, det, tag=note or '')
         src_url = (c.get('source_url') or '').strip() or None
         if src_url and '#' not in src_url:
@@ -1020,7 +1049,10 @@ def main():
         log(f"   佐證：{c.get('evidence')}")
         log(f"   Email：{c.get('email')}　電話：{c.get('phone')}　LinkedIn：{c.get('linkedin_url')}")
 
-    saved = save_candidates(a.job, candidates, a.dry, leads=parsed.get('leads_no_profile'))
+    unconfirmed = calibration_failed(parsed) and not a.sample_only
+    if unconfirmed:
+        log('⚠️ 五人校準沒過，但照新規則（10/28）仍收人：最多 10 位，標「方向待確認」')
+    saved = save_candidates(a.job, candidates, a.dry, leads=parsed.get('leads_no_profile'), direction_unconfirmed=unconfirmed)
     log(f'完成，共 {len(candidates)} 位候選人，新增 {saved} 位進池子' + ('（--dry 沒有真的寫入）' if a.dry else ''))
     if saved:
         push_tg_review_cards(a.dry)

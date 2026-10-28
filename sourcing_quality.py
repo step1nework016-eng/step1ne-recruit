@@ -166,20 +166,86 @@ PHONE_SOFT = re.compile(r'學歷|大學|碩士|博士|專科|高中|科系|相�
                         r'鼎新|T100|TIPTOP|Workflow|SAP|Oracle|NetSuite|正航|文中|凌越|ERP\s*系統|系統操作|'
                         r'熟悉.{0,12}(法規|法令|規定|系統|操作|流程)|'
                         r'責任心|細心|耐心|抗壓|積極|主動|溝通|親和|穩定度|配合度|學習')
+# 2026-10-28 診斷：「駕駛技術佳」「遇壓力能冷靜」這種人格特質／軟能力，LinkedIn、Cake 永遠不會寫，
+# 當成要經歷證據的硬條件 → 永遠 unknown → 最高 C（家庭司機職缺因此天天 0 個 B）。歸成電話確認。
+PHONE_TRAIT = re.compile(r'技術佳|駕駛技術|安全駕駛|意識|常識|態度|服務熱忱|冷靜|應對|應變|突發|壓力|'
+                         r'規劃.{0,4}(路線|行程)|管理時間|時間管理|時間觀念|團隊合作|溝通協調|保密|誠信|誠實|'
+                         r'責任感|責任心|負責任|同理心|熱忱|熱情|樂觀|守時|吃苦|耐勞|EQ|情緒|禮貌|儀態|整潔|勤快|'
+                         r'(中文|英文|日文|台語|韓文|越南語|英語|日語|語言).{0,8}(工作語言|流利|能力|程度|溝通|聽說讀寫|對話|會話|閱讀|讀寫)|'
+                         r'(閱讀|讀懂|看懂).{0,4}(英文|日文)|口語表達|表達能力|表達清楚|以(中|英|日)文為|語言\s*[須需為：:]|(?<![A-Za-z])N[1-5](?!\d)|多益|TOEIC|IELTS|托福|JLPT|'
+                         r'可於.{0,10}(工作|上班)|當地生活')
+# 只寫「英文」「Excel／Word」這種一兩個字的基本能力：公開資料不會寫、電話一問就知道
+_TRIVIAL = re.compile(r'(熟悉|會|具備?|基本|基礎|操作|軟體|文書|處理|能力|即可|中等|佳|'
+                      r'Office|Word|Excel|PowerPoint|PPT|中文|英文|日文|英語|日語|[、／/,，與和及\s：:])+', re.I)
 COND_FIELDS = ('required_conditions', 'must_skills', 'language_requirement')
 JOB_FP_FIELDS = ('title', 'main_duties', 'required_conditions', 'must_skills', 'nice_to_have_skills',
                  'preferred_background', 'language_requirement', 'locations', 'seniority', 'years_min', 'education_level')
+_NUM_PREFIX = re.compile(r'^\s*[0-9０-９]+\s*[\.、．)）]\s*')
+_LABEL_PREFIX = re.compile(r'^\s*(其他|經驗|條件|其他條件|工作經歷|擅長工具|技能|學歷|語言)\s*[：:]\s*')
+_SKIP = re.compile(r'非必要|不限|不拘|加分|尤佳|為佳|優先|不需要|不要求|無經驗可|無經驗亦可|免經驗|不需經驗')
+_BENEFIT = re.compile(r'提供|宿舍|補助|津貼|福利')
+_NOTE = re.compile(r'公司(提供|協助|負擔)|不保證|提供宿舍')   # 公司這邊的說明，不是人選條件
+
+
+def _clean(p):
+    return _NUM_PREFIX.sub('', str(p or '')).strip(' \t-・•*，,')
 
 
 def _split(text):
-    parts = re.split(r'[；;。\n]+|(?<=\S)\s*[0-9０-９]+[\.、．)]\s*', str(text or ''))
-    return [p.strip(' \t-・•*，,') for p in parts if p and len(p.strip(' \t-・•*，,')) >= 2]
+    """一個欄位切成一條一條。2026-10-28 加：認得 ['…','…'] 跟 ["…","…"] 這種清單格式
+    （原本整串被當成一條，半導體專案工程師的硬條件就這樣跟「溝通協調」黏在一起）。"""
+    s = str(text or '').strip()
+    if s[:1] == '[' and s[-1:] == ']':
+        arr = None
+        try:
+            arr = json.loads(s)
+        except ValueError:
+            try:
+                import ast
+                arr = ast.literal_eval(s)
+            except (ValueError, SyntaxError):
+                arr = None
+        if isinstance(arr, list):
+            return [c for c in (_clean(x) for x in arr) if len(c) >= 2]
+    parts = re.split(r'[；;。\n]+|(?<=\S)\s*[0-9０-９]+[\.、．)]\s*', s)
+    return [c for c in (_clean(p) for p in parts) if len(c) >= 2]
+
+
+def _clauses(t):
+    """一條條件再切成小段（逗號、「且／並」），括號裡的不切、頓號不切。"""
+    t = re.sub(r'(?<=\S)(並且|而且|且|並)(?=\S)', '，', t)
+    out, buf, depth = [], '', 0
+    for ch in t:
+        if ch in '（([［':
+            depth += 1
+        elif ch in '）)]］' and depth:
+            depth -= 1
+        if depth == 0 and ch in '，,；;':   # 頓號不切：「系統導入、數位轉型、流程自動化」是同一條的幾個選項
+            out.append(buf)
+            buf = ''
+            continue
+        buf += ch
+    out.append(buf)
+    return [x.strip(' \t-・•*') for x in out if len(x.strip(' \t-・•*')) >= 2]
+
+
+def _is_phone(t):
+    return bool(PHONE_ONLY.search(t) or PHONE_SOFT.search(t) or PHONE_TRAIT.search(t) or _TRIVIAL.fullmatch(t))
+
+
+def _no_experience_job(job):
+    blob = ' '.join(str(job.get(k) or '') for k in ('title', 'required_conditions', 'must_skills', 'seniority'))
+    return bool(re.search(r'儲備|培訓|無經驗|新鮮人|免經驗|不需經驗|entry|junior|intern', blob, re.I))
 
 
 def job_conditions(job):
     """職缺的必要條件清單：[{'no':1,'text':…,'kind':'evidence'|'phone'}]。
     來源：required_conditions、must_skills、language_requirement，以及 preferred_background 裡標「必要」的那句。
-    kind=phone 的是只能電話問的（接受外派、輪班…），其他都是看經歷就該判斷得出來的。"""
+    kind=phone 的是只能電話問的（接受外派、輪班、人格特質…），其他都是看經歷就該判斷得出來的。
+
+    2026-10-28 改：一條條件裡「硬的」跟「軟的」黏在一起時拆開——
+      「半導體廠房監工、機電經驗＋溝通協調」→ 監工經驗要證據、溝通協調電話問；
+      原本整條只要出現「溝通」「學習」就整條變電話確認，真正的硬條件被放水。"""
     items = []   # (文字, 來源)：req＝必要條件、skill＝必備技能、lang＝語言
     src_of = {'required_conditions': 'req', 'must_skills': 'skill', 'language_requirement': 'lang'}
     for f in COND_FIELDS:
@@ -187,19 +253,39 @@ def job_conditions(job):
     for p in _split(job.get('preferred_background')):
         if '必要' in p or '必備' in p:
             items.append((re.sub(r'[（(]?必要[）)]?|[（(]?必備[）)]?', '', p).strip() or p, 'req'))
-    if not items and (job.get('title') or job.get('main_duties')):
-        # 職缺沒填必要條件（例如 bim-engineer-houli）：至少要有「實際做過這份工作的核心任務」的證據
-        items.append((f"實際做過這個職缺的核心工作：{job.get('title') or ''}｜{str(job.get('main_duties') or '')[:120]}", 'core'))
     seen, out = set(), []
-    for t, src in items:
-        is_lang = src == 'lang'
-        key = re.sub(r'\s+', '', t)
-        if key in seen or re.search(r'非必要|不限|不拘|加分|尤佳|為佳|優先|不需要|不要求', t) or re.fullmatch(r'[無皆可/／\s]*', t):
-            continue   # 加分項不是必要條件
+
+    def add(text, kind, src):
+        key = re.sub(r'[（(][^）)]*[）)]|\s+', '', text)   # 括號裡的補充說明不影響「是不是同一條」
+        if key in seen:
+            return
         seen.add(key)
-        # 語言程度公開資料多半看不出來、顧問電話一講就知道 → 歸「電話確認」，不因為 unknown 就降到 C
-        kind = 'phone' if (is_lang or (src != 'core' and (PHONE_ONLY.search(t) or PHONE_SOFT.search(t)))) else 'evidence'
-        out.append({'no': len(out) + 1, 'text': t[:200], 'kind': kind, 'src': src})
+        out.append({'no': len(out) + 1, 'text': text[:200], 'kind': kind, 'src': src})
+
+    for t, src in items:
+        if _SKIP.search(t) or re.fullmatch(r'[無皆可/／\s]*', t):
+            continue   # 加分項、「無經驗可」不是必要條件
+        body = _LABEL_PREFIX.sub('', t).strip()
+        if not body or re.fullmatch(r'[（(].*[）)]', body) and _BENEFIT.search(body):
+            continue   # 「（外縣市同仁提供宿舍…）」是福利說明，不是人選條件
+        if src == 'lang':
+            # 語言程度公開資料多半看不出來、顧問電話一講就知道 → 歸「電話確認」，不因為 unknown 就降到 C
+            add(body, 'phone', src)
+            continue
+        hard, soft = [], []
+        for cl in _clauses(body):
+            if _SKIP.search(cl) or re.fullmatch(r'[（(].*[）)]', cl) or _NOTE.search(cl):
+                continue   # 整段在括號裡的是補充說明（「（現為雲林虎尾）」），公司的說明也不是人選條件
+            (soft if _is_phone(cl) else hard).append(cl)
+        if hard:
+            add('、'.join(hard), 'evidence', src)
+        if soft:
+            add('、'.join(soft), 'phone', src)
+    if (job.get('title') or job.get('main_duties')) and (
+            not out or (not any(c['kind'] == 'evidence' for c in out) and not _no_experience_job(job))):
+        # 職缺沒填必要條件（例如 bim-engineer-houli，照舊）；或 10/28 加：填的全是電話問的（例如家庭司機）——
+        # 至少要有「實際做過這份工作的核心任務」的證據。後者遇到儲備／無經驗可的職缺不加（本來就收沒做過的人）。
+        add(f"實際做過這個職缺的核心工作：{job.get('title') or ''}｜{str(job.get('main_duties') or '')[:120]}", 'evidence', 'core')
     return out
 
 

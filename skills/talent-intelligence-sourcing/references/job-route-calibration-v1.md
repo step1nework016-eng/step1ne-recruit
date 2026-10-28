@@ -27,8 +27,21 @@ Minimize human input without treating a job title as a complete candidate defini
 1. Find exactly five named samples with source URLs.
 2. Do not perform Email or phone deep-search during calibration. Public contact details encountered incidentally may be logged but must not influence Fit.
 3. Label each sample `MATCH`, `MISMATCH`, or `UNCERTAIN` against the complete Archetype Lock, including capability, maturity, visibility, and realistic recruitability.
-4. Bulk sourcing is allowed only when at least four samples are `MATCH` and none reveals a systemic route conflict. Being famous, senior, expensive, commercially established, or unlikely to accept the role is a mismatch whenever the lock targets emerging, trainable, or actively interested talent.
-5. Otherwise set `ROUTE_CALIBRATION_FAILED`, summarize the false-positive pattern, revise the lock, and run another five-sample test.
+4. Full bulk sourcing (up to 20 new people per run) is allowed when at least four samples are `MATCH` and none reveals a systemic route conflict. Being famous, senior, expensive, commercially established, or unlikely to accept the role is a mismatch whenever the lock targets emerging, trainable, or actively interested talent.
+5. Otherwise set `ROUTE_CALIBRATION_FAILED`, summarize the false-positive pattern, and revise the lock. Under the Step1ne override below, a failed calibration no longer blocks the run: continue with a capped search (at most 10 new people) using the revised lock, and every result is tagged `方向待確認`.
+
+## Step1ne override (2026-10-28, approved by Jacky)
+
+This section overrides every "do not bulk-source / do not deep-search contacts until 4/5 pass" sentence in SKILL.md, full-prompt-v3.4.md, job-strategy-router.md and workflow.md for Step1ne runs.
+
+Why: in 101 recorded runs, 58 failed calibration and 50 returned 0 people. The gate required five *new* samples, but for narrow roles (e.g. 后里 BIM) the whole public population was already in the Candidate Memory Ledger, so a new five-person sample could not exist and every run ended empty.
+
+1. **Known passing candidates may be calibration samples.** People already in the Candidate Memory Ledger with grade A or B (marked `可當校準樣本` in the prompt) may be used as calibration samples and logged as `KNOWN_SAMPLE`. They still never count as new output and are never written to `candidates`.
+2. **Calibration is a warning, not a gate.** If calibration passes (4/5 or 5/5), run normally: up to 20 new people. If it fails, still run the formal search with the revised lock, capped at **10 new people** for that run, and report `calibration_result = ROUTE_CALIBRATION_FAILED` with the false-positive pattern in `run_summary`.
+3. **Tagging.** Every person saved from a failed-calibration run is tagged `方向待確認` (note + `raw_json.direction_unconfirmed = true`). Consultants confirm or reject the direction on the swipe page; the grade rules (must-check per condition, max B without a verified résumé) are unchanged.
+4. **Unchanged:** archetype lock, protected-characteristic rules, no login / no guessed Email, profile-page gate, and the per-condition grading. `FAILED_ROUTE_FALSE_POSITIVE` still applies if a consultant later finds the whole batch is the wrong archetype.
+
+Enforced in code by `talent_sourcing_agent.py` (`CALIB_FAIL_CAP`, `calibration_failed`, `direction_unconfirmed`).
 
 ## Ambiguous livestream rule
 
@@ -58,4 +71,4 @@ Do not use appearance, age, gender, ethnicity, disability, or other protected ch
 
 ## Scaling rule
 
-Only after calibration passes may the agent build a 30–100 person pool, perform contact deep-search, trigger graph expansion, or start recurring daily sourcing. Store the five samples in the working workbook and never count failed-route candidates as usable output.
+Only after calibration passes may the agent build a 30–100 person pool or trigger graph expansion. (Step1ne override: a failed calibration still allows one capped run of at most 10 people with public-contact lookup, tagged `方向待確認`; recurring daily sourcing continues.) Store the five samples in the working workbook and never count failed-route candidates as usable output.
