@@ -47,7 +47,9 @@ SKILL_DIR = os.path.expanduser(
     '~/claude-projects/工作流程技能包/recruiting-workflow/headhunter-social-content-skill')
 DB = 'step1ne-recruit'
 MODEL = 'claude-sonnet-5'
-TIMEOUT = 600
+# 2026-10-28：600 秒太緊——正常一次要跑 8.5～9.8 分鐘，跟 ai_worker／社群產稿搶 claude 時
+# 超過 10 分鐘就被砍（10/23、10/28 exit 1）。放寬到 25 分鐘。
+TIMEOUT = 1500
 LOCK = '/tmp/step1ne-topic-research.lock'
 
 # 跟 build_expertise.py 同一個道理：可以查資料，但不准碰這台電腦。

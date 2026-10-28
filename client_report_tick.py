@@ -524,6 +524,7 @@ def tick():
             print(f'[錯誤] request {row["id"]} 處理失敗：{e}', file=sys.stderr)
             D.d1(f"UPDATE client_report_requests SET status='error', error={D.q(str(e)[:300])}, "
                  f"done_at=datetime('now','+8 hours') WHERE id={D.q(row['id'])}")
+    return len(rows)
 
 
 def main():
@@ -537,15 +538,22 @@ def main():
     # 每輪檢查自己的檔案有沒有被改過，有就重新啟動自己。
     me = os.path.abspath(__file__)
     born = os.path.getmtime(me)
+    # 2026-10-28 加：沒有待處理工作時整支靜悄悄，log 7 天沒輸出分不出是閒著還是卡住。
+    # 每 30 輪（約 30 分鐘）寫一行心跳，證明有在連 D1、有在撿工作。
+    rounds = 0
+    picked = 0
     while True:
         if os.path.getmtime(me) != born:
             print('[tick] 程式已更新，重新啟動', file=sys.stderr, flush=True)
             # 用原本的啟動參數（含 -u、相對路徑），WSL2 看門狗是用指令字串找這支的，參數變了會以為它掛了又多開一支
             os.execv(sys.executable, getattr(sys, 'orig_argv', None) or [sys.executable, me] + sys.argv[1:])
         try:
-            tick()
+            picked += tick() or 0
         except Exception as e:
             print(f'[tick 例外] {e}', file=sys.stderr)
+        rounds += 1
+        if rounds % 30 == 1:
+            print(f'[心跳 {time.strftime("%m-%d %H:%M:%S")}] 已掃 {rounds} 輪，撈到待處理 {picked} 筆', flush=True)
         time.sleep(POLL_SECONDS)
 
 
