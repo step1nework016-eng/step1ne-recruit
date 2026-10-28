@@ -1294,7 +1294,7 @@ const CF_TEST_EMAIL = 'aiagentg888@gmail.com';
 const CF_UNSPEC = 'call-first-unspecified';
 const CF_NOTE_HEAD = '【電洽後接手（測試版）】';
 const CF_LIFF = 'https://liff.line.me/2011631457-YcRRVX0v?t=';
-const CF_UPLOAD = 'https://step1ne.com/resume-upload-call-beta/?t=';
+const CF_UPLOAD = 'https://step1ne.com/resume-upload-call/?t=';  // 2026-10-28 換正式網址（-beta 保留可用）
 
 async function cfFlag(env) {
   try {
@@ -5083,6 +5083,69 @@ async function saveReplyResumes(env, emailId, appId) {
     }
   } catch { /* 抓不到就算了，TG 會提醒去 official@ 下載 */ }
   return saved;
+}
+
+// 2026-10-28 Jacky：用人單位在 portal「跟顧問討論這位人選」貼了視訊面試連結（Teams／Meet／Zoom…），
+// backoffice 會把連結存進那場面試（interview_appointments.location）並在 TG 出一張卡片「📧 寄視訊連結給人選」。
+// 這支是那顆按鈕：只有 Jacky／Phoebe 能按；同一場面試同一個連結只寄一次。
+async function handleMeetingLinkAction(env, cq) {
+  const apptId = String(cq.data).slice('mlink:'.length);
+  const answer = async (text, alert) => {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cq.id, text: String(text).slice(0, 190), show_alert: !!alert }),
+    }).catch(() => {});
+  };
+  const uname = String((cq.from && cq.from.username) || '').toLowerCase();
+  const allow = [...String(env.JACKY_TG_USERNAMES || 'jackyyuqi').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean), ...BD_APPROVERS];
+  if (!allow.includes(uname)) { await answer('⛔ 只有 Jacky、Phoebe 可以按', true); return; }
+  const who = uname === 'behe10' ? 'Phoebe' : 'Jacky';
+  const ap = await env.DB.prepare(
+    `SELECT ia.id, ia.application_id, ia.confirmed_slot, ia.location, ia.created_by, ia.status, a.name, a.email
+       FROM interview_appointments ia JOIN applications a ON a.id = ia.application_id WHERE ia.id = ?`).bind(apptId).first();
+  if (!ap) { await answer('❌ 找不到這場面試', true); return; }
+  const url = String(ap.location || '').trim();
+  if (!/^https?:\/\//.test(url)) { await answer('❌ 這場面試沒有存到視訊連結', true); return; }
+  // 2026-10-28 Jacky：除了 Email，有綁 LINE 的人選也同步推一則（兩邊都沒有才擋）
+  const { results: lb } = await env.DB.prepare(`SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound'`).all();
+  const lineIds = (lb || []).filter((row) => safeJsonArray(row.application_ids).includes(ap.application_id)).map((row) => row.line_user_id);
+  if (!ap.email && !lineIds.length) { await answer(`❌ ${ap.name} 沒有 Email 也沒綁 LINE，請用電話給他連結`, true); return; }
+  const done = await env.DB.prepare(
+    `SELECT id FROM candidate_notes WHERE application_id = ? AND type = '視訊連結已寄' AND content LIKE ?`)
+    .bind(ap.application_id, '%' + url + '%').first();
+  if (done) { await answer('這個連結已經寄過了，不重複寄', true); return; }
+  const jc = await jobForCandidate(env, ap.application_id, apptCompanyId(ap));
+  const slot = String(ap.confirmed_slot || '');
+  let when = '（時間請見面試確認信）';
+  if (slot.length >= 16) {
+    const d = new Date(slot.slice(0, 10) + 'T00:00:00Z');
+    const wd = '日一二三四五六'[d.getUTCDay()];
+    const h = Number(slot.slice(11, 13)), mm = slot.slice(14, 16);
+    when = `${Number(slot.slice(5, 7))}/${Number(slot.slice(8, 10))}（${wd}）${h < 12 ? '上午' : (h < 18 ? '下午' : '晚上')} ${h > 12 ? h - 12 : h}:${mm}`;
+  }
+  const app = /teams\./i.test(url) ? 'Microsoft Teams' : /meet\.google/i.test(url) ? 'Google Meet' : /zoom\./i.test(url) ? 'Zoom' : /webex/i.test(url) ? 'Webex' : '';
+  const ok = !ap.email ? false : await sendMail(env, ap.email, `視訊面試連結｜${when}｜${jc.title || '面試'}`, [
+    `${ap.name} 您好：`,
+    `「${jc.title || '這個職缺'}」的視訊面試時間是 ${when}，連結在下方按鈕。`,
+    app ? `連結會用 ${app} 開啟：用手機的話請先下載 ${app} App；用電腦可以直接用瀏覽器開。` : '用手機或電腦都可以開啟。',
+    '建議提早 5 分鐘進去，先測試麥克風跟鏡頭。祝面試順利！',
+  ], { url, text: '進入視訊面試' }, null, { name: ap.name });
+  let lineOk = 0;
+  for (const uid of lineIds) {
+    try { await linePush(env, uid, `🎥 ${ap.name} 您好，「${jc.title || '面試'}」的視訊面試時間是 ${when}\n\n視訊連結：${url}\n\n建議提早 5 分鐘進去，先測試麥克風跟鏡頭。祝面試順利！`); lineOk++; } catch (_) { /* 推不到就算了，Email 有寄 */ }
+  }
+  if (!ok && !lineOk) { await answer('❌ Email 跟 LINE 都沒送出去，請稍後再按一次', true); return; }
+  const via = [ok && 'Email', lineOk && 'LINE'].filter(Boolean).join('＋');
+  await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?, ?, '視訊連結已寄', ?, ?, ?)`)
+    .bind(crypto.randomUUID(), ap.application_id, `已用 ${via} 寄視訊面試連結（${when}）：${url}`, nowTaipei(), who).run();
+  await answer(`✅ 已用 ${via} 寄給 ${ap.name}`);
+  if (cq.message) {
+    await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: cq.message.chat.id, message_id: cq.message.message_id,
+        reply_markup: { inline_keyboard: [[{ text: `✅ ${who} 已用 ${via} 寄給 ${ap.name}（${nowTaipei().slice(5, 16)}）`, callback_data: 'noop' }]] } }),
+    }).catch(() => {});
+  }
 }
 
 // 官網企業詢問：TG 上按「誰接」→ 這家所有開發紀錄指派給那個人（只有 BD_APPROVERS 能按）
@@ -9250,6 +9313,11 @@ export default {
         return new Response('ok');
       }
 
+      if (cq && cq.data && String(cq.data).startsWith('mlink:')) {
+        await handleMeetingLinkAction(env, cq);
+        return new Response('ok');
+      }
+
       if (cq && cq.data && String(cq.data).startsWith('il_take:')) {
         await handleInboundLeadAction(env, cq);
         return new Response('ok');
@@ -10037,7 +10105,7 @@ export default {
       if (tpe2.getUTCHours() === 9 && tpe2.getUTCMinutes() < 15) {
         const tomorrow = new Date(tpe2.getTime() + 24 * 3600 * 1000).toISOString().slice(0, 10);
         const { results: tmr } = await env.DB.prepare(
-          `SELECT ia.id, ia.confirmed_slot, ia.application_id, ia.created_by,
+          `SELECT ia.id, ia.confirmed_slot, ia.application_id, ia.created_by, ia.location, ia.stage,
                   a.name, a.job_title, a.job_slug
              FROM interview_appointments ia
              JOIN applications a ON a.id = ia.application_id
@@ -10049,13 +10117,18 @@ export default {
           { const jc = await jobForCandidate(env, r.application_id, apptCompanyId(r));
             r.job_slug = jc.slug; r.job_title = jc.title; }
           const timeStr = (r.confirmed_slot || '').slice(11, 16);
+          // 2026-10-28 張家昌事故：原本寫死「第二階段面試」（8/13 那時「第二階段」指阿財初審之後的面試），
+          // 客戶第一關面試也被說成第二階段，人選回 LINE 問。改照這場面試實際是第幾關；stage 0 是顧問電洽。
+          const stg = Number(r.stage) || 0;
+          const roundText = stg > 0 ? `第${'一二三四五'[stg - 1] || stg}階段面試` : '電話洽談';
           const { results: hits } = await env.DB.prepare(
             `SELECT line_user_id, application_ids FROM line_bindings WHERE state='bound'`
           ).all();
           const bound = (hits || []).filter((row) => safeJsonArray(row.application_ids).includes(r.application_id));
           for (const b of bound) {
             await linePush(env, b.line_user_id,
-              `⏰ 提醒您，明天（${tomorrow.slice(5).replace('-', '/')}）${timeStr} 有一場「${r.job_title || r.job_slug}」的第二階段面試，別忘記囉！`);
+              `⏰ 提醒您，明天（${tomorrow.slice(5).replace('-', '/')}）${timeStr} 有一場「${r.job_title || r.job_slug}」的${roundText}，別忘記囉！`
+              + (/^https?:\/\//.test(String(r.location || '')) ? `\n\n視訊連結：${r.location}` : ''));
           }
           await notify(env,
             `⏰ 已提醒候選人明天面試：${r.name}（${r.job_title || r.job_slug}）${tomorrow.slice(5).replace('-', '/')} ${timeStr}`
