@@ -5,6 +5,8 @@ QUICK_APPLY_SLUGS = {
     'semiconductor-bim-mep-drafting-trainee-hsinchu',
     'bim-engineer-houli',
     'trainee-engineering-design-engineer',
+    # 2026-10-28 苗栗銅鑼半導體廠專案的無經驗工程繪圖（AutoCAD），比照 10/21 規則加入
+    'engineering-drafting-trainee-tongluo',
 }
 
 
