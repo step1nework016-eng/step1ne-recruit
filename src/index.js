@@ -7170,6 +7170,64 @@ export default {
       let update;
       try { update = await request.json(); } catch { return new Response('ok'); }
 
+      // ── 2026-10-29 Jacky：電話提醒「打完追問」──
+      // backoffice 的 consultantReminderTick 在電話時間過 30 分鐘後發一則「打完了嗎？」＋三顆按鈕（rfu:ok/na/re:<id>）。
+      // 按了就寫進人選卡片（有 application_id 才寫）；「接通」可回覆那則訊息補一句重點，「改約」可回覆新時間（例：10/30 14:00）。
+      // 起因：劉伃庭 10/27 14:30 有打通、14:45 也推薦了，但通話內容沒人記，兩天後被當成「還沒打過」寫進信裡。
+      {
+        const tgPost = (method, body) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/${method}`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+        const cqf = update.callback_query;
+        if (cqf && /^rfu:(ok|na|re):/.test(String(cqf.data || ''))) {
+          const [, act, rid] = String(cqf.data).split(':');
+          const rem = await env.DB.prepare(`SELECT * FROM consultant_reminders WHERE id=?`).bind(rid).first();
+          const LB = { ok: '✅ 接通', na: '📵 沒接', re: '🔁 改約時間' };
+          if (!rem) { await tgPost('answerCallbackQuery', { callback_query_id: cqf.id, text: '找不到這筆提醒' }); return new Response('ok'); }
+          const now = nowTaipei();
+          const who = rem.requested_by || (cqf.from && cqf.from.first_name) || '顧問';
+          await env.DB.prepare(`UPDATE consultant_reminders SET followup_result=?, followup_done_at=? WHERE id=?`).bind(act, now, rid).run().catch(() => {});
+          if (rem.application_id) {
+            const txt = act === 'ok' ? `${String(rem.call_at).slice(5)} 電話接通（${who}）` : act === 'na' ? `${String(rem.call_at).slice(5)} 電話沒接（${who}）` : `${String(rem.call_at).slice(5)} 電話改約（${who}）`;
+            await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+              .bind(crypto.randomUUID(), rem.application_id, '電洽紀錄', txt, now, who).run().catch(() => {});
+          }
+          await tgPost('answerCallbackQuery', { callback_query_id: cqf.id, text: '已記錄' });
+          const hint = act === 'ok' ? '\n👉 想補一句重點：直接「回覆」這則訊息打字，會寫進卡片。'
+            : act === 're' ? '\n👉 直接「回覆」這則訊息打新時間（例：10/30 14:00），會幫你排新提醒。' : '';
+          if (cqf.message) await tgPost('editMessageText', { chat_id: cqf.message.chat.id, message_id: cqf.message.message_id,
+            text: `${cqf.message.text || ''}\n\n已記錄：${LB[act]}${rem.application_id ? '（已寫進人選卡片）' : ''}${hint}`, reply_markup: { inline_keyboard: [] } });
+          return new Response('ok');
+        }
+        const rmf = update.message;
+        if (rmf && rmf.reply_to_message && String(rmf.text || '').trim() && !(rmf.from && rmf.from.is_bot)) {
+          const rem = await env.DB.prepare(`SELECT * FROM consultant_reminders WHERE followup_msg_id=? AND followup_chat=?`)
+            .bind(String(rmf.reply_to_message.message_id), String(rmf.chat.id)).first().catch(() => null);
+          if (rem) {
+            const now = nowTaipei(); const who = rem.requested_by || '顧問'; const t = String(rmf.text).trim();
+            if (rem.followup_result === 're') {
+              const m = t.match(/(?:(\d{4})[\/-])?(\d{1,2})[\/-](\d{1,2})\D+(\d{1,2})[:：](\d{2})/);
+              if (!m) { await tgPost('sendMessage', { chat_id: rmf.chat.id, reply_to_message_id: rmf.message_id, text: '看不懂時間，請用「10/30 14:00」這種格式再回覆一次。' }); return new Response('ok'); }
+              const y = m[1] || now.slice(0, 4);
+              const callAt = `${y}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')} ${m[4].padStart(2, '0')}:${m[5]}`;
+              const tt = new Date(callAt.replace(' ', 'T') + ':00+08:00'); tt.setMinutes(tt.getMinutes() - 30);
+              const remindAt = new Date(tt.getTime() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ');
+              await env.DB.prepare(`INSERT INTO consultant_reminders (id,application_id,candidate_name,call_at,remind_at,message,target_chat_id,fallback_chat_id,fallback_thread_id,requested_by,requested_tg_id,status,created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?)`).bind('rem' + crypto.randomUUID().replace(/-/g, '').slice(0, 12), rem.application_id, rem.candidate_name, callAt, remindAt,
+                 `改約再打：${rem.candidate_name || ''}${rem.message ? '｜' + String(rem.message).slice(0, 200) : ''}`, rem.target_chat_id, rem.fallback_chat_id, rem.fallback_thread_id, who, rem.requested_tg_id, now).run();
+              if (rem.application_id) await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+                .bind(crypto.randomUUID(), rem.application_id, '電洽預約', `📞 改約：${callAt}（${who}）`, now, who).run().catch(() => {});
+              await tgPost('sendMessage', { chat_id: rmf.chat.id, reply_to_message_id: rmf.message_id, text: `✅ 已排新提醒：${callAt.slice(5)}（提前 30 分鐘提醒你）` });
+            } else {
+              if (rem.application_id) await env.DB.prepare(`INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (?,?,?,?,?,?)`)
+                .bind(crypto.randomUUID(), rem.application_id, '電洽紀錄', `${String(rem.call_at).slice(5)} 通話重點（${who}）：${t.slice(0, 1500)}`, now, who).run().catch(() => {});
+              await tgPost('sendMessage', { chat_id: rmf.chat.id, reply_to_message_id: rmf.message_id, text: rem.application_id ? '✅ 已寫進人選卡片' : '✅ 收到（這筆沒有綁人選卡片，只記在提醒紀錄）' });
+              await env.DB.prepare(`UPDATE consultant_reminders SET followup_note=? WHERE id=?`).bind(t.slice(0, 1500), rem.id).run().catch(() => {});
+            }
+            return new Response('ok');
+          }
+        }
+      }
+
       // ── 2026-10-13 Jacky：顧問私訊機器人 → 記下私訊代號（客戶開發早晚提醒才能私訊他）──
       // 只認 consultant_tg 名單上的 TG 帳號（username 對得上才綁），其他人私訊一律不理。
       {
