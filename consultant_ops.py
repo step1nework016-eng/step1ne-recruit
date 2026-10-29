@@ -524,7 +524,9 @@ def cmd_free_mail(a):
     只產生確認卡；Jacky／Phoebe／提出的顧問在 TG 按「確認寄出」才會從 official@ 寄出。可附檔（pdf、word、excel、ppt、圖片）。"""
     import base64
     import mimetypes
-    w = who(); need_where(w)
+    w = who()
+    if not a.now:
+        need_where(w)
     subject = (a.subject or '').strip()
     text = open(a.text_file, encoding='utf-8').read().strip() if a.text_file else (a.text or '').strip()
     if not subject or not text:
@@ -585,6 +587,14 @@ def cmd_free_mail(a):
                       'mime': 'application/pdf'})
     if len(files) > 5:
         die('附件最多 5 個')
+    if a.now:
+        # 2026-10-29 Jacky：Phoebe 明確說「寄」就直接寄，不用再按確認卡（檢查一樣照跑：星期、客戶名、人選文字）
+        r = bo('/admin/free-mail', {'action': 'send', 'to': d['to'], 'cc': ','.join(d.get('cc') or []), 'subject': d['subject'], 'text': text,
+                                    'files': files, 'by': w['name'] or '顧問', 'application_id': app.get('id') or None, 'company': a.company or ''})
+        if not r.get('ok'):
+            die(r.get('error') or '寄送失敗')
+        print(f'✅ 已送出寄信（從 official@，約 1 分鐘內寄出並存寄件備份）。\n收件：{d["to"]}\n主旨：{d["subject"]}' + (f'\n附件：{"、".join(f["filename"] for f in files)}' if files else ''))
+        return
     params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name']}
     who_line = f'人選：{app["name"]}（{app.get("job_title") or app.get("job_slug") or "—"}）\n' if app.get('id') else (f'公司：{a.company}\n' if a.company else '')
     card = ('📧 確認寄出｜自由信件\n' + who_line + f'收件：{d["to"]}\n' + (f'副本：{", ".join(d["cc"])}\n' if d.get('cc') else '') +
@@ -616,6 +626,49 @@ def cmd_anon(a):
     code = rows('SELECT code FROM candidate_anon_codes WHERE application_id=?', [ap['id']])
     print(f'✅ 已送出 {ap["name"]} 的匿名履歷（代號 {code[0]["code"] if code else "產生中"}）。約 1～3 分鐘後草稿貼到 TG「客戶履歷人工確認」，按確認才產 PDF。'
           f'\n之後寄給客戶：free-mail --company 公司 --to 客戶信箱 --subject … --text-file … --anon "{a.who}"')
+
+
+def _anon_req(ap):
+    r = rows("""SELECT id, status, ai_job_id, synthetic_content_json FROM client_report_requests
+                 WHERE application_id=? AND anon_code IS NOT NULL ORDER BY requested_at DESC LIMIT 1""", [ap['id']])
+    if not r:
+        die(f'{ap["name"]} 還沒做過匿名履歷，先跑 anon {ap["name"]}')
+    return r[0]
+
+
+def cmd_anon_edit(a):
+    """改匿名履歷（2026-10-29 Jacky：Phoebe 說要怎麼改就直接改）。等同在 TG 回覆草稿打修改意見：
+    把修改意見＋前一版內容交給 AI 重新整理，1～3 分鐘後新版草稿貼 TG；PDF 已產出過的也能改（確認後覆蓋舊 PDF）。"""
+    ap = resolve(a.who)
+    req = _anon_req(ap)
+    if req['status'] in ('awaiting_synthesis', 'pending'):
+        die('上一版還在整理中，等新版草稿出來再改')
+    old = rows('SELECT payload_json FROM ai_jobs WHERE id=?', [req['ai_job_id']]) if req.get('ai_job_id') else []
+    try:
+        payload = json.loads(old[0]['payload_json']) if old else {}
+    except Exception:
+        payload = {}
+    payload['edit_instruction'] = a.instruction.strip()
+    try:
+        payload['previous_output'] = json.loads(req.get('synthetic_content_json') or '{}')
+    except Exception:
+        payload['previous_output'] = None
+    jid = secrets.token_hex(16)
+    d1("INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'client_report_synthesize', ?, 'pending', ?)",
+       [jid, json.dumps(payload, ensure_ascii=False), fmt(now_tpe())])
+    d1("UPDATE client_report_requests SET status='awaiting_synthesis', ai_job_id=? WHERE id=?", [jid, req['id']])
+    print(f'✅ 已送出修改：{ap["name"]}（{clip(a.instruction, 60)}）。約 1～3 分鐘後新版草稿貼到 TG「客戶履歷人工確認」；'
+          f'沒問題就 anon-confirm {a.who} 產 PDF。')
+
+
+def cmd_anon_confirm(a):
+    """確認匿名履歷草稿、產 PDF（等同 TG 按「✅ 確認，產出PDF」）。"""
+    ap = resolve(a.who)
+    req = _anon_req(ap)
+    if req['status'] != 'awaiting_confirm':
+        die(f'現在狀態是 {req["status"]}，不是等確認（還在整理就等草稿出來；已產出可直接寄）')
+    d1("UPDATE client_report_requests SET status='confirmed' WHERE id=?", [req['id']])
+    print(f'✅ 已確認 {ap["name"]} 的匿名履歷，約 1～3 分鐘產出 PDF；之後 anon {a.who} --status 看好了沒，再用 free-mail --anon 附給客戶。')
 
 
 def cmd_summary(a):
@@ -764,9 +817,12 @@ def main():
     p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）')
     p.add_argument('--file-id', action='append', help='附系統裡已存在的檔案：檔案編號，或「編號:顯示檔名」，可重複')
     p.add_argument('--card-note', help='確認卡最上面多一行說明（不會進信裡）')
-    p.add_argument('--anon', action='append', help='附上這位人選系統做好的匿名履歷 PDF（姓名或編號，可重複）'); p.set_defaults(fn=cmd_free_mail)
+    p.add_argument('--anon', action='append', help='附上這位人選系統做好的匿名履歷 PDF（姓名或編號，可重複）')
+    p.add_argument('--now', action='store_true', help='直接寄出，不貼確認卡（顧問本人明確說「寄」才用）'); p.set_defaults(fn=cmd_free_mail)
     p = sp.add_parser('anon', help='製作匿名履歷（系統流程，TG 確認後產 PDF）'); p.add_argument('who'); p.add_argument('--job', help='對哪個職缺做（職缺 slug），不填用人選原本的職缺'); p.add_argument('--status', action='store_true', help='只看做好了沒')
     p.set_defaults(fn=cmd_anon)
+    p = sp.add_parser('anon-edit', help='改匿名履歷（給修改意見，AI 重新整理）'); p.add_argument('who'); p.add_argument('instruction'); p.set_defaults(fn=cmd_anon_edit)
+    p = sp.add_parser('anon-confirm', help='確認匿名履歷草稿、產 PDF'); p.add_argument('who'); p.set_defaults(fn=cmd_anon_confirm)
     p = sp.add_parser('summary', help='電洽逐字稿寫進卡片（確認卡）'); p.add_argument('who'); p.add_argument('--file'); p.add_argument('--text')
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)

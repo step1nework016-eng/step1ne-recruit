@@ -24,15 +24,22 @@ Phoebe 是 Step1ne（德仁管理顧問）的獵頭顧問，負責電訪、約�
 - 寄給人選：`free-mail --who 姓名`，不用填信箱，程式自動帶卡片上的 Email。不要叫 Phoebe 去查信箱。
 - 「不能取得電話和 email」只適用於**主動開發陌生人選時上網挖聯絡方式**；回覆已應徵、已來信的人選完全沒問題。
 
-## 匿名履歷＋寄給客戶（2026-10-29 Jacky）
-- Phoebe 說「這幾份做匿名履歷」（不管她丟的是 104 PDF 還是人選名字）：**你不要自己讀 PDF、不要自己寫匿名版**，一律走系統：
-  1. `consultant_ops.py find 姓名` 找人選卡片（104 存的履歷大多已建卡、履歷附在卡片上）
-  2. `consultant_ops.py anon 姓名 --job 職缺slug` → 系統讀卡片上的履歷做匿名版，草稿貼 TG「客戶履歷人工確認」，Phoebe 按確認才產 PDF
-  3. `consultant_ops.py anon 姓名 --status` 看 PDF 好了沒
-  4. 寄給客戶：`free-mail --company 公司 --to 客戶信箱 --subject … --text-file 內文檔 --anon 姓名 --anon 姓名`（一封最多 5 個附件）→ TG 確認卡 → 按確認寄出
-- 找不到卡片：請 Phoebe 在顧問後台「新增人選」上傳履歷建卡，再做第 2 步。
-- 104 履歷的使用方式 Jacky 已經決定由公司後台處理，你不用再提醒 104 規範、也不要因此停下來問。
-- 人選地點有更新（例如 Phoebe 說「現居三重、希望地點台北」）：先寫進卡片備註（summary 或請 Phoebe 在卡片改），再做匿名履歷。
+## 一條龍：匿名履歷 → 修改 → 寄給客戶（2026-10-29 Jacky：Phoebe 說什麼就直接做，不要每步都問）
+Phoebe 說一句，你就做到底，做完回一句結果。**不要自己讀 104 PDF、不要自己寫匿名版、不要提 104 規範或停下來問**（Jacky 已決定由公司後台處理）。
+
+| Phoebe 說 | 你直接跑 |
+|---|---|
+| 「幫 XXX 做匿名履歷」（給名字或丟 PDF） | `consultant_ops.py find XXX` 找卡片 → `consultant_ops.py anon XXX --job 職缺slug`（不知道職缺就用卡片上的） |
+| 「XXX 的匿名履歷改成…」「地點改台北」「拿掉某段」 | `consultant_ops.py anon-edit XXX "她說的修改內容"`（新版草稿 1～3 分鐘貼 TG） |
+| 「可以」「OK」「確認」（針對匿名履歷） | `consultant_ops.py anon-confirm XXX` → 產 PDF |
+| 「做好了沒」 | `consultant_ops.py anon XXX --status` |
+| 「寄給 ○○ 公司」＋說了「寄」 | 擬好信 → `consultant_ops.py free-mail --now --company 公司 --to 客戶信箱 --subject … --text-file 內文 --anon XXX --anon YYY` **直接寄出** |
+| 只說「擬一封信」、沒說「寄」 | 把完整信件（收件人／主旨／內文／附件）貼給她看，等她說「寄」再用 `--now` 寄 |
+
+- 找不到人選卡片：請 Phoebe 在顧問後台「新增人選」上傳履歷建卡，再做匿名履歷。
+- 人選地點、可到職日等資料有更新：直接 `anon-edit XXX "現居台北市中山區，希望地點台北"`。
+- 寄給客戶的信署名「Phoebe｜Step1ne 德仁管理顧問」，客戶公司名保密規則照下面「寫給人選的字」。
+- 一封信最多 5 個附件。寄出後回一句：「已寄給 ○○（附 S-xxx、S-yyy）」。
 
 ## 寫給人選的字
 - 不寫「客戶」，改「用人單位」；不提年齡、性別、婚育、外貌、國籍。
