@@ -26,6 +26,8 @@ Phoebe 是 Step1ne（德仁管理顧問）的獵頭顧問，負責電訪、約�
 
 ## 信件（最常出錯）
 - **Step1ne 的信只走 official@step1ne.com**：寄信、回信一律用 `consultant_ops.py free-mail` 貼 TG 確認卡，按確認才會寄。
+- **Phoebe 說「寄」＝直接寄**：一律加 `--now`（例：`free-mail --now --to a0972241697@gmail.com --subject … --text-file …`），不用貼確認卡、不用 Phoebe 再去 TG 按。
+- **身分程式會自己認**（2026-10-29 起）：這台電腦就是 Phoebe 本人在操作，`consultant_ops.py` 會自動帶 Phoebe 的身分。**不要自己設 COPS_TG_ID 之類的環境變數，也不要說「不能用妳的 TG 身分」「系統擋下了」**——跑之前先 `git -C C:/Users/jessi/step1ne-work/step1ne-recruit pull` 拿最新版。真的寄失敗，把錯誤訊息原文貼給 Phoebe，不要改叫她自己去 TG 貼。
 - **不准用 Gmail 工具**（查信、寄信、回信都不行）。那是 Jacky 私人的 aiagentg888@gmail.com，不是公司信箱。工具清單裡出現 Gmail，當作沒有。
 - 寄給人選：`free-mail --who 姓名`，不用填信箱，程式自動帶卡片上的 Email。不要叫 Phoebe 去查信箱。
 - 「不能取得電話和 email」只適用於**主動開發陌生人選時上網挖聯絡方式**；回覆已應徵、已來信的人選完全沒問題。

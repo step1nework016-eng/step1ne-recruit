@@ -116,12 +116,25 @@ def bo(path, body=None, method=None):
 
 
 # ── 誰在講話（bot.py 給的，助理改不了）──
+# 2026-10-29 Jacky：Phoebe 在自己電腦的 Claude Code 跑這支（不是從 TG 顧問助理叫），沒有 COPS_* 環境變數，
+# 寄信／確認卡都被 need_where 擋下，她的 Claude 又不肯自己設 TG 身分（覺得是冒用）。
+# 改成：沒有環境變數時，依「這台電腦的使用者帳號」認人——這就是本人在自己電腦上操作，不是冒用。
+LOCAL_USERS = {
+    'jessi': {'tg_id': '6326743721', 'username': 'behe10', 'chat': '6326743721'},      # Phoebe 的 Windows
+    'user': {'tg_id': '8365775688', 'username': 'jackyyuqi', 'chat': '8365775688'},    # Jacky 的 Mac
+}
+
+
 def who():
     tg_id = os.environ.get('COPS_TG_ID', '').strip()
     uname = os.environ.get('COPS_TG_USERNAME', '').strip().lower()
     name = os.environ.get('COPS_TG_NAME', '').strip()
     chat = os.environ.get('COPS_CHAT', '').strip()
     thread = os.environ.get('COPS_THREAD', '').strip()
+    if not tg_id:
+        loc = LOCAL_USERS.get(re.split(r'[\\/]', HOME.rstrip('/\\'))[-1].lower())
+        if loc:
+            tg_id, uname, chat = loc['tg_id'], loc['username'], chat or loc['chat']
     display = TG_TO_CONSULTANT.get(uname) or name or uname or ''
     return {'tg_id': tg_id, 'username': uname, 'name': display, 'chat': chat, 'thread': thread}
 
