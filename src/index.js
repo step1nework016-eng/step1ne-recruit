@@ -4422,8 +4422,7 @@ async function handleLineEvent(env, ev) {
     const unboundUser = !binding || binding.state !== 'bound';
     const traineeKw = /BIM|繪圖|培訓|無經驗|沒經驗|儲備|新手|Revit|AutoCAD/i.test(t0);
     const keyword = !explicit && traineeKw && t0.length <= 60 && unboundUser;
-    // 已綁定（以前應徵過）的人來問「其他職缺」也要回＋通知顧問——原本會掉進下面 bound 分支，只存訊息、不回不通知（Jacky 10/29 用自己綁定過的 LINE 實測撞到）
-    const askJob = !explicit && !traineeKw && /職缺|工作機會|應徵|徵人|在徵/.test(t0) && t0.length <= 80;
+    const askJob = !explicit && !traineeKw && /職缺|工作機會|應徵|徵人|在徵/.test(t0) && t0.length <= 80 && unboundUser;
     if (askJob) {
       const recentAsk = await env.DB.prepare(`SELECT 1 FROM line_kw_replies WHERE line_user_id = ? AND at >= datetime('now','+8 hours','-1 day') LIMIT 1`)
         .bind(userId).first().catch(() => null);
