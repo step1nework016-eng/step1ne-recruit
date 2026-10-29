@@ -27,7 +27,8 @@
 | 認識公司：請 AI 研究 | 後台客戶卡片「認識公司」按鈕（工作交給 WSL2 跑） | 不用 |
 | 104 職缺找客戶（依職缺開發） | 後台「客戶 / BD → 依職缺開發」；每天由 `hiring_leads_scan.py` 更新 | 不用 |
 | 補客戶 Email／電話 | 後台客戶卡片「更新電話／Email」 | 不用 |
-| 匿名履歷 | 人選卡片「製作匿名履歷」→ TG 確認 | TG 按確認 |
+| 匿名履歷 | `consultant_ops.py anon 姓名 --job 職缺slug`（等同人選卡片「製作匿名履歷」；系統讀卡片上的履歷，**不要自己讀 104 PDF**）→ TG「客戶履歷人工確認」確認 → `anon 姓名 --status` 看 PDF 好了沒 | TG 按確認 |
+| 匿名履歷寄給客戶 | `consultant_ops.py free-mail --company 公司 --to 客戶信箱 --subject … --text-file … --anon 姓名 [--anon 姓名]…`（附系統做好的匿名 PDF，一封最多 5 個附件） | TG 確認卡 |
 | 從現有人選配對＋針對職缺匿名摘要 | `consultant_ops.py match --company 公司 --job 職缺slug`（開始）→ 幾分鐘後 `match --run <run_id>`（看結果）→ `match --brief <application_id>,…`（做匿名履歷：走標準流程，草稿貼 TG「客戶履歷人工確認」，確認才產 PDF；不會自動寄） | 不用；需 WSL2 的 ai_worker 在跑 |
 | LinkedIn 查人、送邀請、傳訊息 | 要用 Phoebe 自己的 Chrome（Claude in Chrome 擴充功能），登入她自己的 LinkedIn | 她明確同意才送，一次一位 |
 

@@ -575,6 +575,14 @@ def cmd_free_mail(a):
             die(f'系統裡找不到這個檔案：{fid}')
         files.append({'file_id': fr[0]['id'], 'filename': fname.strip() or fr[0]['filename'] or 'attachment.pdf',
                       'mime': fr[0]['mime'] or 'application/octet-stream'})
+    # 2026-10-29 Jacky：Phoebe 的 Claude 也要能把「系統做好的匿名履歷」附給客戶——用人選姓名／編號就好，不用自己讀 104 PDF
+    for key in (a.anon or []):
+        ap = resolve(key)
+        ar = rows('SELECT code, file_id, filename FROM candidate_anon_codes WHERE application_id=?', [ap['id']])
+        if not ar or not ar[0].get('file_id'):
+            die(f'{ap["name"]} 的匿名履歷還沒做好：先跑 anon {key}，等 TG「客戶履歷人工確認」按確認、PDF 產出後再寄')
+        files.append({'file_id': ar[0]['file_id'], 'filename': ar[0].get('filename') or f'匿名人選推薦_{ar[0]["code"]}.pdf',
+                      'mime': 'application/pdf'})
     if len(files) > 5:
         die('附件最多 5 個')
     params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name']}
@@ -586,6 +594,28 @@ def cmd_free_mail(a):
         card = a.card_note.strip() + '\n' + card
     aid = create_action('free_mail', app, params, d['to'], d['subject'], text, card, [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')])
     print(f'✅ 已貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}' + (f'\n附件：{len(files)} 個' if files else ''))
+
+
+def cmd_anon(a):
+    """製作匿名履歷（2026-10-29 Jacky：Phoebe 的 Claude 也要能做）。走系統標準流程：後台讀人選卡片上的履歷→AI 改寫匿名版
+    →草稿貼 TG「客戶履歷人工確認」→ 顧問按確認才產 PDF。Claude 不用、也不要自己讀 104 PDF 內容。"""
+    w = who()
+    ap = resolve(a.who)
+    ex = rows('SELECT code, file_id, filename FROM candidate_anon_codes WHERE application_id=?', [ap['id']])
+    if a.status:
+        if not ex:
+            print(f'{ap["name"]}：還沒做過匿名履歷'); return
+        print(f'{ap["name"]}：代號 {ex[0]["code"]}，' + (f'PDF 已產出（{ex[0].get("filename") or ex[0]["file_id"]}），可用 free-mail --anon "{a.who}" 附給客戶'
+              if ex[0].get('file_id') else 'PDF 還沒產出（等 TG 確認）')); return
+    body = {'anonymous': True, 'by': w.get('name') or '顧問'}
+    if a.job:
+        body['job_slug'] = a.job
+    r = bo(f'/admin/application/{urllib.parse.quote(ap["id"])}/client-formal-report', body)
+    if not r.get('ok'):
+        die(r.get('error') or '送出失敗')
+    code = rows('SELECT code FROM candidate_anon_codes WHERE application_id=?', [ap['id']])
+    print(f'✅ 已送出 {ap["name"]} 的匿名履歷（代號 {code[0]["code"] if code else "產生中"}）。約 1～3 分鐘後草稿貼到 TG「客戶履歷人工確認」，按確認才產 PDF。'
+          f'\n之後寄給客戶：free-mail --company 公司 --to 客戶信箱 --subject … --text-file … --anon "{a.who}"')
 
 
 def cmd_summary(a):
@@ -733,7 +763,10 @@ def main():
     p.add_argument('--attach', action='append', help='附件路徑，可重複'); p.add_argument('--who', help='收件人是人選時填人選姓名或編號（會套用人選文字規則、寫進人選卡片）')
     p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）')
     p.add_argument('--file-id', action='append', help='附系統裡已存在的檔案：檔案編號，或「編號:顯示檔名」，可重複')
-    p.add_argument('--card-note', help='確認卡最上面多一行說明（不會進信裡）'); p.set_defaults(fn=cmd_free_mail)
+    p.add_argument('--card-note', help='確認卡最上面多一行說明（不會進信裡）')
+    p.add_argument('--anon', action='append', help='附上這位人選系統做好的匿名履歷 PDF（姓名或編號，可重複）'); p.set_defaults(fn=cmd_free_mail)
+    p = sp.add_parser('anon', help='製作匿名履歷（系統流程，TG 確認後產 PDF）'); p.add_argument('who'); p.add_argument('--job', help='對哪個職缺做（職缺 slug），不填用人選原本的職缺'); p.add_argument('--status', action='store_true', help='只看做好了沒')
+    p.set_defaults(fn=cmd_anon)
     p = sp.add_parser('summary', help='電洽逐字稿寫進卡片（確認卡）'); p.add_argument('who'); p.add_argument('--file'); p.add_argument('--text')
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)
