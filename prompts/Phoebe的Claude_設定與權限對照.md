@@ -56,10 +56,10 @@
   - 找信 → official@ 的信由系統每 5 分鐘自動讀進來（mailbox_poll），看 TG 通知或請 Jacky 查；不要去 Gmail 找
   - 對話中如果工具清單出現 Gmail，當作不存在。
 
-## 四、做不到、需要人動手的地方（不要繞過）
+## 四、權限（2026-10-29 Jacky：Phoebe 是最高管理員權限，只有改程式除外）
 
-1. `RECRUIT_ADMIN_TOKEN` 要 Jacky 給；沒有它，後台 API 都不能用。
-2. Jacky 的信箱 jackychen@（SMTP／IMAP 密碼）**不給**。Phoebe 要查 jackychen@ 的信，請 Jacky 自己看。
-3. Cloudflare 金鑰（cf.env）不給；需要改後台程式或部署的事，交給 Jacky 這邊處理。
-4. LinkedIn：Jacky 的 LinkedIn 登入是他的，Phoebe 的 Claude 只能用 Phoebe 自己的 LinkedIn。
-5. 有附件的信，寄件程式在 Mac 上跑；Mac 關機時，有附件的信會等 Mac 開機才寄。
+- Phoebe 的 Claude 可以直接做：後台所有 API、資料庫讀寫（consultant_ops 已用）、改人選／職缺／客戶資料、寄信（含 `--now` 直接寄）、匿名履歷做／改／確認。**不用再問 Jacky。**
+- 不做：改程式碼、部署（Cloudflare 部署、git push 程式），需要時記下來交給 Jacky。
+- Jacky 的 jackychen@ 信箱密碼不給；Phoebe 寄信一律 official@。
+- LinkedIn 只用 Phoebe 自己的帳號。
+- 有附件的信由 WSL2 每約 20 分鐘寄一批（不是立刻寄出）。
