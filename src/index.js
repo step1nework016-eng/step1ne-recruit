@@ -4415,7 +4415,43 @@ async function handleLineEvent(env, ev) {
   {
     const t0 = String(text || '').trim();
     const explicit = /^(看)?(培訓)?職缺(卡片)?$|^看培訓職缺|^看職缺/.test(t0);
-    const keyword = !explicit && /職缺|工作機會|BIM|繪圖|應徵|培訓/i.test(t0) && t0.length <= 60 && (!binding || binding.state !== 'bound');
+    // ⚠️ 2026-10-29 修：原本只要訊息有「職缺／應徵」就回培訓卡片——卡斯問「雙北主管/家庭專屬司機職缺」
+    // 也收到半導體繪圖師、BIM 的卡片（Jacky 截圖）。改成：
+    //   提到 BIM／繪圖／培訓／無經驗 → 培訓卡片（原行為）
+    //   只說「職缺／應徵」→ 先用職稱片段比對是哪個職缺，對到就回那個職缺；對不到就請他留資料＋職缺名稱
+    const unboundUser = !binding || binding.state !== 'bound';
+    const traineeKw = /BIM|繪圖|培訓|無經驗|沒經驗|儲備|新手|Revit|AutoCAD/i.test(t0);
+    const keyword = !explicit && traineeKw && t0.length <= 60 && unboundUser;
+    const askJob = !explicit && !traineeKw && /職缺|工作機會|應徵|徵人|在徵/.test(t0) && t0.length <= 80 && unboundUser;
+    if (askJob) {
+      const recentAsk = await env.DB.prepare(`SELECT 1 FROM line_kw_replies WHERE line_user_id = ? AND at >= datetime('now','+8 hours','-1 day') LIMIT 1`)
+        .bind(userId).first().catch(() => null);
+      if (!recentAsk) {
+        const { results: openJobs } = await env.DB.prepare(`SELECT slug, title, status FROM jobs WHERE status IN ('open','social_only')`).all()
+          .catch(() => ({ results: [] }));
+        const hit = matchJobByText(t0, openJobs || []);
+        let msg;
+        if (hit && hit.status === 'social_only') {
+          msg = await jobWelcomeMessage(env, hit.slug, hit.title, '', { socialOnly: true });
+        } else if (hit) {
+          const applyUrl = `https://step1ne.com/apply/?job=${encodeURIComponent(hit.slug)}&title=${encodeURIComponent(hit.title)}&utm_source=line_keyword&utm_medium=line`;
+          msg = await jobWelcomeMessage(env, hit.slug, hit.title, applyUrl);
+        } else {
+          msg = '嗨嗨 👋 謝謝你的詢問！\n\n麻煩直接在這裡回覆：\n① 你的名字\n② 方便聯絡的電話\n③ 方便接電話的時段（例如：平日晚上 7 點後）\n④ 目前住哪個縣市\n⑤ 想了解的職缺名稱（貼文截圖也可以）'
+            + '\n\n顧問會在你方便的時間打給你 📞\n\n也可以先看目前所有職缺 👉 https://step1ne.com/jobs/';
+        }
+        const ok = await lineReply(env, replyToken, msg);
+        if (!ok) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
+        try {
+          await env.DB.prepare(`INSERT INTO line_kw_replies (line_user_id, kind, text, at) VALUES (?,?,?,?)`)
+            .bind(userId, hit ? 'job_match' : 'job_ask', t0.slice(0, 60), now).run();
+        } catch { /* 記不到不影響回覆 */ }
+        await notify(env, `💬 LINE 有人沒帶職缺代碼問職缺：「${t0.slice(0, 40)}」\n`
+          + (hit ? `系統判斷是「${hit.title}」，已回這個職缺的說明` : '對不到是哪個職缺，已請對方留資料＋職缺名稱')
+          + '，請到 LINE 官方帳號接手');
+        return;
+      }
+    }
     if (explicit || keyword) {
       let recent = null;
       if (keyword) {
@@ -6091,6 +6127,26 @@ function traineeWelcomeFlex(slug, quickUrl) {
 
 // 2026-10-28 Jacky：兩種職缺都用同一個開頭（職缺名／薪資／地點），結尾都留「名字＋電話＋方便接電話的時段」讓顧問直接打。
 // socialOnly＝還沒簽約、只發社群的職缺：不給應徵表單，留電話是唯一一條路。
+// 2026-10-29：人選沒帶職缺代碼、直接打「想詢問 XXX 職缺」時，用職稱片段比對是哪個職缺。
+// 職稱拿掉括號後依分隔符切段（括號內的也算），≥3 字、不是泛用詞才採計；命中字數最多且唯一、至少 4 字才算對到。
+function jobTitleParts(title) {
+  const t = String(title || '');
+  const inner = (t.match(/[（(]([^）)]*)[）)]/g) || []).join(' ');
+  const outer = t.replace(/[（(][^）)]*[）)]/g, ' ');
+  const GENERIC = /^(無經驗可?|可培訓|儲備培訓|培訓|台北市|新北市|台中市|桃園市|新竹市|高雄市|為主|資深|主管|專員|工程師|助理|正職|兼職)$/;
+  return (outer + ' ' + inner).split(/[／/｜|、,，\s\-–·・：:＋+]+/).map((p) => p.trim())
+    .filter((p) => p.length >= 3 && !GENERIC.test(p));
+}
+function matchJobByText(text, jobs) {
+  const t = String(text || '').toLowerCase();
+  let best = null, bestScore = 0, tie = false;
+  for (const j of jobs) {
+    const score = jobTitleParts(j.title).filter((p) => t.includes(p.toLowerCase())).reduce((n, p) => n + p.length, 0);
+    if (score > bestScore) { best = j; bestScore = score; tie = false; } else if (score && score === bestScore) tie = true;
+  }
+  return bestScore >= 4 && !tie ? best : null;
+}
+
 async function jobWelcomeMessage(env, slug, title, applyUrl, opts = {}) {
   let j = null;
   try {
