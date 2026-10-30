@@ -226,6 +226,10 @@ def process(intake, dry=False):
         link_client(intake, spec)
         D.d1(f"UPDATE job_intakes SET status='published', published_slug={D.q(spec['slug'])}, "
              f"updated_at=datetime('now','+8 hours') WHERE id={D.q(iid)}")
+        # 2026-10-30 Jacky：用人需求要標示指派顧問——發布時把指派顧問寫成職缺的負責顧問（已經有人負責就不蓋掉）
+        who = (intake.get('assigned_to') or intake.get('submitted_by') or '').strip()
+        if who and not who.startswith('總指揮'):
+            D.d1(f"UPDATE jobs SET owner={D.q(who)} WHERE slug={D.q(spec['slug'])} AND COALESCE(owner,'')=''")
         DJ.log('git push 部署中…')
         pushed, push_err = git_push(spec)
         if push_err:
