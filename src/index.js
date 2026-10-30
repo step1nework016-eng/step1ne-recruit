@@ -6024,6 +6024,28 @@ async function handleSocAction(env, cq) {
               }),
             }).catch(() => {});
           } catch (e) {
+            // 2026-10-30 加：串文已經有幾則發出去了（post_progress.done > 0）就不能解鎖成 NULL——
+            // status=NULL 會被 WSL2 social_post_agent.py 當成「要產草稿」認領、整篇重寫，
+            // 之後再核准就是一篇全新的貼文，跟已發出的半篇重複（#1081：20:00 發出第 1 則後第 2 則失敗，
+            // 20:04 草稿被重產，20:21 又整篇發一次）。
+            //   排程觸發：留在 posting，下一輪排程從斷點續發（最多 3 次，之後交給卡住對帳）。
+            //   顧問按的：改成 drafted（保留草稿、不會被重產），重按會從斷點接著發。
+            const pr = await env.DB.prepare(`SELECT post_progress FROM social_post_queue WHERE id=?`).bind(qid).first().catch(() => null);
+            let partial = null;
+            try { partial = JSON.parse((pr && pr.post_progress) || 'null'); } catch { partial = null; }
+            if (partial && partial.done > 0) {
+              const total = Number(String(partial.k || '').split(':')[0]) || '?';
+              console.log(`[soc] #${qid} 第 ${partial.done + 1}/${total} 則失敗：${String(e).slice(0, 200)}`);
+              if (!isScheduledRun) {
+                await env.DB.prepare(`UPDATE social_post_queue SET status='drafted', posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
+              }
+              await answer(`⚠️ 串文發到一半失敗：已發出 ${partial.done}／${total} 則，`
+                + (isScheduledRun ? '下一輪排程（約 15 分鐘內）會自動從斷掉那則接著發。' : '重按「確認發布」會從斷掉那則接著發，不會重發已出去的。')
+                + '\n' + String(e).slice(0, 150), true);
+              await notify(env, `⚠️ Threads 串文發到一半失敗（已發 ${partial.done}／${total} 則）\n職缺：${row.title}\n帳號：${accLabel || '（未指定）'}　·　排隊編號 #${qid}\n\n${String(e).slice(0, 300)}`,
+                { message_thread_id: THREAD.system });
+              return;
+            }
             // 失敗要解鎖，不然這篇就卡在 posting 狀態，之後永遠按不動、也重發不了。
             await env.DB.prepare(`UPDATE social_post_queue SET status=NULL, posting_at=NULL WHERE id=? AND status='posting'`).bind(qid).run();
             await answer('❌ 發文失敗：' + String(e).slice(0, 150), true);
