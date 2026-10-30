@@ -87,10 +87,9 @@ def profile_kind(url):
         return 'github' if len(segs) == 1 and segs[0].lower() not in _GH_RESERVED else None
     if host.endswith('.github.io'):
         return 'github'
-    if host == 'pda.104.com.tw':
-        return '104' if len(segs) >= 2 and segs[0] == 'profile' and segs[1] not in ('intro',) else None
-    if host == 'plus.104.com.tw':
-        return '104' if len(segs) >= 2 and segs[0] == 'profile' else None
+    # 2026-10-30 Jacky：104 只能在顧問本人監督下碰，AI 找人不收 104 個人頁當佐證
+    if host.endswith('104.com.tw'):
+        return None
     if host.endswith('behance.net'):
         return 'behance' if len(segs) == 1 and segs[0] not in ('search', 'galleries', 'joblist', 'assets') else None
     if host.endswith('dribbble.com'):
