@@ -41,3 +41,8 @@ P3_FOLLOWUP_REMINDER_ENABLED = "1"
 [[services]]
 binding = "BACKOFFICE"
 service = "step1ne-backoffice-worker"
+
+# 2026-10-30 加：開 Workers Logs。排程貼文 #1081 發到一半被中斷，當時沒有任何執行紀錄可查，
+# 只能從 Threads 跟資料庫反推。開了之後 console.log（例如 [soc] 發文進度）跟中斷原因都查得到。
+[observability]
+enabled = true

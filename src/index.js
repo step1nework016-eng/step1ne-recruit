@@ -5469,6 +5469,28 @@ async function handleArticleAction(env, cq) {
 // callback_query 那條路徑裡，只能被真的 Telegram 按鈕點擊觸發。排程要做到
 // 「先核准、時間到才真的發文」，得讓同一段發文邏輯也能被 cron 用重建出來的
 // 假 cq 觸發——內容完全不動，只是包成函式讓兩條路都能叫用。
+// 2026-10-30：串文發文進度（post_progress）用的小工具，見 handleSocAction 的 Threads 發文段。
+function textHash(t) {
+  let h = 5381;
+  const str = String(t || '');
+  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+// 比對「Threads 上這則」跟「我們要發的這則」是不是同一則：去掉空白後比前 30 字（跟卡住對帳同一套）。
+function sameHead(a, b) {
+  const norm = (t) => String(t || '').replace(/\s+/g, '').slice(0, 30);
+  return !!norm(a) && norm(a) === norm(b);
+}
+// 讀帳號最近 10 則主貼文；失敗回 null（呼叫端要當「不知道」處理，不能當「沒發過」）。
+async function threadsRecentTexts(userId, token) {
+  try {
+    const r = await fetch(`https://graph.threads.net/v1.0/${userId}/threads?` +
+      new URLSearchParams({ fields: 'id,text,permalink', limit: '10', access_token: token }));
+    const d = await r.json();
+    return r.ok && Array.isArray(d.data) ? d.data : null;
+  } catch { return null; }
+}
+
 async function handleSocAction(env, cq) {
         const [action, qidRaw] = String(cq.data).split(':');
         const qid = Number(qidRaw);
@@ -5477,6 +5499,7 @@ async function handleSocAction(env, cq) {
         // 排程貼文被默默作廢，顧問完全不知道——所以排程路徑遇到擋下／失敗，改成直接回覆在
         // 原本那則審核訊息底下，顧問在自己的主題裡就看得到。
         const isScheduledRun = String(cq.id || '').startsWith('sched_');
+        const isResume = isScheduledRun && !!cq.resume;
         const answer = async (text, alert) => {
           if (isScheduledRun) {
             if (/^[❌🚫⚠️]/u.test(String(text))) {
@@ -5515,7 +5538,7 @@ async function handleSocAction(env, cq) {
         // COALESCE 讓 row.title 對職缺類型／話題類型都能正常顯示，不用動下面任何一處。
         const row = await env.DB.prepare(
           `SELECT q.id, q.job_slug, q.account_id, q.status, q.draft, q.requested_at, q.topic_id, q.scheduled_at,
-                  q.approved_at,
+                  q.approved_at, q.posting_at, q.post_progress,
                   COALESCE(j.title, q.job_slug) AS title, j.status AS job_status,
                   COALESCE(sa.force_link_on_posts, 0) AS force_link_on_posts
              FROM social_post_queue q LEFT JOIN jobs j ON j.slug = q.job_slug
@@ -5588,7 +5611,7 @@ async function handleSocAction(env, cq) {
           // 2026-09-29 Jacky 核准改規則：已經核准、排好時間的貼文不適用「3 天作廢」——
           // 顧問核准時已經看過內容，排在 4 天後很正常（9/24 核准、排 9/28 的 5 篇因此全被作廢）。
           // 內容變動的風險改由下面發文當下的檢查負責：客戶名稱稽核、未填欄位、職缺是否已關閉。
-          if (ageDays >= 3 && row.status !== 'approved_scheduled') {
+          if (ageDays >= 3 && row.status !== 'approved_scheduled' && !isResume) {
             await env.DB.prepare(`UPDATE social_post_queue SET status='expired' WHERE id=?`).bind(row.id).run();
             await answer(`❌ 這則草稿是 ${ageDays} 天前產的，職缺內容可能已經改過（薪資、客戶名稱等），不能直接發。請按「🔄 重新產一次」。`, true);
             return;
@@ -5641,10 +5664,19 @@ async function handleSocAction(env, cq) {
           // 修法：進來第一件事就搶鎖（UPDATE ... WHERE status 不是
           // posting/posted 才會生效），搶不到鎖代表已經在發或發過了，
           // 直接短路擋掉，不再跑一次 Threads API。
-          const claim = await env.DB.prepare(
-            `UPDATE social_post_queue SET status='posting', posting_at=datetime('now','+8 hours') WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
-          ).bind(qid).run();
+          // 2026-10-30 加：排程貼文發到一半被中斷時（#1081），下一輪排程會帶 cq.resume 回來「接著發」。
+          // 這時狀態還停在 posting，一般的搶鎖一定搶不到；改成「posting_at 還是當初那個值」才接手，
+          // 兩輪排程重疊也只有一輪搶得到。
+          const claim = isResume
+            ? await env.DB.prepare(
+              `UPDATE social_post_queue SET posting_at=datetime('now','+8 hours'), post_attempts=COALESCE(post_attempts,1)+1
+                WHERE id=? AND status='posting' AND posting_at=?`
+            ).bind(qid, String(cq.resumePostingAt || '')).run()
+            : await env.DB.prepare(
+              `UPDATE social_post_queue SET status='posting', posting_at=datetime('now','+8 hours'), post_attempts=1 WHERE id=? AND (status IS NULL OR status NOT IN ('posting','posted'))`
+            ).bind(qid).run();
           if (!claim.meta || !claim.meta.changes) {
+            if (isResume) return;
             await answer(row.status === 'posted' ? '✅ 這則已經發過了，沒有重複發' : '⏳ 正在發文中，請稍等，不要重複按', true);
             return;
           }
@@ -5907,11 +5939,11 @@ async function handleSocAction(env, cq) {
                 else chunks.push(moved);
               }
             }
-            let firstId = null, lastId = null;
-            for (const chunk of chunks) {
-              lastId = await postOne(chunk, lastId);
-              if (!firstId) firstId = lastId;
-            }
+            // 2026-10-30 改：每發出一則就把「發到第幾則、最後一則的 id」記進 post_progress。
+            // 起因 #1081：排程發文發完第 1 則就被中斷，整個流程沒跑完、也沒人知道發到哪；
+            // 卡住對帳又只能拿草稿開頭去猜，猜錯就整篇重發（同一職缺同一帳號出現兩篇）。
+            // 有了進度，重跑（排程自動續發，或顧問重按確認）都是從斷掉的那一則接下去，不會重發已出去的。
+            // 進度綁著「這次要發的內容」：草稿重產或改過，k 對不上就當作沒發過，不會接錯串。
             // 2026-09-03 改：純職缺貼文（topic_id 為空）不再自動加發連結回覆——
             // Jacky 要求改成留言制 CTA（見 SKILL.md／style_prompts 的
             // {{CTA_KEYWORD}} 機制），連結由發布端硬加等於把留言制架空。
@@ -5921,20 +5953,46 @@ async function handleSocAction(env, cq) {
             // 不寫死帳號 id，之後要幫別的帳號開一樣的行為只要改這個欄位。
             // 2026-09-24 改（Jacky）：話題文不要帶連結——不再自動加「應徵了解窗口」那則回覆。
             // 現在只剩 DR 這類開了 force_link_on_posts 的帳號，職缺文才會加。
-            if (!row.topic_id && row.force_link_on_posts && row.job_status !== 'social_only') {
-              // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁。
-              // 直接放 LINE 連結的話，候選人一加進去就斷線——LINE 不會告訴我們
-              // 他是從誰的哪則貼文來的，發文成效永遠只能看瀏覽數，看不到帶進幾個人。
-              // 轉址頁會記下點擊再把人送去同一個 LINE，候選人那端多不到半秒。
-              // ⚠️ q=<queue_id> 一定要帶——沒帶的話同帳號同職缺發過多次時，
-              // 點擊只能猜最新那一篇，舊貼文的成效會被吃掉。
-              const goLink = row.account_id
+            // 2026-08-19 改：不再直接貼 lin.ee，改走自家轉址頁（記下點擊才知道是哪則貼文帶來的人）。
+            // ⚠️ q=<queue_id> 一定要帶——沒帶的話同帳號同職缺發過多次時，點擊只能猜最新那一篇。
+            // 沒指定帳號的舊職缺照舊用 lineLink。2026-10-30 起這則連結回覆併進 steps，一樣記進度。
+            const linkStep = (!row.topic_id && row.force_link_on_posts && row.job_status !== 'social_only')
+              ? `▪️ 應徵了解窗口：\n${row.account_id
                 ? `https://step1ne.com/go/?c=${row.account_id}&j=${encodeURIComponent(row.job_slug)}&q=${qid}`
-                : lineLink;   // 沒指定帳號的舊職缺照舊，不要為了統計改變既有行為
-              await postOne(`▪️ 應徵了解窗口：\n${goLink}`, lastId);
+                : lineLink}`
+              : null;
+            const steps = linkStep ? [...chunks, linkStep] : chunks;
+            const progKey = `${steps.length}:${textHash(steps.join('\u0001'))}`;
+            let prog = null;
+            try { prog = JSON.parse(row.post_progress || 'null'); } catch { prog = null; }
+            if (!prog || prog.k !== progKey) prog = { k: progKey, done: 0, first: null, last: null };
+            if (isResume && !prog.done) {
+              // 沒有任何進度紀錄卻停在 posting：照理第 1 則還沒發出去，但進度是發完才寫的，
+              // 保險起見先到 Threads 確認第 1 則真的不在，才從頭發。查不到（API 失敗）就不動，交給卡住對帳。
+              const recent = await threadsRecentTexts(threadsUserId, threadsToken);
+              if (!recent) { console.log(`[soc] #${qid} 續發：查不到 Threads 近期貼文，先不動`); return; }
+              const hit = recent.find((p) => sameHead(p.text, steps[0]));
+              if (hit) {
+                await env.DB.prepare(`UPDATE social_post_queue SET status='posted', url=?, posting_at=NULL, posted_at=datetime('now','+8 hours') WHERE id=?`)
+                  .bind(hit.permalink || null, qid).run();
+                await answer(`⚠️ 第 1 則其實已經發出去了，但沒有紀錄後面幾則發到哪，為了不重複貼文，這則不自動續發。請到 Threads 確認串文是否完整：${hit.permalink || ''}`);
+                return;
+              }
+            }
+            console.log(`[soc] #${qid} 開始發文 ${prog.done}/${steps.length}${isResume ? '（續發）' : ''}`);
+            let firstId = prog.first, lastId = prog.last;
+            for (let i = prog.done; i < steps.length; i++) {
+              lastId = await postOne(steps[i], lastId);
+              if (!firstId) firstId = lastId;
+              prog = { k: progKey, done: i + 1, first: firstId, last: lastId };
+              await env.DB.prepare(`UPDATE social_post_queue SET post_progress=? WHERE id=?`)
+                .bind(JSON.stringify(prog), qid).run()
+                .catch((e) => console.log(`[soc] #${qid} 進度寫入失敗 ${String(e).slice(0, 120)}`));
+              console.log(`[soc] #${qid} 已發 ${i + 1}/${steps.length}`);
+            }
+            if (linkStep) {
               await env.DB.prepare(`UPDATE social_post_queue SET has_external_link=1 WHERE id=?`).bind(qid).run();
             }
-
             // 拿第一則（主文）的公開連結存起來備查——顧問要留紀錄用。
             let permalink = null;
             try {
@@ -9723,10 +9781,15 @@ export default {
     // 搬過去要嘛重複存一份金鑰，要嘛跨 Worker 呼叫，兩個都不划算。
     try {
       const { results: dueApproved } = await env.DB.prepare(
-        `SELECT q.id, q.tg_message_id, q.tg_thread_id, q.tg_chat_id, q.approved_by, sa.tg_thread_id AS acc_thread
+        `SELECT q.id, q.status, q.posting_at, q.tg_message_id, q.tg_thread_id, q.tg_chat_id, q.approved_by, sa.tg_thread_id AS acc_thread
            FROM social_post_queue q LEFT JOIN social_accounts sa ON sa.id = q.account_id
-          WHERE q.status='approved_scheduled'
-            AND datetime(q.scheduled_at) <= datetime('now','+8 hours')
+          WHERE (q.status='approved_scheduled'
+                 AND datetime(q.scheduled_at) <= datetime('now','+8 hours'))
+             -- 2026-10-30 加：排程貼文發到一半被中斷（#1081 停在 posting），下一輪自動從斷點續發，
+             -- 最多試 3 次；超過就交給 step1ne-social-worker 的卡住對帳（它會跳過還在重試的這些）。
+             OR (q.status='posting' AND q.approved_at IS NOT NULL AND q.scheduled_at IS NOT NULL
+                 AND q.posting_at <= datetime('now','+8 hours','-5 minutes')
+                 AND COALESCE(q.post_attempts,1) < 3)
           LIMIT 20`
       ).all();
       const soc = await env.DB.prepare(`SELECT chat_id FROM tg_routes WHERE key='social'`).first().catch(() => null);
@@ -9741,6 +9804,8 @@ export default {
         const fakeCq = {
           id: `sched_${r.id}`,
           data: `soc_approve:${r.id}`,
+          resume: r.status === 'posting',
+          resumePostingAt: r.posting_at,
           from: { username: r.approved_by || '排程' },
           message: legacy
             ? { chat: { id: soc.chat_id }, message_id: undefined, message_thread_id: r.acc_thread ? Number(r.acc_thread) : undefined }
