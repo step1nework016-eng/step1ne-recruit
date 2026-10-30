@@ -10,6 +10,10 @@
 
 用法：python3 hiring_leads_scan.py [類別=財務會計] [天數=30]   （每天跑一次即可，重複跑不會重複寫）
 """
+import sys as _sys
+# 2026-10-30 Jacky：「停掉」——104 只能在 Jacky 監督下碰，不准排程自動跑。要恢復請 Jacky 本人說。
+if '--i-know-jacky-approved' not in _sys.argv:
+    print('已停用（2026-10-30 Jacky）：依職缺開發 104 掃描。104 只能在 Jacky 監督下操作。'); _sys.exit(0)
 import re
 import sys
 import json
@@ -23,6 +27,13 @@ CATS = {
         'keywords': ['財務主管', '財務經理', '財務長', '會計主管', '會計經理', '財務副理', '會計副理'],
         'title': re.compile(r'財務|會計|財會|CFO|Finance|Accounting', re.I),
         'senior': re.compile(r'主管|經理|協理|副理|財務長|處長|副總|主任|Manager|Controller|Head|Director|CFO', re.I),
+    },
+    # 2026-10-27 Jacky：ph 也要開發「無經驗可培訓」的 BIM／繪圖／助理工程師缺（手上有一批相關科系新鮮人）
+    '無經驗培訓': {
+        'keywords': ['BIM 不拘經驗', 'Revit 新鮮人', '機電繪圖 不拘', '建築繪圖 新鮮人', '工程助理 不拘經驗', '儲備工程師', '助理工程師 新鮮人', '繪圖員 無經驗可'],
+        'title': re.compile(r'BIM|Revit|繪圖|製圖|工程助理|儲備工程師|助理工程師|設計助理|CAD', re.I),
+        'senior': None,
+        'entry': re.compile(r'不拘|無經驗|新鮮人|可培訓|培訓|應屆|沒經驗'),
     },
 }
 SKIP_CORP = ('幼兒園', '診所', '學校', '補習班', '安親', '托嬰', '教會', '寺', '基金會', '協會')
@@ -50,11 +61,13 @@ def main():
     for r in res:
         if not cfg['title'].search(r['job']) or any(w in r['company'] for w in SKIP_CORP):
             continue
+        if cfg.get('entry') and not cfg['entry'].search(r['job'] + ' ' + r.get('desc', '')):
+            continue
         by.setdefault(r['company'], []).append(r)
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     n = 0
     for company, jobs in by.items():
-        if not any(cfg['senior'].search(j['job']) for j in jobs):
+        if cfg['senior'] and not any(cfg['senior'].search(j['job']) for j in jobs):
             continue   # 只有專員／助理的先不放，主管級才值得獵頭去談
         jobs.sort(key=lambda j: j['date'], reverse=True)
         keep = [{'job': j['job'], 'date': j['date'], 'url': j['url'], 'area': j['area'], 'salary': j['salary']} for j in jobs[:6]]

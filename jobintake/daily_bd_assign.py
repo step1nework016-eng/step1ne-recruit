@@ -20,6 +20,10 @@ Jacky 要的是：每天早上系統自己挑 N 家（預設 10 家）放進 Pho
     python3 jobintake/daily_bd_assign.py --dry-run    # 只列出會挑哪幾家
     python3 jobintake/daily_bd_assign.py --n 15 --assignee Phoebe --no-scan
 """
+import sys as _sys
+# 2026-10-30 Jacky：「停掉」——104 只能在 Jacky 監督下碰，不准排程自動跑。要恢復請 Jacky 本人說。
+if '--i-know-jacky-approved' not in _sys.argv:
+    print('已停用（2026-10-30 Jacky）：每日開發自動分配（會查 104 公司資料）。104 只能在 Jacky 監督下操作。'); _sys.exit(0)
 import argparse
 import datetime
 import json
