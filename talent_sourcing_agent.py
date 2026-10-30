@@ -136,7 +136,7 @@ def format_ledger(rows):
 PROFILE_RULE = '''【只收有個人頁的人（2026-10-08 Jacky 核准，程式會再擋一次）】
 每一位至少要有一個「打開就看得到本人經歷」的個人頁，填進 linkedin_url／profile_url：
 LinkedIn 個人頁（linkedin.com/in/…）、Cake 公開履歷（cake.me/me/…、cake.me/resumes/…）、GitHub 個人頁（github.com/帳號）、
-104 個人檔案（pda.104.com.tw/profile/…）、Behance／Dribbble 個人作品集、Wantedly 個人檔案（wantedly.com/id/…）、ORCID、Google Scholar 個人頁。
+Behance／Dribbble 個人作品集、Wantedly 個人檔案（wantedly.com/id/…）、ORCID、Google Scholar 個人頁。
 只在新聞、公告、股東會／年報、公司官網團隊頁、企業名錄（ZoomInfo、TheOrg、商會會員頁）看到名字的人，
 先用「姓名＋公司」去找他的個人頁；找不到就**不要放進 candidates**，改放進 leads_no_profile（只當找人線索，不進人才池）。'''
 
@@ -250,6 +250,7 @@ daily-agent-loop-v1＝增量規則：去重、Candidate Memory Ledger、只有 N
 - 不得用任何帳號自動化操作 LinkedIn／Cake／任何平台——公開頁面用瀏覽器/搜尋看得到的內容可以引用，
   需要登入才看得到的一律不用
 - 不得用猜測方式產生 Email（例如硬猜 name@company.com 格式），查不到公開信箱就填 null
+- 2026-10-30 Jacky：不得搜尋、讀取或引用 104 人力銀行（104.com.tw、pda.104.com.tw 等任何 104 網域）的任何頁面——104 只有顧問本人監督下才能碰。找到的人如果唯一佐證是 104，就不要收
 - 不得依年齡、性別、婚姻、國籍、身心障礙、宗教等就業服務法第5條保護項目篩選、排序或排除候選人，
   即使公開資料裡看得到這些資訊也不可以拿來當判斷依據
 
@@ -273,7 +274,7 @@ Cake 履歷其實是景觀設計＋藝術協會＋便利商店主題店鋪設計
     {{
       "name": "姓名", "headline": "職稱或一行描述", "company": "目前或最近公司",
       "location": "地點", "email": "查到的公開Email，查不到填null", "phone": "查到的公開電話，查不到填null",
-      "linkedin_url": "查得到就填，查不到填null", "profile_url": "LinkedIn 以外的個人頁（Cake／GitHub／104 個人檔案…），沒有填null",
+      "linkedin_url": "查得到就填，查不到填null", "profile_url": "LinkedIn 以外的個人頁（Cake／GitHub…，不可用 104），沒有填null",
       "source_url": "找到這個人的來源網址",
       "fit_score": 0到100的整數, "recruitability_class": "DIRECT_TARGET 或 CONTACT_AFTER_CONFIRMATION 或 ADJACENT_TARGET 或 REFERRAL_ONLY 或 LONG_TERM_POOL",
       "evidence": "為什麼判斷這個人符合這個職缺，附身分錨點（公司/專案/技能/地點等至少兩項）",
