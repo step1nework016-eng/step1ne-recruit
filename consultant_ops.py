@@ -29,6 +29,9 @@ TZ = dt.timezone(dt.timedelta(hours=8))
 EXPIRE_H = 24
 # TG username → 顧問顯示名（信件署名用）。跟 consultants 表 / BD_APPROVERS 對齊。
 TG_TO_CONSULTANT = {'jackyyuqi': 'Jacky', 'behe10': 'Phoebe'}
+# applications.owner → 確認卡送去哪（私訊）／署名。2026-11-01 面談後自動擬約電話信用。
+OWNER_TG = {'jacky': {'tg_id': '8365775688', 'username': 'jackyyuqi', 'name': 'Jacky'},
+            'phoebe': {'tg_id': '6326743721', 'username': 'behe10', 'name': 'Phoebe'}}
 DECLINE_REASONS = {'fit': '條件有落差', 'employer': '用人單位這次選了其他方向',
                    'filled': '職缺已有人選進最後階段', 'paused': '職缺暫停招募'}
 CALL_TOPICS = {'will': '意願與想了解的地方', 'pay': '期望待遇、到職時間', 'gap': '面談還沒聊完的細節',
@@ -131,11 +134,14 @@ def who():
     name = os.environ.get('COPS_TG_NAME', '').strip()
     chat = os.environ.get('COPS_CHAT', '').strip()
     thread = os.environ.get('COPS_THREAD', '').strip()
+    # 2026-11-01 修：以前本機帳號認人（Mac＝jackyyuqi）會蓋掉 COPS_TG_NAME，署名永遠是 Jacky
+    # （10/31 曾詩晴負責人是 Phoebe，信卻署名 Jacky）。順序改成：TG 帳號對照 → 明確給的 COPS_TG_NAME → 本機帳號。
+    display = TG_TO_CONSULTANT.get(uname) or name
     if not tg_id:
         loc = LOCAL_USERS.get(re.split(r'[\\/]', HOME.rstrip('/\\'))[-1].lower())
         if loc:
             tg_id, uname, chat = loc['tg_id'], loc['username'], chat or loc['chat']
-    display = TG_TO_CONSULTANT.get(uname) or name or uname or ''
+    display = display or TG_TO_CONSULTANT.get(uname) or uname or ''
     return {'tg_id': tg_id, 'username': uname, 'name': display, 'chat': chat, 'thread': thread}
 
 
@@ -371,16 +377,27 @@ def tg(method, payload):
             return {'ok': False, 'description': f'HTTP {e.code}'}
 
 
-def create_action(kind, app, params, to, subject, text, card_text, buttons):
-    w = who()
+def create_action(kind, app, params, to, subject, text, card_text, buttons, w=None, only_if_none=None):
+    """w：誰提出、卡片貼哪（不給就用 who()）。
+    only_if_none：kind 清單；這位人選已經有這些 kind 的確認卡（任何狀態）就不建、回 None——
+    先占位再貼卡，兩台機器同時跑也只會出一張。"""
+    w = w or who()
     need_where(w)
     aid = 'cop' + secrets.token_hex(6)
     now = now_tpe()
-    d1("""INSERT INTO consultant_ops_actions (id,kind,application_id,candidate_name,params_json,preview_to,preview_subject,preview_text,
-             requested_by,requested_tg_id,requested_tg_username,chat_id,thread_id,status,created_at,expires_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
-       [aid, kind, app['id'], app['name'], json.dumps(params, ensure_ascii=False), to, subject, text,
-        w['name'], w['tg_id'], w['username'], w['chat'], w['thread'] or None, fmt(now), fmt(now + dt.timedelta(hours=EXPIRE_H))])
+    vals = [aid, kind, app['id'], app['name'], json.dumps(params, ensure_ascii=False), to, subject, text,
+            w['name'], w['tg_id'], w['username'], w['chat'], w['thread'] or None, fmt(now), fmt(now + dt.timedelta(hours=EXPIRE_H))]
+    cols = """INSERT INTO consultant_ops_actions (id,kind,application_id,candidate_name,params_json,preview_to,preview_subject,preview_text,
+             requested_by,requested_tg_id,requested_tg_username,chat_id,thread_id,status,created_at,expires_at)"""
+    if only_if_none:
+        ph = ','.join('?' * len(only_if_none))
+        r = d1(cols + f""" SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?
+                WHERE NOT EXISTS (SELECT 1 FROM consultant_ops_actions WHERE application_id=? AND kind IN ({ph}))""",
+               vals + [app['id']] + list(only_if_none))
+        if not (r.get('meta') or {}).get('changes'):
+            return None
+    else:
+        d1(cols + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)", vals)
     if os.environ.get('COPS_TEST') == '1':   # 工程測試用：卡片標明，避免有人誤按
         card_text = '【測試・請勿按確認，等一下會自動取消】\n' + card_text
     kb = {'inline_keyboard': [[{'text': lb, 'callback_data': f'{cb}:{aid}'} for lb, cb in buttons]]}
@@ -423,20 +440,25 @@ def card_tail(w, extra=''):
             f'由 {w["name"] or "顧問"} 透過顧問助理產生。按「✅ 確認寄出」才會真的寄（Jacky、Phoebe 或 {w["name"] or "提出的人"} 本人可按），{EXPIRE_H} 小時內有效。')
 
 
-def cmd_call_mail(a):
-    app = resolve(a.who)
-    w = who(); need_where(w)
-    params = {'action': 'preview', 'by': w['name'], 'note': a.note or ''}
-    if a.topics:
-        keys = [x.strip() for x in a.topics.split(',') if x.strip()]
-        bad = [k for k in keys if k not in CALL_TOPICS]
-        if bad:
-            die(f'不認得的主題代號：{bad}；可用：{CALL_TOPICS}')
-        params['topics'] = keys
-    if a.topic_extra:
-        params['topic_extra'] = a.topic_extra
-    if a.ask_resume in ('yes', 'no'):
-        params['ask_resume'] = a.ask_resume == 'yes'
+def owner_of(app_id):
+    """人選的負責顧問：回傳 (owner id, 顯示名)；沒有就 (None, None)。"""
+    r = rows("""SELECT a.owner, c.display_name FROM applications a LEFT JOIN consultants c ON c.id=a.owner WHERE a.id=?""", [app_id])
+    if not r or not r[0].get('owner'):
+        return None, None
+    o = r[0]['owner']
+    return o, (OWNER_TG.get(o) or {}).get('name') or r[0].get('display_name') or None
+
+
+def call_mail_draft(app, by, note='', topics=None, topic_extra=None, ask_resume=None):
+    """跟後台要約電話信草稿＋檢查。手動（call-mail 指令）跟面談後自動（auto_call_mail.py）共用這一份。
+    回傳 (send_params, 草稿 d, 卡片附註 extra)；不能寄就 die。"""
+    params = {'action': 'preview', 'by': by, 'note': note or ''}
+    if topics:
+        params['topics'] = topics
+    if topic_extra:
+        params['topic_extra'] = topic_extra
+    if ask_resume is not None:
+        params['ask_resume'] = ask_resume
     d = bo(f'/admin/applications/{app["id"]}/call-mail', params)
     if not d.get('ok'):
         die(d.get('error') or '產生草稿失敗')
@@ -451,9 +473,26 @@ def cmd_call_mail(a):
         extra.append('ℹ️ 這位人選有綁 LINE')
     if d.get('followups'):
         extra.append('電話要追問（只給你看，不在信裡）：\n' + '\n'.join(f'・{clip(x, 80)}' for x in d['followups'][:5]))
+    return send_params, d, extra
+
+
+def cmd_call_mail(a):
+    app = resolve(a.who)
+    w = who(); need_where(w)
+    keys = None
+    if a.topics:
+        keys = [x.strip() for x in a.topics.split(',') if x.strip()]
+        bad = [k for k in keys if k not in CALL_TOPICS]
+        if bad:
+            die(f'不認得的主題代號：{bad}；可用：{CALL_TOPICS}')
+    # 2026-11-01：署名跟負責顧問一致（--by 指定 ＞ 負責顧問 ＞ 下指令的人 ＞ Jacky）
+    by = (a.by or '').strip() or owner_of(app['id'])[1] or w['name'] or 'Jacky'
+    send_params, d, extra = call_mail_draft(app, by, a.note, keys, a.topic_extra,
+                                            (a.ask_resume == 'yes') if a.ask_resume in ('yes', 'no') else None)
     card = card_head('確認寄出｜約電話信', app, d['to'], d['subject']) + d['text'] + '\n' + card_tail(w, '\n'.join(extra))
     aid = create_action('call_mail', app, send_params, d['to'], d['subject'], d['text'], card,
                         [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')])
+    print(f'署名：{by}')
     print(f'✅ 已在這個 topic 貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}\n--- 信件內容 ---\n{d["text"]}')
 
 
@@ -815,7 +854,8 @@ def main():
     p = sp.add_parser('today', help='今天/明天的電話'); p.add_argument('--days', type=int, default=2); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
     p.add_argument('--topics', help='逗號分隔：' + ','.join(CALL_TOPICS)); p.add_argument('--topic-extra')
-    p.add_argument('--ask-resume', choices=['yes', 'no']); p.set_defaults(fn=cmd_call_mail)
+    p.add_argument('--ask-resume', choices=['yes', 'no']); p.add_argument('--by', help='署名顧問（不填＝負責顧問）')
+    p.set_defaults(fn=cmd_call_mail)
     p = sp.add_parser('call-confirm', help='回信確認電話時間（預覽＋確認卡）'); p.add_argument('who')
     p.add_argument('--slot', required=True, help='信裡寫的時間，例如「10/8（四）下午 2:00」'); p.add_argument('--salutation')
     p.add_argument('--phone'); p.add_argument('--extra'); p.add_argument('--at', help='同時登記電話時間＋提醒，例如 2026-10-08 14:00')

@@ -6255,6 +6255,34 @@ def _safe_to_restart():
     return True
 
 
+# 2026-11-01 面談結束後自動擬約電話信（auto_call_mail.py；只出確認卡，不寄信）。
+# 只在主力機跑（備援機有設 BACKUP_DELAY_SEC）；另開執行緒，D1／後台慢也不會卡到面談回覆。
+AUTO_CALL_MAIL_EVERY_SEC = 180
+_ACM_LAST = 0
+_ACM_RUNNING = threading.Event()
+
+
+def _auto_call_mail_tick():
+    try:
+        import auto_call_mail
+        auto_call_mail.tick(log=log)
+    except BaseException as e:
+        log(f'約電話信自動擬稿載入失敗（不影響面談）：{type(e).__name__} {str(e)[:200]}')
+    finally:
+        _ACM_RUNNING.clear()
+
+
+def maybe_auto_call_mail():
+    global _ACM_LAST
+    if BACKUP_DELAY_SEC > 0 or os.environ.get('AUTO_CALL_MAIL') == '0':
+        return
+    if time.time() - _ACM_LAST < AUTO_CALL_MAIL_EVERY_SEC or _ACM_RUNNING.is_set():
+        return
+    _ACM_LAST = time.time()
+    _ACM_RUNNING.set()
+    threading.Thread(target=_auto_call_mail_tick, daemon=True).start()
+
+
 _VER_LAST = 0
 _STARTED_AT = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -6272,6 +6300,8 @@ def main():
     taskboard('面談引擎啟動', f'{INTERVIEW_HOST}｜輪詢 {POLL_SEC} 秒，同時最多 {MAX_PARALLEL} 場')
     while True:
         tick()
+        if not once:
+            maybe_auto_call_mail()
         # 心跳：專案管理那張卡片靠這個判斷阿財還活著。最多每分鐘一次。
         with _lock:
             busy_n = len(_busy)
