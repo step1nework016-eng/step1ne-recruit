@@ -5815,7 +5815,24 @@ async function handleSocAction(env, cq) {
             // 非同步處理的，太快呼叫 publish 會抓不到還沒就緒的 container。
             // 官方文件建議發布前等幾秒，這裡固定等 5 秒再 publish，
             // 三則串文連續發也一樣，每一則都各自等。
+            // 2026-11-02 加：Threads 偶爾對帶連結的那一則回 OAuthException 4279047（Invalid link，is_transient=false），
+            // 10/30 #1081、11/1 #1083／#1084／#1088 都是第 2 則（帶 step1ne.com/go 連結）這樣失敗，
+            // 之後 15 分鐘後的續發都成功。所以遇到這個錯先在同一輪重建 container 再試（最多 3 次、間隔 20 秒），
+            // 還是失敗才丟出去，交給原本的「下一輪續發」。其他錯誤照舊直接丟出去。
             const postOne = async (text, replyToId) => {
+              let lastErr;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                  return await postOneOnce(text, replyToId);
+                } catch (e) {
+                  lastErr = e;
+                  if (!String(e).includes('4279047') || attempt === 3) throw e;
+                  await sleep(20000);
+                }
+              }
+              throw lastErr;
+            };
+            const postOneOnce = async (text, replyToId) => {
               const params = { media_type: 'TEXT', text, access_token: threadsToken };
               if (replyToId) params.reply_to_id = replyToId;
               const createR = await fetch(
