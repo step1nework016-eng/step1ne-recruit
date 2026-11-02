@@ -95,12 +95,28 @@ def main():
         return
     box = _env('~/.config/workflow-os/step1ne-mailbox.env')
     user, pw = box['MAIL_IMAP_USER'], box['MAIL_IMAP_PASS']
-    smtp = None if dry else smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=30, context=ssl.create_default_context())
-    imap = None
+    # 2026-11-02 Jacky：CMoney 這串維持用 jackychen@ 寄（寄件人是 jackychen@ 的信改用他的帳號登入）。
+    # 這台沒有 jackychen@ 的密碼檔就不碰那封，留給有密碼的那台（Mac）寄。
     try:
-        if smtp:
-            smtp.login(user, pw)
+        jb = _env('~/.config/workflow-os/jacky-mailbox.env')
+        jacky = (jb['MAIL_USER'], jb['MAIL_PASS'])
+    except Exception:
+        jacky = None
+    conns = {}      # 帳號 → [smtp, imap]
+
+    def conn(acct):
+        if acct not in conns:
+            u, p = (user, pw) if acct == 'official' else jacky
+            sm = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=30, context=ssl.create_default_context())
+            sm.login(u, p)
+            conns[acct] = [sm, None, u, p]
+        return conns[acct]
+    try:
         for m in rows:
+            acct = 'jacky' if 'jackychen@' in (m.get('from_addr') or '').lower() else 'official'
+            if acct == 'jacky' and not jacky:
+                print(f"（略過，這台沒有 jackychen@ 密碼）{m['to_email']}｜{m['subject']}")
+                continue
             if dry:
                 bad = client_name_errors((m.get('subject') or '') + '\n' + (m.get('text') or '') + '\n' + (m.get('html') or ''))
                 print(f"[dry] {m['kind']} → {m['to_email']}｜{m['subject']}" + (f"  ⛔ 會擋下：{bad}" if bad else ''))
@@ -133,6 +149,8 @@ def main():
                             "WHERE id=? AND status='pending' RETURNING id", [m['id']])
             if not claim:
                 continue
+            c = conn(acct)
+            smtp = c[0]
             msg = EmailMessage()
             msg['From'] = m['from_addr'] or f'Step1ne 德仁管理顧問 <{user}>'
             msg['To'] = m['to_email']
@@ -177,25 +195,26 @@ def main():
                 d1_rw.q("UPDATE mail_outbox SET status='pending', error=? WHERE id=?", [f'GoDaddy 寄信失敗：{e}'[:300], m['id']])
                 print(f"❌ {m['to_email']}：{e}")
                 if (m.get('attempts') or 0) >= 2:
-                    _tg(f"⚠️ official@ 寄信失敗 3 次：{m['to_email']}｜{m['subject']}\n原因：{str(e)[:200]}\n10 分鐘後會改用 Resend 補寄。")
+                    _tg(f"⚠️ {'jackychen@' if acct == 'jacky' else 'official@'} 寄信失敗 3 次：{m['to_email']}｜{m['subject']}\n原因：{str(e)[:200]}\n10 分鐘後會改用 Resend 補寄。")
                 continue
             d1_rw.q("UPDATE mail_outbox SET status='sent', sent_at=?, message_id=?, error=NULL WHERE id=?",
                     [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), mid, m['id']])
             print(f"✅ {m['kind']} → {m['to_email']}｜{m['subject']}")
             # 存一份到「寄件備份」——存不進去不影響已經寄出
             try:
-                if imap is None:
-                    imap = imaplib.IMAP4_SSL(box['MAIL_IMAP_HOST'], 993, timeout=30)
-                    imap.login(user, pw)
-                imap.append('Sent', '\\Seen', imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+                if c[1] is None:
+                    c[1] = imaplib.IMAP4_SSL(box['MAIL_IMAP_HOST'], 993, timeout=30)
+                    c[1].login(c[2], c[3])
+                c[1].append('Sent', '\\Seen', imaplib.Time2Internaldate(time.time()), msg.as_bytes())
             except Exception as e:
                 print(f"（存寄件備份失敗，信已寄出：{e}）")
     finally:
-        for c in (smtp, imap):
-            try:
-                c and (c.quit() if c is smtp else c.logout())
-            except Exception:
-                pass
+        for sm, im, _u, _p in conns.values():
+            for x, fn in ((sm, 'quit'), (im, 'logout')):
+                try:
+                    x and getattr(x, fn)()
+                except Exception:
+                    pass
 
 
 if __name__ == '__main__':
