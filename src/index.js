@@ -4950,6 +4950,32 @@ async function refreshPrecallAfterResume(env, appId) {
   } catch { return false; }
 }
 
+// 2026-11-02 Jacky（馬若喬案例）：顧問接到「人選回信約電話」通知時，要一次看到 姓名／信箱／電話／（約的時間在回信內文）＋履歷，
+// 不用再點進卡片找、也不會「不知道從哪來、不知道要問什麼」。通知文字後面接著把履歷檔丟到同一個主題。
+async function candContactLines(env, appId) {
+  const a = await env.DB.prepare(`SELECT email, phone, source_channel, utm_source, resume_file_id FROM applications WHERE id=?`).bind(appId || '').first().catch(() => null);
+  if (!a) return { text: '', resume: null };
+  const mail = a.email && !/@(placeholder|example)\b|noemail|no-email/i.test(a.email) ? a.email : '';
+  const src = a.source_channel || a.utm_source || '';
+  return { text: [`信箱：${mail || '（沒有）'}`, `電話：${a.phone || '（沒有）'}`, src ? `來源：${src}` : ''].filter(Boolean).join('\n'), resume: a.resume_file_id || null };
+}
+async function sendResumeDoc(env, fileId, caption, threadId) {
+  if (!fileId || !env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return false;
+  try {
+    const f = await fileB64(env, fileId);
+    if (!f) return false;
+    const buf = Uint8Array.from(atob(f.content), (c) => c.charCodeAt(0));
+    const rm = await tgRemapBody(env, { chat_id: env.TG_CHAT_ID, message_thread_id: threadId ? Number(threadId) : null });
+    const form = new FormData();
+    form.append('chat_id', rm.chat_id);
+    if (rm.message_thread_id != null) form.append('message_thread_id', String(rm.message_thread_id));
+    form.append('caption', String(caption || '').slice(0, 1000));
+    form.append('document', new Blob([buf]), f.filename || 'resume.pdf');
+    const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
+    return r.ok;
+  } catch { return false; }
+}
+
 // ── official@ 信箱收信（mailbox_poll.py → /internal/mailbox-ingest）──────────────
 async function ingestMailboxMessage(env, b) {
   // 2026-10-19 Jacky：jackychen@ 的信也要進 TG（之前只讀 official@），通知上標清楚是哪個信箱
@@ -5018,9 +5044,12 @@ async function ingestMailboxMessage(env, b) {
     const timeChange = /挪|改到|改成|調整|換|不方便|沒辦法|無法|取消|延|提前|可以嗎|好嗎|\?|？/.test(body.split(/\n>|於 .{0,40}寫道/)[0] || '');
     const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner || '（還沒指派顧問）');
     const t = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
-    await notify(env, `${timeChange ? '🚨⚠️ 對方可能改了時間，先回信確認再打電話！\n' : ''}📞 人選回信（${mbx} 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n${excerpt}`
+    const cl = await candContactLines(env, cbm.application_id);
+    await notify(env, `${timeChange ? '🚨⚠️ 對方可能改了時間，先回信確認再打電話！\n' : ''}📞 人選回信（${mbx} 信箱）｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n${cl.text}\n\n${excerpt}`
       + (cv.length ? `\n\n📎 附的履歷（${cv.join('、')}）已放進人選卡片${pcQueued ? '，電洽準備卡正在用新履歷重產（約 5 分鐘）' : ''}` : (att.length ? '\n\n📎 有附件，請到 ${mbx} 信箱下載' : ''))
       + `\n\n人選卡片：${cardUrl(cbm.application_id)}`, t ? { message_thread_id: t } : undefined).catch(() => {});
+    if (cl.resume) await sendResumeDoc(env, cl.resume, `📎 ${cbm.name || ''} 的履歷（${cbm.job_title || ''}）`, t);
+    else await notify(env, `⚠️ ${cbm.name || fromEmail} 系統裡還沒有履歷，打電話前請先跟人選要`, t ? { message_thread_id: t } : undefined).catch(() => {});
     return { ok: true, matched: 'call_booking', notified: true };
   }
 
@@ -6414,12 +6443,15 @@ export default {
           const who = String(cbm.owner || '').toLowerCase() === 'phoebe' ? '@behe10' : (cbm.owner ? cbm.owner : '（還沒指派顧問）');
           // 2026-10-02 Jacky：人選回信要有自己的主題，不要跟面試通知混在一起
           const candTopic = await getOrCreateTopic(env, 'candidate_replies', '📞 人選回信').catch(() => null);
+          const cl2 = await candContactLines(env, cbm.application_id);
           await notify(env,
-            `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n\n`
+            `📞 人選回信約電話時間｜${cbm.name || fromEmail}\n職缺：${cbm.job_title || '—'}\n負責：${who}\n${cl2.text}\n\n`
             + (body ? body.slice(0, 1500) : '（這封沒有帶文字內容，請到 Resend 收件紀錄查看）')
             + (cvSaved.length ? `\n\n📎 附的履歷（${cvSaved.join('、')}）已放進人選卡片，電洽準備卡正在用新履歷自動重產（約 5 分鐘）` : (hasAtt ? '\n\n📎 有附件但沒有存進卡片（不是 PDF／Word 或太大），請到 official@ 信箱下載' : ''))
             + `\n\n人選卡片：https://step1ne.com/consultant/candidates/?tab=triage&app=${encodeURIComponent(cbm.application_id)}`,
             candTopic ? { message_thread_id: candTopic } : undefined).catch(() => {});
+          if (cl2.resume) await sendResumeDoc(env, cl2.resume, `📎 ${cbm.name || ''} 的履歷（${cbm.job_title || ''}）`, candTopic);
+          else await notify(env, `⚠️ ${cbm.name || fromEmail} 系統裡還沒有履歷，打電話前請先跟人選要`, candTopic ? { message_thread_id: candTopic } : undefined).catch(() => {});
           return json(request, { ok: true, received: true, matched: 'call_booking' });
         }
         // 先對完整信箱，對不到就對同網域最近寄出的那封（常見：窗口轉給同事回）
