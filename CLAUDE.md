@@ -63,6 +63,13 @@ Python 常駐 daemon 不會自動 reload——改完程式碼一定要 `launchct
 
 Cloudflare Worker 用 ESM，`node --check` 對這類檔案不可靠。要驗證語法用 `npx wrangler deploy --dry-run --outdir /tmp/xxx`，那是真正的 esbuild 打包器，才會抓到真的語法錯誤。
 
+## 客戶總表＝唯一真相；合約／客戶條件只講查得到的（2026-11-02 Jacky）
+
+列客戶、排職缺、找人、做策略之前，先跑 `python3 consultant_ops.py clients`（後台「客戶總表」頁同一份，D1 `client_board`）。
+總表「已拿掉／暫停」的職缺永遠不准再列、不准找人；只有「客戶確認」的職缺才花時間找人；管道限制照做（例：大樹不准 104）。
+回答合約條款、價格、期限、客戶條件，先跑 `python3 consultant_ops.py kb <關鍵字…>`，回答一定附出處（表名＋日期＋id）；查不到就說查不到，不准推測。
+起因：11/2 AI 一直把已拿掉的「大樹 軟體專案管理師 PM」列出來、把只有 104 來源的職缺當成客戶需求。總表只有 Jacky／Phoebe 明確說要改才改（後台頁或 `client-set`，都會留紀錄）。
+
 ## 管理者（Phoebe）電腦上的 Claude
 
 在管理者電腦上工作時，先讀 `docs/管理者交接說明.md`（怎麼拿資料、可用助理、硬規則）。

@@ -17,6 +17,16 @@
 COPS_TG_NAME / COPS_CHAT / COPS_THREAD），不吃命令列參數，助理改不了。
 
 輸出是給助理看的純文字；助理再用白話轉述給顧問。
+
+2026-11-02 Jacky：客戶總表＋小知識庫（AI 一直列出已拿掉的「大樹 軟體專案管理師 PM」、把只有 104 的職缺當成客戶需求）
+  * clients：印「主力客戶狀態總表」（D1 client_board，後台「客戶總表」頁同一份）。
+    **任何 Claude（Jacky Mac、Phoebe Windows、TG 顧問助理）要列客戶／排職缺／找人之前，先跑這個。**
+    「已拿掉／暫停」欄裡的職缺永遠不准再列、不准找人；只有「✅ 客戶確認」的職缺才花時間找人。
+  * client-set：Jacky／Phoebe 明確講要改時才用（例如「大樹 PM 拿掉」），每次修改都會留紀錄。
+  * kb <關鍵字…>：一次搜書櫃（合約／公司簡介全文）、客戶總表、客戶備註、未簽約職缺備註、
+    近 60 天信件（official@＋jackychen@）、人選備註。每筆附出處。
+  ⚠️ 硬規則：回答合約條款、價格、期限、客戶條件，一定附出處（表名＋日期＋id）；
+     kb 查不到就說「查不到」，不准推測、不准用印象補。總表跟其他資料打架時，以總表為準並講出來。
 """
 import argparse, datetime as dt, json, os, re, secrets, sys, urllib.error, urllib.parse, urllib.request
 
@@ -848,6 +858,267 @@ def cmd_match(a):
     die('用法：--company 公司 --job 職缺slug 開始；--run ID 看結果；--brief 人選application_id,… 產匿名履歷')
 
 
+# ── 2026-11-02 客戶總表（唯一真相）＋小知識庫 ──
+KB_RULE = ('⚠️ 規則：回答合約條款、價格、期限、客戶條件一定附上面的出處；查不到就說查不到，不准推測。'
+           '客戶總表跟其他資料不一致時，以客戶總表為準，並把不一致講出來。')
+PRIVATE_BOX = 'jackychen@step1ne.com'
+
+
+def _board(include_archived=False):
+    # 沒有資料庫金鑰的電腦（例如 Phoebe 的 Windows）改走後台 API，同一份資料
+    if not (_CF.get('CLOUDFLARE_API_TOKEN') and _CF.get('CLOUDFLARE_ACCOUNT_ID')):
+        res = bo('/admin/client-board')
+        if not res.get('ok'):
+            die(res.get('error') or '讀不到客戶總表')
+        return [r for r in res['items'] if include_archived or not r.get('archived')]
+    rs = rows('SELECT * FROM client_board' + ('' if include_archived else ' WHERE COALESCE(archived,0)=0') + ' ORDER BY archived, sort, name')
+    for r in rs:
+        for k, col in (('jobs', 'jobs_json'), ('removed', 'removed_json')):
+            try:
+                r[k] = json.loads(r.get(col) or '[]')
+            except ValueError:
+                r[k] = []
+    return rs
+
+
+def _nz(t):
+    return re.sub(r'[\s（）()【】「」\[\]・·,，、/]+', '', str(t or '')).lower()
+
+
+def _board_print(r, full=True):
+    print(f'■ {r["name"]}　（出處：client_board {r["id"][:8]}，最後修改 {str(r.get("updated_at") or "")[:16]} {r.get("updated_by") or ""}）')
+    print(f'   合約：{r.get("contract") or "—"}')
+    print(f'   窗口：{r.get("contacts") or "—"}')
+    if r['jobs']:
+        print('   找人中的職缺：')
+        for j in r['jobs']:
+            mark = '✅ 客戶確認' if j.get('confirmed') else '❓ 未經客戶確認（不要花時間找人）'
+            print(f'     ・{j["title"]}｜{mark}' + (f'｜{j["date"]}' if j.get('date') else '') + (f'｜{j["note"]}' if j.get('note') and full else '')
+                  + (f'\n        確認來源：{j["source"]}' if j.get('source') and full else ''))
+    else:
+        print('   找人中的職缺：無（需求未確認，先不要找人）')
+    if r['removed']:
+        print('   ⛔ 已拿掉／暫停（不准再列、不准找人）：')
+        for j in r['removed']:
+            st = '已拿掉' if j.get('status') == 'removed' else '暫停'
+            print(f'     ・{j["title"]}｜{st}｜{j.get("by") or "?"} {j.get("date") or ""}' + (f'｜{j["reason"]}' if j.get('reason') else ''))
+    print(f'   管道限制：{r.get("channel_rules") or "—"}')
+    print(f'   下一步：{r.get("next_step") or "—"}')
+    if r.get('note') and full:
+        print(f'   備註：{r["note"]}')
+
+
+def cmd_clients(a):
+    if a.log:
+        b = _board_pick(a.log, True)
+        if not _CF.get('CLOUDFLARE_API_TOKEN'):
+            for x in (bo(f'/admin/client-board/{urllib.parse.quote(b["id"])}/log').get('items') or [])[:a.n]:
+                print(f'・{x["changed_at"]}｜{x["changed_by"]}｜{x["field"]}：{clip(x["old_value"], 160) or "（空）"} → {clip(x["new_value"], 200) or "（空）"}')
+            return
+        for x in rows('SELECT * FROM client_board_log WHERE board_id=? ORDER BY changed_at DESC LIMIT ?', [b['id'], a.n]):
+            print(f'・{x["changed_at"]}｜{x["changed_by"]}｜{x["field"]}：{clip(x["old_value"], 160) or "（空）"} → {clip(x["new_value"], 200) or "（空）"}')
+        return
+    rs = _board(a.all)
+    if a.name:
+        rs = [r for r in rs if _board_match(r, a.name)]
+        if not rs:
+            die(f'客戶總表沒有「{a.name}」')
+    print(f'主力客戶狀態總表（唯一真相；後台「客戶總表」頁同一份；讀取時間 {fmt(now_tpe())}）')
+    print('規則：⛔ 欄的職缺永遠不准再列／找人；只有 ✅ 客戶確認的職缺才花時間找人；管道限制要遵守。\n')
+    for r in rs:
+        _board_print(r, full=not a.short)
+        print()
+
+
+def _board_match(r, key):
+    k = _nz(key)
+    return bool(k) and any(k in _nz(x) or (_nz(x) and _nz(x) in k) for x in [r['name']] + str(r.get('aliases') or '').split('\n') if x.strip())
+
+
+def _board_pick(key, include_archived=False):
+    rs = [r for r in _board(include_archived) if _board_match(r, key)]
+    if not rs:
+        die(f'客戶總表沒有「{key}」')
+    if len(rs) > 1:
+        die('對到好幾家：' + '、'.join(r['name'] for r in rs) + '，請打完整一點')
+    return rs[0]
+
+
+def cmd_client_set(a):
+    b = _board_pick(a.client, True)
+    w = who()
+    by = (w.get('name') or w.get('username') or '').strip()
+    if not by:
+        die('不知道是誰在改（修改一定要留名字）')
+    by = f'{by}（經 AI）'
+    f = {}
+    for opt, col in (('contract', 'contract'), ('contacts', 'contacts'), ('channel', 'channel_rules'), ('next', 'next_step'), ('note', 'note')):
+        v = getattr(a, opt)
+        if v is not None:
+            f[col] = v
+    jobs, removed = list(b['jobs']), list(b['removed'])
+    today = now_tpe().strftime('%Y-%m-%d')
+    if a.add_job:
+        if any(_nz(j['title']) == _nz(a.add_job) for j in jobs):
+            die(f'「{a.add_job}」已經在找人中的職缺裡')
+        jobs.append({'title': a.add_job, 'confirmed': bool(a.confirmed), 'source': a.source or '', 'date': a.date or today, 'note': a.job_note or ''})
+        removed = [j for j in removed if _nz(j['title']) != _nz(a.add_job)]
+    for title, st in ((a.drop_job, 'removed'), (a.pause_job, 'paused')):
+        if not title:
+            continue
+        hit = [j for j in jobs if _nz(title) in _nz(j['title'])]
+        if len(hit) > 1:
+            die('對到好幾個職缺：' + '、'.join(j['title'] for j in hit))
+        name = hit[0]['title'] if hit else title
+        jobs = [j for j in jobs if j['title'] != name]
+        removed = [j for j in removed if _nz(j['title']) != _nz(name)]
+        removed.append({'title': name, 'status': st, 'by': w.get('name') or by, 'date': today, 'reason': a.reason or ''})
+    if a.confirm_job:
+        hit = [j for j in jobs if _nz(a.confirm_job) in _nz(j['title'])]
+        if len(hit) != 1:
+            die('要確認的職缺對不到（或對到好幾個）')
+        if not a.source:
+            die('標成客戶確認一定要給 --source（客戶怎麼確認的：哪封信／哪通電話）')
+        hit[0].update({'confirmed': True, 'source': a.source, 'date': a.date or today})
+    if jobs != b['jobs']:
+        f['jobs'] = jobs
+    if removed != b['removed']:
+        f['removed'] = removed
+    if not f:
+        die('沒有要改的東西')
+    r = bo(f'/admin/client-board/{urllib.parse.quote(b["id"])}', {'by': by, 'fields': f})
+    if not r.get('ok'):
+        die(r.get('error') or '改不成功')
+    print(f'✅ 已改「{b["name"]}」{r.get("changed", 0)} 個欄位（紀錄：{by}）。現在的樣子：\n')
+    _board_print(_board_pick(b['name'], True))
+
+
+def _kb_terms(q):
+    return [t for t in re.split(r'[\s,，、]+', ' '.join(q)) if t]
+
+
+def _kb_like(cols, terms):
+    hay = "(' '||" + "||' '||".join(f"COALESCE({c},'')" for c in cols) + ')'
+    return ' AND '.join([f'{hay} LIKE ?'] * len(terms)), [f'%{t}%' for t in terms]
+
+
+def _snips(text, terms, n=3, width=90):
+    t = re.sub(r'[ \t　]+', ' ', str(text or ''))
+    flat = re.sub(r'\s+', '', t)
+    out, used = [], []
+    # 先找最不像公司名的詞（通常是最後一個），找不到再往前
+    for term in list(reversed(terms)):
+        tk = re.sub(r'\s+', '', term)
+        for m in re.finditer(re.escape(tk), flat, re.I):
+            if any(abs(m.start() - u) < width for u in used):
+                continue
+            used.append(m.start())
+            s0 = max(0, m.start() - width // 2)
+            out.append(('…' if s0 else '') + flat[s0:m.start() + width] + '…')
+            if len(out) >= n:
+                return out
+        if out:
+            return out
+    return out
+
+
+def cmd_kb(a):
+    terms = _kb_terms(a.q)
+    if not terms:
+        die('請給關鍵字，例如：kb 大樹 付款')
+    if not (_CF.get('CLOUDFLARE_API_TOKEN') and _CF.get('CLOUDFLARE_ACCOUNT_ID')):
+        die('這台電腦沒有資料庫權限，kb 跑不了。請在 TG「顧問助理」裡請它查（它會跑同一個 kb），或看後台「客戶總表」頁。不准用推測回答。')
+    w = who()
+    can_private = w.get('username') in ('jackyyuqi', 'behe10')
+    board = _board(True)
+    removed_by_co = {}
+    for r in board:
+        for j in r['removed']:
+            removed_by_co.setdefault(r['id'], []).append(j)
+    hits = 0
+
+    def head(label, src):
+        nonlocal hits
+        hits += 1
+        print(f'\n【{label}】出處：{src}')
+
+    # ① 客戶總表
+    for r in board:
+        hay = _nz(' '.join([r['name'], r.get('aliases') or '', r.get('contract') or '', r.get('contacts') or '', r.get('channel_rules') or '',
+                            r.get('next_step') or '', r.get('note') or '', json.dumps(r['jobs'], ensure_ascii=False), json.dumps(r['removed'], ensure_ascii=False)]))
+        if all(_nz(t) in hay for t in terms):
+            head('客戶總表（唯一真相）', f'client_board {r["id"][:8]}，最後修改 {str(r.get("updated_at"))[:16]} {r.get("updated_by") or ""}')
+            _board_print(r)
+    # ② 書櫃全文
+    docs = rows("""SELECT k.file_id, k.title AS ktitle, k.text, k.extracted_at, k.method, d.id AS doc_id, d.title, d.layer, d.is_active, d.uploaded_at, d.note,
+                          cc.display_name AS company
+                     FROM kb_doc_text k LEFT JOIN doc_library d ON d.file_id = k.file_id LEFT JOIN client_companies cc ON cc.id = d.company_id""")
+    for d in docs:
+        if d.get('doc_id') and not d.get('is_active') and not d.get('company') and not a.all:
+            continue   # 舊版公版不搜（--all 才搜）
+        title = d.get('title') or d.get('ktitle') or ''
+        hay = _nz(' '.join([title, d.get('company') or '', d.get('note') or '', d.get('text') or '']))
+        if not all(_nz(t) in hay for t in terms):
+            continue
+        tag = '使用中' if d.get('is_active') else ('客戶專用' if d.get('company') else ('舊版' if d.get('doc_id') else '匯入文件'))
+        src = (f'書櫃 doc_library {d["doc_id"][:8]}「{title}」（{tag}，上傳 {str(d.get("uploaded_at") or "日期不明")[:10]}）'
+               f'，檔案 /admin/file/{d["file_id"]}' if d.get('doc_id') else f'知識庫匯入「{title}」（{d.get("method")}，匯入 {str(d.get("extracted_at"))[:10]}）')
+        head('書櫃全文', src)
+        if d.get('note'):
+            print(f'   書櫃備註：{d["note"]}')
+        body_terms = [t for t in terms if _nz(t) in _nz(d.get('text'))] or terms
+        for sn in _snips(d.get('text'), body_terms, n=a.n_snip):
+            print(f'   ▸ {sn}')
+    # ③ 客戶帳號備註
+    sql, ps = _kb_like(['display_name', 'aliases', 'note', 'relation_note'], terms)
+    for r in rows(f'SELECT id, display_name, relation, note, relation_note, updated_at FROM client_companies WHERE {sql} LIMIT 10', ps):
+        head('客戶帳號備註', f'client_companies {r["id"]}「{r["display_name"]}」（關係 {r.get("relation") or "—"}，更新 {str(r.get("updated_at") or "")[:10]}）')
+        for sn in _snips((r.get('note') or '') + '\n' + (r.get('relation_note') or ''), terms, n=a.n_snip, width=160):
+            print(f'   ▸ {sn}')
+    # ④ 未簽約／社群職缺備註
+    sql, ps = _kb_like(['so.company', 'so.aliases', 'so.client_note', 'j.title'], terms)
+    for r in rows(f"""SELECT so.job_slug, so.company, so.client_note, so.src_kind, so.created_at, j.title, j.status
+                        FROM job_social_only so LEFT JOIN jobs j ON j.slug = so.job_slug WHERE {sql} ORDER BY so.created_at DESC LIMIT 15""", ps):
+        warn = ''
+        for b in board:
+            if _board_match(b, r['company']):
+                for j in removed_by_co.get(b['id'], []):
+                    if _nz(j['title']) in _nz(r['title']) or _nz(r['title']) in _nz(j['title']):
+                        warn = f'  ⛔ 客戶總表：{"已拿掉" if j["status"] == "removed" else "暫停"}（{j.get("by")} {j.get("date")}）——以總表為準，不要找人'
+                if not warn and not any(_nz(j['title']) in _nz(r['title']) or _nz(r['title']) in _nz(j['title']) for j in b['jobs']):
+                    warn = '  ❓ 客戶總表沒有列這個職缺＝客戶沒確認，不要花時間找人'
+        head('未簽約職缺（job_social_only）', f'job_social_only {r["job_slug"]}（{r["company"]}，來源 {r.get("src_kind") or "—"}，建立 {str(r["created_at"])[:10]}）')
+        print(f'   職缺：{r.get("title")}｜系統狀態 {r.get("status")}{warn}')
+        if r.get('client_note'):
+            print(f'   ▸ {clip(r["client_note"], 300)}')
+    # ⑤ 近 60 天信件
+    since = (now_tpe() - dt.timedelta(days=a.days)).strftime('%Y-%m-%d')
+    sql, ps = _kb_like(['subject', 'body_text', 'from_addr', 'from_name', 'to_addrs', 'link_name'], terms)
+    extra = '' if can_private else ' AND mailbox <> ?'
+    ms = rows(f"""SELECT id, mailbox, folder, sent_at, from_addr, to_addrs, subject, body_text FROM mail_archive
+                   WHERE sent_at >= ? AND COALESCE(is_system_copy,0)=0 AND {sql}{extra} ORDER BY sent_at DESC LIMIT ?""",
+              [since] + ps + ([] if can_private else [PRIVATE_BOX]) + [a.mails])
+    for m in ms:
+        head('信件', f'mail_archive #{m["id"]}（{m["mailbox"]} {"寄出" if m["folder"] == "sent" else "收到"}，{str(m["sent_at"])[:16]}）')
+        print(f'   主旨：{m.get("subject")}｜{m.get("from_addr")} → {clip(m.get("to_addrs"), 80)}')
+        body = re.split(r'\n-{3,}\s*Original message|\n\s*On .{5,80} wrote:|\n\s*於 .{5,80}寫道', str(m.get('body_text') or ''), maxsplit=1)[0]
+        for sn in _snips(body, terms, n=2, width=140):
+            print(f'   ▸ {sn}')
+    if not can_private:
+        print(f'\n（{PRIVATE_BOX} 的信只有 Jacky／Phoebe 本人查得到，這次沒搜）')
+    # ⑥ 人選備註
+    sql, ps = _kb_like(['n.content', 'a.name'], terms)
+    for r in rows(f"""SELECT n.id, n.application_id, n.type, n.content, n.created_at, n.created_by, a.name
+                        FROM candidate_notes n LEFT JOIN applications a ON a.id = n.application_id WHERE {sql} ORDER BY n.created_at DESC LIMIT 10""", ps):
+        head('人選備註', f'candidate_notes {r["id"][:8]}（人選 {r.get("name") or "?"}，application_id {r["application_id"]}，{str(r["created_at"])[:10]} {r.get("created_by") or ""}）')
+        for sn in _snips(r.get('content'), terms, n=2, width=140):
+            print(f'   ▸ {sn}')
+    print(f'\n共 {hits} 筆（關鍵字：{"＋".join(terms)}；信件只搜近 {a.days} 天）。')
+    if not hits:
+        print('❌ 查不到。不准推測——請直接跟顧問說「系統裡查不到」，並問要去哪裡確認。')
+    print(KB_RULE)
+
+
 def cmd_pending(a):
     for r in rows("""SELECT id,kind,candidate_name,status,requested_by,created_at,decided_by FROM consultant_ops_actions
                       ORDER BY created_at DESC LIMIT ?""", [a.n]):
@@ -855,7 +1126,7 @@ def cmd_pending(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱')
+    ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
     p = sp.add_parser('find', help='查人選'); p.add_argument('who'); p.add_argument('--all', action='store_true', help='同名多筆全部列')
     p.set_defaults(fn=cmd_find)
@@ -896,6 +1167,19 @@ def main():
     p = sp.add_parser('cancel-remind'); p.add_argument('id'); p.set_defaults(fn=cmd_cancel_remind)
     p = sp.add_parser('match', help='從現有人選配對＋針對職缺匿名摘要（等同後台客戶卡片按鈕）'); p.add_argument('--company'); p.add_argument('--job', help='職缺 slug'); p.add_argument('--run'); p.add_argument('--brief', help='application_id，逗號分隔'); p.set_defaults(fn=cmd_match)
     p = sp.add_parser('pending', help='最近的確認卡狀態'); p.add_argument('-n', type=int, default=10); p.set_defaults(fn=cmd_pending)
+    p = sp.add_parser('clients', help='主力客戶狀態總表（唯一真相）——列客戶／排職缺／找人前先跑'); p.add_argument('name', nargs='?', help='只看這家')
+    p.add_argument('--short', action='store_true', help='不印來源與備註'); p.add_argument('--all', action='store_true', help='含已封存的')
+    p.add_argument('--log', metavar='客戶', help='看這家的修改紀錄'); p.add_argument('-n', type=int, default=30); p.set_defaults(fn=cmd_clients)
+    p = sp.add_parser('client-set', help='改客戶總表（Jacky／Phoebe 明確說要改才用；會留紀錄）'); p.add_argument('client')
+    p.add_argument('--contract'); p.add_argument('--contacts'); p.add_argument('--channel', help='管道限制'); p.add_argument('--next', help='下一步'); p.add_argument('--note')
+    p.add_argument('--add-job', help='新增找人中的職缺'); p.add_argument('--confirmed', action='store_true', help='搭配 --add-job：客戶已確認')
+    p.add_argument('--confirm-job', help='把既有職缺標成客戶確認（要 --source）'); p.add_argument('--source', help='客戶怎麼確認的（哪封信／哪通電話）')
+    p.add_argument('--date'); p.add_argument('--job-note')
+    p.add_argument('--drop-job', help='拿掉職缺（移到已拿掉）'); p.add_argument('--pause-job', help='暫停職缺'); p.add_argument('--reason')
+    p.set_defaults(fn=cmd_client_set)
+    p = sp.add_parser('kb', help='小知識庫：一次搜書櫃全文／客戶總表／客戶備註／職缺備註／近 60 天信件／人選備註（每筆附出處）')
+    p.add_argument('q', nargs='+', help='關鍵字，多個＝都要有'); p.add_argument('--days', type=int, default=60); p.add_argument('--mails', type=int, default=8)
+    p.add_argument('--n-snip', type=int, default=3); p.add_argument('--all', action='store_true', help='連舊版公版合約也搜'); p.set_defaults(fn=cmd_kb)
     a = ap.parse_args()
     a.fn(a)
 
