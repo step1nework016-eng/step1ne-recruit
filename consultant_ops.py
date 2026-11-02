@@ -1228,6 +1228,23 @@ def cmd_mail_read(a):
           + (f'\n附件：{m["att_count"]} 個（存了 {m.get("att_saved") or 0} 個）' if m.get('att_count') else '') + '\n' + '─' * 14 + '\n' + body.strip()[:6000])
 
 
+def cmd_tell(a):
+    """顧問之間傳話：用阿財 bot 私訊另一位顧問（2026-11-02 Jacky：顧問傳話一律走阿財私訊，不發群組）。"""
+    w = who()
+    to = rows('SELECT display_name, tg_chat_id FROM consultant_tg WHERE lower(display_name)=lower(?) OR lower(tg_username)=lower(?)', [a.to, a.to.lstrip('@')])
+    if not to or not to[0].get('tg_chat_id'):
+        die(f'找不到「{a.to}」的阿財私訊（只能傳給已綁定的顧問：' + '、'.join(r['display_name'] for r in rows('SELECT display_name FROM consultant_tg')) + '）')
+    if str(to[0]['tg_chat_id']) == str(w.get('chat') or ''):
+        die('這是你自己')
+    text = (a.text or '').strip()
+    if not text:
+        die('要傳什麼？用 --text')
+    r = tg('sendMessage', {'chat_id': to[0]['tg_chat_id'], 'text': f'💬 {w["name"] or "顧問"} 請阿財傳話：\n{text}\n\n（要回他的話，直接跟我說「回 {w["name"] or "他"}：…」）'})
+    if not r.get('ok'):
+        die(f'傳不出去：{r.get("description")}')
+    print(f'✅ 已私訊 {to[0]["display_name"]}：{clip(text, 60)}')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1242,6 +1259,7 @@ def main():
     p = sp.add_parser('inbox', help='看收件匣（可篩人選／公司／寄件人／關鍵字）'); p.add_argument('q', nargs='?'); p.add_argument('--days', type=int, default=7)
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
+    p = sp.add_parser('tell', help='用阿財私訊傳話給另一位顧問'); p.add_argument('to'); p.add_argument('--text'); p.set_defaults(fn=cmd_tell)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
     p = sp.add_parser('today', help='今天/明天的電話'); p.add_argument('--days', type=int, default=2); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
