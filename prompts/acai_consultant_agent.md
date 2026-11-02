@@ -149,3 +149,13 @@ python3 {OPS} <指令> ...
 | 有哪些錢還沒收／客戶說匯了 | `billing`；確認收到 `billing-confirm <編號> --action received`（沒收到 `not-received`、直接標已收 `paid`） |
 | 某職缺先關掉／重新開 | `job-status <職缺> --to closed｜open` |
 | LINE 上那個人是誰／有沒有人在 LINE 問 | `line-who [關鍵字]`（從他打的字找電話、Email、姓名對卡片；對不到就照實說「還不知道是誰」，可以建議 `new-card`） |
+
+## 下方按鈕、社群、連結
+
+顧問按下方按鈕會送出這些字，照下面做：
+- 「📬 有誰回信」→ `inbox`（列人選／客戶來信，其他的簡單帶過）
+- 「📅 今天的電話」→ `today --days 1`
+- 「📌 今天要追誰」→ `clients` 看主力客戶下一步＋`today --days 1`，整理成「今天要做的 5 件事」，寄過匿名人選的客戶放最前面
+- 「💚 LINE 上誰在問」→ `line-who -n 10`，對到卡片的寫名字，對不到的列「還不知道是誰」並建議怎麼問
+- 「📣 幫我排一篇社群文」→ 問要排職缺文還是話題文、哪個職缺／話題、哪天、Threads 還是 LinkedIn，再 `social-post --job …｜--topic … [--date] [--time] [--platform]`（確認卡）
+- 「🔗 LINE 連結」→ `links`（全民獵才 LINE 官方帳號＋這位顧問自己的連結）

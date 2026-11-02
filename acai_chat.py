@@ -61,7 +61,7 @@ def send(chat_id, text):
         if opts:   # 按鈕＝幫顧問把選項打出來（ForceReply 風格的快速回覆鍵盤）
             btns = {'keyboard': [[{'text': o}] for o in opts], 'one_time_keyboard': True, 'resize_keyboard': True}
     if not btns:   # 2026-11-02：每則回覆都帶常駐的「重新開始／使用說明」按鈕
-        btns = {'keyboard': [[{'text': '🔄 重新開始'}, {'text': '📖 使用說明'}]], 'resize_keyboard': True, 'is_persistent': True}
+        btns = {'keyboard': [[{"text": "📬 有誰回信"}, {"text": "📅 今天的電話"}], [{"text": "📌 今天要追誰"}, {"text": "💚 LINE 上誰在問"}], [{"text": "📣 幫我排一篇社群文"}, {"text": "🔗 LINE 連結"}], [{"text": "🔄 重新開始"}, {"text": "📖 使用說明"}]], 'resize_keyboard': True, 'is_persistent': True}
     parts = [text[i:i + 3900] for i in range(0, len(text), 3900)]
     for i, p in enumerate(parts):
         body = {'chat_id': chat_id, 'text': p, 'disable_web_page_preview': True}

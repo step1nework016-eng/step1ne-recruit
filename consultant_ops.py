@@ -1513,6 +1513,51 @@ def cmd_line_who(a):
               + f'\n   說過：{clip(t, 120)}')
 
 
+OFFICIAL_LINE = 'https://lin.ee/XcSWPzM'   # 全民獵才 LINE 官方帳號（跟信件版型 mail_v2 LINE_URL 同一個）
+
+
+def cmd_links(a):
+    """全民獵才 LINE 官方帳號＋這位顧問自己的 LINE 加好友連結（社群帳號上設的）。"""
+    w = who()
+    own = rows("SELECT label, line_link FROM social_accounts WHERE consultant_name=? AND is_active=1 AND COALESCE(line_link,'')<>''", [w['name'] or ''])
+    print(f'全民獵才 LINE 官方帳號：{OFFICIAL_LINE}')
+    for r in own:
+        print(f'{w["name"]} 的 LINE 加好友連結（{r["label"]}）：{r["line_link"]}')
+    if not own:
+        print(f'（{w["name"]} 還沒有設定自己的 LINE 加好友連結）')
+
+
+def cmd_social_post(a):
+    """幫顧問排一篇社群發文（職缺文或話題文）。草稿照原本的社群流程產生、審核；排程本身走確認卡。"""
+    w = who()
+    plat = a.platform or 'threads'
+    acc = rows("SELECT id, label FROM social_accounts WHERE consultant_name=? AND platform=? AND is_active=1", [w['name'] or '', plat])
+    if not acc:
+        die(f'{w["name"]} 沒有啟用中的 {plat} 帳號')
+    body = {'account_id': acc[0]['id'], 'post_date': a.date or now_tpe().strftime('%Y-%m-%d'), 'post_time': a.time or ''}
+    what = ''
+    if a.job:
+        js = rows("SELECT slug,title FROM jobs WHERE (slug=? OR title LIKE ?) AND COALESCE(status,'open') IN ('open','social_only') ORDER BY updated_at DESC LIMIT 6", [a.job, f'%{a.job}%'])
+        if len(js) != 1:
+            if not js:
+                die('找不到開放中的這個職缺')
+            print('對到好幾個職缺，請顧問選：'); [print(f'  ・{j["slug"]}｜{j["title"]}') for j in js]; sys.exit(2)
+        body['job_slug'] = js[0]['slug']; what = f'職缺文：{js[0]["title"]}'
+    elif a.topic:
+        tp = rows("SELECT id, name FROM topic_prompts WHERE CAST(id AS TEXT)=? OR name LIKE ? LIMIT 6", [a.topic, f'%{a.topic}%'])
+        if len(tp) != 1:
+            if not tp:
+                die('找不到這個話題（可以先問顧問要哪一題，或改用職缺文）')
+            print('對到好幾個話題，請顧問選：'); [print(f'  ・{t["id"]}｜{t["name"]}') for t in tp]; sys.exit(2)
+        body['topic_id'] = tp[0]['id']; what = f'話題文：{tp[0]["name"]}'
+        if a.hook:
+            body['topic_hook'] = a.hook
+    else:
+        die('要排職缺文（--job）還是話題文（--topic）？')
+    card = f'📣 確認排社群發文｜{acc[0]["label"]}\n{what}\n日期：{body["post_date"]} {body["post_time"] or "（當天排程跑到就產草稿）"}\n按了才排；草稿產好會照原本流程貼來審核，審過才發。'
+    _confirm_bo('/admin/social/schedule', body, {'id': '', 'name': acc[0]['label']}, card, f'已排 {acc[0]["label"]} 的{what}', '排社群發文')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1545,6 +1590,9 @@ def main():
     p.set_defaults(fn=cmd_billing_confirm)
     p = sp.add_parser('job-status', help='開／關職缺（確認卡）'); p.add_argument('job'); p.add_argument('--to', choices=['open', 'closed'], required=True); p.set_defaults(fn=cmd_job_status)
     p = sp.add_parser('line-who', help='LINE 上還沒綁定的人是誰'); p.add_argument('q', nargs='?'); p.add_argument('-n', type=int, default=20); p.set_defaults(fn=cmd_line_who)
+    p = sp.add_parser('links', help='全民獵才 LINE 官方帳號＋自己的 LINE 連結'); p.set_defaults(fn=cmd_links)
+    p = sp.add_parser('social-post', help='排一篇社群發文（確認卡）'); p.add_argument('--job'); p.add_argument('--topic'); p.add_argument('--hook', help='話題文的切入角度')
+    p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--date'); p.add_argument('--time'); p.set_defaults(fn=cmd_social_post)
     p = sp.add_parser('new-card', help='建新的人選卡片（一人一卡：電話/Email 對到就不建）'); p.add_argument('name'); p.add_argument('--phone'); p.add_argument('--email')
     p.add_argument('--job', help='職缺代號或關鍵字，不給＝暫無職缺'); p.add_argument('--source', help='哪個管道：104、LinkedIn、LINE、轉介…'); p.add_argument('--note')
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
