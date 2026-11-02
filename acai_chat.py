@@ -134,6 +134,9 @@ def run(p):
             notes.append(f'（顧問傳了一個檔案，但下載失敗：{e}。請顧問再傳一次）')
     if reset and text in ('/start',):
         text = '你好'
+    rt = (p.get('reply_to') or '').strip()
+    if rt:
+        notes.insert(0, f'（顧問是在回覆這則訊息：「{rt[:1500]}」）')
     prompt = '\n'.join([x for x in [text, *notes] if x]) or '（顧問傳了空白訊息）'
     sid = session_for(chat_id, reset)
     persona = open(PROMPT_FILE, encoding='utf-8').read().replace('{OPS}', OPS)

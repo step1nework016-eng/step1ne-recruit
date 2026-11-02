@@ -7385,6 +7385,7 @@ export default {
               }
               await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'acai_chat', ?, 'pending', ?)`)
                 .bind(uid(), JSON.stringify({ chat_id: String(pm.chat.id), message_id: pm.message_id, text: txt.slice(0, 8000), file,
+                  reply_to: pm.reply_to_message ? String(pm.reply_to_message.text || pm.reply_to_message.caption || '').slice(0, 2000) : '',
                   who: { id: pm.from.id, username: pm.from.username, name: row.display_name } }), nowTaipei()).run();
               await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendChatAction`, { method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ chat_id: pm.chat.id, action: 'typing' }) }).catch(() => {});
