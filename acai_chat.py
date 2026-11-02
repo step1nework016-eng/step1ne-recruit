@@ -28,7 +28,7 @@ OPS = os.path.join(HERE, 'consultant_ops.py')
 PROMPT_FILE = os.path.join(HERE, 'prompts', 'acai_consultant_agent.md')
 WORK = os.path.expanduser('~/acai-chat')
 CLAUDE_BIN = shutil.which('claude') or os.path.expanduser('~/.local/bin/claude')
-MODEL = 'claude-sonnet-5'
+MODEL = 'claude-sonnet-5-5'   # 2026-11-02 Jacky：阿財 agent 一律 Sonnet 5.5
 PY = shutil.which('python3') or 'python3'
 
 
