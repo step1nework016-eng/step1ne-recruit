@@ -272,6 +272,30 @@ def tick(dry_run=False):
     STAGE_LABEL = {'stage1': '第一階段', 'stage2': '第二階段', 'stage3': '第三階段',
                    'stage4': '第四階段', 'offer': '錄取', 'onboard': '報到'}
 
+    # 2026-11-02 Jacky：「過了一天還是舊的」——以前只看 placements.stage_since，顧問打了電話、寫了紀錄、
+    # 客戶在專區排了面試，這支都不知道，同一個人天天被報「卡住 N 天」，開出來的待辦也只能手動按掉。
+    # 改成：卡住天數從「這個人最後一次有任何動作」算起；有新動作就自動結掉還開著的待辦。
+    last_act = {}
+    def _bump(app_id, t):
+        if app_id and t and str(t) > last_act.get(app_id, ''):
+            last_act[app_id] = str(t)[:19]
+    for sql in ("SELECT application_id a, MAX(created_at) t FROM candidate_notes GROUP BY application_id",
+                "SELECT application_id a, MAX(created_at) t FROM stage_events GROUP BY application_id",
+                "SELECT application_id a, MAX(COALESCE(manual_stage_at, forwarded_at)) t FROM candidate_forwards GROUP BY application_id",
+                "SELECT application_id a, MAX(COALESCE(confirmed_at, created_at)) t FROM interview_appointments GROUP BY application_id"):
+        try:
+            for x in d1(sql):
+                _bump(x['a'], x['t'])
+        except Exception as ex:
+            log(f'（讀最後動作失敗，略過這一類）：{ex}')
+
+    if not dry_run:
+        for t in d1("SELECT f.id, f.created_at, p.application_id FROM followup_tasks f JOIN placements p ON p.id=f.placement_id WHERE f.status='open'"):
+            if last_act.get(t['application_id'], '') > str(t['created_at'] or ''):
+                d1(f"UPDATE followup_tasks SET status='resolved', resolved_at=datetime('now','+8 hours'), "
+                   f"resolved_by='系統：之後有新動作' WHERE id={q(t['id'])}")
+                log(f"  自動結掉待辦（之後有新動作）：{t['id']}")
+
     created, notified = 0, []
 
     for r in rows:
@@ -280,7 +304,8 @@ def tick(dry_run=False):
         if r['application_id'] in consultant_rejected_apps:
             continue  # 顧問自己在初篩報告就決定不推薦，同樣不是卡住
 
-        bucket, days = aging_bucket(r['stage'], r['stage_since'])
+        since = max(str(r['stage_since'] or ''), last_act.get(r['application_id'], '')) or r['stage_since']
+        bucket, days = aging_bucket(r['stage'], since)
         if bucket in (None, 'NORMAL'):
             continue
 
@@ -319,7 +344,9 @@ def tick(dry_run=False):
                 notify('CRITICAL_STALE', text)
             notified.append(('CRITICAL_STALE', r['candidate_name']))
 
-        if contact == 'MISSING' and bucket in ('OVERDUE', 'CRITICAL_STALE'):
+        # 2026-11-02 關掉：client_contact_status() 寫死永遠回 MISSING（見上面註解），這則每天對每個逾期人選必發，
+        # 跟實際有沒有窗口無關，只是噪音。客戶窗口已經在客戶總表／客戶卡片裡，要重開請先把那邊的窗口接進來。
+        if False and contact == 'MISSING' and bucket in ('OVERDUE', 'CRITICAL_STALE'):
             text = (f"🙋 OWNER_DECISION_REQUIRED｜{r['candidate_name']}\n"
                    f"客戶「{r.get('client_name')}」在系統裡沒有任何已驗證聯絡窗口，"
                    f"無法自動產生跟進草稿，需要人工先確認要找誰跟進。")
