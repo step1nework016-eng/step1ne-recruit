@@ -5391,6 +5391,12 @@ async function handleConsultantOpsAction(env, cq) {
       await finish('done', { reminder_id: rid }, `✅ ${who} 確認，已記下並排提醒`, `⏰ ${row.candidate_name}：電話 ${p.call_at} 已記到卡片，${String(p.remind_at).slice(5)} 會提醒 ${row.requested_by || '你'}（${rid}）`);
       return;
     }
+    // 2026-11-02 Mac 上分批跑的工作（例如 LinkedIn 每 5 位一批）：按了只記 done，Mac 那邊輪詢狀態才往下一批
+    if (row.kind === 'batch_go') {
+      await ans('好，開始下一批');
+      await finish('done', {}, `✅ ${who} 按了：${p.done_label || '繼續下一批'}`);
+      return;
+    }
     await ans('不認得的動作'); await finish('failed', { error: 'unknown kind' }, '❌ 不認得的動作');
   } catch (e) {
     await ans('處理失敗，請到後台再試一次');
