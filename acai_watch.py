@@ -2,7 +2,7 @@
 """acai_watch.py — 阿財面談備援通知（E20，2026-10-09 Jacky）
 
 為什麼有這支：Jacky 要「接下來會跟阿財面談的人選，隨時有人顧著」。人選在面談裡講了話，阿財太久沒回，
-Jacky 要能馬上知道、直接打電話接手，不要等人選自己放棄。這支每 2 分鐘跑一次，只看、只通知 Jacky 的 TG 私訊：
+Jacky 要能馬上知道、直接打電話接手，不要等人選自己放棄。這支每 2 分鐘跑一次，只看、只發阿財 bot 私訊（11/2 起：有負責顧問只給那位，沒指派給每位顧問）：
 
   🟢 開始面談：人選第一次真的開口（不算「進入面談室」那個系統標記）→ 通知一次
   🚨 阿財太久沒回：人選最後一則訊息超過 3 分鐘阿財還沒回 → 通知（附電話、人選卡片連結）；
@@ -74,15 +74,31 @@ def is_transition(text):
     return bool(MK and MK.is_transition(text))
 
 
-# ── 通知（只私訊 Jacky）────────────────────────────────────────
-def dm(text):
-    """送到 Jacky 的 TG 私訊。成功回 True。"""
+# ── 通知（阿財 bot 私訊）──────────────────────────────────────
+# 2026-11-02 Jacky：跟其他通知同一套規矩——人選有負責顧問只私訊那位；沒指派就私訊每一位綁定阿財的顧問。
+# 備援自己壞掉（查不到資料庫）那種系統訊息仍只給 Jacky。
+def recipients(a):
+    """這場面談的通知要送誰：回 [(顯示名, chat_id)]。查不到名單就退回只給 Jacky。"""
+    try:
+        tg = {str(r['display_name']).lower(): (r['display_name'], str(r['tg_chat_id']))
+              for r in d1('SELECT display_name, tg_chat_id FROM consultant_tg') if r.get('tg_chat_id')}
+    except Exception as e:
+        log(f'查不到顧問名單，先只給 Jacky：{e}')
+        tg = {}
+    if not tg:
+        return [('Jacky', JACKY_TG)]
+    o = (a.get('owner') or '').strip().lower()
+    return [tg[o]] if o in tg else list(tg.values())
+
+
+def dm(text, chat_id=JACKY_TG):
+    """阿財 bot 私訊（預設 Jacky）。成功回 True。"""
     try:
         e = dict(l.strip().split('=', 1) for l in open(os.path.expanduser('~/.config/workflow-os/step1ne-tg.env'), encoding='utf-8')
                  if '=' in l and not l.startswith('#'))
         r = json.loads(urllib.request.urlopen(
             f"https://api.telegram.org/bot{e['TG_BOT_TOKEN']}/sendMessage",
-            data=urllib.parse.urlencode({'chat_id': JACKY_TG, 'text': text, 'disable_web_page_preview': 'true'}).encode(),
+            data=urllib.parse.urlencode({'chat_id': chat_id, 'text': text, 'disable_web_page_preview': 'true'}).encode(),
             timeout=20).read())
         return bool(r.get('ok'))
     except Exception as ex:
@@ -215,7 +231,7 @@ def fetch(now):
     if not msgs:
         return [], {}
     ids = ','.join("'" + i.replace("'", "") + "'" for i in msgs)
-    apps = d1(f"SELECT id, name, job_title, job_slug, phone, interview_state, interview_started_at, interview_ended_at, lock_expires_at "
+    apps = d1(f"SELECT id, name, job_title, job_slug, phone, owner, interview_state, interview_started_at, interview_ended_at, lock_expires_at "
               f"FROM applications WHERE id IN ({ids}) AND interview_state IN ('active','paused','done')")
     return apps, msgs
 
@@ -271,7 +287,9 @@ def run(dry=False):
         if dry:
             log('（--dry）會送：\n' + text + '\n')
             continue
-        if not dm(text):
+        to = recipients(act[1])
+        sent = [n for n, cid in to if dm(text, cid)]
+        if not sent:
             # 沒送出去就不要記成「通知過了」，下一輪再試
             if act[0] == 'slow':
                 new_state['slow'].pop(str(act[2]['id']), None)
@@ -280,7 +298,7 @@ def run(dry=False):
             elif act[0] == 'end':
                 new_state['apps'][act[1]['id']]['state'] = 'active'
         else:
-            log(f'已私訊 Jacky：{act[0]}｜{act[1]["name"]}')
+            log(f'已私訊 {"、".join(sent)}：{act[0]}｜{act[1]["name"]}')
     if not dry:
         save_state(new_state)
 
