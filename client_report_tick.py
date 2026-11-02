@@ -81,6 +81,10 @@ def _clean_text(t):
     """一段文字：含不確定字眼的句子整句拿掉，其他句子留著。"""
     if not isinstance(t, str) or not _UNSURE.search(t):
         return t
+    # 括號裡的補充說明（例：「大學 資訊傳播系（學校名稱、學位與起訖年月未提及）」）只拿掉括號，前面的內容留著
+    t = re.sub(r'[（(][^（）()]*?(?:' + _UNSURE.pattern + r')[^（）()]*?[）)]', '', t).strip()
+    if not _UNSURE.search(t):
+        return t
     parts = re.split(r'(?<=[。；！？\n])', t)
     return ''.join(x for x in parts if not _UNSURE.search(x)).strip()
 
@@ -110,9 +114,9 @@ def client_only_confirmed(data):
             out = []
             for x in o:
                 if isinstance(x, str):
-                    if _UNSURE.search(x):
-                        continue
-                    out.append(x)
+                    x = _clean_text(x)
+                    if x:
+                        out.append(x)
                 elif isinstance(x, dict):
                     if any(isinstance(v, str) and _UNSURE.search(v) for k, v in x.items() if k not in ('detail_bullets',)) \
                             and not ('employer' in x or 'role' in x):      # 工作經歷不整筆刪，只清文字
