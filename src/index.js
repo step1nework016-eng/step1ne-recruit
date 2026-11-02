@@ -5415,7 +5415,8 @@ async function handleConsultantOpsAction(env, cq) {
         await ans('不允許的動作'); await finish('failed', { error: 'path not allowed' }, '❌ 不允許的動作'); return;
       }
       const d = await copsBo(env, path, { ...(p.body || {}), by: who });
-      if (d.ok === false || (d.ok === undefined && d.error)) {   // 有些端點成功時不帶 ok 欄位 await ans(`沒完成：${d.error || '後台出錯'}`); await finish('failed', d, `❌ 沒完成：${String(d.error || '').slice(0, 40)}`); return; }
+      // 有些端點成功時不帶 ok 欄位，所以只在明確失敗時才算失敗
+      if (d.ok === false || (d.ok === undefined && d.error)) { await ans(`沒完成：${d.error || '後台出錯'}`); await finish('failed', d, `❌ 沒完成：${String(d.error || '').slice(0, 40)}`); return; }
       await ans(String(d.message || '完成了'));
       await finish('done', d, `✅ ${who}：${p.done_label || '已處理'}`, d.say || null);
       return;
