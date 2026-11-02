@@ -1703,6 +1703,11 @@ def process(job):
     if kind == 'special_check':
         import special_check
         return special_check.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-11-02 Jacky：客戶卡片一有更新（資料庫觸發器排的），照最新紀錄重排這家的下一步（整條在 jobintake/bd_followup_ai.py）
+    if kind == 'bd_followup_refresh':
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'jobintake'))
+        import bd_followup_ai
+        return bd_followup_ai.run_one(json.loads(job.get('payload_json') or '{}').get('company') or '')
     if kind == 'company_research':
         import company_research
         return company_research.run(json.loads(job.get('payload_json') or '{}'))
