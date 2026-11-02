@@ -1747,7 +1747,7 @@ def _fetch_static(app_id):
                 static['acai_v2'] = False
     except Exception as e:
         log(f'⚠️ 電洽後接手資料載入失敗（照一般流程面談，電洽摘要照樣讀得到）：{e}')
-    return _anonymize_static(static, job_slug_for_ctx)
+    return _anonymize_static(static, job_slug_for_ctx, app_id)
 
 
 def _anon_info_for_job(job):
@@ -1771,7 +1771,7 @@ def _anon_for_app(app_id):
     return _anon_info_for_job(r[0]) if r and r[0].get('slug') else None
 
 
-def _anonymize_static(static, job_slug):
+def _anonymize_static(static, job_slug, app_id=''):
     """2026-11-02 未簽約客戶職缺匿名面談：阿財讀到的所有資料（職缺、題庫、到職障礙、初篩、表單備註）
     先把公司名／別名換成產業描述，阿財根本看不到公司名就講不出來。履歷全文不動（那是人選自己的經歷）。
     出口還有第二道檢查（_anon_gate），兩道都過才送到人選面前。"""
@@ -1788,6 +1788,10 @@ def _anonymize_static(static, job_slug):
     static['job'] = job
     static['anon'] = info
     log(f'🔒 {job.get("slug")}：未簽約客戶職缺，匿名面談（對外講「{info["desc"]}」，擋 {len(info["terms"])} 個公司名寫法）')
+    try:      # 留一筆「哪台機器用匿名模式讀過這位」：查 notify_throttle key LIKE 'anon_seen:%' 就知道各台是不是新版
+        _mark_once(f'anon_seen:{app_id}:{INTERVIEW_HOST}')
+    except Exception:
+        pass
     if info.get('desc_missing') and _mark_once(f'anon_desc_missing:{job.get("slug")}'):
         tg(f'ℹ️ 未簽約職缺「{job.get("title")}」（{job.get("slug")}）沒有填產業描述，阿財只能講「這家公司」。'
            f'要補的話填 job_social_only.industry_desc（例如「日商台灣子公司（商用廚房設備）」）。', THREAD_SYSTEM)
