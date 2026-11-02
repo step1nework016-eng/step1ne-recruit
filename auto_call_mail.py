@@ -21,8 +21,9 @@ consultant_ops.py call-mail，人選容易冷掉。
   * 已推薦給客戶（candidate_forwards 有紀錄）
   * 重複／已被取代的應徵、已婉拒（status rejected/duplicate/closed）
 
-署名＆送卡：applications.owner（jacky→Jacky 私訊、phoebe→Phoebe 私訊；沒有負責顧問→Jacky）。
-Jacky、Phoebe 都能按（Worker 的 BD_APPROVERS）。
+送卡：一律送 Jacky 私訊；負責顧問是 Phoebe 的再送一份到 Phoebe 私訊（2026-11-02 Jacky）。
+同一張卡兩邊按只會寄一次（Worker 先搶 consultant_ops_actions 狀態）。Jacky、Phoebe 都能按。
+信件不寫顧問名字，以「全民獵才招募團隊」口吻（模板在後台 callMailDraft；by 只記誰負責）。
 
 開關：D1 site_settings 'auto_call_mail'＝on／off（沒設＝off）。
 跑在哪：interview_daemon.py 主迴圈每 AUTO_EVERY_SEC 秒叫一次 tick()，**只在主力機（WSL2，沒設
@@ -131,25 +132,30 @@ def make_card(r, dry_run=False, test=False):
     send_params, d, extra = c.call_mail_draft(app, t['name'])
     send_params['_auto'] = 'interview_done'   # 底線開頭的參數 Worker 寄信時會拿掉，只是記號
     if dry_run:
-        return {'ok': True, 'dry_run': True, 'to_tg': t['name'], 'by': t['name'], 'mail_to': d['to'],
+        to_tg = 'Jacky' + ('' if t['name'] == 'Jacky' else '＋' + t['name'])
+        return {'ok': True, 'dry_run': True, 'to_tg': to_tg, 'by': t['name'], 'mail_to': d['to'],
                 'subject': d['subject'], 'text': d['text']}
-    target = OWNER_TG_TEST if test else t
-    w = {'tg_id': target['tg_id'], 'username': target['username'], 'name': f'系統（面談後自動・{t["name"]}）',
+    jk = c.OWNER_TG['jacky']
+    target = OWNER_TG_TEST if test else jk          # 主卡一律在 Jacky 私訊
+    also = () if test or t['tg_id'] == jk['tg_id'] else (t['tg_id'],)   # Phoebe 負責的再送她一份
+    w = {'tg_id': t['tg_id'], 'username': t['username'], 'name': f'系統（面談後自動・{t["name"]}）',
          'chat': target['tg_id'], 'thread': ''}
     route = f'{r.get("route_code") or "—"} {r.get("route_label") or ""}'.strip()
     head = (f'🤖 阿財面談結束（{str(r["interview_ended_at"])[5:16]}），系統先幫你擬好約電話信。\n'
             f'負責顧問：{t["name"]}｜阿財分流：{route}\n')
     tail = ('─' * 14 + '\n' + ('\n'.join(extra) + '\n' if extra else '') +
-            f'信件署名 {t["name"]}，從 official@ 寄。按「✅ 確認寄出」才會真的寄（Jacky、Phoebe 都可以按），'
+            ('這張卡 Jacky、Phoebe 私訊各一份，誰先按都只會寄一次。' if also else '') +
+            f'信件以全民獵才招募團隊名義、從 official@ 寄。按「✅ 確認寄出」才會真的寄（Jacky、Phoebe 都可以按），'
             f'{c.EXPIRE_H} 小時內有效；不想約就按「✖ 不寄了」，這位不會再自動出卡。')
     card = head + c.card_head('確認寄出｜約電話信', app, d['to'], d['subject']) + d['text'] + '\n' + tail
     if test:
         card = '【測試・請勿按確認，等一下會自動取消】\n' + card
     aid = c.create_action('call_mail', app, send_params, d['to'], d['subject'], d['text'], card,
-                          [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')], w=w, only_if_none=('call_mail',))
+                          [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')], w=w, only_if_none=('call_mail',),
+                          also_chats=also)
     if not aid:
         return {'ok': False, 'skip': '已經有約電話信的確認卡（別台剛出過）'}
-    return {'ok': True, 'action_id': aid, 'to_tg': target['name'], 'by': t['name'], 'mail_to': d['to'], 'subject': d['subject']}
+    return {'ok': True, 'action_id': aid, 'to_tg': '＋'.join([target['name']] + [t['name'] for _ in also]), 'by': t['name'], 'mail_to': d['to'], 'subject': d['subject']}
 
 
 OWNER_TG_TEST = c.OWNER_TG['jacky']

@@ -377,10 +377,11 @@ def tg(method, payload):
             return {'ok': False, 'description': f'HTTP {e.code}'}
 
 
-def create_action(kind, app, params, to, subject, text, card_text, buttons, w=None, only_if_none=None):
+def create_action(kind, app, params, to, subject, text, card_text, buttons, w=None, only_if_none=None, also_chats=()):
     """w：誰提出、卡片貼哪（不給就用 who()）。
     only_if_none：kind 清單；這位人選已經有這些 kind 的確認卡（任何狀態）就不建、回 None——
-    先占位再貼卡，兩台機器同時跑也只會出一張。"""
+    先占位再貼卡，兩台機器同時跑也只會出一張。
+    also_chats：同一張卡再貼到這些私訊（按鈕是同一個編號，Worker 先搶狀態，誰先按都只會寄一次）。"""
     w = w or who()
     need_where(w)
     aid = 'cop' + secrets.token_hex(6)
@@ -410,6 +411,11 @@ def create_action(kind, app, params, to, subject, text, card_text, buttons, w=No
            [json.dumps({'error': 'card_post_failed', 'tg': r.get('description')}, ensure_ascii=False), aid])
         die(f'確認卡貼不出去：{r.get("description")}')
     d1('UPDATE consultant_ops_actions SET tg_message_id=? WHERE id=?', [str(r['result']['message_id']), aid])
+    for ch in also_chats:
+        if ch and str(ch) != str(w['chat']):
+            r2 = tg('sendMessage', {'chat_id': ch, 'text': card_text[:4000], 'reply_markup': kb, 'disable_web_page_preview': True})
+            if not r2.get('ok'):
+                print(f'⚠️ 另一份確認卡貼不到 {ch}：{r2.get("description")}')
     return aid
 
 
@@ -490,9 +496,12 @@ def cmd_call_mail(a):
     send_params, d, extra = call_mail_draft(app, by, a.note, keys, a.topic_extra,
                                             (a.ask_resume == 'yes') if a.ask_resume in ('yes', 'no') else None)
     card = card_head('確認寄出｜約電話信', app, d['to'], d['subject']) + d['text'] + '\n' + card_tail(w, '\n'.join(extra))
+    # 2026-11-02 Jacky：約電話信的確認卡一律也送一份到 Jacky 私訊（他自己下的指令就不重複）
+    jk = OWNER_TG['jacky']
+    also = () if w['username'] == jk['username'] else (jk['tg_id'],)
     aid = create_action('call_mail', app, send_params, d['to'], d['subject'], d['text'], card,
-                        [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')])
-    print(f'署名：{by}')
+                        [('✅ 確認寄出', 'cop_ok'), ('✖ 不寄了', 'cop_no')], also_chats=also)
+    print(f'負責顧問：{by}' + ('（確認卡也送一份到 Jacky 私訊）' if also else ''))
     print(f'✅ 已在這個 topic 貼出確認卡（{aid}），還沒寄。\n收件：{d["to"]}\n主旨：{d["subject"]}\n--- 信件內容 ---\n{d["text"]}')
 
 
