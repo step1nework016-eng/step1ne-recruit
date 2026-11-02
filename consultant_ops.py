@@ -1663,6 +1663,48 @@ def cmd_set_owner(a):
     print(f'✅ {app["name"]} 的負責顧問改成 {(ow or "（未指派）").capitalize()}')
 
 
+QUICK_APPLY_SLUGS = {'bim-mep-drafting-engineer-hsinchu', 'semiconductor-bim-mep-drafting-trainee-hsinchu', 'bim-engineer-houli',
+                     'trainee-engineering-design-engineer', 'engineering-drafting-trainee-tongluo'}   # 跟 consultant-app/resumelink.js 同一份
+
+
+def cmd_resume_link(a):
+    """給人選連結：聊過的給「上傳履歷連結」、還沒聊過的給「應徵連結」（貼 LINE 用）；--send 寄 Email（確認卡）。"""
+    w = who()
+    app = resolve(a.who) if a.who else None
+    job = a.job or (app.get('job_slug') if app else '')
+    if job in ('unspecified', 'entry-general-match', 'other') or (job or '').startswith('pending-so-'):
+        job = ''
+    if job:
+        jr = rows("SELECT slug,title,status FROM jobs WHERE slug=? OR title LIKE ? LIMIT 3", [job, f'%{job}%'])
+        if len(jr) == 1 and jr[0]['status'] not in ('closed', 'social_only', 'draft'):
+            job, jt = jr[0]['slug'], jr[0]['title']
+        else:
+            job, jt = '', ''
+    else:
+        jt = ''
+    r = bo('/admin/resume-upload-link', {'action': 'link', 'by': w['name'], 'job_slug': job, 'application_id': app['id'] if app else None, 'src': 'line'})
+    up = r.get('link') if r.get('ok') else None
+    if not up:
+        die(r.get('error') or '產不出上傳履歷連結')
+    site = 'https://step1ne.com'
+    import urllib.parse as _u
+    apply = (f'{site}/apply-general/' if not job else
+             f'{site}{"/apply-quick/" if job in QUICK_APPLY_SLUGS else "/apply/"}?job={_u.quote(job)}&title={_u.quote(jt)}&utm_source=consultant&utm_medium=line&utm_campaign={_u.quote(job)}')
+    print(f'已經聊過 → 上傳履歷連結（貼 LINE）：{up}')
+    print(f'還沒聊過 → 應徵連結（貼 LINE，會先跟阿財聊）：{apply}')
+    print('（人選從上傳履歷連結傳進來，卡片會自動指派給你）')
+    if a.send:
+        if not app:
+            die('寄 Email 要指定人選（--who）')
+        em = rows('SELECT email, name FROM applications WHERE id=?', [app['id']])[0]
+        if not (em.get('email') or '').strip() or 'placeholder' in (em.get('email') or ''):
+            die(f'{app["name"]} 卡片上沒有 Email，只能貼 LINE')
+        _confirm_bo('/admin/resume-upload-link', {'action': 'send', 'by': w['name'], 'to': em['email'], 'name': em['name'], 'application_id': app['id'],
+                                                   'job_slug': job, 'src': 'email'}, app,
+                    f'📧 確認寄上傳履歷連結｜{app["name"]}（{em["email"]}）' + (f'\n職缺：{jt}' if jt else '') + '\n按了會從 official@ 寄出（系統預設的信件內容）。',
+                    f'已寄上傳履歷連結給 {app["name"]}', '寄上傳履歷連結')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1699,6 +1741,8 @@ def main():
     p = sp.add_parser('social-gaps', help='每個帳號還沒發過的職缺'); p.add_argument('--accounts', help='逗號分隔，例如 Jacky,Phoebe,Anna,DR；不給＝自己')
     p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--company'); p.set_defaults(fn=cmd_social_gaps)
     p = sp.add_parser('styles', help='發文公式清單'); p.set_defaults(fn=cmd_styles)
+    p = sp.add_parser('resume-link', help='給人選上傳履歷／應徵連結（--send 寄 Email，確認卡）'); p.add_argument('who', nargs='?'); p.add_argument('--job')
+    p.add_argument('--send', action='store_true'); p.set_defaults(fn=cmd_resume_link)
     p = sp.add_parser('social-batch', help='批量排社群文（一張確認卡）'); p.add_argument('--accounts'); p.add_argument('--jobs', required=True)
     p.add_argument('--style'); p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--start', help='第一天 YYYY-MM-DD')
     p.add_argument('--time'); p.add_argument('--spread', action='store_true', help='每個職缺排在不同天（第 1 個職缺第 1 天、第 2 個第 2 天…）'); p.set_defaults(fn=cmd_social_batch)

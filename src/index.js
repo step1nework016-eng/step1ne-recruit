@@ -5425,7 +5425,7 @@ async function handleConsultantOpsAction(env, cq) {
       // 2026-11-02 Jacky「全部做完」：阿財顧問助理補齊常用功能，凡是客戶看得到／人選收得到／跟錢有關的都走這張確認卡
       const COPS_BO_ALLOW = ['/admin/billing2/terms-confirm', '/admin/billing2/mail', '/admin/forward-candidate', '/admin/set-manual-stage',
         '/admin/pipeline/forward-decision', '/admin/pipeline/candidate-withdraw', '/admin/candidate-form-submissions/trigger',
-        '/admin/line-notify-interview', '/admin/billing-installments/confirm', '/admin/billing-installments/mark-paid', '/admin/social/schedule'];
+        '/admin/line-notify-interview', '/admin/billing-installments/confirm', '/admin/billing-installments/mark-paid', '/admin/social/schedule', '/admin/resume-upload-link'];
       const okDyn = /^\/admin\/candidate-form-submissions\/[\w-]+\/resend$/.test(path)
         || (/^\/admin\/jobs\/[a-z0-9-]+$/.test(path) && Object.keys(p.body || {}).every((k) => k === 'status') && ['open', 'closed'].includes((p.body || {}).status));
       if (!COPS_BO_ALLOW.includes(path) && !okDyn) {
