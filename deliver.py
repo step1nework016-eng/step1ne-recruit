@@ -1307,7 +1307,8 @@ def build_client_html_v2(data, meta, show=None):
         srcs.append('AI 面談逐字稿')
     if meta.get('call_summary_client') or data.get('qa'):
         srcs.append('顧問電洽摘要')
-    if meta.get('disc'):
+    # 2026-11-02：meta['disc'] 可能是 {d:None,...} 這種空殼，會被當成「有做」——要真的有分數才寫（侯弼航等三位沒做卻寫了）
+    if any(isinstance(v, (int, float)) for v in ((meta.get('disc') or {}).values() if isinstance(meta.get('disc'), dict) else [])):
         srcs.append('工作風格測驗')
     if not anonymous:   # 2026-10-14 匿名履歷照 A-01／C-03 範本：不放「來源」列
         row('來源', e(srcs[0] + '／' + '＋'.join(srcs[1:]) if len(srcs) > 1 else srcs[0]))
