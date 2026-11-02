@@ -98,9 +98,10 @@ def session_for(chat_id, reset):
         return None
     r = D.query(f"SELECT session_id, ver FROM acai_chat_sessions WHERE chat_id={q(chat_id)}")
     rows = (r.get('results') if isinstance(r, dict) else r) or []
-    if rows and rows[0].get('ver') != _persona_ver():
-        return None      # 功能更新過：開新對話（舊對話裡的「我做不到」不再沿用）
-    return rows[0]['session_id'] if rows else None
+    if not rows:
+        return None
+    # 功能更新過：保留對話（顧問可能正在講一件事），由 run() 在這一則前面提醒「以最新說明為準」
+    return (rows[0]['session_id'], rows[0].get('ver') != _persona_ver())
 
 
 def save_session(chat_id, sid, who):
@@ -152,7 +153,11 @@ def run(p):
     if rt:
         notes.insert(0, f'（顧問是在回覆這則訊息：「{rt[:1500]}」）')
     prompt = '\n'.join([x for x in [text, *notes] if x]) or '（顧問傳了空白訊息）'
-    sid = session_for(chat_id, reset)
+    ss = session_for(chat_id, reset)
+    sid, updated = (ss if isinstance(ss, tuple) else (ss, False))
+    if updated:
+        prompt = ('（系統提示：你的功能剛更新過。以現在的說明書和工具為準，你在前面對話裡說「做不到」的事可能已經做得到了，'
+                  '不要沿用舊說法。前面聊到的人選、事情照常接著講。）\n' + prompt)
     persona = open(PROMPT_FILE, encoding='utf-8').read().replace('{OPS}', OPS)
     import datetime
     from zoneinfo import ZoneInfo
