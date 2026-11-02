@@ -1785,6 +1785,8 @@ def _anonymize_static(static, job_slug, app_id=''):
     job['client_intro'] = AN.scrub_text(job.get('client_intro'), info)
     job['confidential_client'] = 1
     job['client_named'] = 0
+    if job.get('notes'):      # 舊職缺備註寫著「不收應徵、不跑阿財」——現在開放匿名面談，別讓阿財讀到互相矛盾的話
+        job['notes'] = str(job['notes']).replace('不收應徵、不跑阿財', '不收官網應徵；阿財面談走匿名模式')
     static['job'] = job
     static['anon'] = info
     log(f'🔒 {job.get("slug")}：未簽約客戶職缺，匿名面談（對外講「{info["desc"]}」，擋 {len(info["terms"])} 個公司名寫法）')
