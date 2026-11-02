@@ -19,6 +19,7 @@ import autoupdate                    # 自動更新（見 autoupdate.py 檔頭�
 import shutil, tempfile              # 交付時產 PDF 的暫存目錄（deliver.py）
 import interview_markers as MK   # E17：等待過渡語的標記，認得出來才排除得掉
 import cjk_punct as CP           # E24：中文旁邊的半形標點 → 全形（寫出去前的確定性清洗）
+import anon_mode as AN           # 2026-11-02：未簽約客戶職缺匿名面談（公司名不讓人選知道）
 _NOT_T = MK.sql_not_transition('m.content')   # SQL 片段：這則不是過渡語（給別名 m 的查詢用）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -737,6 +738,8 @@ def notify_candidate(app_id, abandoned, extra_lines=None):
             tok = _api_token.new(('STEP1NE_ACAI_TOKEN',)) or tok
         if not tok:
             return log('找不到 RECRUIT_ADMIN_TOKEN，跳過候選人通知信')
+        if extra_lines:      # 2026-11-02 未簽約客戶職缺：信裡的推薦理由也不能有公司名
+            extra_lines = [_anon_mail(app_id, '', str(x), None)[1] for x in extra_lines]
         req = urllib.request.Request(
             'https://step1ne-backoffice-worker.aiagentg888.workers.dev/admin/interview-done',
             data=json.dumps({'id': app_id, 'abandoned': bool(abandoned),
@@ -1744,7 +1747,81 @@ def _fetch_static(app_id):
                 static['acai_v2'] = False
     except Exception as e:
         log(f'⚠️ 電洽後接手資料載入失敗（照一般流程面談，電洽摘要照樣讀得到）：{e}')
+    return _anonymize_static(static, job_slug_for_ctx)
+
+
+def _anon_info_for_job(job):
+    """未簽約客戶職缺（jobs.status='social_only'）→ 匿名資訊；其他職缺 None。
+    查詢失敗時不能當成「不用匿名」：退回用 jobs.client_name（就是公司名）當擋字，對外講「這家公司」。"""
+    job = job or {}
+    try:
+        return AN.info_for(job.get('slug'), d1)
+    except Exception as e:
+        if job.get('status') != 'social_only':
+            return None
+        log(f'⚠️ 匿名資料讀取失敗，改用職缺上的公司名擋字：{str(e)[:120]}')
+        terms = AN._clean_terms(AN._variants(job.get('client_name')))
+        return {'company': job.get('client_name') or '', 'terms': terms, 'desc': AN.FALLBACK_DESC, 'desc_missing': True}
+
+
+def _anon_for_app(app_id):
+    """用 application id 找匿名資訊（給沒有 ctx 的地方：預熱貼上、寄信）。"""
+    r = d1(f"SELECT j.slug, j.status, j.client_name FROM applications a LEFT JOIN jobs j ON j.slug = a.job_slug "
+           f"WHERE a.id = {q(app_id)}")
+    return _anon_info_for_job(r[0]) if r and r[0].get('slug') else None
+
+
+def _anonymize_static(static, job_slug):
+    """2026-11-02 未簽約客戶職缺匿名面談：阿財讀到的所有資料（職缺、題庫、到職障礙、初篩、表單備註）
+    先把公司名／別名換成產業描述，阿財根本看不到公司名就講不出來。履歷全文不動（那是人選自己的經歷）。
+    出口還有第二道檢查（_anon_gate），兩道都過才送到人選面前。"""
+    job = static.get('job') or {}
+    info = _anon_info_for_job(job if job.get('slug') else {'slug': job_slug})
+    if not info:
+        return static
+    static = AN.scrub(static, info, skip_keys=('resume_text',))
+    job = dict(static.get('job') or {})
+    job['client_name'] = info['desc']
+    job['client_intro'] = AN.scrub_text(job.get('client_intro'), info)
+    job['confidential_client'] = 1
+    job['client_named'] = 0
+    static['job'] = job
+    static['anon'] = info
+    log(f'🔒 {job.get("slug")}：未簽約客戶職缺，匿名面談（對外講「{info["desc"]}」，擋 {len(info["terms"])} 個公司名寫法）')
+    if info.get('desc_missing') and _mark_once(f'anon_desc_missing:{job.get("slug")}'):
+        tg(f'ℹ️ 未簽約職缺「{job.get("title")}」（{job.get("slug")}）沒有填產業描述，阿財只能講「這家公司」。'
+           f'要補的話填 job_social_only.industry_desc（例如「日商台灣子公司（商用廚房設備）」）。', THREAD_SYSTEM)
     return static
+
+
+def _anon_gate(app_id, name, ctx, msgs, talk_prompt=None, job_slug=''):
+    """出口檢查：阿財每句要送給人選的話，送出前比對公司名／別名。
+    命中 → 有提示詞就重生成一次；還命中（或沒辦法重生成）→ 把公司名換成產業描述；一定通知 TG。"""
+    info = (ctx or {}).get('anon')
+    if not info or not msgs:
+        return msgs
+    found = sorted({h for m in msgs for h in AN.hits(m, info)})
+    if not found:
+        return msgs
+    log(f'🔒 {name}：阿財這輪講到公司名 {found}，攔下')
+    how = '已把公司名換成產業描述'
+    if talk_prompt:
+        try:
+            retry = run_claude(talk_prompt +
+                               f'\n\n⚠️ 你剛剛那則回覆裡出現了公司名稱（{"、".join(found)}）。這是匿名面談，'
+                               f'公司一律只能講「{info["desc"]}」，人選問公司名就回「{AN.ASK_COMPANY_REPLY}」。請重寫這一輪。')
+            log_token_usage(app_id, 'talk_retry_anon', talk_prompt, _snapshot_session_files())
+            r2 = [m for m in (retry.get('messages') or []) if str(m).strip()][:3]
+            if r2 and not any(AN.hits(m, info) for m in r2):
+                msgs, how = r2, '已重寫一次'
+        except Exception as e:
+            log(f'⚠️ {name}：匿名重寫失敗，改用替換：{str(e)[:120]}')
+    msgs = [AN.scrub_text(str(m), info) for m in msgs]
+    if any(AN.hits(m, info) for m in msgs):      # 理論上換完不會再命中；萬一有，整輪換成安全句
+        msgs, how = [AN.ASK_COMPANY_REPLY + '我們先回到您的經歷。'], '換成安全句'
+    tg(f'🔒 阿財差點對 {name} 講出未簽約公司名：{"、".join(found)}\n'
+       f'{how}，人選沒有看到公司名。職缺：{job_slug}', THREAD_SYSTEM)
+    return msgs
 
 
 def clear_static_cache(app_id):
@@ -1770,7 +1847,7 @@ def context_for(app_id):
     try:
         _pl = d1(f"SELECT interview_plan_json FROM applications WHERE id={q(app_id)}")
         if _pl and _pl[0].get('interview_plan_json'):
-            ctx['plan'] = json.loads(_pl[0]['interview_plan_json'])
+            ctx['plan'] = AN.scrub(json.loads(_pl[0]['interview_plan_json']), ctx.get('anon'))
     except Exception as e:
         log(f'讀題目計畫失敗（不影響面談，改走現場生成）：{str(e)[:80]}')
     # 2026-10-02 胡耀中：職缺在「排題目」之後才改成要考英文（14:42 改、他 15:02 開始面談），
@@ -2243,7 +2320,9 @@ def build_prompt(ctx, skill_md):
         # 但候選人很可能直接問「是哪一間公司」「是不是美光」——
         # 這條規則不寫清楚，阿財會照著「盡量回答候選人問題」的預設去猜或補完，等於還是講出去。
         _ext = _job_extras(job.get('slug'))
-        if _ext.get('company'):
+        if ctx.get('anon'):      # 2026-11-02 未簽約客戶職缺：匿名面談，優先於任何「公司名稱怎麼講」的設定
+            lines.extend(AN.prompt_lines(ctx['anon']))
+        elif _ext.get('company'):
             lines.append('  🏢 公司名稱怎麼講（顧問指定，**這條優先於任何「不講公司名稱／不方便透露」的規則**）：' + _ext['company'])
         elif job.get('confidential_client'):
             lines.append('  🔒 這個職缺的客戶名稱與廠區地名不可以講。'
@@ -2270,6 +2349,8 @@ def build_prompt(ctx, skill_md):
         # 2026-10-07 Jacky：公司近期動態（每週自動查證更新，存在 client_companies.news_brief）。
         # 只拿來介紹公司、回答候選人「公司在做什麼」——不是評分依據，也不准講出公司名稱。
         try:
+            if ctx.get('anon'):      # 公司近期動態一定寫著公司名，匿名面談不帶
+                raise LookupError('anon')
             _nb = d1(f"SELECT TRIM(COALESCE(c.news_pinned,'') || char(10) || COALESCE(c.news_brief,'')) AS news_brief FROM jobs j JOIN client_companies c ON c.id=j.company_id WHERE j.slug={q(job.get('slug') or '')}")
             if _nb and _nb[0].get('news_brief'):
                 lines.append('  📰 公司近期動態（只當背景：可以用來介紹公司方向、回答候選人問題，或自然地問一句他有沒有相關經驗；'
@@ -4137,6 +4218,7 @@ def _recs_only_mail(a, recs):
                      + lines + ['', '看完今天的面談內容後，會有人再跟您聯繫。謝謝您！', '',
                                 'Step1ne 德仁管理顧問', 'Email：official@step1ne.com', '就業服務許可證：北市就服字第 0363 號'])
     subject = f'感謝您參加「{job}」線上面談'
+    subject, text, _ = _anon_mail(a['id'], subject, text, None)
     # 2026-10-21 新版設計（site_settings mail_design_v2：off／test／on），字跟純文字版一樣
     html = None
     try:
@@ -4150,6 +4232,21 @@ def _recs_only_mail(a, recs):
        f"{q(str(_uuid.uuid4()))}, 'acai_job_recs', {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
        f"{q(subject)}, {q(text)}, {q(html)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
     log(f"{a.get('name')}：面談後推薦職缺信已排寄")
+
+
+def _anon_mail(app_id, subject, text, html):
+    """2026-11-02 未簽約客戶職缺：面談後寄給人選的信，公司名一律換成產業描述（其他職缺原樣）。"""
+    try:
+        info = _anon_for_app(app_id)
+    except Exception as e:
+        log(f'⚠️ 寄信前查匿名資料失敗（照原文寄，信裡只有職稱）：{str(e)[:100]}')
+        return subject, text, html
+    if not info:
+        return subject, text, html
+    found = sorted({h for t in (subject, text, html) for h in AN.hits(t, info)})
+    if found:
+        log(f'🔒 {app_id[:8]}：面談後的信講到未簽約公司名 {found}，已換成產業描述')
+    return tuple(AN.scrub_text(t, info) if t else t for t in (subject, text, html))
 
 
 def _saved_recs(app_id):
@@ -4167,6 +4264,7 @@ def _queue_thanks_mail(a, kind, *, has_resume, show_assessment, recs, done_label
     subject, text, html = ITM.build(name=a.get('name'), job_title=a.get('job_title') or a.get('job_slug') or '',
                                     token=a['chat_token'], has_resume=has_resume, show_assessment=show_assessment,
                                     recs=recs, done_label=done_label, left=left)
+    subject, text, html = _anon_mail(a['id'], subject, text, html)
     d1(f"INSERT INTO mail_outbox (id, kind, from_addr, to_email, subject, text, html, ref_table, ref_id, status, created_at) VALUES ("
        f"{q(str(_uuid.uuid4()))}, {q(kind)}, {q('Step1ne <official@step1ne.com>')}, {q(a['email'])}, "
        f"{q(subject)}, {q(text)}, {q(html)}, 'applications', {q(a['id'])}, 'pending', datetime('now','+8 hours'))")
@@ -4991,6 +5089,7 @@ def handle(app):
                f'職缺：{app.get("job_slug")}　·　這通常代表職缺資料裡混進了用人單位的歧視性偏好，'
                f'值得回頭看一下那個職缺的備註怎麼寫的。', THREAD_SYSTEM)
 
+        msgs = _anon_gate(app_id, name, ctx, msgs, talk_prompt, app.get('job_slug'))   # 2026-11-02 未簽約職缺：公司名出口檢查
         msgs = _resume_after_stuck(ctx.get('application') or app, msgs, rnd)   # 2026-10-24：卡住後接上，先說抱歉久等
         if rnd and (rnd.get('stuck') or rnd.get('apology')):
             log(f'✅ {name}：這輪卡住後接上了（人選等了 {rnd["wait"] / 60:.1f} 分鐘）')
@@ -5892,6 +5991,9 @@ def do_prewarm(app):
 
         # E24：預熱的開場白是 Worker 進房時直接貼給候選人的，Worker 不會清標點，所以存進去之前就要清好
         msgs = [_clean_out(m) for m in (result.get('messages') or []) if str(m).strip()][:3]
+        if msgs and ctx.get('anon') and any(AN.hits(m, ctx['anon']) for m in msgs):
+            log(f'🔒 {name}：預熱的開場白講到未簽約公司名，丟掉（進房時現場生成，會過出口檢查）')
+            msgs = []
         if msgs:
             msgs = _foreign_opening(ctx, msgs)      # 外語人選：開場前先放固定的外語歡迎（最多變 4 則）
             now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -5989,6 +6091,12 @@ def _post_prewarmed_opening(app_id, name):
     except (ValueError, TypeError):
         return False
     if not msgs or any(law5_hits(m) for m in msgs):
+        return False
+    try:
+        _ai = _anon_for_app(app_id)
+    except Exception:
+        return False      # 查不到是不是未簽約職缺 → 不貼預熱，走現場生成（有出口檢查）
+    if _ai and any(AN.hits(m, _ai) for m in msgs):
         return False
     conv = d1(f"SELECT content FROM messages WHERE application_id={q(app_id)} AND {MK.sql_not_transition('content')} "
               f"ORDER BY id ASC LIMIT 4")
