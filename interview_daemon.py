@@ -1806,6 +1806,7 @@ def _anon_gate(app_id, name, ctx, msgs, talk_prompt=None, job_slug=''):
     info = (ctx or {}).get('anon')
     if not info or not msgs:
         return msgs
+    msgs = [AN.brand_fix(str(m)) for m in msgs]      # 自稱跟問意願信一致：全民獵才
     found = sorted({h for m in msgs for h in AN.hits(m, info)})
     if not found:
         return msgs
@@ -1817,7 +1818,7 @@ def _anon_gate(app_id, name, ctx, msgs, talk_prompt=None, job_slug=''):
                                f'\n\n⚠️ 你剛剛那則回覆裡出現了公司名稱（{"、".join(found)}）。這是匿名面談，'
                                f'公司一律只能講「{info["desc"]}」，人選問公司名就回「{AN.ASK_COMPANY_REPLY}」。請重寫這一輪。')
             log_token_usage(app_id, 'talk_retry_anon', talk_prompt, _snapshot_session_files())
-            r2 = [m for m in (retry.get('messages') or []) if str(m).strip()][:3]
+            r2 = [AN.brand_fix(str(m)) for m in (retry.get('messages') or []) if str(m).strip()][:3]
             if r2 and not any(AN.hits(m, info) for m in r2):
                 msgs, how = r2, '已重寫一次'
         except Exception as e:
