@@ -1703,6 +1703,10 @@ def process(job):
     if kind == 'special_check':
         import special_check
         return special_check.run(json.loads(job.get('payload_json') or '{}'), run_claude=run_claude)
+    # 2026-11-02 Jacky：阿財 bot 私訊對話（顧問跟阿財聊天，取代自己開 Claude Code；整條在 acai_chat.py）
+    if kind == 'acai_chat':
+        import acai_chat
+        return acai_chat.run(json.loads(job.get('payload_json') or '{}'))
     # 2026-11-02 Jacky：客戶卡片一有更新（資料庫觸發器排的），照最新紀錄重排這家的下一步（整條在 jobintake/bd_followup_ai.py）
     if kind == 'bd_followup_refresh':
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'jobintake'))
@@ -3409,7 +3413,8 @@ _INFLIGHT = {}
 _INFLIGHT_KIND = {}   # jid → kind，算「背景工作佔了幾個位子」用
 # 顧問在畫面前等的工作：排最前面，而且永遠保留 1 個位子給它們（見 tick）
 URGENT_KINDS = ('billing_read', 'precall_card', 'postcall_result', 'call_notes_summary', 'call_prep',
-                'client_call_split', 'job_card_feedback', 'job_switch_fit', 'inbound_reply', 'channel_call_summary')
+                'client_call_split', 'job_card_feedback', 'job_switch_fit', 'inbound_reply', 'channel_call_summary',
+                'acai_chat')   # 2026-11-02 顧問私訊阿財在等回覆
 _DRAIN = False   # 偵測到新版、等手上工作做完準備換版時為 True，這段期間不接新工作
 
 
@@ -3447,7 +3452,7 @@ def _maybe_self_update(last_checked):
 
 def _fast_kinds():
     """2026-10-19 Jacky：上傳發票要 20 秒內帶入。顧問在畫面前等的 kind，空檔每 3 秒看一次（只查有沒有這種 pending，走 status 索引，很輕）。"""
-    ks = ['billing_read']
+    ks = ['billing_read', 'acai_chat']   # 2026-11-02：顧問私訊阿財，3 秒內就要開始想
     try:
         sk = open(os.path.expanduser('~/.config/workflow-os/ai_worker_skip_kinds.txt'), encoding='utf-8').read()
         skip = {x.strip() for x in re.split(r'[,\n]', sk) if x.strip()}

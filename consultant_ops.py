@@ -1125,10 +1125,122 @@ def cmd_pending(a):
         print(f'・{r["id"]}｜{r["kind"]}｜{r["candidate_name"]}｜{r["status"]}｜{r["requested_by"]}｜{r["created_at"]}' + (f'｜按的人 {r["decided_by"]}' if r.get('decided_by') else ''))
 
 
+# ── 2026-11-02 阿財 bot 私訊對話（Jacky：顧問直接跟阿財講就更新系統，不用開後台） ──
+def cmd_note(a):
+    """把顧問口頭回報寫進人選卡片（電洽紀錄／備註）。內部紀錄，不對外寄任何東西。"""
+    app = resolve(a.who)
+    w = who()
+    text = (open(a.text_file, encoding='utf-8').read() if a.text_file else (a.text or '')).strip()
+    if not text:
+        die('要寫什麼？用 --text')
+    kind = a.type or '電洽紀錄'
+    d1("INSERT INTO candidate_notes (id, application_id, type, content, created_at, created_by) VALUES (lower(hex(randomblob(8))),?,?,?,datetime('now','+8 hours'),?)",
+       [app['id'], kind, text[:6000], w['name'] or '顧問'])
+    print(f'✅ 已寫進 {app["name"]}（{app.get("job_title") or app.get("job_slug") or "—"}）的卡片：{kind}｜{clip(text, 80)}')
+
+
+def _forms_of(app_id):
+    return rows("""SELECT jf.id AS job_form_id, jf.name AS form_name, f.company_id, c.display_name AS company,
+                          s.status, s.submitted_at
+                     FROM candidate_forwards f JOIN applications a ON a.id = f.application_id
+                     JOIN job_forms jf ON jf.job_slug = a.job_slug
+                     LEFT JOIN client_companies c ON c.id = f.company_id
+                     LEFT JOIN candidate_form_submissions s ON s.job_form_id = jf.id AND s.application_id = f.application_id AND s.company_id = f.company_id
+                    WHERE f.application_id = ?""", [app_id])
+
+
+def cmd_form_upload(a):
+    """上傳人選填好的人事資料表（客戶專區立刻看得到）。已經交過的要加 --replace 才會換掉。"""
+    import base64
+    app = resolve(a.who)
+    path = os.path.expanduser(a.file)
+    if not os.path.isfile(path):
+        die(f'找不到檔案：{path}')
+    fs = _forms_of(app['id'])
+    if a.company:
+        fs = [f for f in fs if a.company in (f.get('company') or '')]
+    if not fs:
+        die(f'{app["name"]} 還沒推薦給任何設定了表單的客戶，沒地方放人事資料表（先推薦、或到職缺頁設定「客戶指定表單」）')
+    if len(fs) > 1:
+        print('這位人選有好幾份表單，請用 --company 指定是哪一家：')
+        for f in fs:
+            print(f'  ・{f.get("company")}｜{f["form_name"]}｜{f.get("status") or "還沒寄"}')
+        sys.exit(2)
+    f = fs[0]
+    if f.get('status') == 'submitted' and not a.replace:
+        print(f'⚠️ {app["name"]} 給 {f.get("company")} 的「{f["form_name"]}」{str(f.get("submitted_at") or "")[:16]} 已經交過一份。'
+              '要換成這份新的，先問顧問確定，再加 --replace 重跑。')
+        sys.exit(2)
+    r = bo('/admin/candidate-form-submissions/upload', {'application_id': app['id'], 'company_id': f['company_id'], 'job_form_id': f['job_form_id'],
+            'file_b64': base64.b64encode(open(path, 'rb').read()).decode(), 'file_name': a.name or os.path.basename(path),
+            'file_mime': 'application/pdf' if path.lower().endswith('.pdf') else 'application/octet-stream'})
+    if not r.get('ok'):
+        die(r.get('error') or '上傳失敗')
+    print(f'✅ 已上傳 {app["name"]} 給 {f.get("company")} 的「{f["form_name"]}」{"（換掉舊的）" if f.get("status") == "submitted" else ""}，客戶專區立刻看得到。')
+
+
+def cmd_resume_upload(a):
+    """把履歷檔掛到人選卡片（已經有履歷會換成這份，舊的不會刪）。"""
+    import base64
+    app = resolve(a.who)
+    path = os.path.expanduser(a.file)
+    if not os.path.isfile(path):
+        die(f'找不到檔案：{path}')
+    r = bo(f'/admin/applications/{app["id"]}/resume-upload', {'file_b64': base64.b64encode(open(path, 'rb').read()).decode(),
+                                                             'file_name': a.name or os.path.basename(path)})
+    if not r.get('ok'):
+        die(r.get('error') or '上傳失敗')
+    print(f'✅ 已把履歷放進 {app["name"]} 的卡片。')
+
+
+def cmd_inbox(a):
+    """看收件匣（official@，Jacky／Phoebe 另含 jackychen@）。可依人選／公司／寄件人／關鍵字篩。"""
+    w = who()
+    boxes = ['official@step1ne.com'] + (['jackychen@step1ne.com'] if w.get('username') in ('jackyyuqi', 'behe10') else [])
+    where, ps = ["folder='in'", "COALESCE(is_system_copy,0)=0", f"mailbox IN ({','.join('?' * len(boxes))})",
+                 "sent_at >= datetime('now','+8 hours',?)"], boxes + [f'-{a.days} days']
+    if a.q:
+        where.append("(from_addr LIKE ? OR from_name LIKE ? OR subject LIKE ? OR body_text LIKE ? OR link_name LIKE ?)")
+        ps += [f'%{a.q}%'] * 5
+    rs = rows(f"""SELECT id, mailbox, sent_at, from_name, from_addr, subject, att_count, link_name FROM mail_archive
+                   WHERE {' AND '.join(where)} ORDER BY sent_at DESC LIMIT ?""", ps + [a.n])
+    if not rs:
+        print(f'近 {a.days} 天收件匣沒有符合的信。')
+        return
+    for r in rs:
+        print(f'・#{r["id"]}｜{str(r["sent_at"])[5:16]}｜{r.get("from_name") or ""} <{r["from_addr"]}>｜{r.get("subject") or "（無主旨）"}'
+              + (f'｜附件 {r["att_count"]}' if r.get('att_count') else '') + (f'｜對到：{r["link_name"]}' if r.get('link_name') else '')
+              + ('' if r['mailbox'].startswith('official') else '｜jackychen@'))
+    print('\n看全文：mail-read <#編號>。回信：free-mail --to <對方信箱> --subject "Re: 原主旨"（系統會自動接在原信底下）。')
+
+
+def cmd_mail_read(a):
+    w = who()
+    r = rows('SELECT * FROM mail_archive WHERE id=?', [str(a.id).lstrip('#')])
+    if not r:
+        die('找不到這封信')
+    m = r[0]
+    if m['mailbox'] == PRIVATE_BOX and w.get('username') not in ('jackyyuqi', 'behe10'):
+        die('這封在 Jacky 的私人信箱，只有 Jacky／Phoebe 看得到')
+    body = re.split(r'\n-{3,}\s*Original message|\n\s*On .{5,80} wrote:|\n\s*於 .{5,80}寫道', str(m.get('body_text') or ''), maxsplit=1)[0]
+    print(f'信箱：{m["mailbox"]}（{"收到" if m["folder"] == "in" else "寄出"}）\n時間：{m["sent_at"]}\n寄件：{m.get("from_name") or ""} <{m["from_addr"]}>\n收件：{m.get("to_addrs")}'
+          + (f'\n副本：{m["cc_addrs"]}' if m.get('cc_addrs') else '') + f'\n主旨：{m.get("subject")}'
+          + (f'\n附件：{m["att_count"]} 個（存了 {m.get("att_saved") or 0} 個）' if m.get('att_count') else '') + '\n' + '─' * 14 + '\n' + body.strip()[:6000])
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
     p = sp.add_parser('find', help='查人選'); p.add_argument('who'); p.add_argument('--all', action='store_true', help='同名多筆全部列')
+    p = sp.add_parser('note', help='把顧問回報寫進人選卡片（電洽紀錄／備註，內部紀錄）'); p.add_argument('who'); p.add_argument('--text'); p.add_argument('--text-file')
+    p.add_argument('--type', help='預設「電洽紀錄」，也可以「note」'); p.set_defaults(fn=cmd_note)
+    p = sp.add_parser('form-upload', help='上傳人選填好的人事資料表（已交過要 --replace）'); p.add_argument('who'); p.add_argument('--file', required=True)
+    p.add_argument('--company'); p.add_argument('--replace', action='store_true'); p.add_argument('--name', help='檔名'); p.set_defaults(fn=cmd_form_upload)
+    p = sp.add_parser('resume-upload', help='把履歷檔放進人選卡片'); p.add_argument('who'); p.add_argument('--file', required=True)
+    p = sp.add_parser('inbox', help='看收件匣（可篩人選／公司／寄件人／關鍵字）'); p.add_argument('q', nargs='?'); p.add_argument('--days', type=int, default=7)
+    p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
+    p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
+    p.add_argument('--name'); p.set_defaults(fn=cmd_resume_upload)
     p.set_defaults(fn=cmd_find)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
     p = sp.add_parser('today', help='今天/明天的電話'); p.add_argument('--days', type=int, default=2); p.set_defaults(fn=cmd_today)

@@ -7365,7 +7365,32 @@ export default {
       {
         const pm = update.message;
         if (pm && pm.chat && pm.chat.type === 'private' && pm.from && pm.from.username && !pm.from.is_bot) {
-          const row = await env.DB.prepare(`SELECT display_name FROM consultant_tg WHERE lower(tg_username)=lower(?)`).bind(pm.from.username).first().catch(() => null);
+          const row = await env.DB.prepare(`SELECT display_name, tg_chat_id FROM consultant_tg WHERE lower(tg_username)=lower(?)`).bind(pm.from.username).first().catch(() => null);
+          if (row && String(row.tg_chat_id || '') === String(pm.chat.id)) {
+            // 2026-11-02 Jacky：阿財 bot 要是「有腦袋的 agent」——顧問私訊就是在跟阿財聊天。
+            // 這裡只排隊（ai_jobs kind=acai_chat），WSL2 ai_worker 的 acai_chat.py 用上鎖的 Claude 想、查系統、回覆。
+            // 身分由這裡依 consultant_tg 名單判斷後放進 payload，助理改不了。以前每則私訊都回「已綁定」，改成只有第一次綁定才回。
+            const doc = pm.document || null;
+            const photo = Array.isArray(pm.photo) && pm.photo.length ? pm.photo[pm.photo.length - 1] : null;
+            const voice = pm.voice || pm.audio || null;
+            const txt = String(pm.text || pm.caption || '').trim();
+            if (txt || doc || photo || voice) {
+              const file = doc ? { file_id: doc.file_id, file_name: doc.file_name || 'file', mime: doc.mime_type || '', size: doc.file_size || 0, kind: 'document' }
+                : photo ? { file_id: photo.file_id, file_name: 'photo.jpg', mime: 'image/jpeg', size: photo.file_size || 0, kind: 'photo' }
+                : voice ? { file_id: voice.file_id, file_name: voice.file_name || 'voice.ogg', mime: voice.mime_type || 'audio/ogg', size: voice.file_size || 0, kind: 'voice' } : null;
+              if (file && Number(file.size || 0) > 20 * 1024 * 1024) {
+                await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ chat_id: pm.chat.id, text: '這個檔案超過 20MB，Telegram 機器人下載不了，請壓縮或切小一點再傳。' }) }).catch(() => {});
+                return new Response('ok');
+              }
+              await env.DB.prepare(`INSERT INTO ai_jobs (id, kind, payload_json, status, created_at) VALUES (?, 'acai_chat', ?, 'pending', ?)`)
+                .bind(uid(), JSON.stringify({ chat_id: String(pm.chat.id), message_id: pm.message_id, text: txt.slice(0, 8000), file,
+                  who: { id: pm.from.id, username: pm.from.username, name: row.display_name } }), nowTaipei()).run();
+              await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendChatAction`, { method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ chat_id: pm.chat.id, action: 'typing' }) }).catch(() => {});
+              return new Response('ok');
+            }
+          }
           if (row) {
             await env.DB.prepare(`UPDATE consultant_tg SET tg_chat_id=?, updated_at=? WHERE display_name=?`).bind(String(pm.chat.id), nowTaipei(), row.display_name).run().catch(() => {});
             await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
