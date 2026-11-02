@@ -213,6 +213,8 @@ def show_one(app_id):
     job = rows("SELECT title, confidential_client, status FROM jobs WHERE slug=?", [ap.get('job_slug') or ''])
     job = job[0] if job else {}
     print(f'【{ap.get("name")}】編號 {ap.get("id")}')
+    _ow = rows('SELECT owner FROM applications WHERE id=?', [ap.get('id')])
+    print(f'負責顧問：{((_ow[0].get("owner") or "") if _ow else "").capitalize() or "還沒指派"}')
     print(f'應徵：{job.get("title") or ap.get("job_title") or "（未指定職缺）"}（{ap.get("job_slug")}）'
           + ('｜⚠️ 保密客戶職缺：對人選不能講公司名' if job.get('confidential_client') else '')
           + (f'｜職缺狀態 {job.get("status")}' if job.get('status') and job.get('status') != 'open' else ''))
@@ -334,14 +336,24 @@ def cmd_today(a):
     t1 = t0 + dt.timedelta(days=max(1, a.days))
     lo, hi = fmt(t0), fmt(t1)
     items = []
+    me_ = (who().get('name') or '').lower()
+    allv = bool(getattr(a, 'all', False))
+    hidden = 0
     for r in rows("""SELECT r.call_at, r.candidate_name, r.application_id, r.requested_by, r.message, r.status, r.id
                        FROM consultant_reminders r WHERE r.call_at>=? AND r.call_at<? AND r.status IN ('pending','sending','sent')
                        ORDER BY r.call_at""", [lo, hi]):
+        # 2026-11-02 Jacky：有指派的只給負責的那位看；沒指派的大家都看得到
+        if not allv and me_ and (r.get('requested_by') or '').lower() not in ('', me_):
+            hidden += 1
+            continue
         items.append((r['call_at'], f'☎️ {r.get("candidate_name") or "（沒掛人選）"}｜{r.get("requested_by") or "—"}'
                       + (f'｜{clip(r.get("message"), 50)}' if r.get('message') else '') + f'｜提醒 {r["status"]}（{r["id"]}）'))
-    for r in rows("""SELECT i.confirmed_slot, i.stage, i.location, a.name, a.job_title, i.created_by
+    for r in rows("""SELECT i.confirmed_slot, i.stage, i.location, a.name, a.job_title, i.created_by, LOWER(COALESCE(a.owner,'')) AS owner
                        FROM interview_appointments i JOIN applications a ON a.id=i.application_id
                       WHERE i.status='confirmed' AND i.confirmed_slot>=? AND i.confirmed_slot<? ORDER BY i.confirmed_slot""", [lo, hi]):
+        if not allv and me_ and r.get('owner') not in ('', me_):
+            hidden += 1
+            continue
         lbl = '顧問電話' if r.get('stage') == 0 else f'第{r.get("stage")}關面試'
         items.append((r['confirmed_slot'], f'📅 {r["name"]}｜{lbl}｜{r.get("job_title") or ""}' + (f'｜{r["location"]}' if r.get('location') else '')))
     items.sort(key=lambda x: str(x[0]))
@@ -350,6 +362,8 @@ def cmd_today(a):
         print('（沒有排定的）')
     for t, s in items:
         print(f'・{str(t)[5:16]}　{s}')
+    if hidden:
+        print(f'（另有 {hidden} 筆是其他顧問負責的，沒列；要看全部加 --all）')
     # 顧問在後台手寫的「電洽預約」備註（自由文字，時間要看內容）——顧問助理建的已經在上面了，不重複列
     notes = rows("""SELECT n.content, n.created_at, a.name FROM candidate_notes n JOIN applications a ON a.id=n.application_id
                       WHERE n.type='電洽預約' AND n.created_at >= ?
@@ -1638,6 +1652,17 @@ def cmd_social_batch(a):
     print(f'✅ 確認卡貼好了（{aid}），共 {len(items)} 篇，按「確認排程」才會排。')
 
 
+def cmd_set_owner(a):
+    app = resolve(a.who)
+    ow = None if a.to.lower() in ('none', '無', '取消') else a.to.strip().lower()
+    if ow and not rows('SELECT 1 x FROM consultant_tg WHERE lower(display_name)=?', [ow]) and not rows("SELECT 1 x FROM applications WHERE lower(owner)=? LIMIT 1", [ow]):
+        die(f'沒有「{a.to}」這位顧問')
+    r = bo('/admin/set-owner', {'kind': 'application', 'id': app['id'], 'owner': ow})
+    if r.get('ok') is False:
+        die(r.get('error') or '沒改成')
+    print(f'✅ {app["name"]} 的負責顧問改成 {(ow or "（未指派）").capitalize()}')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1683,7 +1708,8 @@ def main():
     p.add_argument('--job', help='職缺代號或關鍵字，不給＝暫無職缺'); p.add_argument('--source', help='哪個管道：104、LinkedIn、LINE、轉介…'); p.add_argument('--note')
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
-    p = sp.add_parser('today', help='今天/明天的電話'); p.add_argument('--days', type=int, default=2); p.set_defaults(fn=cmd_today)
+    p = sp.add_parser('today', help='今天/明天的電話（只列自己負責＋還沒指派的）'); p.add_argument('--days', type=int, default=2); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_today)
+    p = sp.add_parser('set-owner', help='指派人選的負責顧問'); p.add_argument('who'); p.add_argument('--to', required=True, help='Jacky、Phoebe…；none＝取消指派'); p.set_defaults(fn=cmd_set_owner)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
     p.add_argument('--topics', help='逗號分隔：' + ','.join(CALL_TOPICS)); p.add_argument('--topic-extra')
     p.add_argument('--ask-resume', choices=['yes', 'no']); p.add_argument('--by', help='署名顧問（不填＝負責顧問）')
