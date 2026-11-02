@@ -1245,6 +1245,57 @@ def cmd_tell(a):
     print(f'✅ 已私訊 {to[0]["display_name"]}：{clip(text, 60)}')
 
 
+def cmd_new_card(a):
+    """建新的人選卡片（跟後台「＋新增人選」同一條路）。一人一卡：電話或 Email 對到現有人選就不建，回報那張卡。"""
+    import base64
+    w = who()
+    name = (a.name or '').strip()
+    if not name:
+        die('要填姓名')
+    if not (a.phone or a.email):
+        die('至少要有電話或 Email 其中一個（之後才認得出是同一個人）')
+    if not a.consent:
+        die('要先跟顧問確認「本人同意建檔」，確認了再加 --consent')
+    digits = re.sub(r'\D', '', a.phone or '')
+    hits = []
+    if digits:
+        hits += rows("""SELECT id,name,job_slug,created_at,owner FROM applications WHERE superseded_by IS NULL AND COALESCE(status,'')<>'duplicate'
+                          AND replace(replace(replace(replace(COALESCE(phone,''),'-',''),' ',''),'+886','0'),'(','') LIKE ?""", [f'%{digits[-9:]}%'])
+    if a.email:
+        hits += rows("SELECT id,name,job_slug,created_at,owner FROM applications WHERE superseded_by IS NULL AND COALESCE(status,'')<>'duplicate' AND lower(email)=lower(?)", [a.email.strip()])
+    if hits:
+        seen = {}
+        for h in hits:
+            seen[h['id']] = h
+        print('⚠️ 系統裡已經有這個人（電話或 Email 對得上），一人一卡，不建新的：')
+        for h in seen.values():
+            print(f'  {h["id"]}｜{h["name"]}｜{h["job_slug"]}｜{str(h["created_at"])[:10]}｜負責 {h.get("owner") or "—"}')
+        print('要記這次的事就用 note 寫進那張卡；要改應徵職缺請顧問到後台改。')
+        sys.exit(2)
+    job = 'unspecified'
+    if a.job:
+        js = rows("SELECT slug,title FROM jobs WHERE slug=? OR title LIKE ? ORDER BY (status='open') DESC LIMIT 6", [a.job, f'%{a.job}%'])
+        if len(js) != 1:
+            print('職缺對不到唯一一個，請顧問選：' if js else '找不到這個職缺：')
+            for j in js:
+                print(f'  {j["slug"]}｜{j["title"]}')
+            sys.exit(2)
+        job = js[0]['slug']
+    body = {'source_kind': 'new', 'name': name, 'email': (a.email or '').strip(), 'phone': (a.phone or '').strip(), 'job_slug': job,
+            'owner': (w['name'] or '').lower() or None, 'source_channel': a.source or '顧問建檔（阿財）', 'resume_source': '顧問提供',
+            'call_notes': (a.note or '').strip(), 'consent_confirmed': True, 'by': w['name'] or '顧問'}
+    if a.resume:
+        path = os.path.expanduser(a.resume)
+        if not os.path.isfile(path):
+            die(f'找不到履歷檔：{path}')
+        body.update({'resume_b64': base64.b64encode(open(path, 'rb').read()).decode(), 'resume_name': os.path.basename(path),
+                     'resume_mime': 'application/pdf' if path.lower().endswith('.pdf') else 'application/octet-stream'})
+    r = bo('/admin/pipeline/manual-forward', body)
+    if not r.get('ok', True) or r.get('error'):
+        die(r.get('error') or '建卡失敗')
+    print(f'✅ 已建好 {name} 的人選卡片（負責：{w["name"]}，職缺：{job}）。{r.get("message") or ""}')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1260,6 +1311,9 @@ def main():
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
     p = sp.add_parser('tell', help='用阿財私訊傳話給另一位顧問'); p.add_argument('to'); p.add_argument('--text'); p.set_defaults(fn=cmd_tell)
+    p = sp.add_parser('new-card', help='建新的人選卡片（一人一卡：電話/Email 對到就不建）'); p.add_argument('name'); p.add_argument('--phone'); p.add_argument('--email')
+    p.add_argument('--job', help='職缺代號或關鍵字，不給＝暫無職缺'); p.add_argument('--source', help='哪個管道：104、LinkedIn、LINE、轉介…'); p.add_argument('--note')
+    p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
     p = sp.add_parser('today', help='今天/明天的電話'); p.add_argument('--days', type=int, default=2); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
