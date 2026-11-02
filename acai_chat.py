@@ -79,19 +79,31 @@ def download(file_id, name, dest_dir):
     return out
 
 
+def _persona_ver():
+    # 2026-11-02 Jacky：阿財功能更新後還拿舊對話裡自己講過的「做不到」回答——說明書一改就自動開新對話
+    import hashlib
+    return hashlib.md5(open(PROMPT_FILE, 'rb').read() + open(OPS, 'rb').read()).hexdigest()[:12]
+
+
 def session_for(chat_id, reset):
     D.query("CREATE TABLE IF NOT EXISTS acai_chat_sessions (chat_id TEXT PRIMARY KEY, session_id TEXT, who TEXT, updated_at TEXT)")
+    try:
+        D.query("ALTER TABLE acai_chat_sessions ADD COLUMN ver TEXT")
+    except Exception:
+        pass
     if reset:
         D.query(f"DELETE FROM acai_chat_sessions WHERE chat_id={q(chat_id)}")
         return None
-    r = D.query(f"SELECT session_id, updated_at FROM acai_chat_sessions WHERE chat_id={q(chat_id)}")
+    r = D.query(f"SELECT session_id, ver FROM acai_chat_sessions WHERE chat_id={q(chat_id)}")
     rows = (r.get('results') if isinstance(r, dict) else r) or []
+    if rows and rows[0].get('ver') != _persona_ver():
+        return None      # 功能更新過：開新對話（舊對話裡的「我做不到」不再沿用）
     return rows[0]['session_id'] if rows else None
 
 
 def save_session(chat_id, sid, who):
-    D.query(f"""INSERT INTO acai_chat_sessions (chat_id, session_id, who, updated_at) VALUES ({q(chat_id)},{q(sid)},{q(who)},datetime('now','+8 hours'))
-                ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id, who=excluded.who, updated_at=excluded.updated_at""")
+    D.query(f"""INSERT INTO acai_chat_sessions (chat_id, session_id, who, updated_at, ver) VALUES ({q(chat_id)},{q(sid)},{q(who)},datetime('now','+8 hours'),{q(_persona_ver())})
+                ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id, who=excluded.who, updated_at=excluded.updated_at, ver=excluded.ver""")
 
 
 def selfcheck(p):
