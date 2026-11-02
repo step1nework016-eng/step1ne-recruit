@@ -4953,12 +4953,26 @@ async function refreshPrecallAfterResume(env, appId) {
 // 2026-11-02 Jacky（馬若喬案例）：顧問接到「人選回信約電話」通知時，要一次看到 姓名／信箱／電話／（約的時間在回信內文）＋履歷，
 // 不用再點進卡片找、也不會「不知道從哪來、不知道要問什麼」。通知文字後面接著把履歷檔丟到同一個主題。
 async function candContactLines(env, appId) {
-  const a = await env.DB.prepare(`SELECT email, phone, source_channel, utm_source, resume_file_id FROM applications WHERE id=?`).bind(appId || '').first().catch(() => null);
+  const a = await env.DB.prepare(`SELECT email, phone, source_channel, utm_source, utm_medium, origin, resume_file_id FROM applications WHERE id=?`).bind(appId || '').first().catch(() => null);
   if (!a) return { text: '', resume: null };
   const mail = a.email && !/@(placeholder|example)\b|noemail|no-email/i.test(a.email) ? a.email : '';
-  const src = a.source_channel || a.utm_source || '';
-  return { text: [`信箱：${mail || '（沒有）'}`, `電話：${a.phone || '（沒有）'}`, src ? `來源：${src}` : ''].filter(Boolean).join('\n'), resume: a.resume_file_id || null };
+  return { text: [`信箱：${mail || '（沒有）'}`, `電話：${a.phone || '（沒有）'}`, `來源：${candSourceLabel(a)}`].join('\n'), resume: a.resume_file_id || null };
 }
+// 2026-11-02 Jacky：「來源」要寫顧問看得懂的管道（104、LinkedIn…），不要寫 consultant 這種系統代號
+function candSourceLabel(a) {
+  if (!a) return '';
+  if (a.source_channel && !/^不指定$/.test(a.source_channel)) return a.source_channel;
+  const o = String(a.origin || '').trim();
+  const M = { '104': '104', quick_apply: '快速應徵（官網）', '官網': '官網應徵', Threads: 'Threads 社群', LINE: 'LINE 官方帳號', LinkedIn: 'LinkedIn',
+    'AI 找人': 'AI 找人', '顧問加入': '顧問自己加的', general_match: 'AI 配對', call_first: '先電洽再建卡', Cake: 'Cake' };
+  if (M[o]) return M[o] + (a.utm_medium === 'sourced' && o !== '顧問加入' ? '（顧問主動找的）' : '');
+  if (o && !/^(不明|測試)$/.test(o)) return o;
+  const u = String(a.utm_source || '');
+  if (/^line/.test(u)) return 'LINE';
+  if (u === 'website') return '官網應徵';
+  return '查不到';
+}
+
 async function sendResumeDoc(env, fileId, caption, threadId) {
   if (!fileId || !env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return false;
   try {
