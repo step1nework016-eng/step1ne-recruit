@@ -1,0 +1,9 @@
+[Unit]
+Description=每月 1 號 09:00（台灣時間）跑 step1ne.com 內容成效月報
+
+[Timer]
+OnCalendar=*-*-01 09:00:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target
