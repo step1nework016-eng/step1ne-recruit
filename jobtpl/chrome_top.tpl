@@ -31,7 +31,7 @@ document.addEventListener('click', function (e) {
 <link rel="icon" type="image/png" sizes="512x512" href="/assets/favicon-512.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Step1ne 德仁管理顧問">
+<meta property="og:site_name" content="全民獵才">
 <meta property="og:title" content="{og_title}">
 <meta property="og:description" content="{og_desc}">
 <meta property="og:url" content="https://step1ne.com/jobs/{slug}/">
