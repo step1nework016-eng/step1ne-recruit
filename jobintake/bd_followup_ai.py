@@ -183,10 +183,8 @@ def save(company, x, now):
 def run_one(company):
     """2026-11-02 Jacky：客戶卡片一有更新就重排這家的下一步（ai_worker 的 bd_followup_refresh 工作呼叫）。
     資料庫觸發器在顧問記電話／上傳電洽／寫心得／上傳合約／寄信／打勾已聯繫時，先把舊的下一步結掉（ai_state='refresh'），
-    再排一筆工作；這裡照最新紀錄寫新的 ai_* 建議。放進備選池的公司不整理。"""
-    st = q(f"SELECT parked_at FROM bd_company_status WHERE company={s(company)}")
-    if st and st[0].get('parked_at'):
-        return '備選池，不整理'
+    再排一筆工作；這裡照最新紀錄寫新的 ai_* 建議。"""
+    # 放進備選池的也照樣整理：有人更新卡片＝還在跟（例：京朋 10/12 進備選池，10/30 Phoebe 還在打）
     t = now_tw()
     head, parts = material(company)
     if not parts:
