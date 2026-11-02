@@ -28,7 +28,7 @@ COPS_TG_NAME / COPS_CHAT / COPS_THREAD），不吃命令列參數，助理改不
   ⚠️ 硬規則：回答合約條款、價格、期限、客戶條件，一定附出處（表名＋日期＋id）；
      kb 查不到就說「查不到」，不准推測、不准用印象補。總表跟其他資料打架時，以總表為準並講出來。
 """
-import argparse, datetime as dt, json, os, re, secrets, sys, urllib.error, urllib.parse, urllib.request
+import argparse, datetime as dt, json, os, re, secrets, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 HOME = os.path.expanduser('~')
 CFG = f'{HOME}/.config/workflow-os'
@@ -1240,6 +1240,73 @@ def cmd_mail_read(a):
     print(f'信箱：{m["mailbox"]}（{"收到" if m["folder"] == "in" else "寄出"}）\n時間：{m["sent_at"]}\n寄件：{m.get("from_name") or ""} <{m["from_addr"]}>\n收件：{m.get("to_addrs")}'
           + (f'\n副本：{m["cc_addrs"]}' if m.get('cc_addrs') else '') + f'\n主旨：{m.get("subject")}'
           + (f'\n附件：{m["att_count"]} 個（存了 {m.get("att_saved") or 0} 個）' if m.get('att_count') else '') + '\n' + '─' * 14 + '\n' + body.strip()[:6000])
+    atts = rows('SELECT part_idx, filename, size FROM mail_archive_attachments WHERE archive_id=? ORDER BY part_idx', [m['id']])
+    if atts:
+        print('─' * 14 + '\n附件（看內容：mail-att #' + str(m['id']) + ' [第幾個]）：')
+        for i, x in enumerate(atts, 1):
+            print(f'  {i}. {x["filename"]}（{round((x.get("size") or 0) / 1024)} KB）')
+
+
+def _file_bytes(file_id):
+    """用後台金鑰把系統裡的檔案（R2／D1）抓回來。"""
+    tok = (_api_token.new() if _api_token else None) or _TOK.get('RECRUIT_ADMIN_TOKEN')
+    req = urllib.request.Request(f'{BACKOFFICE}/admin/file/{urllib.parse.quote(str(file_id))}',
+                                 headers={'Authorization': f'Bearer {tok}', 'User-Agent': UA})
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return r.read()
+
+
+def _doc_text(path):
+    """Word／Excel 直接抽文字（PDF、圖片讓阿財用 Read 看）。"""
+    import zipfile
+    low = path.lower()
+    try:
+        if low.endswith('.docx'):
+            x = zipfile.ZipFile(path).read('word/document.xml').decode('utf-8', 'ignore')
+            x = re.sub(r'</w:p>', '\n', x); x = re.sub(r'</w:tc>', '｜', x)
+            return re.sub(r'<[^>]+>', '', x)
+        if low.endswith('.xlsx'):
+            z = zipfile.ZipFile(path)
+            ss = re.findall(r'<t[^>]*>([^<]*)</t>', z.read('xl/sharedStrings.xml').decode('utf-8', 'ignore')) if 'xl/sharedStrings.xml' in z.namelist() else []
+            return '｜'.join(ss)
+        if low.endswith('.pdf'):
+            r = subprocess.run(['pdftotext', '-layout', path, '-'], capture_output=True, text=True, timeout=60)
+            return r.stdout if r.returncode == 0 else ''
+    except Exception as e:
+        return f'（抽文字失敗：{e}）'
+    return ''
+
+
+def cmd_mail_att(a):
+    """2026-11-02 Jacky：阿財要能看信件附件——下載到阿財的工作資料夾，Word／Excel／PDF 直接印出文字，圖片／掃描檔用 Read 看。"""
+    w = who()
+    r = rows('SELECT id, mailbox, subject FROM mail_archive WHERE id=?', [str(a.id).lstrip('#')])
+    if not r:
+        die('找不到這封信')
+    m = r[0]
+    if m['mailbox'] == PRIVATE_BOX and w.get('username') not in ('jackyyuqi', 'behe10'):
+        die('這封在 Jacky 的私人信箱，只有 Jacky／Phoebe 看得到')
+    atts = rows('SELECT part_idx, file_id, filename, mime, size FROM mail_archive_attachments WHERE archive_id=? ORDER BY part_idx', [m['id']])
+    if not atts:
+        die('這封信沒有存下來的附件（可能太大或格式不收）')
+    pick = atts if not a.n else [atts[a.n - 1]] if 0 < a.n <= len(atts) else die(f'只有 {len(atts)} 個附件')
+    out = os.path.join(os.getcwd(), 'mail_att', str(m['id']))
+    os.makedirs(out, exist_ok=True)
+    for x in pick:
+        name = re.sub(r'[\\/:*?"<>|]', '_', x.get('filename') or f'附件{x["part_idx"]}')
+        path = os.path.join(out, name)
+        try:
+            open(path, 'wb').write(_file_bytes(x['file_id']))
+        except Exception as e:
+            print(f'❌ {name} 抓不到：{e}')
+            continue
+        print(f'📎 {name} → {path}')
+        t = _doc_text(path).strip()
+        if t:
+            print('──── 內容（前 5000 字）────\n' + re.sub(r'\n{3,}', '\n\n', t)[:5000])
+        else:
+            print('（這是圖片或掃描檔，用 Read 打開上面的路徑看）')
+    print('\n要交進人選卡片：form-upload <人選> <檔案路徑>（人事資料表）或 resume-upload <人選> <檔案路徑>（履歷）。')
 
 
 def cmd_tell(a):
@@ -1719,6 +1786,7 @@ def main():
     p = sp.add_parser('inbox', help='看收件匣（可篩人選／公司／寄件人／關鍵字）'); p.add_argument('q', nargs='?'); p.add_argument('--days', type=int, default=7)
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
+    p = sp.add_parser('mail-att', help='下載並看信件附件'); p.add_argument('id'); p.add_argument('n', nargs='?', type=int, default=0); p.set_defaults(fn=cmd_mail_att)
     p = sp.add_parser('tell', help='用阿財私訊傳話給另一位顧問'); p.add_argument('to'); p.add_argument('--text'); p.set_defaults(fn=cmd_tell)
     p = sp.add_parser('recommend', help='推薦人選給客戶（確認卡）'); p.add_argument('who'); p.add_argument('--company', required=True); p.add_argument('--job'); p.add_argument('--note')
     p.add_argument('--send-forms', action='store_true'); p.set_defaults(fn=cmd_recommend)
