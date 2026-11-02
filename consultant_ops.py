@@ -1558,6 +1558,86 @@ def cmd_social_post(a):
     _confirm_bo('/admin/social/schedule', body, {'id': '', 'name': acc[0]['label']}, card, f'已排 {acc[0]["label"]} 的{what}', '排社群發文')
 
 
+def _accounts_for(names, plat):
+    w = who()
+    names = [n.strip() for n in (names or w['name'] or '').replace('、', ',').split(',') if n.strip()]
+    if any(n.lower() != (w['name'] or '').lower() for n in names) and w.get('username') not in ('jackyyuqi', 'behe10'):
+        die('只有 Jacky、Phoebe 可以幫別人的帳號排文；你只能排自己的')
+    out = []
+    for n in names:
+        r = rows("SELECT id, label, consultant_name FROM social_accounts WHERE lower(consultant_name)=lower(?) AND platform=? AND is_active=1", [n, plat])
+        if not r:
+            die(f'{n} 沒有啟用中的 {plat} 帳號（有的帳號：' + '、'.join(x['consultant_name'] for x in rows("SELECT DISTINCT consultant_name FROM social_accounts WHERE platform=? AND is_active=1", [plat])) + '）')
+        out.append(r[0])
+    return out
+
+
+def cmd_social_gaps(a):
+    """每個帳號還沒發過（也沒排）的開放職缺（含只發社群的未簽約職缺），依客戶分組。"""
+    plat = a.platform or 'threads'
+    accs = _accounts_for(a.accounts, plat)
+    jobs = rows("""SELECT j.slug, j.title, j.status, COALESCE(c.display_name, j.client_name, '（未綁客戶）') AS co FROM jobs j
+                    LEFT JOIN client_companies c ON c.id=j.company_id WHERE j.status IN ('open','social_only') AND j.slug NOT LIKE 'pending-so-%'
+                    AND j.slug NOT IN ('unspecified','entry-general-match')""")
+    if a.company:
+        jobs = [j for j in jobs if a.company in (j['co'] or '') or a.company in j['title']]
+    for acc in accs:
+        done = {r['job_slug'] for r in rows("""SELECT job_slug FROM social_post_queue WHERE account_id=? AND status NOT IN ('skipped','deleted','superseded','expired','blocked','blocked_compliance')
+                                               UNION SELECT job_slug FROM social_schedule WHERE account_id=? AND COALESCE(status,'') NOT IN ('cancelled')""", [acc['id'], acc['id']])}
+        gap = [j for j in jobs if j['slug'] not in done]
+        print(f'\n【{acc["label"]}】還沒發過 {len(gap)} 個：')
+        byco = {}
+        for j in gap:
+            byco.setdefault(j['co'], []).append(j)
+        for co_, js in sorted(byco.items()):
+            print(f'  {co_}：' + '；'.join(f'{j["title"]}〔{j["slug"]}〕' + ('（未簽約・只發社群）' if j['status'] == 'social_only' else '') for j in js))
+
+
+def cmd_styles(a):
+    """發文公式（風格提示詞不列，系統會自動套顧問自己的語氣）。"""
+    for r in rows("SELECT id, name, COALESCE(subtype,'') st FROM style_prompts WHERE COALESCE(subtype,'')<>'' ORDER BY id"):
+        print(f'・{r["id"]}｜{r["name"]}' + {'pure': '（純職缺）', 'dialog': '（對話討論型）', 'anon': '（匿名人選文）'}.get(r['st'], ''))
+    print('不指定公式＝系統照平常的規則自動選。')
+
+
+def cmd_social_batch(a):
+    """一次排多篇社群發文：多個帳號 × 多個職缺（同一天同帳號可排不同職缺；同帳號同天同職缺同公式系統會擋）。一張確認卡。"""
+    import datetime as _dt
+    plat = a.platform or 'threads'
+    accs = _accounts_for(a.accounts, plat)
+    slugs = [x.strip() for x in (a.jobs or '').replace('、', ',').split(',') if x.strip()]
+    if not slugs:
+        die('要排哪些職缺？用 --jobs slug1,slug2（先用 social-gaps 看代號）')
+    jm = {r['slug']: r['title'] for r in rows(f"SELECT slug,title FROM jobs WHERE slug IN ({','.join('?' * len(slugs))}) AND status IN ('open','social_only')", slugs)}
+    bad = [x for x in slugs if x not in jm]
+    if bad:
+        die('這些職缺代號對不到開放中的職缺：' + '、'.join(bad))
+    style = None
+    if a.style:
+        st = rows("SELECT id,name FROM style_prompts WHERE CAST(id AS TEXT)=? OR name LIKE ? LIMIT 3", [a.style, f'%{a.style}%'])
+        if len(st) != 1:
+            die('公式對不到唯一一個（用 styles 看編號）')
+        style = st[0]
+    d0 = _dt.date.fromisoformat(a.start) if a.start else now_tpe().date()
+    items, lines = [], []
+    for ai, acc in enumerate(accs):
+        for ji, sl in enumerate(slugs):
+            day = d0 + _dt.timedelta(days=(ji if a.spread else 0))
+            body = {'account_id': acc['id'], 'post_date': day.isoformat(), 'post_time': a.time or '', 'job_slug': sl}
+            if style:
+                body['style_id'] = style['id']
+            items.append({'path': '/admin/social/schedule', 'body': body})
+            lines.append(f'・{day.strftime("%m/%d")}｜{acc["consultant_name"]}｜{jm[sl]}')
+    if len(items) > 40:
+        die(f'一次 {len(items)} 篇太多了，請分批（一次最多 40 篇）')
+    card = (f'📣 確認批量排社群文｜{plat}｜共 {len(items)} 篇' + (f'｜公式：{style["name"]}' if style else '｜公式：系統自動選') + '\n'
+            + '\n'.join(lines[:40]) + '\n按了才排；草稿產好會照原本流程一篇篇貼來審核，審過才發。同帳號同天同職缺同公式的會被系統擋下（卡片結果會列出）。')
+    w = who(); need_where(w)
+    aid = create_action('bo_call', {'id': '', 'name': f'社群批量 {len(items)} 篇'}, {'batch': items, 'done_label': f'已排 {len(items)} 篇社群文'},
+                        '', '批量排社群文', card, card, [('✅ 確認排程', 'cop_ok'), ('✖ 不要', 'cop_no')], w=w)
+    print(f'✅ 確認卡貼好了（{aid}），共 {len(items)} 篇，按「確認排程」才會排。')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1591,6 +1671,12 @@ def main():
     p = sp.add_parser('job-status', help='開／關職缺（確認卡）'); p.add_argument('job'); p.add_argument('--to', choices=['open', 'closed'], required=True); p.set_defaults(fn=cmd_job_status)
     p = sp.add_parser('line-who', help='LINE 上還沒綁定的人是誰'); p.add_argument('q', nargs='?'); p.add_argument('-n', type=int, default=20); p.set_defaults(fn=cmd_line_who)
     p = sp.add_parser('links', help='全民獵才 LINE 官方帳號＋自己的 LINE 連結'); p.set_defaults(fn=cmd_links)
+    p = sp.add_parser('social-gaps', help='每個帳號還沒發過的職缺'); p.add_argument('--accounts', help='逗號分隔，例如 Jacky,Phoebe,Anna,DR；不給＝自己')
+    p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--company'); p.set_defaults(fn=cmd_social_gaps)
+    p = sp.add_parser('styles', help='發文公式清單'); p.set_defaults(fn=cmd_styles)
+    p = sp.add_parser('social-batch', help='批量排社群文（一張確認卡）'); p.add_argument('--accounts'); p.add_argument('--jobs', required=True)
+    p.add_argument('--style'); p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--start', help='第一天 YYYY-MM-DD')
+    p.add_argument('--time'); p.add_argument('--spread', action='store_true', help='每個職缺排在不同天（第 1 個職缺第 1 天、第 2 個第 2 天…）'); p.set_defaults(fn=cmd_social_batch)
     p = sp.add_parser('social-post', help='排一篇社群發文（確認卡）'); p.add_argument('--job'); p.add_argument('--topic'); p.add_argument('--hook', help='話題文的切入角度')
     p.add_argument('--platform', choices=['threads', 'linkedin']); p.add_argument('--date'); p.add_argument('--time'); p.set_defaults(fn=cmd_social_post)
     p = sp.add_parser('new-card', help='建新的人選卡片（一人一卡：電話/Email 對到就不建）'); p.add_argument('name'); p.add_argument('--phone'); p.add_argument('--email')

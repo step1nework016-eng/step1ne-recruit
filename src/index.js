@@ -5405,6 +5405,21 @@ async function handleConsultantOpsAction(env, cq) {
     }
     // 2026-10-19 收費進程（backoffice billing_v2.js 建的卡）：按了才轉呼叫後台。只放行這兩支：
     //   terms-confirm＝合約讀取結果確認生效；mail＝逾期提醒卡「擬催款信」（只是再貼一張確認卡，不會寄）
+    // 2026-11-02 Jacky：阿財批量排社群文——一張確認卡裡多筆，只放行 /admin/social/schedule
+    if (row.kind === 'bo_call' && Array.isArray(p.batch)) {
+      const items = p.batch.slice(0, 40);
+      if (!items.every((x) => x && x.path === '/admin/social/schedule')) { await ans('不允許的動作'); await finish('failed', { error: 'batch path not allowed' }, '❌ 不允許的動作'); return; }
+      let ok = 0; const fails = [];
+      for (const it of items) {
+        const d = await copsBo(env, it.path, { ...(it.body || {}), by: who });
+        if (d.ok === false || (d.ok === undefined && d.error)) fails.push(`${(it.body || {}).post_date || ''} ${(it.body || {}).job_slug || ''}：${String(d.error || '失敗').slice(0, 60)}`);
+        else ok += 1;
+      }
+      await ans(`排好 ${ok} 篇${fails.length ? `，${fails.length} 篇沒排` : ''}`);
+      await finish(fails.length && !ok ? 'failed' : 'done', { ok, fails }, `✅ ${who}：已排 ${ok} 篇${fails.length ? `｜${fails.length} 篇沒排` : ''}`,
+        fails.length ? `沒排成的（多半是同帳號同天同職缺已經排過）：\n${fails.join('\n')}` : null);
+      return;
+    }
     if (row.kind === 'bo_call') {
       const path = String(p.path || '');
       // 2026-11-02 Jacky「全部做完」：阿財顧問助理補齊常用功能，凡是客戶看得到／人選收得到／跟錢有關的都走這張確認卡

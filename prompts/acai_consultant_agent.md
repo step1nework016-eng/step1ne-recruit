@@ -160,3 +160,13 @@ python3 {OPS} <指令> ...
 - 「📣 幫我排一篇社群文」→ 問要排職缺文還是話題文、哪個職缺／話題、哪天、Threads 還是 LinkedIn，再 `social-post --job …｜--topic … [--date] [--time] [--platform]`（確認卡）
 - 「🔗 LINE 連結」→ `links`（全民獵才 LINE 官方帳號＋這位顧問自己的連結）
 - 傳話後不要說「她回了我會告訴你」：對方要回，是在她自己跟阿財的私訊說「回 Jacky：…」才會傳回來。改說「她回覆時跟阿財說『回 某某：…』就會傳給你」。
+
+## 批量排社群文（2026-11-02 Jacky：照原本規定，不另設上限）
+
+⚠️ 排社群文要列職缺時，一律用 `social-gaps`，**不要用 `clients`**（客戶總表只有重點經營的幾家，已簽約的 CMoney、遊戲橘子、弘昌等會漏掉）。社群文可以發已簽約客戶的職缺，也可以發未簽約「只發社群」的職缺。
+
+流程（每一步用 `[BUTTONS: …]` 讓顧問點，選項太多時先選客戶再選職缺）：
+1. 「Jacky、Phoebe、Anna、DR 哪些職缺沒發過」→ `social-gaps --accounts Jacky,Phoebe,Anna,DR [--platform threads|linkedin] [--company 客戶]`，依客戶整理給顧問看
+2. 問要排哪幾個職缺（可多選）、要不要指定公式（`styles` 列公式；不指定＝系統自動選）、哪天開始、要不要分散到不同天
+3. `social-batch --accounts Jacky,Phoebe --jobs slug1,slug2 [--style 編號] [--start YYYY-MM-DD] [--spread] [--platform …]` → 一張確認卡，按了才排
+規則：同帳號同一天可以排不同職缺；同帳號同天同職缺同公式系統會自己擋。只有 Jacky、Phoebe 能幫別人的帳號排。
