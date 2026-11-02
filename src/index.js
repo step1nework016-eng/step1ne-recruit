@@ -5297,6 +5297,8 @@ async function copsBookCall(env, row, callAt, remindAt, note, by) {
       row.chat_id, row.thread_id || null, row.requested_by, row.requested_tg_id, row.id, now).run();
   return rid;
 }
+// 阿財使用說明（原文在 prompts/acai_guide.txt，改那份要同步改這裡）
+const ACAI_GUIDE = "📖 阿財使用說明\n\n直接用講的就好，像跟同事講話。不確定的地方阿財會先問你。\n\n【查】\n・「馬若喬現在什麼狀況？」\n・「京朋最近怎樣？」「CMoney 還有哪些職缺在找？」\n・「有誰回信？」「吳鈺芳那封寫什麼？」\n・「今天有哪些電話？」\n・「LINE 上最近有誰在問？」\n\n【記（直接寫進卡片）】\n・「馬若喬今天打過了，沒接」\n・「京朋李小姐說主管看完再回」（客戶卡片下一步會自動重排）\n・直接丟檔案：人事資料表、履歷、電洽逐字稿 → 阿財問你是誰的，再放進卡片\n・「幫我建一張卡：王小明 0912-345-678，104 來的」（同一個人系統裡已經有，就記在原本那張）\n\n【做（會出確認卡，你按 ✅ 才真的做）】\n・寄信：約電話、確認時間、婉拒、回信、寄匿名履歷給客戶\n・推薦人選給客戶、做推薦履歷\n・改階段：一面、二面、錄取、報到；標不推進；人選放棄\n・寄／催人事資料表、用 LINE 叫人選來面談\n・收款確認、開關職缺\n\n【其他】\n・傳話：「幫我跟 Phoebe 說…」「回 Jacky：…」\n・每天 08:00～21:00 整點，有新信才會私訊你（Phoebe 收 official@；Jacky 兩個信箱）\n\n【按鈕】\n🔄 重新開始：換話題、或阿財接錯話時按\n📖 使用說明：再看一次這份";
 async function handleConsultantOpsAction(env, cq) {
   const [action, id] = String(cq.data).split(':');
   const tgApi = (m, b) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/${m}`, {
@@ -7381,6 +7383,19 @@ export default {
             const photo = Array.isArray(pm.photo) && pm.photo.length ? pm.photo[pm.photo.length - 1] : null;
             const voice = pm.voice || pm.audio || null;
             const txt = String(pm.text || pm.caption || '').trim();
+            // 2026-11-02 Jacky：阿財私訊下方常駐兩顆按鈕（重新開始／使用說明），按了這裡直接回，不經過 AI
+            const ACAI_KB = { keyboard: [[{ text: '🔄 重新開始' }, { text: '📖 使用說明' }]], resize_keyboard: true, is_persistent: true };
+            const acaiSay = (t) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: pm.chat.id, text: t, reply_markup: ACAI_KB, disable_web_page_preview: true }) }).catch(() => {});
+            if (/^(🔄\s*)?重新開始$|^\/new$|^\/start$/.test(txt)) {
+              await env.DB.prepare(`DELETE FROM acai_chat_sessions WHERE chat_id=?`).bind(String(pm.chat.id)).run().catch(() => {});
+              await acaiSay(`好，${row.display_name}，前面的對話清掉了，重新開始。\n想查誰、記什麼、寄什麼，直接跟我說。不知道能做什麼就按「📖 使用說明」。`);
+              return new Response('ok');
+            }
+            if (/^(📖\s*)?使用說明$|^\/help$/.test(txt)) {
+              await acaiSay(ACAI_GUIDE);
+              return new Response('ok');
+            }
             if (txt || doc || photo || voice) {
               const file = doc ? { file_id: doc.file_id, file_name: doc.file_name || 'file', mime: doc.mime_type || '', size: doc.file_size || 0, kind: 'document' }
                 : photo ? { file_id: photo.file_id, file_name: 'photo.jpg', mime: 'image/jpeg', size: photo.file_size || 0, kind: 'photo' }
