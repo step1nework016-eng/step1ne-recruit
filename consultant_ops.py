@@ -651,12 +651,12 @@ def cmd_free_mail(a):
     if a.now:
         # 2026-10-29 Jacky：Phoebe 明確說「寄」就直接寄，不用再按確認卡（檢查一樣照跑：星期、客戶名、人選文字）
         r = bo('/admin/free-mail', {'action': 'send', 'to': d['to'], 'cc': ','.join(d.get('cc') or []), 'subject': d['subject'], 'text': text,
-                                    'files': files, 'by': w['name'] or '顧問', 'application_id': app.get('id') or None, 'company': a.company or ''})
+                                    'files': files, 'by': w['name'] or '顧問', 'from_name': a.from_name or '', 'application_id': app.get('id') or None, 'company': a.company or ''})
         if not r.get('ok'):
             die(r.get('error') or '寄送失敗')
         print(f'✅ 已送出寄信（從 official@，約 1 分鐘內寄出並存寄件備份）。\n收件：{d["to"]}\n主旨：{d["subject"]}' + (f'\n附件：{"、".join(f["filename"] for f in files)}' if files else ''))
         return
-    params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name']}
+    params = {'cc': ','.join(d.get('cc') or []), 'files': files, 'company': a.company or '', 'by': w['name'], 'from_name': a.from_name or ''}
     who_line = f'人選：{app["name"]}（{app.get("job_title") or app.get("job_slug") or "—"}）\n' if app.get('id') else (f'公司：{a.company}\n' if a.company else '')
     card = ('📧 確認寄出｜自由信件\n' + who_line + f'收件：{d["to"]}\n' + (f'副本：{", ".join(d["cc"])}\n' if d.get('cc') else '') +
             f'主旨：{d["subject"]}\n' + (f'附件：{"、".join(f["filename"] for f in files)}\n' if files else '') + '─' * 14 + '\n' + text + '\n' +
@@ -874,6 +874,7 @@ def main():
     p.add_argument('--no-keep', action='store_true'); p.add_argument('--subject'); p.add_argument('--text-file')
     p.add_argument('--again', action='store_true'); p.set_defaults(fn=cmd_decline)
     p = sp.add_parser('free-mail', help='自由信件：寄給客戶或人選（確認卡；可附檔）'); p.add_argument('--to', help='收件信箱；寄給人選時可省略，會自動帶人選卡片上的 Email')
+    p.add_argument('--from-name', help='寄件人顯示名稱；不填＝「全民獵才 招募團隊」（2026-11-02 Jacky：統一，除非有指定）')
     p.add_argument('--cc'); p.add_argument('--subject', required=True); p.add_argument('--text-file'); p.add_argument('--text')
     p.add_argument('--attach', action='append', help='附件路徑，可重複'); p.add_argument('--who', help='收件人是人選時填人選姓名或編號（會套用人選文字規則、寫進人選卡片）')
     p.add_argument('--company', help='收件人是客戶時填公司名（記在這家的紀錄）')
