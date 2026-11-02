@@ -1621,6 +1621,85 @@ def build_pdfs(data, meta, out_dir):
     return made
 
 
+
+_UNSURE = re.compile(r'待確認|待補|尚未|未問|還沒問|沒問到|未提及|未提供|未見|未說明|未具體|不詳|不清楚|無法判斷|資料不足|尚無|有待|仍需|需再確認|進一步確認|'
+                     r'建議.{0,12}(面試|面談|電訪|後續).{0,12}(確認|了解|追問|詢問|評估)|請企業自行評估')
+_KEEP_AS_IS = ('expected_salary',)   # 「依後續面談可談」是定案寫法（feedback_client_cv_no_weitiji），不動
+
+
+def _clean_text(t):
+    """一段文字：含不確定字眼的句子整句拿掉，其他句子留著。"""
+    if not isinstance(t, str) or not _UNSURE.search(t):
+        return t
+    # 括號裡的補充說明（例：「大學 資訊傳播系（學校名稱、學位與起訖年月未提及）」）只拿掉括號，前面的內容留著
+    t = re.sub(r'[（(][^（）()]*?(?:' + _UNSURE.pattern + r')[^（）()]*?[）)]', '', t).strip()
+    if not _UNSURE.search(t):
+        return t
+    parts = re.split(r'(?<=[。；！？\n])', t)
+    return ''.join(x for x in parts if not _UNSURE.search(x)).strip()
+
+
+def client_only_confirmed(data):
+    """客戶版只留已確認的內容（2026-11-02 Jacky）。"""
+    d = json.loads(json.dumps(data, ensure_ascii=False))
+    ok_items = set()
+    hc = []
+    for h in d.get('hard_conditions') or []:
+        if isinstance(h, dict) and str(h.get('verdict') or '') == '符合' and not _UNSURE.search(str(h.get('detail') or '')):
+            hc.append(h); ok_items.add(str(h.get('item') or '').strip())
+    d['hard_conditions'] = hc
+    d['must_check_items'] = [m for m in (d.get('must_check_items') or [])
+                             if isinstance(m, dict) and m.get('status') == 'pass' and not _UNSURE.search(str(m.get('detail') or ''))]
+    d['condition_check'] = [c for c in (d.get('condition_check') or [])
+                            if isinstance(c, dict) and not _UNSURE.search(str(c.get('evidence') or ''))
+                            and (not hc or str(c.get('requirement') or '').strip() in ok_items
+                                 or not any(str(c.get('requirement') or '').strip() == str(h.get('item') or '').strip()
+                                            for h in data.get('hard_conditions') or [] if isinstance(h, dict)))]
+    d['gaps'] = []
+
+    def walk(o, key=''):
+        if isinstance(o, str):
+            return o if key in _KEEP_AS_IS else _clean_text(o)
+        if isinstance(o, list):
+            out = []
+            for x in o:
+                if isinstance(x, str):
+                    x = _clean_text(x)
+                    if x:
+                        out.append(x)
+                elif isinstance(x, dict):
+                    if any(isinstance(v, str) and _UNSURE.search(v) for k, v in x.items() if k not in ('detail_bullets',)) \
+                            and not ('employer' in x or 'role' in x):      # 工作經歷不整筆刪，只清文字
+                        continue
+                    out.append(walk(x, key))
+                else:
+                    out.append(walk(x, key))
+            return out
+        if isinstance(o, dict):
+            return {k: walk(v, k) for k, v in o.items()}
+        return o
+    d = walk(d)
+    sr = d.get('summary_row')
+    if isinstance(sr, dict):
+        for k, v in list(sr.items()):
+            if k not in _KEEP_AS_IS and isinstance(v, str) and not v.strip():
+                sr[k] = '依後續面談可談' if k in ('available',) else v
+    return d
+
+
+# 2026-11-02 Jacky：所有給客戶的推薦履歷（顧問手動產、AI 找的人、阿財面談後自動產、匿名履歷）都只留已確認內容，
+# 不能出現「待確認／尚未／未問到／未提及」——兩個客戶版產生器在這裡統一包一層，任何路徑都逃不掉。
+_build_client_html_raw = build_client_html
+_build_client_html_v2_raw = build_client_html_v2
+
+
+def build_client_html(data, meta, show=None):
+    return _build_client_html_raw(client_only_confirmed(data) if isinstance(data, dict) else data, meta, show=show)
+
+
+def build_client_html_v2(data, meta, show=None):
+    return _build_client_html_v2_raw(client_only_confirmed(data) if isinstance(data, dict) else data, meta, show=show)
+
 if __name__ == '__main__':
     import sys
     data = json.load(open(sys.argv[1], encoding='utf-8'))
