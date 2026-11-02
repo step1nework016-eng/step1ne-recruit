@@ -1296,6 +1296,223 @@ def cmd_new_card(a):
     print(f'✅ 已建好 {name} 的人選卡片（負責：{w["name"]}，職缺：{job}）。{r.get("message") or ""}')
 
 
+# ── 2026-11-02 阿財補齊顧問常用功能（Jacky：「全部做完」）──
+# 會影響外面的人（客戶看得到、人選收得到、錢）一律走確認卡（Worker bo_call，真人按才執行）；只改內部紀錄的直接做。
+def _confirm_bo(path, body, app, card, done_label, kind_label):
+    w = who()
+    need_where(w)
+    aid = create_action('bo_call', app, {'path': path, 'body': body, 'done_label': done_label}, '', kind_label, card, card,
+                        [('✅ 確認執行', 'cop_ok'), ('✖ 不要', 'cop_no')], w=w)
+    print(f'✅ 確認卡貼好了（{aid}），按「確認執行」才會真的做：{done_label}')
+
+
+def _company(app, name):
+    """把顧問講的公司名對到 company_id：先找這位人選推薦過的公司，再找全部客戶。"""
+    fw = rows("""SELECT f.company_id, c.display_name FROM candidate_forwards f LEFT JOIN client_companies c ON c.id=f.company_id
+                  WHERE f.application_id=?""", [app['id']]) if app.get('id') else []
+    if name:
+        hit = [r for r in fw if name in (r.get('display_name') or '')]
+        if not hit:
+            hit = rows("SELECT id AS company_id, display_name FROM client_companies WHERE display_name LIKE ? OR aliases LIKE ? LIMIT 5", [f'%{name}%', f'%{name}%'])
+    else:
+        hit = fw
+    if len(hit) == 1:
+        return hit[0]['company_id'], hit[0].get('display_name') or name
+    if not hit:
+        die(f'對不到「{name or "客戶"}」：' + ('這位人選還沒推薦給任何客戶' if not name else '查無此客戶'))
+    print('對到好幾家，請顧問選（用 --company 指定）：')
+    for r in hit:
+        print(f'  ・{r.get("display_name")}')
+    sys.exit(2)
+
+
+def cmd_recommend(a):
+    """推薦人選給客戶（記成已推薦、客戶專區看得到）。一律確認卡。"""
+    app = resolve(a.who)
+    cid, cname = _company(app, a.company)
+    warn = []
+    cfr = rows("SELECT consultant_confirmed_at, file_id FROM client_formal_reports WHERE source_id=? AND company_id=? ORDER BY generated_at DESC LIMIT 1", [app['id'], cid])
+    if not cfr or not cfr[0].get('file_id'):
+        warn.append('還沒有推薦履歷（客戶專區只會看到名字）')
+    if rows("SELECT 1 x FROM candidate_forwards WHERE application_id=? AND company_id=?", [app['id'], cid]):
+        die(f'{app["name"]} 已經推薦給 {cname} 過了')
+    body = {'application_id': app['id'], 'company_id': cid, 'job_slug': a.job or None, 'note': a.note or None, 'send_forms': bool(a.send_forms)}
+    card = (f'📤 確認推薦｜{app["name"]} → {cname}\n職缺：{a.job or app.get("job_title") or app.get("job_slug")}\n'
+            + (f'給客戶的備註：{a.note}\n' if a.note else '') + ('會同時寄人事資料表給人選\n' if a.send_forms else '')
+            + (''.join(f'⚠️ {x}\n' for x in warn)) + '按了：系統記成已推薦，客戶專區立刻看得到這位人選。')
+    _confirm_bo('/admin/forward-candidate', body, app, card, f'已推薦 {app["name"]} 給 {cname}', '推薦人選')
+
+
+STAGE_ZH = {'stage1': '第一階段（一面）', 'stage2': '第二階段（二面）', 'stage3': '第三階段', 'stage4': '第四階段', 'offer': '錄取', 'onboard': '報到', 'care': '到職關懷', 'confirm': '顧問確認', 'screening': '阿財初審'}
+
+
+def cmd_stage(a):
+    app = resolve(a.who)
+    cid, cname = _company(app, a.company)
+    if a.to not in STAGE_ZH:
+        die('階段只能是：' + '、'.join(f'{k}={v}' for k, v in STAGE_ZH.items()))
+    body = {'application_id': app['id'], 'company_id': cid, 'stage': a.to, 'note': a.note or None}
+    if a.date:
+        body['onboard_date'] = a.date
+    card = f'📶 確認改階段｜{app["name"]}（{cname}）→ {STAGE_ZH[a.to]}' + (f'（{a.date}）' if a.date else '') + (f'\n備註：{a.note}' if a.note else '') + '\n按了才會改；有綁 LINE 的人選可能會收到進度通知。'
+    _confirm_bo('/admin/set-manual-stage', body, app, card, f'{app["name"]} 改成 {STAGE_ZH[a.to]}', '改人選階段')
+
+
+def cmd_not_push(a):
+    app = resolve(a.who)
+    cid, cname = _company(app, a.company)
+    if not a.reason:
+        die('要寫不推進的原因（客戶看得到，用寫給對方看的措辭）')
+    card = f'⛔ 確認標不推進｜{app["name"]}（{cname}）\n原因（客戶看得到）：{a.reason}'
+    _confirm_bo('/admin/pipeline/forward-decision', {'application_id': app['id'], 'company_id': cid, 'not_recommended': True, 'reason': a.reason},
+                app, card, f'{app["name"]} 在 {cname} 標不推進', '標不推進')
+
+
+def cmd_withdraw(a):
+    app = resolve(a.who)
+    cid, cname = _company(app, a.company)
+    if not a.reason:
+        die('要寫人選放棄的原因')
+    card = f'🚪 確認人選已放棄｜{app["name"]}（{cname}）\n原因：{a.reason}'
+    _confirm_bo('/admin/pipeline/candidate-withdraw', {'application_id': app['id'], 'company_id': cid, 'reason': a.reason},
+                app, card, f'{app["name"]} 已放棄 {cname}', '人選放棄')
+
+
+def cmd_form_send(a):
+    app = resolve(a.who)
+    fs = _forms_of(app['id'])
+    if a.company:
+        fs = [f for f in fs if a.company in (f.get('company') or '')]
+    if len(fs) != 1:
+        if not fs:
+            die('這位人選沒有可以寄的表單（要先推薦給有設定表單的客戶）')
+        print('有好幾份，請用 --company 指定：'); [print(f'  ・{f.get("company")}｜{f["form_name"]}｜{f.get("status") or "還沒寄"}') for f in fs]; sys.exit(2)
+    f = fs[0]
+    if f.get('status') == 'submitted':
+        die(f'{app["name"]} 的「{f["form_name"]}」已經交回了（{str(f.get("submitted_at"))[:16]}）')
+    if f.get('status') == 'sent':
+        sub = rows("SELECT id FROM candidate_form_submissions WHERE job_form_id=? AND application_id=? AND company_id=?", [f['job_form_id'], app['id'], f['company_id']])
+        card = f'📨 確認催填｜{app["name"]}：{f.get("company")}「{f["form_name"]}」\n按了會再寄一次提醒信給人選。'
+        _confirm_bo(f'/admin/candidate-form-submissions/{sub[0]["id"]}/resend', {}, app, card, f'已催 {app["name"]} 填表', '催填人事資料表')
+        return
+    card = f'📨 確認寄人事資料表｜{app["name"]}：{f.get("company")}「{f["form_name"]}」\n按了會寄信給人選請他填。'
+    _confirm_bo('/admin/candidate-form-submissions/trigger', {'application_id': app['id'], 'company_id': f['company_id'], 'job_form_id': f['job_form_id']},
+                app, card, f'已寄人事資料表給 {app["name"]}', '寄人事資料表')
+
+
+def cmd_line_invite(a):
+    app = resolve(a.who)
+    card = f'💚 確認用 LINE 通知面談｜{app["name"]}\n按了會立刻送一則 LINE 給人選，附他的阿財面談連結。'
+    _confirm_bo('/admin/line-notify-interview', {'application_id': app['id']}, app, card, f'已用 LINE 通知 {app["name"]} 面談', 'LINE 面談通知')
+
+
+def cmd_client_report(a):
+    """做推薦履歷（具名、客戶版）AI 草稿。做好會貼到「客戶履歷人工確認」，按確認才產 PDF。"""
+    app = resolve(a.who)
+    cid, cname = _company(app, a.company)
+    r = bo(f'/admin/application/{app["id"]}/client-formal-report', {'company_id': cid})
+    if r.get('ok') is False:
+        die(r.get('error') or '沒辦法開始')
+    print(f'✅ 已開始做 {app["name"]} 給 {cname} 的推薦履歷草稿，1～3 分鐘後會貼到「客戶履歷人工確認」，按確認才會產 PDF。'
+          '提醒：推薦履歷要有中文姓名、年齡、性別、期望薪資，缺的話先用 note 補進卡片再做。')
+
+
+BD_RES = {'interested': '有興趣', 'no_answer': '沒接', 'not_interested': '不需要／拒絕', 'send_info': '請寄資料', 'callback': '再約時間',
+          'got_contact': '問到窗口', 'got_email': '拿到信箱', 'gatekeeper': '被總機擋', 'not_hiring': '沒在徵人', 'other': '其他'}
+
+
+def cmd_client_log(a):
+    """記客戶（開發中公司）的電話／進度，直接寫進客戶卡片；系統約 1 分鐘內照最新內容重排下一步。"""
+    w = who()
+    co_ = rows("SELECT DISTINCT company FROM bd_outreach WHERE company LIKE ? LIMIT 6", [f'%{a.company}%'])
+    if not co_:
+        co_ = rows("SELECT company FROM bd_company_status WHERE company LIKE ? LIMIT 6", [f'%{a.company}%'])
+    if len(co_) != 1:
+        if not co_:
+            die(f'開發名單裡找不到「{a.company}」')
+        print('對到好幾家，請顧問選：'); [print(f'  ・{r["company"]}') for r in co_]; sys.exit(2)
+    company = co_[0]['company']
+    if a.result and a.result not in BD_RES:
+        die('結果只能是：' + '、'.join(f'{k}={v}' for k, v in BD_RES.items()))
+    body = {'company': company, 'kind': a.kind or 'call', 'result': a.result or None, 'note': (a.note or '').strip(), 'by': w['name'] or '顧問',
+            'next_step': a.next or '', 'next_due': a.due or ''}
+    if a.tag:
+        body['tag'] = a.tag
+    r = bo('/admin/bd/log', body)
+    if not r.get('ok'):
+        die(r.get('error') or '沒寫進去')
+    print(f'✅ 已記到 {company}：{BD_RES.get(a.result, "紀錄")}｜{clip(a.note, 60)}' + (f'｜下一步 {a.next} {a.due or ""}' if a.next else '｜下一步系統約 1 分鐘內照這筆重排'))
+
+
+def cmd_billing(a):
+    rs = rows("""SELECT i.id, i.label, i.due_date, i.amount_taxed, i.client_submitted_at, i.paid_at, i.confirmed_received, p.candidate_name, p.client_name
+                   FROM placement_billing_installments i JOIN placements p ON p.id=i.placement_id
+                  WHERE i.paid_at IS NULL OR (i.client_submitted_at IS NOT NULL AND i.confirmed_received IS NULL)
+                  ORDER BY i.due_date LIMIT 20""")
+    if not rs:
+        print('目前沒有待收的款項。'); return
+    for r in rs:
+        st = '客戶說已匯款，待確認' if r.get('client_submitted_at') and r.get('confirmed_received') is None else ('未收款' if not r.get('paid_at') else '')
+        print(f'・{r["id"]}｜{r.get("client_name")}｜{r.get("candidate_name")}｜{r.get("label")}｜{r.get("amount_taxed") or "—"} 元｜到期 {r.get("due_date") or "—"}｜{st}')
+
+
+def cmd_billing_confirm(a):
+    r = rows("""SELECT i.id, i.label, i.amount_taxed, p.candidate_name, p.client_name FROM placement_billing_installments i JOIN placements p ON p.id=i.placement_id WHERE i.id=?""", [a.id])
+    if not r:
+        die('找不到這筆款項（先用 billing 列出來）')
+    x = r[0]
+    app = {'id': '', 'name': x.get('client_name') or ''}
+    if a.action == 'received':
+        _confirm_bo('/admin/billing-installments/confirm', {'id': a.id, 'received': True}, app,
+                    f'💰 確認已收到款項｜{x.get("client_name")}｜{x.get("candidate_name")}｜{x.get("label")}｜{x.get("amount_taxed") or ""} 元', '已確認收到款項', '收款確認')
+    elif a.action == 'not-received':
+        _confirm_bo('/admin/billing-installments/confirm', {'id': a.id, 'received': False}, app,
+                    f'❌ 確認「客戶說匯了但還沒收到」｜{x.get("client_name")}｜{x.get("label")}', '已標記還沒收到', '收款確認')
+    else:
+        _confirm_bo('/admin/billing-installments/mark-paid', {'id': a.id, 'paid': True}, app,
+                    f'💰 確認標記已收款｜{x.get("client_name")}｜{x.get("candidate_name")}｜{x.get("label")}', '已標記收款', '標記收款')
+
+
+def cmd_job_status(a):
+    j = rows("SELECT slug,title,status FROM jobs WHERE slug=? OR title LIKE ? ORDER BY (status='open') DESC LIMIT 6", [a.job, f'%{a.job}%'])
+    if len(j) != 1:
+        if not j:
+            die('找不到這個職缺')
+        print('對到好幾個，請顧問選：'); [print(f'  ・{x["slug"]}｜{x["title"]}｜{x["status"]}') for x in j]; sys.exit(2)
+    j = j[0]
+    st = 'open' if a.to == 'open' else 'closed'
+    _confirm_bo(f'/admin/jobs/{j["slug"]}', {'status': st}, {'id': '', 'name': j['title']},
+                f'📋 確認{"開啟" if st == "open" else "關閉"}職缺｜{j["title"]}（目前：{j["status"]}）\n' + ('關閉後官網拿掉、阿財不再面談這個職缺。' if st == 'closed' else '開啟後官網會顯示、阿財開始面談。'),
+                f'職缺「{j["title"]}」已{"開啟" if st == "open" else "關閉"}', '開關職缺')
+
+
+def cmd_line_who(a):
+    """LINE 官方帳號上還沒綁定的人：從他們打過的字找電話／Email，對得上就說是誰。只查不改。"""
+    rs = rows("""SELECT b.line_user_id, b.display_name, b.state, b.created_at,
+                        (SELECT GROUP_CONCAT(l.text, ' ／ ') FROM (SELECT text FROM line_inbound_log WHERE line_user_id=b.line_user_id AND msg_type='text' ORDER BY created_at DESC LIMIT 6) l) AS texts,
+                        (SELECT MAX(created_at) FROM line_inbound_log WHERE line_user_id=b.line_user_id) AS last_at,
+                        (SELECT COUNT(*) FROM line_inbound_log WHERE line_user_id=b.line_user_id AND msg_type IN ('file','image')) AS files
+                   FROM line_bindings b WHERE b.state<>'bound' ORDER BY last_at DESC LIMIT ?""", [a.n])
+    if a.q:
+        rs = [r for r in rs if a.q in (r.get('texts') or '') or a.q in (r.get('display_name') or '')]
+    if not rs:
+        print('沒有符合的未綁定 LINE 人選。'); return
+    for r in rs:
+        t = r.get('texts') or ''
+        phones = sorted(set(re.findall(r'09\d{2}[-\s]?\d{3}[-\s]?\d{3}', t)))
+        mails = sorted(set(re.findall(r'[\w.+-]+@[\w-]+\.[\w.]+', t)))
+        match = []
+        for ph in phones:
+            d = re.sub(r'\D', '', ph)
+            match += [m['name'] for m in rows("SELECT name FROM applications WHERE replace(replace(COALESCE(phone,''),'-',''),' ','') LIKE ? AND superseded_by IS NULL LIMIT 2", [f'%{d[-9:]}%'])]
+        for em in mails:
+            match += [m['name'] for m in rows("SELECT name FROM applications WHERE lower(email)=lower(?) AND superseded_by IS NULL LIMIT 2", [em])]
+        print(f'・LINE：{r.get("display_name") or "（沒抓到名稱）"}｜最後訊息 {str(r.get("last_at") or "")[:16]}｜傳過檔案/圖 {r.get("files") or 0}'
+              + (f'｜電話 {"、".join(phones)}' if phones else '') + (f'｜信箱 {"、".join(mails)}' if mails else '')
+              + (f'｜✅ 對到卡片：{"、".join(sorted(set(match)))}' if match else '｜❓ 還不知道是誰')
+              + f'\n   說過：{clip(t, 120)}')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -1311,6 +1528,23 @@ def main():
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
     p = sp.add_parser('tell', help='用阿財私訊傳話給另一位顧問'); p.add_argument('to'); p.add_argument('--text'); p.set_defaults(fn=cmd_tell)
+    p = sp.add_parser('recommend', help='推薦人選給客戶（確認卡）'); p.add_argument('who'); p.add_argument('--company', required=True); p.add_argument('--job'); p.add_argument('--note')
+    p.add_argument('--send-forms', action='store_true'); p.set_defaults(fn=cmd_recommend)
+    p = sp.add_parser('stage', help='改人選在某家客戶的階段（確認卡）'); p.add_argument('who'); p.add_argument('--company'); p.add_argument('--to', required=True)
+    p.add_argument('--date', help='報到日 YYYY-MM-DD'); p.add_argument('--note'); p.set_defaults(fn=cmd_stage)
+    p = sp.add_parser('not-push', help='標不推進（確認卡，客戶看得到原因）'); p.add_argument('who'); p.add_argument('--company'); p.add_argument('--reason'); p.set_defaults(fn=cmd_not_push)
+    p = sp.add_parser('withdraw', help='人選自己放棄（確認卡）'); p.add_argument('who'); p.add_argument('--company'); p.add_argument('--reason'); p.set_defaults(fn=cmd_withdraw)
+    p = sp.add_parser('form-send', help='寄／催人事資料表給人選（確認卡）'); p.add_argument('who'); p.add_argument('--company'); p.set_defaults(fn=cmd_form_send)
+    p = sp.add_parser('line-invite', help='用 LINE 通知人選來阿財面談（確認卡）'); p.add_argument('who'); p.set_defaults(fn=cmd_line_invite)
+    p = sp.add_parser('client-report', help='做推薦履歷（具名）AI 草稿'); p.add_argument('who'); p.add_argument('--company'); p.set_defaults(fn=cmd_client_report)
+    p = sp.add_parser('client-log', help='記客戶電話／進度（直接寫進客戶卡片）'); p.add_argument('company'); p.add_argument('--result'); p.add_argument('--note')
+    p.add_argument('--kind', choices=['call', 'mail', 'other']); p.add_argument('--next'); p.add_argument('--due'); p.add_argument('--tag', choices=['HOT', 'WARM', 'FUTURE', 'NO', 'MATERIAL'])
+    p.set_defaults(fn=cmd_client_log)
+    p = sp.add_parser('billing', help='待收款項'); p.set_defaults(fn=cmd_billing)
+    p = sp.add_parser('billing-confirm', help='收款確認（確認卡）'); p.add_argument('id'); p.add_argument('--action', choices=['received', 'not-received', 'paid'], default='received')
+    p.set_defaults(fn=cmd_billing_confirm)
+    p = sp.add_parser('job-status', help='開／關職缺（確認卡）'); p.add_argument('job'); p.add_argument('--to', choices=['open', 'closed'], required=True); p.set_defaults(fn=cmd_job_status)
+    p = sp.add_parser('line-who', help='LINE 上還沒綁定的人是誰'); p.add_argument('q', nargs='?'); p.add_argument('-n', type=int, default=20); p.set_defaults(fn=cmd_line_who)
     p = sp.add_parser('new-card', help='建新的人選卡片（一人一卡：電話/Email 對到就不建）'); p.add_argument('name'); p.add_argument('--phone'); p.add_argument('--email')
     p.add_argument('--job', help='職缺代號或關鍵字，不給＝暫無職缺'); p.add_argument('--source', help='哪個管道：104、LinkedIn、LINE、轉介…'); p.add_argument('--note')
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)

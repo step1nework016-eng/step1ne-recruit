@@ -131,3 +131,21 @@ python3 {OPS} <指令> ...
 2. `new-card <姓名> --phone … --email … --source … [--job …] [--note "電話裡聊到的重點"] [--resume <檔案路徑>] --consent`
 3. 工具說「系統裡已經有這個人」＝同一個人，**不要建新的**，改用 `note` 記在那張卡上，跟顧問說「他已經有卡了（某職缺、某天建的），我記在原本那張」。
 負責顧問會自動是跟你講話的那位。
+
+## 推薦、階段、表單、客戶進度、收款、職缺（2026-11-02 補齊）
+
+凡是**客戶看得到、人選收得到、跟錢有關**的，工具都只會貼確認卡，按了才做；跟顧問講清楚「確認卡貼好了，按了才會…」。
+
+| 顧問說 | 你跑 |
+|---|---|
+| 把 Jeff 推給 CMoney | `recommend <人選> --company <客戶> [--job <職缺>] [--note "給客戶的一句話"] [--send-forms]`（推之前先 `find` 看推薦履歷做了沒、四項齊不齊，缺的先講） |
+| 幫他做推薦履歷 | `client-report <人選> --company <客戶>`（做好會貼到「客戶履歷人工確認」） |
+| 他一面約好了／錄取了／11/10 報到 | `stage <人選> --company <客戶> --to stage1｜stage2｜offer｜onboard [--date 2026-11-10]` |
+| 客戶說這個人不要／我們不推了 | `not-push <人選> --company <客戶> --reason "寫給客戶看的措辭"`（原因客戶看得到，不可寫年齡性別等） |
+| 人選說不考慮了 | `withdraw <人選> --company <客戶> --reason "…"` |
+| 寄人事資料表給他／催他填 | `form-send <人選> [--company <客戶>]`（已寄過會自動變成催填） |
+| 用 LINE 叫他來跟阿財面談 | `line-invite <人選>` |
+| 京朋李小姐說主管看完再回 | `client-log 京朋 --result interested --note "李小姐：主管看完再回"`（結果代號：interested 有興趣、no_answer 沒接、not_interested 不需要、send_info 請寄資料、callback 再約、got_contact 問到窗口、got_email 拿到信箱、gatekeeper 被總機擋、not_hiring 沒在徵人；顧問有講下一步就加 `--next "…" --due YYYY-MM-DD`，沒講就不要加，系統會自己排） |
+| 有哪些錢還沒收／客戶說匯了 | `billing`；確認收到 `billing-confirm <編號> --action received`（沒收到 `not-received`、直接標已收 `paid`） |
+| 某職缺先關掉／重新開 | `job-status <職缺> --to closed｜open` |
+| LINE 上那個人是誰／有沒有人在 LINE 問 | `line-who [關鍵字]`（從他打的字找電話、Email、姓名對卡片；對不到就照實說「還不知道是誰」，可以建議 `new-card`） |

@@ -5405,11 +5405,17 @@ async function handleConsultantOpsAction(env, cq) {
     //   terms-confirm＝合約讀取結果確認生效；mail＝逾期提醒卡「擬催款信」（只是再貼一張確認卡，不會寄）
     if (row.kind === 'bo_call') {
       const path = String(p.path || '');
-      if (!['/admin/billing2/terms-confirm', '/admin/billing2/mail'].includes(path)) {
+      // 2026-11-02 Jacky「全部做完」：阿財顧問助理補齊常用功能，凡是客戶看得到／人選收得到／跟錢有關的都走這張確認卡
+      const COPS_BO_ALLOW = ['/admin/billing2/terms-confirm', '/admin/billing2/mail', '/admin/forward-candidate', '/admin/set-manual-stage',
+        '/admin/pipeline/forward-decision', '/admin/pipeline/candidate-withdraw', '/admin/candidate-form-submissions/trigger',
+        '/admin/line-notify-interview', '/admin/billing-installments/confirm', '/admin/billing-installments/mark-paid'];
+      const okDyn = /^\/admin\/candidate-form-submissions\/[\w-]+\/resend$/.test(path)
+        || (/^\/admin\/jobs\/[a-z0-9-]+$/.test(path) && Object.keys(p.body || {}).every((k) => k === 'status') && ['open', 'closed'].includes((p.body || {}).status));
+      if (!COPS_BO_ALLOW.includes(path) && !okDyn) {
         await ans('不允許的動作'); await finish('failed', { error: 'path not allowed' }, '❌ 不允許的動作'); return;
       }
       const d = await copsBo(env, path, { ...(p.body || {}), by: who });
-      if (!d.ok) { await ans(`沒完成：${d.error || '後台出錯'}`); await finish('failed', d, `❌ 沒完成：${String(d.error || '').slice(0, 40)}`); return; }
+      if (d.ok === false || (d.ok === undefined && d.error)) {   // 有些端點成功時不帶 ok 欄位 await ans(`沒完成：${d.error || '後台出錯'}`); await finish('failed', d, `❌ 沒完成：${String(d.error || '').slice(0, 40)}`); return; }
       await ans(String(d.message || '完成了'));
       await finish('done', d, `✅ ${who}：${p.done_label || '已處理'}`, d.say || null);
       return;
