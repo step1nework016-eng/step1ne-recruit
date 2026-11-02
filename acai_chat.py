@@ -94,7 +94,26 @@ def save_session(chat_id, sid, who):
                 ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id, who=excluded.who, updated_at=excluded.updated_at""")
 
 
+def selfcheck(p):
+    """不發 TG：用跟對話一樣的環境跑一次工具箱，把原始輸出回傳（查 WSL2 缺什麼設定用）。"""
+    who = p.get('who') or {}
+    env = {k: os.environ[k] for k in ('HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'PATH') if k in os.environ}
+    env.setdefault('LANG', 'C.UTF-8')
+    env.update({'COPS_TG_ID': str(who.get('id') or ''), 'COPS_TG_USERNAME': who.get('username') or '', 'COPS_TG_NAME': who.get('name') or '',
+                'COPS_CHAT': str(p.get('chat_id') or ''), 'COPS_THREAD': '', 'TZ': 'Asia/Taipei'})
+    out = []
+    for args in (p.get('selfcheck') or [['find', '馬若喬']]):
+        r = subprocess.run([PY, OPS, *args], capture_output=True, text=True, timeout=120, env=env, cwd=HERE)
+        out.append(f'$ {" ".join(args)} → exit {r.returncode}\n{(r.stdout or "")[-800:]}\n{(r.stderr or "")[-1500:]}')
+    cfg = os.path.expanduser('~/.config/workflow-os')
+    out.append('config: ' + ', '.join(sorted(x for x in os.listdir(cfg) if x.endswith('.env'))) if os.path.isdir(cfg) else 'config: 沒有資料夾')
+    out.append(f'claude: {CLAUDE_BIN}')
+    return '\n'.join(out)
+
+
 def run(p):
+    if p.get('selfcheck'):
+        return selfcheck(p)
     chat_id = str(p.get('chat_id') or '')
     who = p.get('who') or {}
     name = who.get('name') or '顧問'
