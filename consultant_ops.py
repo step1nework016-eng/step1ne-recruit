@@ -1554,6 +1554,40 @@ def cmd_billing_confirm(a):
                     f'💰 確認標記已收款｜{x.get("client_name")}｜{x.get("candidate_name")}｜{x.get("label")}', '已標記收款', '標記收款')
 
 
+
+def cmd_funnel(a):
+    """2026-11-03 Jacky：某家公司／某職缺「社群點擊 → 應徵 → 阿財面談」人數統計。
+    社群點擊＝link_clicks（社群貼文、留言裡的職缺連結被點）；應徵＝applications；面談＝interview_started_at／ended_at。
+    ⚠️ 點擊和應徵沒有一對一綁定（點擊不記名），只能看同一職缺的量，不能說「這幾個點擊就是這幾個人」。"""
+    k = a.key.strip()
+    js = rows("""SELECT j.slug, j.title, j.status FROM jobs j
+                 WHERE j.slug=? OR j.title LIKE ? OR j.client_name LIKE ?
+                    OR j.company_id IN (SELECT company_id FROM jobs WHERE client_name LIKE ? AND company_id IS NOT NULL)
+                 ORDER BY j.status='open' DESC, j.slug""", [k, f'%{k}%', f'%{k}%', f'%{k}%'])
+    if a.only:
+        js = [j for j in js if a.only in j['title'] or a.only in j['slug']]
+    if not js:
+        die(f'找不到跟「{k}」有關的職缺')
+    since = a.since or '2000-01-01'
+    tot = dict(posts=0, clk=0, thr=0, app=0, soc=0, iv=0, done=0)
+    print(f'【{k}】社群→應徵→阿財面談（{since} 起；點擊與應徵無法一對一綁定，看量即可）')
+    for j in js:
+        c = rows("""SELECT count(*) n, count(DISTINCT queue_id) posts,
+                           sum(CASE WHEN ua LIKE '%Barcelona%' THEN 1 ELSE 0 END) thr
+                    FROM link_clicks WHERE job_slug=? AND clicked_at>=?""", [j['slug'], since])[0]
+        ap = rows("""SELECT count(*) n,
+                            sum(CASE WHEN interview_started_at IS NOT NULL THEN 1 ELSE 0 END) iv,
+                            sum(CASE WHEN interview_ended_at IS NOT NULL THEN 1 ELSE 0 END) done,
+                            sum(CASE WHEN coalesce(utm_source,'') NOT IN ('consultant','104','') AND coalesce(utm_medium,'')!='sourced' THEN 1 ELSE 0 END) self
+                     FROM applications WHERE job_slug=? AND created_at>=? AND name NOT LIKE '%測試%'""", [j['slug'], since])[0]
+        n = lambda v: int(v or 0)
+        print(f'・{j["title"]}（{j["status"]}）：貼文 {n(c["posts"])} 篇｜社群點擊 {n(c["n"])}（Threads {n(c["thr"])}）'
+              f'｜應徵 {n(ap["n"])}（自己從網站／LINE 來 {n(ap["self"])}）｜阿財面談 開始 {n(ap["iv"])}、完成 {n(ap["done"])}')
+        for key, v in (('posts', c['posts']), ('clk', c['n']), ('thr', c['thr']), ('app', ap['n']), ('soc', ap['self']), ('iv', ap['iv']), ('done', ap['done'])):
+            tot[key] += n(v)
+    print(f'合計：貼文 {tot["posts"]} 篇｜社群點擊 {tot["clk"]}（Threads {tot["thr"]}）｜應徵 {tot["app"]}（自己來 {tot["soc"]}）'
+          f'｜阿財面談 開始 {tot["iv"]}、完成 {tot["done"]}')
+
 def cmd_job_status(a):
     j = rows("SELECT slug,title,status FROM jobs WHERE slug=? OR title LIKE ? ORDER BY (status='open') DESC LIMIT 6", [a.job, f'%{a.job}%'])
     if len(j) != 1:
@@ -1820,6 +1854,7 @@ def main():
     p.add_argument('--job', help='職缺代號或關鍵字，不給＝暫無職缺'); p.add_argument('--source', help='哪個管道：104、LinkedIn、LINE、轉介…'); p.add_argument('--note')
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
+    p = sp.add_parser('funnel', help='某公司／職缺：社群點擊→應徵→阿財面談人數'); p.add_argument('key', help='公司名或職缺關鍵字'); p.add_argument('--only', help='只看標題含這個字的職缺（例：日本）'); p.add_argument('--since', help='起始日 YYYY-MM-DD'); p.set_defaults(fn=cmd_funnel)
     p = sp.add_parser('today', help='今天/明天的電話（只列自己負責＋還沒指派的）'); p.add_argument('--days', type=int, default=2); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('set-owner', help='指派人選的負責顧問'); p.add_argument('who'); p.add_argument('--to', required=True, help='Jacky、Phoebe…；none＝取消指派'); p.set_defaults(fn=cmd_set_owner)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
