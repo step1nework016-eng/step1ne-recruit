@@ -1584,10 +1584,12 @@ def cmd_funnel(a):
                            sum(CASE WHEN ua LIKE '%Barcelona%' THEN 1 ELSE 0 END) thr
                     FROM link_clicks WHERE job_slug=? AND clicked_at>=?""", [j['slug'], since])[0]
         ap = rows("""SELECT count(*) n,
-                            sum(CASE WHEN interview_started_at IS NOT NULL THEN 1 ELSE 0 END) iv,
+                            sum(CASE WHEN interview_started_at IS NOT NULL OR interview_ended_at IS NOT NULL THEN 1 ELSE 0 END) iv,
                             sum(CASE WHEN interview_ended_at IS NOT NULL THEN 1 ELSE 0 END) done,
                             sum(CASE WHEN coalesce(utm_source,'') NOT IN ('consultant','104','') AND coalesce(utm_medium,'')!='sourced' THEN 1 ELSE 0 END) self
-                     FROM applications WHERE job_slug=? AND created_at>=? AND name NOT LIKE '%測試%'""", [j['slug'], since])[0]
+                     FROM applications WHERE job_slug=? AND created_at>=? AND name NOT LIKE '%測試%'
+                       AND coalesce(status,'')!='duplicate'""", [j['slug'], since])[0]
+        # 2026-11-03：舊資料有只記 ended_at 沒記 started_at 的（施冠廷等）→「開始」算兩者任一；重複卡不算（翁紹軒）
         n = lambda v: int(v or 0)
         print(f'・{j["title"]}（{j["status"]}）：貼文 {n(c["posts"])} 篇｜社群點擊 {n(c["n"])}（Threads {n(c["thr"])}）'
               f'｜應徵 {n(ap["n"])}（自己從網站／LINE 來 {n(ap["self"])}）｜阿財面談 開始 {n(ap["iv"])}、完成 {n(ap["done"])}')
