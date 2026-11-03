@@ -15,7 +15,7 @@ import pm_calendar as pc
 import consultant_ops as c
 
 TZ = ZoneInfo('Asia/Taipei')
-JACKY_TG = '8365775688'
+PEOPLE = {'jacky': ('Jacky', '8365775688'), 'phoebe': ('Phoebe', '6326743721')}   # 2026-11-03：Phoebe 一起換新版
 now = dt.datetime.now(TZ)
 today = now.date()
 yday = today - dt.timedelta(days=1)
@@ -24,49 +24,60 @@ W = '一二三四五六日'
 fmt = lambda d: f'{d.month}/{d.day}（{W[d.weekday()]}）'
 
 
-def today_items():
+def today_items(me):
     items = []
+    other_names = set()
     try:
         tk = pc.token()
         for e in pc._req('GET', f'/calendar/events?from={today}&to={today + dt.timedelta(days=1)}', token=tk) or []:
             s = dt.datetime.fromisoformat(e['startAt'].replace('Z', '+00:00')).astimezone(TZ)
             if s.date() == today:
-                items.append((s.strftime('%H:%M'), e.get('title') or '（沒標題）', 'cal'))
+                items.append((s.strftime('%H:%M'), e.get('title') or '（沒標題）', 'cal'))   # 發財基地是 Jacky 帳號的行事曆
     except Exception as ex:
         items.append(('--:--', f'⚠️ 發財基地行事曆讀不到（{str(ex)[:60]}），下面只有系統裡的電話／面試', 'err'))
     d0, d1 = f'{today} 00:00', f'{today + dt.timedelta(days=1)} 00:00'
-    for r in c.rows("""SELECT call_at, candidate_name, message FROM consultant_reminders
+    if me != 'jacky':
+        items = [x for x in items if x[2] == 'err']   # 發財基地行事曆是 Jacky 的，Phoebe 不放
+    for r in c.rows("""SELECT call_at, candidate_name, message, LOWER(COALESCE(requested_by,'')) rb FROM consultant_reminders
                        WHERE call_at>=? AND call_at<? AND status IN ('pending','sending','sent')""", [d0, d1]):
+        if r['rb'] and r['rb'] != me:
+            other_names.add(r['candidate_name']); continue
         items.append((str(r['call_at'])[11:16], f'⏰ 提醒｜{r["candidate_name"]}｜{c.clip(r.get("message") or "", 50)}', 'rem'))
     for r in c.rows("""SELECT i.confirmed_slot, i.stage, a.name, a.job_title, LOWER(COALESCE(a.owner,'')) owner
                        FROM interview_appointments i JOIN applications a ON a.id=i.application_id
                        WHERE i.confirmed_slot>=? AND i.confirmed_slot<?""", [d0, d1]):
         who = {'jacky': 'Jacky', 'phoebe': 'Phoebe'}.get(r['owner'], '未指派')
+        if r['owner'] and r['owner'] != me:   # 有負責顧問的只給那位；沒指派的大家都看到
+            other_names.add(r['name']); continue
         items.append((str(r['confirmed_slot'])[11:16], f'📅 {r["name"]}｜{("第" + str(r["stage"]) + "關面試") if str(r.get("stage") or "").isdigit() else (r.get("stage") or "面試")}｜{r.get("job_title") or ""}（{who} 跟進）', 'appt'))
     # 同一件事（行事曆＋系統各一筆）只留系統那筆：同時間、名字出現在行事曆標題裡
     keep = []
     for t, txt, k in sorted(items):
+        if k == 'cal' and any(nm and nm in txt for nm in other_names):
+            continue
         if k == 'cal' and any(t == t2 and k2 != 'cal' and txt2.split('｜')[0].strip('☎️📅 ') in txt for t2, txt2, k2 in items):
             continue
         keep.append((t, txt))
     return keep
 
 
-def recap():
+def recap(me):
     a, b = f'{yday} 00:00', f'{today} 00:00'
+    nm = PEOPLE[me][0]
     n = lambda q, p=(): (c.rows(q, list(p)) or [{'n': 0}])[0]['n']
-    L = [f'昨天 {fmt(yday)} 系統記到的：']
-    new_apps = c.rows("SELECT DISTINCT name FROM applications WHERE created_at>=? AND created_at<? AND name NOT LIKE '%測試%' ORDER BY created_at", [a, b])
+    L = [f'昨天 {fmt(yday)} 系統記到的（你負責的＋還沒指派的）：']
+    own = "(LOWER(COALESCE(owner,''))=? OR COALESCE(owner,'')='')"
+    new_apps = c.rows(f"SELECT DISTINCT name FROM applications WHERE created_at>=? AND created_at<? AND name NOT LIKE '%測試%' AND {own} ORDER BY created_at", [a, b, me])
     L.append(f'・新應徵 {len(new_apps)} 位' + (f'：{"、".join(x["name"] for x in new_apps[:6])}' if new_apps else ''))
-    L.append(f'・跟阿財面談完 {n("SELECT COUNT(*) n FROM applications WHERE interview_ended_at>=? AND interview_ended_at<?", (a, b))} 位')
+    L.append(f'・跟阿財面談完 {n(f"SELECT COUNT(*) n FROM applications WHERE interview_ended_at>=? AND interview_ended_at<? AND name NOT LIKE '%測試%' AND {own}", (a, b, me))} 位')
     fw = c.rows("""SELECT a.name, cc.display_name co FROM candidate_forwards f JOIN applications a ON a.id=f.application_id
-                   LEFT JOIN client_companies cc ON cc.id=f.company_id WHERE f.forwarded_at>=? AND f.forwarded_at<?""", [a, b])
+                   LEFT JOIN client_companies cc ON cc.id=f.company_id WHERE f.forwarded_at>=? AND f.forwarded_at<? AND f.forwarded_by=?""", [a, b, nm])
     rm = c.rows("SELECT subject FROM mail_outbox WHERE status='sent' AND sent_at>=? AND sent_at<? AND subject LIKE '%推薦人選%'", [a, b])
     L.append(f'・推薦給客戶 {len(fw)} 位' + (f'：{"、".join(x["name"] + "→" + (x["co"] or "?")[:6] for x in fw[:5])}' if fw else '')
-             + (f'；另外用 Email 寄推薦信 {len(rm)} 封' if rm else ''))
-    L.append(f'・人選電洽紀錄 {n("SELECT COUNT(*) n FROM candidate_notes WHERE created_at>=? AND created_at<? AND content LIKE ?", (a, b, "%電洽%"))} 筆、客戶開發電話 {n("SELECT COUNT(*) n FROM bd_call_logs WHERE created_at>=? AND created_at<? AND deleted_at IS NULL", (a, b))} 通')
-    L.append(f'・寄出信件：人選 {n("SELECT COUNT(*) n FROM mail_outbox WHERE status=? AND sent_at>=? AND sent_at<? AND ref_table=?", ("sent", a, b, "applications"))} 封、客戶 {n("SELECT COUNT(*) n FROM mail_outbox WHERE status=? AND sent_at>=? AND sent_at<? AND ref_table=?", ("sent", a, b, "bd_company"))} 封')
-    L.append(f'・人事資料表交回 {n("SELECT COUNT(*) n FROM candidate_form_submissions WHERE submitted_at>=? AND submitted_at<?", (a, b))} 份')
+             + (f'（全隊另外用 Email 寄推薦信／匿名履歷 {len(rm)} 封）' if rm else ''))
+    L.append(f'・人選電洽紀錄 {n("SELECT COUNT(*) n FROM candidate_notes WHERE created_at>=? AND created_at<? AND content LIKE ? AND created_by=?", (a, b, "%電洽%", nm))} 筆、客戶開發電話 {n("SELECT COUNT(*) n FROM bd_call_logs WHERE created_at>=? AND created_at<? AND deleted_at IS NULL AND (caller=? OR updated_by=?)", (a, b, nm, nm))} 通')
+    L.append(f'・全隊寄出信件：人選 {n("SELECT COUNT(*) n FROM mail_outbox WHERE status=? AND sent_at>=? AND sent_at<? AND ref_table=?", ("sent", a, b, "applications"))} 封、客戶 {n("SELECT COUNT(*) n FROM mail_outbox WHERE status=? AND sent_at>=? AND sent_at<? AND ref_table=?", ("sent", a, b, "bd_company"))} 封')
+    L.append(f'・人事資料表交回 {n(f"SELECT COUNT(*) n FROM candidate_form_submissions s JOIN applications ap ON ap.id=s.application_id WHERE s.submitted_at>=? AND s.submitted_at<? AND (LOWER(COALESCE(ap.owner,\'\'))=? OR COALESCE(ap.owner,\'\')=\'\')", (a, b, me))} 份')
     return L
 
 
@@ -90,9 +101,9 @@ def goals():
     return L
 
 
-def main():
-    items = today_items()
-    parts = [f'早安 Jacky ☀️ 今天 {fmt(today)}']
+def brief(me):
+    items = today_items(me)
+    parts = [f'早安 {PEOPLE[me][0]} ☀️ 今天 {fmt(today)}']
     real = [x for x in items if not x[1].startswith('⚠️')]
     if real:
         parts.append('今天有安排：\n' + '\n'.join(f'・{t}　{txt}' for t, txt in items))
@@ -101,13 +112,19 @@ def main():
             parts.append(items[0][1])
         parts.append('今天沒有排電話或會議。')
     if not real or '--recap' in sys.argv:
-        parts.append('\n'.join(recap()))
+        parts.append('\n'.join(recap(me)))
         parts.append('\n'.join(goals()))
-    text = '\n\n'.join(parts)
-    if '--dry-run' in sys.argv:
-        print(text); return
-    r = c.tg('sendMessage', {'chat_id': JACKY_TG, 'text': text[:4000], 'disable_web_page_preview': True})
-    print('已送出' if r.get('ok') else f'送出失敗：{r.get("description")}')
+    return '\n\n'.join(parts)
+
+
+def main():
+    only = [x for x in sys.argv[1:] if x.lower() in PEOPLE]
+    for me in (only or list(PEOPLE)):
+        text = brief(me)
+        if '--dry-run' in sys.argv:
+            print(f'===== {PEOPLE[me][0]} =====\n{text}\n'); continue
+        r = c.tg('sendMessage', {'chat_id': PEOPLE[me][1], 'text': text[:4000], 'disable_web_page_preview': True})
+        print(PEOPLE[me][0], '已送出' if r.get('ok') else f'送出失敗：{r.get("description")}')
 
 
 if __name__ == '__main__':
