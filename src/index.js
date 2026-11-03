@@ -6457,6 +6457,24 @@ export default {
     //
     // 認證方式：Resend 的 webhook 只能設定網址、不能帶自訂 header，
     // 所以把密鑰放在路徑裡（走 HTTPS，等同 header 的保護強度）。
+    // 2026-11-03 Jacky：給顧問的電洽名單要「點人選就直接看履歷」，不要跳後台登入。
+    //   consultant_ops.py resume-share 產生帶亂數的連結（resume_share_links，預設 14 天過期），這裡只讀不寫、不讓 Google 收錄。
+    if (p.startsWith('/r/') && request.method === 'GET') {
+      const token = p.slice(3).replace(/\/+$/, '');
+      if (!/^[a-f0-9]{24,64}$/.test(token)) return new Response('not found', { status: 404 });
+      const row = await env.DB.prepare(
+        `SELECT l.application_id, l.expires_at, a.resume_file_id, a.name FROM resume_share_links l JOIN applications a ON a.id=l.application_id WHERE l.token=?`).bind(token).first();
+      const nowTpe = new Date(Date.now() + 8 * 3600e3).toISOString().replace('T', ' ').slice(0, 19);
+      if (!row) return new Response('連結不存在', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      if (String(row.expires_at) < nowTpe) return new Response('這個履歷連結已過期，請跟阿財重新要一次', { status: 410, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      const f = row.resume_file_id ? await fileB64(env, row.resume_file_id) : null;
+      if (!f) return new Response(`${row.name || '這位人選'} 的卡片上沒有履歷檔`, { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      ctx.waitUntil(env.DB.prepare(`UPDATE resume_share_links SET opened_count=opened_count+1 WHERE token=?`).bind(token).run());
+      const bin = Uint8Array.from(atob(f.content), (ch) => ch.charCodeAt(0));
+      const inline = /pdf|image\//i.test(f.mime);
+      return new Response(bin, { headers: { 'Content-Type': f.mime, 'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'private, no-store',
+        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.filename)}` } });
+    }
     // 2026-11-03 阿財 publish-page 公開的網頁（確認卡按了才會存進來）
     if (p.startsWith('/p/') && request.method === 'GET') {
       const token = p.slice(3).replace(/\/+$/, '');

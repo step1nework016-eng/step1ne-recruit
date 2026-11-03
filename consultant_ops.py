@@ -1318,6 +1318,22 @@ def cmd_mail_att(a):
 
 
 
+
+def resume_share_url(app_id, days=14):
+    """產生直接看履歷的連結（不用登入，帶亂數、預設 14 天過期）。只給內部顧問用的名單／訊息，不要貼給客戶或公開。"""
+    w = who()
+    tok = secrets.token_hex(16)
+    exp = fmt(now_tpe() + dt.timedelta(days=days))
+    d1('INSERT INTO resume_share_links (token, application_id, created_by, expires_at) VALUES (?,?,?,?)', [tok, app_id, w.get('name') or '', exp])
+    return f'https://step1ne-recruit-api.aiagentg888.workers.dev/r/{tok}'
+
+
+def cmd_resume_share(a):
+    """給一位或多位人選的「直接看履歷」連結（內部用，14 天過期）。做電洽名單 HTML 時每位人選都掛這個連結。"""
+    for key in a.who:
+        app = resolve(key)
+        print(f'{app["name"]}：{resume_share_url(app["id"], a.days)}')
+
 def cmd_resume_get(a):
     """2026-11-03 Jacky：阿財要能把人選卡片上的原始履歷檔拿出來傳給顧問（預設傳給正在講話的人；--to Phoebe 轉給別位；--no-send 只下載）。"""
     app = resolve(a.who)
@@ -2103,6 +2119,7 @@ def main():
     p = sp.add_parser('inbox', help='看收件匣（可篩人選／公司／寄件人／關鍵字）'); p.add_argument('q', nargs='?'); p.add_argument('--days', type=int, default=7)
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
+    p = sp.add_parser('resume-share', help='產生直接看履歷的連結（不用登入，內部用，預設 14 天過期）'); p.add_argument('who', nargs='+'); p.add_argument('--days', type=int, default=14); p.set_defaults(fn=cmd_resume_share)
     p = sp.add_parser('resume-get', help='把人選卡片上的原始履歷檔下載並私訊傳給顧問（--to Phoebe 轉給別位；--no-send 只下載）'); p.add_argument('who')
     p.add_argument('--to'); p.add_argument('--caption'); p.add_argument('--no-send', action='store_true'); p.set_defaults(fn=cmd_resume_get)
     p = sp.add_parser('mail-att', help='下載並看信件附件'); p.add_argument('id'); p.add_argument('n', nargs='?', type=int, default=0); p.set_defaults(fn=cmd_mail_att)
