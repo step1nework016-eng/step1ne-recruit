@@ -803,13 +803,21 @@ def cmd_remind(a):
     # 用 --name 帶名字（人選名＋職缺），行事曆才會出現。
     if not app.get('name') and getattr(a, 'name', None):
         app = {**app, 'name': a.name}
+    # 2026-11-03 Jacky：「提醒 Phoebe …」也要能排——--for 其他已綁定阿財的顧問，時間到私訊對方
+    tgt_chat, tgt_name = w['tg_id'], w['name'] or '你'
+    if getattr(a, 'for_', None):
+        r = rows('SELECT display_name, tg_chat_id FROM consultant_tg WHERE lower(display_name)=lower(?) OR lower(tg_username)=lower(?)', [a.for_, a.for_.lstrip('@')])
+        if not r or not r[0].get('tg_chat_id'):
+            die(f'找不到「{a.for_}」的阿財私訊（只能提醒已綁定的顧問：' + '、'.join(x['display_name'] for x in rows('SELECT display_name FROM consultant_tg')) + '）')
+        tgt_chat, tgt_name = str(r[0]['tg_chat_id']), r[0]['display_name']
     rid = 'rem' + secrets.token_hex(6)
     d1("""INSERT INTO consultant_reminders (id,application_id,candidate_name,call_at,remind_at,message,target_chat_id,
              fallback_chat_id,fallback_thread_id,requested_by,requested_tg_id,status,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?)""",
-       [rid, app['id'], app['name'], fmt(t), fmt(rem), (a.text or '')[:500], w['tg_id'], w['chat'], w['thread'] or None,
+       [rid, app['id'], app['name'], fmt(t), fmt(rem), ((f'（{w["name"]} 請阿財提醒你）' if tgt_chat != w['tg_id'] else '') + (a.text or ''))[:500],
+        tgt_chat, tgt_chat if tgt_chat != w['tg_id'] else w['chat'], w['thread'] or None,
         w['name'], w['tg_id'], fmt(now_tpe())])
-    print(f'✅ 已排提醒（{rid}）：{fmt(rem)} 私訊 {w["name"] or "你"}' + (f'，關於 {app["name"]}' if app['name'] else '') +
+    print(f'✅ 已排提醒（{rid}）：{fmt(rem)} 私訊 {tgt_name}' + (f'，關於 {app["name"]}' if app['name'] else '') +
           f'（時間到的那一刻起 10 分鐘內會發）。取消：cancel-remind {rid}')
 
 
@@ -1685,10 +1693,20 @@ def cmd_sql(a):
 
 
 def cmd_send_file(a):
-    """把工作資料夾裡的檔案用阿財私訊傳給正在講話的顧問（只傳給自己，不對外）。"""
+    """把工作資料夾裡的檔案用阿財私訊傳給顧問（不對外）。不給 --to＝傳給正在講話的人；
+    --to Phoebe／Jacky（逗號可多位）＝傳給其他已綁定阿財的顧問（2026-11-03 Jacky：「把這個提供給 ph」要能直接傳檔，跟 tell 一樣是內部傳話，不用確認卡）。"""
     w = who()
-    if not w['chat']:
-        die('不知道要傳給誰（這支只能從 TG 顧問助理裡用）')
+    targets = []
+    if a.to:
+        for t in [x.strip() for x in a.to.split(',') if x.strip()]:
+            r = rows('SELECT display_name, tg_chat_id FROM consultant_tg WHERE lower(display_name)=lower(?) OR lower(tg_username)=lower(?)', [t, t.lstrip('@')])
+            if not r or not r[0].get('tg_chat_id'):
+                die(f'找不到「{t}」的阿財私訊（只能傳給已綁定的顧問：' + '、'.join(x['display_name'] for x in rows('SELECT display_name FROM consultant_tg')) + '）')
+            targets.append((str(r[0]['tg_chat_id']), r[0]['display_name']))
+    elif w['chat']:
+        targets.append((w['chat'], w['name'] or '顧問'))
+    if not targets:
+        die('不知道要傳給誰（這支只能從 TG 顧問助理裡用，或加 --to 顧問名）')
     path = _out_path(a.path)
     if not os.path.isfile(path):
         die(f'找不到檔案 {path}')
@@ -1709,24 +1727,28 @@ def cmd_send_file(a):
     tok = _TG.get('TG_BOT_TOKEN')
     if not tok:
         die('找不到系統 bot 設定')
-    b = '----acai' + secrets.token_hex(8)
     fn = os.path.basename(path)
-    parts = []
-    for k, v in (('chat_id', w['chat']), ('caption', (a.caption or '')[:1000])):
-        if v:
-            parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
-    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="document"; filename="{fn}"; '
-                 f"filename*=UTF-8''{urllib.parse.quote(fn)}\r\nContent-Type: application/octet-stream\r\n\r\n".encode() + data + b'\r\n')
-    parts.append(f'--{b}--\r\n'.encode())
-    req = urllib.request.Request(f'https://api.telegram.org/bot{tok}/sendDocument', data=b''.join(parts),
-                                 headers={'Content-Type': f'multipart/form-data; boundary={b}'})
-    try:
-        r = json.load(urllib.request.urlopen(req, timeout=120))
-    except urllib.error.HTTPError as e:
-        r = {'ok': False, 'description': e.read().decode()[:300]}
-    if not r.get('ok'):
-        die(f'傳檔失敗：{r.get("description")}')
-    print(f'✅ 已傳給 {w["name"] or "顧問"}：{fn}（{len(data) // 1024 + 1} KB）')
+    for chat, tname in targets:
+        cap = a.caption or ''
+        if chat != str(w.get('chat') or ''):   # 轉給別位顧問：講清楚是誰請阿財傳的
+            cap = f'📎 {w["name"] or "顧問"} 請阿財轉給你' + (f'：{cap}' if cap else '')
+        b = '----acai' + secrets.token_hex(8)
+        parts = []
+        for k, v in (('chat_id', chat), ('caption', cap[:1000])):
+            if v:
+                parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="document"; filename="{fn}"; '
+                     f"filename*=UTF-8''{urllib.parse.quote(fn)}\r\nContent-Type: application/octet-stream\r\n\r\n".encode() + data + b'\r\n')
+        parts.append(f'--{b}--\r\n'.encode())
+        req = urllib.request.Request(f'https://api.telegram.org/bot{tok}/sendDocument', data=b''.join(parts),
+                                     headers={'Content-Type': f'multipart/form-data; boundary={b}'})
+        try:
+            r = json.load(urllib.request.urlopen(req, timeout=120))
+        except urllib.error.HTTPError as e:
+            r = {'ok': False, 'description': e.read().decode()[:300]}
+        if not r.get('ok'):
+            die(f'傳給 {tname} 失敗：{r.get("description")}')
+        print(f'✅ 已傳給 {tname}：{fn}（{len(data) // 1024 + 1} KB）')
 
 
 def cmd_job_status(a):
@@ -2001,7 +2023,8 @@ def main():
     p.add_argument('--limit', type=int, default=200); p.add_argument('--csv', help='存成 CSV 到工作資料夾（完整內容）')
     p.add_argument('--json', action='store_true'); p.add_argument('--full', action='store_true', help='長文字不截斷'); p.add_argument('--width', type=int, default=200)
     p.set_defaults(fn=cmd_sql)
-    p = sp.add_parser('send-file', help='把工作資料夾裡的檔案（HTML／CSV／PDF…）私訊傳給正在講話的顧問'); p.add_argument('path'); p.add_argument('--caption')
+    p = sp.add_parser('send-file', help='把工作資料夾裡的檔案（HTML／CSV／PDF…）私訊傳給顧問（預設自己；--to Phoebe 傳給別位）'); p.add_argument('path'); p.add_argument('--caption')
+    p.add_argument('--to', help='傳給其他顧問：Phoebe、Jacky…，逗號可多位')
     p.set_defaults(fn=cmd_send_file)
     p = sp.add_parser('today', help='今天/明天的電話（只列自己負責＋還沒指派的）'); p.add_argument('--days', type=int, default=2); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('set-owner', help='指派人選的負責顧問'); p.add_argument('who'); p.add_argument('--to', required=True, help='Jacky、Phoebe…；none＝取消指派'); p.set_defaults(fn=cmd_set_owner)
@@ -2036,7 +2059,8 @@ def main():
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)
     p.add_argument('--before', type=int, default=30); p.add_argument('--note'); p.set_defaults(fn=cmd_book)
     p = sp.add_parser('remind', help='只提醒自己（不寫卡片）'); p.add_argument('--at', required=True); p.add_argument('--text', default=''); p.add_argument('--name', default='', help='沒掛人選卡時的顯示名稱（例：Stanley Wang（美德 供應鏈主管））；有名字才會進發財基地行事曆')
-    p.add_argument('--app'); p.add_argument('--before', type=int, default=30); p.set_defaults(fn=cmd_remind)
+    p.add_argument('--app'); p.add_argument('--before', type=int, default=30)
+    p.add_argument('--for', dest='for_', help='提醒其他顧問（Phoebe、Jacky…），時間到私訊對方'); p.set_defaults(fn=cmd_remind)
     p = sp.add_parser('reminders', help='還沒發的提醒'); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_reminders)
     p = sp.add_parser('cancel-remind'); p.add_argument('id'); p.set_defaults(fn=cmd_cancel_remind)
     p = sp.add_parser('match', help='從現有人選配對＋針對職缺匿名摘要（等同後台客戶卡片按鈕）'); p.add_argument('--company'); p.add_argument('--job', help='職缺 slug'); p.add_argument('--run'); p.add_argument('--brief', help='application_id，逗號分隔'); p.set_defaults(fn=cmd_match)

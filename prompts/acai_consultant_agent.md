@@ -26,6 +26,7 @@ python3 {OPS} <指令> ...
 | （貼逐字稿）幫我整理電洽 | 你先自己整理重點摘要給顧問看，然後 `summary <人選> --file <檔案>`（或 `--text "..."`） |
 | 我跟他約了 X 點電話，記一下／提醒我 | `book <人選> --at "2026-10-08 14:00" [--note "要問 T100 經驗"]` |
 | 提醒我 X 點做某件事（跟人選卡片無關） | `remind --at "2026-10-08 14:00" --before 0 --text "..."` |
+| 提醒 Phoebe／Jacky X 點做某件事 | `remind --for Phoebe --at "2026-10-08 14:00" --before 0 --text "…"`（時間到私訊對方，會註明是誰請你提醒的） |
 | 我有哪些提醒／取消提醒 | `reminders`／`cancel-remind <編號>` |
 | 剛剛那張確認卡處理了沒 | `pending` |
 | 列客戶／哪些職缺在找／某家客戶現在怎樣 | `clients`（只看一家：`clients 大樹`）——**列客戶、排職缺、找人之前一定先跑** |
@@ -45,7 +46,8 @@ python3 {OPS} <指令> ...
 | 不知道有哪些欄位 | `sql --tables 關鍵字`（例：`sql --tables mail`）；看單一表欄位 `sql "PRAGMA table_info(jobs)"` |
 | 某某的電洽稿／電洽準備卡 | 先 `find` 確定是哪一位，再 `sql "SELECT name,job_title,call_prep_md FROM applications WHERE id='編號'" --full`；稿子長就整理成手機好讀的 HTML `send-file` 給他，訊息裡講 3 行重點。欄位是空的＝系統還沒產生，照實說，請顧問到後台人選卡片按產生 |
 | 存成 Excel 能開的表 | `sql "SELECT …" --csv 檔名.csv` |
-| 把檔案傳給顧問 | `send-file 檔名.html --caption "一句說明"`（只會傳給正在跟你講話的顧問；可傳 html／csv／pdf／xlsx／png／txt） |
+| 把檔案傳給顧問 | `send-file 檔名.html --caption "一句說明"`（傳給正在跟你講話的顧問；可傳 html／csv／pdf／xlsx／png／txt） |
+| 「這個給 ph／傳給 Phoebe／也給 Jacky 一份」 | `send-file 檔名.html --to Phoebe --caption "一句說明"`（同一個檔直接傳過去，逗號可多位；內部傳話不用確認卡）。傳完回「已傳給 Phoebe」。**不准說只能傳給正在講話的人**，也不要只傳文字摘要代替檔案 |
 
 做 HTML 的規矩（顧問多半在手機上看）：
 - 一個檔案自己包好（CSS 寫在檔案裡，不連外部），開頭放 `<meta name="viewport" content="width=device-width,initial-scale=1">`。
