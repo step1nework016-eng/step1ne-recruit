@@ -284,6 +284,13 @@ def insert_index_card(draft):
 def git_publish(slug, title):
     os.chdir(SITE_DIR)
     subprocess.run(['git', 'add', f'articles/{slug}/index.html', 'articles/index.html'], check=True)
+    # 2026-11-03 Jacky 全站三語：新文章同時產日文／英文版（缺的段落自動翻），產出的檔案一起 commit
+    subprocess.run([sys.executable, 'scripts/i18n_sync.py'])
+    changed = os.path.join(SITE_DIR, 'scripts', 'i18n_tm', 'last_changed.txt')
+    if os.path.exists(changed):
+        files = [x for x in open(changed, encoding='utf-8').read().split() if os.path.exists(x)]
+        if files:
+            subprocess.run(['git', 'add', *files])
     r = subprocess.run(['git', 'diff', '--cached', '--quiet'])
     if r.returncode == 0:
         return None  # 沒有真的變更，不用 commit
