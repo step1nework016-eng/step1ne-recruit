@@ -1669,9 +1669,18 @@ def cmd_sql(a):
         else:
             cols = list(res[0].keys())
             print('\t'.join(cols))
+            cut = set()
             for r in res:
-                print('\t'.join('' if r[c] is None else (str(r[c]) if a.full else clip(str(r[c]), a.width)).replace('\n', '⏎').replace('\t', ' ')
-                                for c in cols))
+                cells = []
+                for c in cols:
+                    v = '' if r[c] is None else str(r[c])
+                    if not a.full and len(v) > a.width:
+                        cut.add(c)
+                        v = clip(v, a.width)
+                    cells.append(v.replace('\n', '⏎').replace('\t', ' '))
+                print('\t'.join(cells))
+            if cut:   # 2026-11-03：阿財看到截斷的附件清單就說「第三份查不到」——明講哪些欄位沒印完
+                print(f'⚠️ 這些欄位太長被截斷了：{"、".join(sorted(cut))}。要看完整內容加 --full（或只選那一欄、加條件縮小筆數）。')
     print(f'— {len(res)} 筆' + ('（還有更多，加 --limit 或縮小條件）' if more else ''))
 
 
