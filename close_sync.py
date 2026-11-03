@@ -146,6 +146,8 @@ def main():
         log(f'  {kind}：{what}')
 
     if '--deploy' in sys.argv:
+        # 2026-11-03：關閉橫幅也要出現在日文／英文版（缺的段落自動翻）
+        subprocess.run([sys.executable, 'scripts/i18n_sync.py'], cwd=SITE)
         subprocess.run(['git', 'add', '-A'], cwd=SITE, check=True)
         # 2026-09-30：先確認真的有變更，再 commit。以前把「commit 失敗」（例如 WSL2 的官網 repo 沒設 git 身份）
         # 跟「沒有變更」印成同一句，部署悄悄沒做也沒人發現。現在 commit 失敗會報錯、結束代碼 1。

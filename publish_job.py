@@ -403,6 +403,8 @@ def main():
         pass  # 查不到就用預設值，不擋主流程
 
     if a.deploy:
+        # 2026-11-03 Jacky 全站三語：有日文／英文版的頁面跟著重產（缺的段落自動翻），再一起過守門員
+        subprocess.run([sys.executable, 'scripts/i18n_sync.py'], cwd=SITE)
         # 2026-09-25 加：推之前先跑客戶名守門員，沒過就不部署（見 publish_approved.git_push）
         guard = subprocess.run(['python3', 'scripts/check_no_client_names.py', '-v'], cwd=SITE,
                                capture_output=True, text=True, timeout=120)

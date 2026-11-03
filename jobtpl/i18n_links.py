@@ -13,7 +13,9 @@ import os, re
 BASE = 'https://step1ne.com'
 HEAD_A, HEAD_B = '<!--i18n-hreflang-->', '<!--/i18n-hreflang-->'
 SW_A, SW_B = '<!--i18n-switch-->', '<!--/i18n-switch-->'
-LANGS = [('zh-Hant', '中文', '/jobs/%s/'), ('id', 'Bahasa Indonesia', '/id/jobs/%s/'), ('vi', 'Tiếng Việt', '/vi/jobs/%s/')]
+# 2026-11-03 加日文／英文（全站三語）。日英版本身由網站 repo 的 scripts/i18n_site.py 產，這裡只負責中文頁上的連結
+LANGS = [('zh-Hant', '中文', '/jobs/%s/'), ('ja', '日本語', '/ja/jobs/%s/'), ('en', 'English', '/en/jobs/%s/'),
+         ('id', 'Bahasa Indonesia', '/id/jobs/%s/'), ('vi', 'Tiếng Việt', '/vi/jobs/%s/')]
 
 SWITCH_CSS = ('.s1-lang{max-width:820px;margin:0 auto;padding:10px 24px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}'
               '.s1-lang a,.s1-lang b{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;border-radius:999px;'
