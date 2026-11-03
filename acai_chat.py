@@ -167,11 +167,13 @@ def run(p):
     env = {k: os.environ[k] for k in ('HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'PATH') if k in os.environ}
     env.setdefault('LANG', 'C.UTF-8')
     env.update({'COPS_TG_ID': str(who.get('id') or ''), 'COPS_TG_USERNAME': who.get('username') or '', 'COPS_TG_NAME': name,
-                'COPS_CHAT': chat_id, 'COPS_THREAD': '', 'TZ': 'Asia/Taipei'})
+                'COPS_CHAT': chat_id, 'COPS_THREAD': '', 'COPS_WDIR': wdir, 'TZ': 'Asia/Taipei'})
     cmd = [CLAUDE_BIN, '-p', '--model', MODEL, '--output-format', 'text', '--setting-sources', '', '--strict-mcp-config',
            '--permission-mode', 'dontAsk',
-           '--allowedTools', f'Bash({PY} {OPS}:*)', f'Bash(python3 {OPS}:*)', f'Read({wdir}/**)',
-           '--disallowedTools', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit',
+           # 2026-11-03 Jacky：阿財要能自己做統計／HTML 檔再傳給顧問——Write／Edit 只開放自己的工作資料夾（//＝絕對路徑）
+           '--allowedTools', f'Bash({PY} {OPS}:*)', f'Bash(python3 {OPS}:*)', f'Read({wdir}/**)', f'Read(/{wdir}/**)',
+           f'Write(/{wdir}/**)', f'Edit(/{wdir}/**)',
+           '--disallowedTools', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit',
            '--append-system-prompt', sysprompt]
     new_sid = sid or str(uuid.uuid4())
     cmd += (['--resume', sid] if sid else ['--session-id', new_sid])

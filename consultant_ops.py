@@ -1588,6 +1588,138 @@ def cmd_funnel(a):
     print(f'合計：貼文 {tot["posts"]} 篇｜社群點擊 {tot["clk"]}（Threads {tot["thr"]}）｜應徵 {tot["app"]}（自己來 {tot["soc"]}）'
           f'｜阿財面談 開始 {tot["iv"]}、完成 {tot["done"]}')
 
+# ── 通用唯讀查詢＋傳檔（2026-11-03 Jacky：不要一個個加指令，顧問任何系統需求阿財都要能自己查、自己算、做成檔案）──
+# 只准 SELECT／WITH（＋看欄位的 PRAGMA）；寫入語句、多句、註解一律擋。金鑰類欄位與表不給看。
+SQL_SECRET_COLS = {'chat_token', 'token', 'portal_token', 'preview_token', 'invite_token', 'access_token', 'refresh_token',
+                   'account_password_enc', 'account_password_iv', 'key_hash', 'session_id'}
+SQL_SECRET_TABLES = {'mail_private_keys', 'tg_bot_sessions', 'acai_chat_sessions'}
+SQL_WRITE = re.compile(r'\b(insert|update|delete|drop|alter|create|attach|detach|vacuum|reindex|analyze|begin|commit|rollback|'
+                       r'savepoint|release|load_extension)\b|\breplace\s+into\b', re.I)
+SQL_PRAGMA_OK = re.compile(r'^pragma\s+(table_info|table_xinfo|index_list|foreign_key_list)\s*\(\s*[\'"]?(\w+)[\'"]?\s*\)$', re.I)
+OUT_EXT = {'.html', '.htm', '.csv', '.txt', '.pdf', '.xlsx', '.png', '.jpg', '.jpeg'}
+
+
+def _sql_check(sql):
+    s = sql.strip().rstrip(';').strip()
+    bare = re.sub(r"'(?:[^']|'')*'", "''", s)          # 字串內容不檢查（例：status='deleted'）
+    if '--' in bare or '/*' in bare:
+        die('查詢裡不要放註解')
+    if ';' in bare:
+        die('一次只能一句查詢')
+    low = bare.lower()
+    if not re.match(r'^(select|with|pragma)\b', low):
+        die('只能查（SELECT／WITH），不能改資料')
+    if SQL_WRITE.search(bare):
+        die('這句看起來會改資料，只能查（SELECT／WITH）')
+    words = set(re.findall(r'[a-z_][a-z0-9_]*', low))
+    if words & SQL_SECRET_TABLES or words & SQL_SECRET_COLS:
+        die('這些是系統金鑰／登入資料，不能查')
+    if low.startswith('pragma') and not SQL_PRAGMA_OK.match(bare):
+        die('PRAGMA 只能看欄位：PRAGMA table_info(表名)')
+    return s
+
+
+def _out_dir():
+    return os.path.realpath(os.environ.get('COPS_WDIR') or os.getcwd())
+
+
+def _out_path(path):
+    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(_out_dir(), path))
+    if not (full == _out_dir() or full.startswith(_out_dir() + os.sep)):
+        die(f'檔案只能放在自己的工作資料夾（{_out_dir()}）')
+    return full
+
+
+def cmd_sql(a):
+    if a.tables:
+        for t in rows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' "
+                      "AND name NOT LIKE 'sqlite%' ORDER BY name"):
+            if t['name'] in SQL_SECRET_TABLES:
+                continue
+            if a.tables is True or a.tables.lower() in t['name'].lower():
+                cols = [c['name'] for c in rows(f"PRAGMA table_info('{t['name']}')") if c['name'] not in SQL_SECRET_COLS]
+                print(f"{t['name']}: {', '.join(cols)}")
+        return
+    q_ = a.query if a.query != '-' else sys.stdin.read()
+    if a.file:
+        q_ = open(_out_path(a.file), encoding='utf-8').read()
+    if not q_:
+        die('沒有查詢')
+    s = _sql_check(q_)
+    lim = max(1, min(a.limit, 5000))
+    if not s.lower().startswith('pragma'):
+        s = f'SELECT * FROM (\n{s}\n) LIMIT {lim + 1}'
+    res = rows(s)
+    more = len(res) > lim
+    res = [{k: ('（不給看）' if k.lower() in SQL_SECRET_COLS else v) for k, v in r.items()} for r in res[:lim]]
+    if a.csv:
+        import csv
+        out = _out_path(a.csv)
+        with open(out, 'w', encoding='utf-8-sig', newline='') as f:   # 有 BOM，Excel 開中文才不會亂碼
+            w = csv.DictWriter(f, fieldnames=list(res[0].keys()) if res else ['（沒有資料）'])
+            w.writeheader()
+            w.writerows(res)
+        print(f'已存 {out}（{len(res)} 筆{"，還有更多沒抓，調大 --limit" if more else ""}）')
+        return
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+    else:
+        if not res:
+            print('（沒有資料）')
+        else:
+            cols = list(res[0].keys())
+            print('\t'.join(cols))
+            for r in res:
+                print('\t'.join('' if r[c] is None else (str(r[c]) if a.full else clip(str(r[c]), a.width)).replace('\n', '⏎').replace('\t', ' ')
+                                for c in cols))
+    print(f'— {len(res)} 筆' + ('（還有更多，加 --limit 或縮小條件）' if more else ''))
+
+
+def cmd_send_file(a):
+    """把工作資料夾裡的檔案用阿財私訊傳給正在講話的顧問（只傳給自己，不對外）。"""
+    w = who()
+    if not w['chat']:
+        die('不知道要傳給誰（這支只能從 TG 顧問助理裡用）')
+    path = _out_path(a.path)
+    if not os.path.isfile(path):
+        die(f'找不到檔案 {path}')
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in OUT_EXT:
+        die(f'只能傳 {"、".join(sorted(OUT_EXT))}')
+    data = open(path, 'rb').read()
+    if len(data) > 45 * 1024 * 1024:
+        die('檔案太大（超過 45MB）')
+    if ext in ('.html', '.htm'):
+        t = data.decode('utf-8', 'replace')
+        if 'name="viewport"' not in t and "name='viewport'" not in t:   # 手機打開才不會縮成一小格
+            meta = '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            t = re.sub(r'(<head[^>]*>)', r'\1' + meta, t, count=1, flags=re.I) if re.search(r'<head[^>]*>', t, re.I) else meta + t
+            data = t.encode('utf-8')
+    if ext == '.csv' and not data.startswith(b'\xef\xbb\xbf'):
+        data = b'\xef\xbb\xbf' + data
+    tok = _TG.get('TG_BOT_TOKEN')
+    if not tok:
+        die('找不到系統 bot 設定')
+    b = '----acai' + secrets.token_hex(8)
+    fn = os.path.basename(path)
+    parts = []
+    for k, v in (('chat_id', w['chat']), ('caption', (a.caption or '')[:1000])):
+        if v:
+            parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="document"; filename="{fn}"; '
+                 f"filename*=UTF-8''{urllib.parse.quote(fn)}\r\nContent-Type: application/octet-stream\r\n\r\n".encode() + data + b'\r\n')
+    parts.append(f'--{b}--\r\n'.encode())
+    req = urllib.request.Request(f'https://api.telegram.org/bot{tok}/sendDocument', data=b''.join(parts),
+                                 headers={'Content-Type': f'multipart/form-data; boundary={b}'})
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=120))
+    except urllib.error.HTTPError as e:
+        r = {'ok': False, 'description': e.read().decode()[:300]}
+    if not r.get('ok'):
+        die(f'傳檔失敗：{r.get("description")}')
+    print(f'✅ 已傳給 {w["name"] or "顧問"}：{fn}（{len(data) // 1024 + 1} KB）')
+
+
 def cmd_job_status(a):
     j = rows("SELECT slug,title,status FROM jobs WHERE slug=? OR title LIKE ? ORDER BY (status='open') DESC LIMIT 6", [a.job, f'%{a.job}%'])
     if len(j) != 1:
@@ -1855,6 +1987,13 @@ def main():
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
     p = sp.add_parser('funnel', help='某公司／職缺：社群點擊→應徵→阿財面談人數'); p.add_argument('key', help='公司名或職缺關鍵字'); p.add_argument('--only', help='只看標題含這個字的職缺（例：日本）'); p.add_argument('--since', help='起始日 YYYY-MM-DD'); p.set_defaults(fn=cmd_funnel)
+    p = sp.add_parser('sql', help='通用唯讀查詢（只能 SELECT／WITH；--tables 看有哪些表與欄位）'); p.add_argument('query', nargs='?', help='SQL；給 - 從標準輸入讀')
+    p.add_argument('--file', help='從工作資料夾的檔案讀 SQL'); p.add_argument('--tables', nargs='?', const=True, help='列出資料表與欄位（可給關鍵字篩）')
+    p.add_argument('--limit', type=int, default=200); p.add_argument('--csv', help='存成 CSV 到工作資料夾（完整內容）')
+    p.add_argument('--json', action='store_true'); p.add_argument('--full', action='store_true', help='長文字不截斷'); p.add_argument('--width', type=int, default=200)
+    p.set_defaults(fn=cmd_sql)
+    p = sp.add_parser('send-file', help='把工作資料夾裡的檔案（HTML／CSV／PDF…）私訊傳給正在講話的顧問'); p.add_argument('path'); p.add_argument('--caption')
+    p.set_defaults(fn=cmd_send_file)
     p = sp.add_parser('today', help='今天/明天的電話（只列自己負責＋還沒指派的）'); p.add_argument('--days', type=int, default=2); p.add_argument('--all', action='store_true'); p.set_defaults(fn=cmd_today)
     p = sp.add_parser('set-owner', help='指派人選的負責顧問'); p.add_argument('who'); p.add_argument('--to', required=True, help='Jacky、Phoebe…；none＝取消指派'); p.set_defaults(fn=cmd_set_owner)
     p = sp.add_parser('call-mail', help='約電話信（預覽＋確認卡）'); p.add_argument('who'); p.add_argument('--note')
