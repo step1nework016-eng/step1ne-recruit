@@ -1683,6 +1683,81 @@ def _out_path(path):
     return full
 
 
+
+# ── 2026-11-03 Jacky：阿財要能做任何系統資料操作——改資料一律出確認卡（Jacky／Phoebe／提出的顧問本人按了才寫進去）──
+DBW_BLOCK_TABLES = SQL_SECRET_TABLES | {'consultant_ops_actions', 'consultant_tg', 'files', 'file_chunks', 'mail_outbox', 'site_settings'}
+DBW_MAX_ROWS = 50
+
+
+def _dbw_parse(sql):
+    s = re.sub(r'--[^\n]*', ' ', sql).strip().rstrip(';').strip()
+    if ';' in s:
+        die('一次只能一句')
+    low = s.lower()
+    m = re.match(r'^update\s+["`]?(\w+)["`]?\s+set\s+(.+?)\s+where\s+(.+)$', s, re.I | re.S)
+    if m:
+        kind, table, sets, where = 'update', m.group(1), m.group(2), m.group(3)
+    else:
+        m = re.match(r'^insert\s+into\s+["`]?(\w+)["`]?\s*\(', s, re.I)
+        if not m:
+            die('只能 UPDATE … SET … WHERE …（一定要有 WHERE）或 INSERT INTO 表(欄位) VALUES(…)。不能刪資料、不能改表結構')
+        kind, table, sets, where = 'insert', m.group(1), '', ''
+    if re.search(r'\b(delete|drop|alter|create|attach|detach|pragma|vacuum|replace)\b', low):
+        die('不能刪資料、不能改表結構')
+    if table.lower() in DBW_BLOCK_TABLES:
+        die(f'「{table}」這張表不能用這個方式改（系統金鑰、寄件匣、確認卡、檔案本體）')
+    if set(re.findall(r'\w+', low)) & {c.lower() for c in SQL_SECRET_COLS}:
+        die('不能改系統金鑰／登入資料欄位')
+    return s, kind, table, sets, where
+
+
+def cmd_db_write(a):
+    """改系統資料（UPDATE／INSERT）：先算會動到幾筆、貼確認卡，真人按了才寫。"""
+    w = who()
+    sql, kind, table, sets, where = _dbw_parse(a.sql)
+    n = 1
+    preview = ''
+    if kind == 'update':
+        n = rows(f'SELECT COUNT(*) n FROM {table} WHERE {where}')[0]['n']
+        if n == 0:
+            die('WHERE 條件一筆都對不到，沒有東西可以改')
+        if n > DBW_MAX_ROWS:
+            die(f'會改到 {n} 筆，超過 {DBW_MAX_ROWS} 筆上限；條件縮小或分批')
+        cols = [c.strip().split('=')[0].strip().strip('"`') for c in re.split(r',(?![^()]*\))', sets)]
+        keycol = 'name' if 'name' in {x['name'] for x in rows(f"PRAGMA table_info('{table}')")} else 'rowid'
+        cur = rows(f'SELECT {keycol} AS k, {", ".join(cols)} FROM {table} WHERE {where} LIMIT 8')
+        preview = '\n'.join('・' + str(r['k']) + '：' + '，'.join(f'{c}={str(r.get(c))[:40]}' for c in cols) for r in cur)
+    card = (f'🛠 改系統資料｜{a.why}\n'
+            f'表：{table}｜{"會改到 " + str(n) + " 筆" if kind == "update" else "新增 1 筆"}\n'
+            + (f'目前的值：\n{preview}\n' if preview else '')
+            + f'\n要執行的：\n{sql[:1500]}\n\n按「確認執行」才會寫進系統（{w["name"] or "顧問"} 提出）。')
+    aid = create_action('db_write', {'id': '', 'name': a.why[:40]}, {'sql': sql, 'kind': kind, 'table': table, 'where': where, 'expect': n, 'done_label': a.why[:60]},
+                        '', '改系統資料', card, card, [('✅ 確認執行', 'cop_ok'), ('✖ 不要', 'cop_no')], w=w)
+    print(f'✅ 確認卡貼好了（{aid}）：{a.why}。{"會改到 " + str(n) + " 筆，" if kind == "update" else ""}按「確認執行」才會寫進系統。')
+
+
+def cmd_publish_page(a):
+    """把工作資料夾的 HTML 做成一個網址給人看（客戶、Jim 這類）：出確認卡，真人按了才公開。網址帶亂數、不讓 Google 收錄。"""
+    import base64
+    w = who()
+    path = _out_path(a.path)
+    if not os.path.isfile(path) or not path.lower().endswith(('.html', '.htm')):
+        die('只能公開工作資料夾裡的 .html 檔')
+    data = open(path, 'rb').read()
+    if len(data) > 700 * 1024:
+        die('HTML 太大（超過 700KB），圖片請用連結，不要整張塞進檔案')
+    t = data.decode('utf-8', 'replace')
+    if 'name="viewport"' not in t and "name='viewport'" not in t:
+        die('這份 HTML 沒有手機版設定（viewport），先補好手機版再公開')
+    slug = re.sub(r'[^a-z0-9-]', '', (a.slug or '').lower())[:40]
+    card = (f'🌐 公開網頁｜{a.title}\n檔案：{os.path.basename(path)}（{len(data)//1024} KB）\n'
+            f'按「確認公開」後會產生一個網址（帶亂數、Google 搜不到），拿到網址的人都看得到。\n'
+            f'⚠️ 裡面有人選全名、電話、內部備註的，不要公開。')
+    aid = create_action('publish_page', {'id': '', 'name': a.title[:40]},
+                        {'html_b64': base64.b64encode(data).decode(), 'title': a.title[:80], 'slug': slug, 'replace': a.replace or '', 'done_label': f'公開網頁：{a.title[:40]}'},
+                        '', '公開網頁', card, card, [('✅ 確認公開', 'cop_ok'), ('✖ 不要', 'cop_no')], w=w)
+    print(f'✅ 確認卡貼好了（{aid}），按「確認公開」才會產生網址；網址會在 TG 回覆裡。')
+
 def cmd_sql(a):
     if a.tables:
         for t in rows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_cf%' ESCAPE '\\' "
@@ -2065,6 +2140,9 @@ def main():
     p.add_argument('--resume', help='履歷檔路徑'); p.add_argument('--consent', action='store_true', help='顧問確認本人同意建檔'); p.set_defaults(fn=cmd_new_card)
     p = sp.add_parser('job', help='查職缺與公司近期動態'); p.add_argument('key'); p.set_defaults(fn=cmd_job)
     p = sp.add_parser('funnel', help='某公司／職缺：社群點擊→應徵→阿財面談人數'); p.add_argument('key', help='公司名或職缺關鍵字'); p.add_argument('--only', help='只看標題含這個字的職缺（例：日本）'); p.add_argument('--since', help='起始日 YYYY-MM-DD'); p.set_defaults(fn=cmd_funnel)
+    p = sp.add_parser('db-write', help='改系統資料（UPDATE…WHERE／INSERT）：出確認卡，按了才寫'); p.add_argument('sql'); p.add_argument('--why', required=True, help='白話說明要改什麼、為什麼'); p.set_defaults(fn=cmd_db_write)
+    p = sp.add_parser('publish-page', help='把工作資料夾的 HTML 公開成網址（確認卡）'); p.add_argument('path'); p.add_argument('--title', required=True)
+    p.add_argument('--slug', help='網址好記的英文字，可省'); p.add_argument('--replace', help='要更新的舊網址代號（同一個網址換新版）'); p.set_defaults(fn=cmd_publish_page)
     p = sp.add_parser('sql', help='通用唯讀查詢（只能 SELECT／WITH；--tables 看有哪些表與欄位）'); p.add_argument('query', nargs='?', help='SQL；給 - 從標準輸入讀')
     p.add_argument('--file', help='從工作資料夾的檔案讀 SQL'); p.add_argument('--tables', nargs='?', const=True, help='列出資料表與欄位（可給關鍵字篩）')
     p.add_argument('--limit', type=int, default=200); p.add_argument('--csv', help='存成 CSV 到工作資料夾（完整內容）')

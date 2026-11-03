@@ -5464,6 +5464,46 @@ async function handleConsultantOpsAction(env, cq) {
       await finish('done', {}, `✅ ${who} 按了：${p.done_label || '繼續下一批'}`);
       return;
     }
+    // 2026-11-03 Jacky：阿財要能改任何系統資料——consultant_ops.py db-write 先算好會動幾筆貼卡，這裡按了才寫；
+    //   再擋一次：只能一句 UPDATE…WHERE／INSERT，不能刪、不能改表結構、不能碰金鑰／寄件匣／確認卡／檔案本體；筆數跟卡片上不同就不寫
+    if (row.kind === 'db_write') {
+      const sql = String(p.sql || '').trim();
+      const low = sql.toLowerCase();
+      const BLOCK = ['mail_private_keys', 'tg_bot_sessions', 'acai_chat_sessions', 'consultant_ops_actions', 'consultant_tg', 'files', 'file_chunks', 'mail_outbox', 'site_settings'];
+      const bad = sql.includes(';') || !/^(update\s+["`]?\w+["`]?\s+set\s[\s\S]+\swhere\s|insert\s+into\s+["`]?\w+["`]?\s*\()/i.test(sql)
+        || /\b(delete|drop|alter|create|attach|detach|pragma|vacuum|replace)\b/i.test(low)
+        || BLOCK.includes(String(p.table || '').toLowerCase()) || /\b(chat_token|portal_token|preview_token|invite_token|access_token|refresh_token|account_password_enc|account_password_iv|key_hash|session_id)\b/i.test(low);
+      if (bad) { await ans('不允許的寫法'); await finish('failed', { error: 'sql not allowed' }, '❌ 不允許的寫法'); return; }
+      if (p.kind === 'update') {
+        const c = await env.DB.prepare(`SELECT COUNT(*) n FROM ${p.table} WHERE ${p.where}`).first();
+        if (!c || Number(c.n) !== Number(p.expect)) {
+          const why = `現在對到 ${c ? c.n : '?'} 筆，跟確認卡上的 ${p.expect} 筆不一樣`;
+          await ans(`⛔ 沒有改：${why}`); await finish('stale', { error: why }, `⛔ 沒有改：${why}`); return;
+        }
+      }
+      const r = await env.DB.prepare(sql).run();
+      const n = (r.meta && r.meta.changes) || 0;
+      await ans(`改好了（${n} 筆）`);
+      await finish('done', { changes: n }, `✅ ${who} 確認：${p.done_label || '已改'}（${n} 筆）`, `🛠 已寫進系統：${p.done_label || ''}（${n} 筆，${who} 按的）`);
+      return;
+    }
+    // 2026-11-03 Jacky：阿財做的 HTML（給 Jim／客戶看的報告）要能變成網址——按了才存進 R2，/p/<代號>/ 讀出來，不讓 Google 收錄
+    if (row.kind === 'publish_page') {
+      let token = String(p.replace || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+      if (token) {
+        const old = await env.FILES.head(`pages/${token}.html`);
+        if (!old) { await ans('找不到要更新的舊網址'); await finish('failed', { error: 'replace not found' }, '❌ 找不到要更新的舊網址'); return; }
+      } else {
+        const rnd = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+        token = (p.slug ? `${p.slug}-` : '') + rnd;
+      }
+      const bin = Uint8Array.from(atob(String(p.html_b64 || '')), (ch) => ch.charCodeAt(0));
+      await env.FILES.put(`pages/${token}.html`, bin, { httpMetadata: { contentType: 'text/html; charset=utf-8' }, customMetadata: { title: String(p.title || ''), by: who } });
+      const link = `https://step1ne-recruit-api.aiagentg888.workers.dev/p/${token}/`;
+      await ans('公開了');
+      await finish('done', { url: link, token }, `🌐 ${who} 確認公開：${p.title || ''}`, `🌐 網頁公開了：${link}\n（之後要換新版：publish-page 檔名 --title … --replace ${token}，網址不變）`);
+      return;
+    }
     await ans('不認得的動作'); await finish('failed', { error: 'unknown kind' }, '❌ 不認得的動作');
   } catch (e) {
     await ans('處理失敗，請到後台再試一次');
@@ -6417,6 +6457,14 @@ export default {
     //
     // 認證方式：Resend 的 webhook 只能設定網址、不能帶自訂 header，
     // 所以把密鑰放在路徑裡（走 HTTPS，等同 header 的保護強度）。
+    // 2026-11-03 阿財 publish-page 公開的網頁（確認卡按了才會存進來）
+    if (p.startsWith('/p/') && request.method === 'GET') {
+      const token = p.slice(3).replace(/\/+$/, '');
+      if (!/^[a-z0-9-]{6,60}$/.test(token)) return new Response('not found', { status: 404 });
+      const obj = await env.FILES.get(`pages/${token}.html`);
+      if (!obj) return new Response('not found', { status: 404 });
+      return new Response(obj.body, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'no-store' } });
+    }
     if (p.startsWith('/webhook/resend/') && request.method === 'POST') {
       const token = p.slice('/webhook/resend/'.length);
       if (!env.RESEND_WEBHOOK_TOKEN || token !== env.RESEND_WEBHOOK_TOKEN) {

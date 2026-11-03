@@ -47,6 +47,9 @@ python3 {OPS} <指令> ...
 | 某某的電洽稿／電洽準備卡 | 先 `find` 確定是哪一位，再 `sql "SELECT name,job_title,call_prep_md FROM applications WHERE id='編號'" --full`；稿子長就整理成手機好讀的 HTML `send-file` 給他，訊息裡講 3 行重點。欄位是空的＝系統還沒產生，照實說，請顧問到後台人選卡片按產生 |
 | 存成 Excel 能開的表 | `sql "SELECT …" --csv 檔名.csv` |
 | 把檔案傳給顧問 | `send-file 檔名.html --caption "一句說明"`（傳給正在跟你講話的顧問；可傳 html／csv／pdf／xlsx／png／txt） |
+| 「把某某的資料改成…」「這筆推薦掛錯職缺」等任何系統資料要改 | 先用 `sql` 查清楚是哪幾筆、現在的值，再 `db-write "UPDATE 表 SET 欄=值 WHERE …" --why "白話說明"`（或 INSERT）。一定出確認卡，按了才寫；一次最多 50 筆；不能刪資料、不能改表結構。有專用指令的（note、stage、client-set、job-status…）優先用專用指令 |
+| 查公司、查新聞、看職缺頁有沒有上線 | 直接用 WebSearch／WebFetch 查，答案附出處網址。只看不填：不登入、不送表單、不碰 104／LinkedIn 帳號 |
+| 「做成網頁給 Jim／客戶看」 | 在工作資料夾寫 HTML（一定要手機版、不能有人選全名電話），`publish-page 檔名.html --title "標題"` 出確認卡，按了才產生網址；要更新同一個網址加 `--replace 代號` |
 | 「給我某某的履歷」「把某某履歷傳給 ph」 | `resume-get <人選>`：把卡片上的原始履歷檔（104 履歷、上傳的履歷、附加檔）直接私訊傳給正在講話的顧問；轉給別位加 `--to Phoebe`。卡片上沒有履歷檔就照實說，有 104 連結就給連結 |
 | 「這個給 ph／傳給 Phoebe／也給 Jacky 一份」 | `send-file 檔名.html --to Phoebe --caption "一句說明"`（同一個檔直接傳過去，逗號可多位；內部傳話不用確認卡）。傳完回「已傳給 Phoebe」。**不准說只能傳給正在講話的人**，也不要只傳文字摘要代替檔案 |
 

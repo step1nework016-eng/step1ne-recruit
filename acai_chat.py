@@ -173,7 +173,9 @@ def run(p):
            # 2026-11-03 Jacky：阿財要能自己做統計／HTML 檔再傳給顧問——Write／Edit 只開放自己的工作資料夾（//＝絕對路徑）
            '--allowedTools', f'Bash({PY} {OPS}:*)', f'Bash(python3 {OPS}:*)', f'Read({wdir}/**)', f'Read(/{wdir}/**)',
            f'Write(/{wdir}/**)', f'Edit(/{wdir}/**)',
-           '--disallowedTools', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit',
+           # 2026-11-03 Jacky：阿財要能上網查公司／新聞、確認職缺頁有沒有上線（只讀，不填表、不登入）
+           'WebFetch', 'WebSearch',
+           '--disallowedTools', 'Task', 'NotebookEdit',
            '--append-system-prompt', sysprompt]
     new_sid = sid or str(uuid.uuid4())
     cmd += (['--resume', sid] if sid else ['--session-id', new_sid])
