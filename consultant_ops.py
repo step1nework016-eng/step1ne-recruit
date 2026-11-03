@@ -1317,6 +1317,49 @@ def cmd_mail_att(a):
     print('\n要交進人選卡片：form-upload <人選> <檔案路徑>（人事資料表）或 resume-upload <人選> <檔案路徑>（履歷）。')
 
 
+
+def cmd_resume_get(a):
+    """2026-11-03 Jacky：阿財要能把人選卡片上的原始履歷檔拿出來傳給顧問（預設傳給正在講話的人；--to Phoebe 轉給別位；--no-send 只下載）。"""
+    app = resolve(a.who)
+    r = rows('SELECT resume_file_id, resume_extra_files, resume_104_url FROM applications WHERE id=?', [app['id']])[0]
+    ids = []
+    if r.get('resume_file_id'):
+        ids.append((r['resume_file_id'], None))
+    try:
+        for x in json.loads(r.get('resume_extra_files') or '[]'):
+            if x.get('file_id'):
+                ids.append((x['file_id'], x.get('filename')))
+    except Exception:
+        pass
+    if not ids:
+        msg = f'{app["name"]} 的卡片上沒有履歷檔'
+        if r.get('resume_104_url'):
+            msg += f'；104 履歷連結（要登入 104 才看得到）：{r["resume_104_url"]}'
+        die(msg)
+    out = os.path.join(_out_dir(), '履歷', re.sub(r'[\\/:*?"<>|\s]', '_', app['name']))
+    os.makedirs(out, exist_ok=True)
+    got = []
+    for fid, fname in ids:
+        meta = rows('SELECT filename FROM files WHERE id=?', [fid])
+        name = re.sub(r'[\\/:*?"<>|]', '_', fname or (meta[0]['filename'] if meta and meta[0].get('filename') else f'{app["name"]}_履歷.pdf'))
+        path = os.path.join(out, name)
+        try:
+            open(path, 'wb').write(_file_bytes(fid))
+        except Exception as e:
+            print(f'❌ {name} 抓不到：{e}')
+            continue
+        got.append(path)
+        print(f'📎 {name} → {path}')
+    if not got:
+        die('履歷檔都抓不到')
+    if a.no_send:
+        return
+    for path in got:
+        if os.path.splitext(path)[1].lower() not in OUT_EXT:
+            print(f'（{os.path.basename(path)} 這種格式不能用阿財傳，已下載在上面的路徑）')
+            continue
+        cmd_send_file(argparse.Namespace(path=path, caption=a.caption or f'{app["name"]} 的履歷', to=a.to))
+
 def cmd_tell(a):
     """顧問之間傳話：用阿財 bot 私訊另一位顧問（2026-11-02 Jacky：顧問傳話一律走阿財私訊，不發群組）。"""
     w = who()
@@ -1606,7 +1649,7 @@ SQL_SECRET_TABLES = {'mail_private_keys', 'tg_bot_sessions', 'acai_chat_sessions
 SQL_WRITE = re.compile(r'\b(insert|update|delete|drop|alter|create|attach|detach|vacuum|reindex|analyze|begin|commit|rollback|'
                        r'savepoint|release|load_extension)\b|\breplace\s+into\b', re.I)
 SQL_PRAGMA_OK = re.compile(r'^pragma\s+(table_info|table_xinfo|index_list|foreign_key_list)\s*\(\s*[\'"]?(\w+)[\'"]?\s*\)$', re.I)
-OUT_EXT = {'.html', '.htm', '.csv', '.txt', '.pdf', '.xlsx', '.png', '.jpg', '.jpeg'}
+OUT_EXT = {'.html', '.htm', '.csv', '.txt', '.pdf', '.xlsx', '.png', '.jpg', '.jpeg', '.docx', '.doc'}
 
 
 def _sql_check(sql):
@@ -1985,6 +2028,8 @@ def main():
     p = sp.add_parser('inbox', help='看收件匣（可篩人選／公司／寄件人／關鍵字）'); p.add_argument('q', nargs='?'); p.add_argument('--days', type=int, default=7)
     p.add_argument('-n', type=int, default=15); p.set_defaults(fn=cmd_inbox)
     p = sp.add_parser('mail-read', help='看一封信全文'); p.add_argument('id'); p.set_defaults(fn=cmd_mail_read)
+    p = sp.add_parser('resume-get', help='把人選卡片上的原始履歷檔下載並私訊傳給顧問（--to Phoebe 轉給別位；--no-send 只下載）'); p.add_argument('who')
+    p.add_argument('--to'); p.add_argument('--caption'); p.add_argument('--no-send', action='store_true'); p.set_defaults(fn=cmd_resume_get)
     p = sp.add_parser('mail-att', help='下載並看信件附件'); p.add_argument('id'); p.add_argument('n', nargs='?', type=int, default=0); p.set_defaults(fn=cmd_mail_att)
     p = sp.add_parser('tell', help='用阿財私訊傳話給另一位顧問'); p.add_argument('to'); p.add_argument('--text'); p.set_defaults(fn=cmd_tell)
     p = sp.add_parser('recommend', help='推薦人選給客戶（確認卡）'); p.add_argument('who'); p.add_argument('--company', required=True); p.add_argument('--job'); p.add_argument('--note')

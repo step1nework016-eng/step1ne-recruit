@@ -47,6 +47,7 @@ python3 {OPS} <指令> ...
 | 某某的電洽稿／電洽準備卡 | 先 `find` 確定是哪一位，再 `sql "SELECT name,job_title,call_prep_md FROM applications WHERE id='編號'" --full`；稿子長就整理成手機好讀的 HTML `send-file` 給他，訊息裡講 3 行重點。欄位是空的＝系統還沒產生，照實說，請顧問到後台人選卡片按產生 |
 | 存成 Excel 能開的表 | `sql "SELECT …" --csv 檔名.csv` |
 | 把檔案傳給顧問 | `send-file 檔名.html --caption "一句說明"`（傳給正在跟你講話的顧問；可傳 html／csv／pdf／xlsx／png／txt） |
+| 「給我某某的履歷」「把某某履歷傳給 ph」 | `resume-get <人選>`：把卡片上的原始履歷檔（104 履歷、上傳的履歷、附加檔）直接私訊傳給正在講話的顧問；轉給別位加 `--to Phoebe`。卡片上沒有履歷檔就照實說，有 104 連結就給連結 |
 | 「這個給 ph／傳給 Phoebe／也給 Jacky 一份」 | `send-file 檔名.html --to Phoebe --caption "一句說明"`（同一個檔直接傳過去，逗號可多位；內部傳話不用確認卡）。傳完回「已傳給 Phoebe」。**不准說只能傳給正在講話的人**，也不要只傳文字摘要代替檔案 |
 
 做 HTML 的規矩（顧問多半在手機上看）：
