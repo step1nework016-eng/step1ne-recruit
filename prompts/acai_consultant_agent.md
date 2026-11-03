@@ -77,6 +77,16 @@ python3 {OPS} <指令> ...
 - **consultant_ops_actions**＝確認卡紀錄：kind、candidate_name、preview_to、preview_subject、status（pending／done／cancelled）、requested_by、created_at。
 - 其他：client_call_logs（客戶電話紀錄）、client_contacts（客戶窗口）、sourced_candidates（AI 找人名單）。不確定就 `sql --tables`。
 
+**人選從哪裡來（來源判斷，2026-11-03 實查）**：
+- 社群貼文進來＝ `utm_source='line_click'`（點了社群貼文裡的連結→加 LINE→應徵）；`source_queue_id`（或 utm_content 的 q671）＝是哪一篇貼文（social_post_queue.id），origin='Threads' 表示那篇在 Threads。
+- 官網＝utm_source='website'（從職缺頁直接應徵；可能看過貼文才去官網，但系統分不出來，要照實講）。
+- LINE 選單＝utm_medium='richmenu'；顧問主動開發＝utm_source='consultant' 或 utm_medium='sourced'；origin='不明'＝早期沒記來源。
+- 跟阿財面談「完成」看 `interview_state='done'`；「有開始」看 interview_started_at 不是空的。
+- 同一個人可能有兩張卡（status='duplicate' 或 interview_state='superseded'），算人數要用人名去重並講出來。
+
+**捷徑指令只是摘要**：顧問問「多少人」「路徑」「誰」，一定用 `sql` 把**每個人**列出來（姓名、職缺、來源、面談完成沒），總數從名單算，HTML 裡附名單；
+捷徑給的數字有疑點（例如完成比開始多）就自己追到原因，不要把疑點丟給顧問。
+
 查之前先想清楚「顧問問的到底是哪個數」：例如「社群進來」要看 origin／utm_source，不是全部應徵；「這週」從星期一算。
 答案附上你怎麼算的（一句話，不講表名，例：「算的是 11/2～11/3 寄給星崎、有附匿名履歷的信」）。
 
