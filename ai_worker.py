@@ -1806,9 +1806,13 @@ def _run_expertise_build(payload):
     if (payload or {}).get('ladder'):
         try:
             import build_ladder as BL
-            BL.build(rows[0])
+            ok = BL.build(rows[0])
         except Exception as e:
-            log(f'  ⚠️ {slug} 階梯題重出失敗（舊的階梯題還在）：{str(e)[:150]}')
+            ok = None
+            log(f'  ⚠️ {slug} 階梯題重出失敗：{str(e)[:150]}')
+        if not ok:
+            # 階梯題是阿財優先用的題目，沒換到一定要講，不然以為新條件已經在問了
+            rs._tg(f'⚠️ 「{rows[0].get("title") or slug}」的分級階梯題沒有重出成功，阿財還在用舊題目。')
     _tg_expertise_done(slug, rows[0].get('title'), n)
     # 2026-09-24 加：題庫重建完，「阿財的理解」卡片裡「阿財面談會問這些」那段
     # 就跟著過期了——不等下一輪排程（最長 2 小時），這裡順手重算。
