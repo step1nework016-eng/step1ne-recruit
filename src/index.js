@@ -5299,6 +5299,28 @@ async function copsBookCall(env, row, callAt, remindAt, note, by) {
 }
 // 阿財使用說明（原文在 prompts/acai_guide.txt，改那份要同步改這裡）
 const ACAI_GUIDE = "📖 阿財使用說明\n\n直接用講的就好，像跟同事講話。不確定的地方阿財會先問你。\n\n【查】\n・「馬若喬現在什麼狀況？」\n・「京朋最近怎樣？」「CMoney 還有哪些職缺在找？」\n・「有誰回信？」「吳鈺芳那封寫什麼？」\n・「今天有哪些電話？」\n・「LINE 上最近有誰在問？」\n\n【記（直接寫進卡片）】\n・「馬若喬今天打過了，沒接」\n・「京朋李小姐說主管看完再回」（客戶卡片下一步會自動重排）\n・直接丟檔案：人事資料表、履歷、電洽逐字稿 → 阿財問你是誰的，再放進卡片\n・「幫我建一張卡：王小明 0912-345-678，104 來的」（同一個人系統裡已經有，就記在原本那張）\n\n【做（會出確認卡，你按 ✅ 才真的做）】\n・寄信：約電話、確認時間、婉拒、回信、寄匿名履歷給客戶\n・推薦人選給客戶、做推薦履歷\n・改階段：一面、二面、錄取、報到；標不推進；人選放棄\n・寄／催人事資料表、用 LINE 叫人選來面談\n・收款確認、開關職缺\n\n【其他】\n・傳話：「幫我跟 Phoebe 說…」「回 Jacky：…」\n・每天 08:00～21:00 整點，有新信才會私訊你（Phoebe 收 official@；Jacky 兩個信箱）\n\n【社群、連結】\n・「幫我排一篇 BIM 的職缺文」「明天排一篇話題文」→ 確認卡，按了才排；草稿照原本流程審過才發\n・「全民獵才的 LINE 連結？」「我的 LINE 連結？」\n\n【下方按鈕】\n📬 有誰回信／📅 今天的電話／📌 今天要追誰／💚 LINE 上誰在問／📣 排社群文／🔗 LINE 連結\n🔄 重新開始：換話題、或阿財接錯話時按\n📖 使用說明：再看一次這份";
+// 職缺更新後的第二張卡：按了才排社群發文；草稿照原本流程產生、審過才發。
+async function copsPostJdSocialCard(env, row, slug, title, say) {
+  const acc = await env.DB.prepare(`SELECT id, label FROM social_accounts WHERE lower(consultant_name)=lower(?) AND platform='threads' AND is_active=1 LIMIT 1`).bind(row.requested_by || '').first();
+  if (!acc) { await say(`（${row.requested_by || '這位顧問'}沒有啟用中的 Threads 帳號，社群發文這次沒有產卡）`); return; }
+  const now = nowTaipei();
+  const postDate = now.slice(0, 10);
+  const old = await env.DB.prepare(`SELECT COUNT(*) n FROM social_post_queue WHERE job_slug=? AND status IN ('drafted','needs_material','ready_manual')`).bind(slug).first();
+  const card = `📣 第二張｜要不要排社群發文？\n職缺：${title}\n帳號：${acc.label}\n日期：${postDate}（當天排程跑到就產草稿）\n\n按了才排；草稿會用剛更新的內容產，照原本流程審過才發。已經發出去的舊文不會變。`
+    + (old && old.n ? `\n⚠️ 這個職缺還有 ${old.n} 篇舊內容的草稿沒發，那些不會自動更新，要發前請重產。` : '');
+  const aid = 'cop' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  const expires = new Date(Date.now() + 32 * 3600e3).toISOString().replace('T', ' ').slice(0, 19);
+  const params = { path: '/admin/social/schedule', body: { account_id: acc.id, job_slug: slug, post_date: postDate, post_time: '' }, done_label: `已排 ${acc.label} 的職缺文：${title}` };
+  await env.DB.prepare(`INSERT INTO consultant_ops_actions (id,kind,application_id,candidate_name,params_json,preview_to,preview_subject,preview_text,
+      requested_by,requested_tg_id,requested_tg_username,chat_id,thread_id,status,created_at,expires_at) VALUES (?,'bo_call','',?,?,'',?,?,?,?,?,?,?,'pending',?,?)`)
+    .bind(aid, acc.label, JSON.stringify(params), '排社群發文', card, row.requested_by, row.requested_tg_id, row.requested_tg_username, row.chat_id, row.thread_id, now, expires).run();
+  const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: row.chat_id, ...(row.thread_id ? { message_thread_id: Number(row.thread_id) } : {}), text: card, disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: [[{ text: '✅ 確認排程', callback_data: `cop_ok:${aid}` }, { text: '✖ 不要', callback_data: `cop_no:${aid}` }]] } }) }).then((x) => x.json()).catch(() => ({ ok: false }));
+  if (r.ok) await env.DB.prepare(`UPDATE consultant_ops_actions SET tg_message_id=? WHERE id=?`).bind(String(r.result.message_id), aid).run();
+  else await env.DB.prepare(`UPDATE consultant_ops_actions SET status='failed', result_json=? WHERE id=?`).bind(JSON.stringify({ error: 'card_post_failed', tg: r.description }), aid).run();
+  if (!r.ok) throw new Error(r.description || '貼卡失敗');
+}
 async function handleConsultantOpsAction(env, cq) {
   const [action, id] = String(cq.data).split(':');
   const tgApi = (m, b) => fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/${m}`, {
@@ -5343,6 +5365,8 @@ async function handleConsultantOpsAction(env, cq) {
   }
   if (action !== 'cop_ok') { await ans('未知的操作'); return; }
 
+  // 2026-11-04 改職缺 JD 只有 Jacky、Phoebe 能核准（提出的顧問本人不行）
+  if (['jd_update', 'jd_restore'].includes(row.kind) && !BD_APPROVERS.includes(uname)) { await ans('⛔ 更新職缺內容只有 Jacky、Phoebe 可以按'); return; }
   // 先搶成 sending：TG 重送同一個按鈕、或兩個人同時按，只會執行一次
   const claim = await env.DB.prepare(`UPDATE consultant_ops_actions SET status='sending', decided_by=?, decided_tg_id=?, decided_at=? WHERE id=? AND status='pending'`)
     .bind(who, presserId, now, id).run();
@@ -5406,6 +5430,30 @@ async function handleConsultantOpsAction(env, cq) {
     // 2026-10-19 收費進程（backoffice billing_v2.js 建的卡）：按了才轉呼叫後台。只放行這兩支：
     //   terms-confirm＝合約讀取結果確認生效；mail＝逾期提醒卡「擬催款信」（只是再貼一張確認卡，不會寄）
     // 2026-11-02 Jacky：阿財批量排社群文——一張確認卡裡多筆，只放行 /admin/social/schedule
+    // 2026-11-04 Jacky：阿財顧問助理更新職缺 JD。存的就是卡上那份（後台再驗一次客戶名、就服法、內容有沒有被別人改過）；
+    //   存好再貼第二張社群卡，按了才排，不自動發。
+    if (row.kind === 'jd_update' || row.kind === 'jd_restore') {
+      const slug = String(p.slug || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(slug)) { await ans('職缺代號不對'); await finish('failed', { error: 'bad slug' }, '❌ 職缺代號不對'); return; }
+      const apiPath = `/admin/jobs/${encodeURIComponent(slug)}/${row.kind === 'jd_update' ? 'jd-apply' : 'jd-restore'}`;
+      const d = await copsBo(env, apiPath, { ...(p.payload || {}), base_hash: p.base_hash, by: who, action_id: id });
+      if (d.ok === false || d.error) {
+        await ans(`沒存：${String(d.error || '後台出錯').slice(0, 150)}`);
+        await finish(d.stale ? 'stale' : 'failed', d, `❌ 沒存：${String(d.error || '').slice(0, 40)}`, `⛔ 職缺沒有更新：${d.error || '後台出錯'}`);
+        return;
+      }
+      await ans(row.kind === 'jd_update' ? '存好了' : '還原好了');
+      const pageLine = d.page_sync ? `職缺頁約 10～20 分鐘內更新，好了會通知。` : (d.page_note || '官網頁沒有變動。');
+      await finish('done', d, `✅ ${who} 確認，已${row.kind === 'jd_update' ? '更新' : '還原'}`,
+        `✅ ${d.job_title || slug}：已${row.kind === 'jd_update' ? '更新' : '還原'}（${who} 按的）\n改了：${(d.changed || []).join('、') || '—'}\n${pageLine}\n阿財下一場面談就用新內容；正在面談的人不受影響。`
+        + (d.questions_job ? '\n面談題目正在依新內容重出，好了會通知。' : '')
+        + (d.revision_id ? `\n修改紀錄：${d.revision_id.slice(0, 8)}（要改回去跟我說「還原這次」）` : ''));
+      if (row.kind === 'jd_update' && ['open', 'social_only'].includes(String(d.status || 'open'))) {
+        try { await copsPostJdSocialCard(env, row, slug, d.job_title || slug, say); }
+        catch (e) { await say(`⚠️ 社群確認卡沒貼出來：${String(e && e.message || e).slice(0, 120)}（職缺本身已更新）`); }
+      }
+      return;
+    }
     if (row.kind === 'bo_call' && Array.isArray(p.batch)) {
       const items = p.batch.slice(0, 40);
       if (!items.every((x) => x && x.path === '/admin/social/schedule')) { await ans('不允許的動作'); await finish('failed', { error: 'batch path not allowed' }, '❌ 不允許的動作'); return; }

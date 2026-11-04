@@ -1900,6 +1900,141 @@ def cmd_job_status(a):
                 f'職缺「{j["title"]}」已{"開啟" if st == "open" else "關閉"}', '開關職缺')
 
 
+# 2026-11-04 Jacky：顧問助理更新職缺 JD。卡片上看到什麼就存什麼，不經 AI 改寫；守門都在後台 jd-apply，這裡只組卡片。
+JD_SCORING = ('scoring_notes', 'must_check_items', 'hard_filters')
+JD_FACTS = ('main_duties', 'required_conditions', 'nice_to_have_skills', 'must_skills', 'education_level', 'language_requirement',
+            'preferred_background', 'personality_traits', 'client_screen_conditions', 'years_min')
+CARD_LIMIT = 3700
+
+
+def _one_job(key):
+    j = rows("SELECT slug,title,status FROM jobs WHERE slug=? OR title LIKE ? ORDER BY (status='open') DESC, (slug=?) DESC LIMIT 8", [key, f'%{key}%', key])
+    exact = [x for x in j if x['slug'] == key]
+    if exact:
+        return exact[0]
+    if len(j) != 1:
+        if not j:
+            die('找不到這個職缺')
+        print('對到好幾個，請顧問選（用代號再跑一次）：'); [print(f'  ・{x["slug"]}｜{x["title"]}｜{x["status"]}') for x in j]; sys.exit(2)
+    return j[0]
+
+
+def _post_long_card(kind, app, params, subject, text, buttons, w):
+    """內容超過 TG 一則上限就拆成好幾則，按鈕在最後一則；全文都會看得到，不會被截掉。"""
+    parts, cur = [], ''
+    for line in text.split('\n'):
+        while len(line) > CARD_LIMIT:
+            if cur:
+                parts.append(cur); cur = ''
+            parts.append(line[:CARD_LIMIT]); line = line[CARD_LIMIT:]
+        if len(cur) + len(line) + 1 > CARD_LIMIT:
+            parts.append(cur); cur = ''
+        cur = f'{cur}\n{line}' if cur else line
+    parts.append(cur)
+    for i, p in enumerate(parts[:-1]):
+        body = {'chat_id': w['chat'], 'text': f'（第 {i + 1}／{len(parts)} 則，確認按鈕在最後一則）\n{p}', 'disable_web_page_preview': True}
+        if w['thread']:
+            body['message_thread_id'] = int(w['thread'])
+        r = tg('sendMessage', body)
+        if not r.get('ok'):
+            die(f'確認卡貼不出去：{r.get("description")}')
+    return create_action(kind, app, params, '', subject, text, parts[-1], buttons, w=w)
+
+
+def cmd_jd_show(a):
+    j = _one_job(a.job)
+    r = rows("""SELECT slug,title,status,client_named,main_duties,required_conditions,nice_to_have_skills,must_skills,years_min,education_level,
+                language_requirement,preferred_background,personality_traits,client_screen_conditions,scoring_notes,must_check_items,hard_filters,jd_spec_json,jd_regen_pending,jd_regen_last_error
+                FROM jobs WHERE slug=?""", [j['slug']])[0]
+    spec = {}
+    try:
+        spec = json.loads(r.pop('jd_spec_json') or '{}')
+    except Exception:
+        pass
+    print(json.dumps({'資料': r, '頁面': {k: spec.get(k) for k in ('subtitle', 'intro', 'description', 'card_desc', 'duties', 'must', 'plus', 'why', 'benefits', 'faq')}}, ensure_ascii=False, indent=1))
+
+
+def cmd_jd_update(a):
+    w = who()
+    need_where(w)
+    j = _one_job(a.job)
+    raw = open(a.file, encoding='utf-8').read() if a.file else a.json
+    if not raw:
+        die('要給新內容（--json 或 --file）')
+    try:
+        src = json.loads(raw)
+    except Exception as e:
+        die(f'內容格式不對：{e}')
+    if not isinstance(src, dict) or not src:
+        die('內容格式不對')
+    payload = {'page': {}, 'facts': {}, 'scoring': {}, 'note': a.note or ''}
+    for k, v in src.items():
+        payload['scoring' if k in JD_SCORING else 'facts' if k in JD_FACTS else 'page'][k] = v
+    if a.rebuild_questions:
+        payload['rebuild_questions'] = True
+    res = bo(f'/admin/jobs/{j["slug"]}/jd-apply', {**payload, 'dry_run': True})
+    if not res.get('ok'):
+        die(res.get('error') or '後台出錯')
+    lines = [f'📝 確認更新職缺｜{res.get("job_title") or j["title"]}（{res.get("status")}）']
+    if a.note:
+        lines.append(f'來源：{a.note}')
+    lines.append('按確認後，存的就是下面的新內容，不會再經 AI 改寫。')
+    for c in res.get('changes') or []:
+        lines += ['', f'【{c["label"]}】', '舊：', c['old'], '新：', c['new']]
+    for x in res.get('warnings') or []:
+        lines += ['', f'⚠️ {x}']
+    lines += ['', '職缺頁：' + ('確認後約 10～20 分鐘更新' if res.get('page_sync') else (res.get('page_note') or '這次沒有動到頁面'))]
+    lines.append('面談題目：' + ('會依新內容重出（AI 出題，約 3 分鐘）' if a.rebuild_questions else '不重出，沿用現有題目'))
+    if res.get('untouched'):
+        lines += ['', '這次沒改到的頁面段落，請看有沒有跟新條件衝突（有就先別按，跟助理說）：']
+        for k, v in res['untouched'].items():
+            lines += [f'〈{k}〉', v]
+    lines += ['', '不動已配對的人選；正在面談的人照開始時的內容談完。舊內容有留，可以還原。', '只有 Jacky、Phoebe 能按確認。']
+    aid = _post_long_card('jd_update', {'id': '', 'name': j['title']},
+                          {'slug': j['slug'], 'payload': payload, 'base_hash': res['base_hash']}, '更新職缺 JD', '\n'.join(lines),
+                          [('✅ 確認更新', 'cop_ok'), ('✖ 不要', 'cop_no')], w)
+    print(f'✅ 確認卡貼好了（{aid}）：{j["title"]}，改 {len(res.get("changes") or [])} 段。按「確認更新」才會存。')
+    for x in res.get('warnings') or []:
+        print(f'⚠️ {x}')
+    print('沒改到的段落已列在卡片上，請你也比對一次，有衝突就主動跟顧問講。')
+
+
+def cmd_jd_history(a):
+    j = _one_job(a.job)
+    res = bo(f'/admin/jobs/{j["slug"]}/jd-revisions')
+    if not res.get('revisions'):
+        print(f'{j["title"]}：還沒有透過這裡改過的紀錄')
+        return
+    print(f'{j["title"]} 的修改紀錄（新到舊）：')
+    for r in res['revisions']:
+        labels = '、'.join(c.get('label', '') for c in json.loads(r.get('changed_json') or '[]'))
+        print(f'  ・{r["id"]}｜{r["created_at"]}｜{r["by_name"]}｜{"還原" if r["kind"] == "restore" else "更新"}｜{labels}')
+
+
+def cmd_jd_restore(a):
+    w = who()
+    need_where(w)
+    j = _one_job(a.job)
+    rev = a.rev
+    if not rev:
+        rs = bo(f'/admin/jobs/{j["slug"]}/jd-revisions').get('revisions') or []
+        rs = [r for r in rs if r['kind'] == 'update']
+        if not rs:
+            die('這個職缺沒有可以還原的修改紀錄')
+        rev = rs[0]['id']
+    res = bo(f'/admin/jobs/{j["slug"]}/jd-restore', {'revision_id': rev, 'dry_run': True})
+    if not res.get('ok'):
+        die(res.get('error') or '後台出錯')
+    lines = [f'↩️ 確認還原職缺｜{j["title"]}', f'改回 {res.get("created_at")}（{res.get("by_name")}）修改之前的內容。']
+    for c in res.get('changes') or []:
+        lines += ['', f'【{c["label"]}】', '現在：', c['old'], '改回：', c['new']]
+    lines += ['', '職缺頁：' + ('確認後約 10～20 分鐘更新' if res.get('page_sync') else '這次沒有動到頁面'), '只有 Jacky、Phoebe 能按確認。']
+    aid = _post_long_card('jd_restore', {'id': '', 'name': j['title']},
+                          {'slug': j['slug'], 'payload': {'revision_id': rev}, 'base_hash': res['base_hash']}, '還原職缺 JD', '\n'.join(lines),
+                          [('✅ 確認還原', 'cop_ok'), ('✖ 不要', 'cop_no')], w)
+    print(f'✅ 確認卡貼好了（{aid}），按「確認還原」才會改回去。')
+
+
 def cmd_line_who(a):
     """LINE 官方帳號上還沒綁定的人：從他們打過的字找電話／Email，對得上就說是誰。只查不改。"""
     rs = rows("""SELECT b.line_user_id, b.display_name, b.state, b.created_at,
@@ -2139,6 +2274,10 @@ def main():
     p = sp.add_parser('billing', help='待收款項'); p.set_defaults(fn=cmd_billing)
     p = sp.add_parser('billing-confirm', help='收款確認（確認卡）'); p.add_argument('id'); p.add_argument('--action', choices=['received', 'not-received', 'paid'], default='received')
     p.set_defaults(fn=cmd_billing_confirm)
+    p = sp.add_parser('jd-show', help='看職缺目前的 JD 與評分內容'); p.add_argument('job'); p.set_defaults(fn=cmd_jd_show)
+    p = sp.add_parser('jd-update', help='更新職缺 JD（確認卡）'); p.add_argument('job'); p.add_argument('--json'); p.add_argument('--file'); p.add_argument('--note', help='內容來源，例如：客戶 11/4 來信'); p.add_argument('--rebuild-questions', action='store_true', help='專業方向變了才加：依新內容重出面談題目'); p.set_defaults(fn=cmd_jd_update)
+    p = sp.add_parser('jd-history', help='看職缺 JD 的修改紀錄'); p.add_argument('job'); p.set_defaults(fn=cmd_jd_history)
+    p = sp.add_parser('jd-restore', help='還原職缺 JD（確認卡）'); p.add_argument('job'); p.add_argument('--rev', help='修改紀錄編號，不給就還原最近一次'); p.set_defaults(fn=cmd_jd_restore)
     p = sp.add_parser('job-status', help='開／關職缺（確認卡）'); p.add_argument('job'); p.add_argument('--to', choices=['open', 'closed'], required=True); p.set_defaults(fn=cmd_job_status)
     p = sp.add_parser('line-who', help='LINE 上還沒綁定的人是誰'); p.add_argument('q', nargs='?'); p.add_argument('-n', type=int, default=20); p.set_defaults(fn=cmd_line_who)
     p = sp.add_parser('links', help='全民獵才 LINE 官方帳號＋自己的 LINE 連結'); p.set_defaults(fn=cmd_links)

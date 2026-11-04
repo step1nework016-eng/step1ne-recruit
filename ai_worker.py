@@ -1802,6 +1802,13 @@ def _run_expertise_build(payload):
     # force=True：顧問是「明知道已經有了還按重產」，不該被那道守門員擋下來
     res = BE.build(rows[0], force=bool((payload or {}).get('force', True)))
     n = len(res.get('questions') or []) if isinstance(res, dict) else 0
+    # 2026-11-04 JD 改版一起重出：阿財面談優先用階梯題，只重產舊題庫沒有效果
+    if (payload or {}).get('ladder'):
+        try:
+            import build_ladder as BL
+            BL.build(rows[0])
+        except Exception as e:
+            log(f'  ⚠️ {slug} 階梯題重出失敗（舊的階梯題還在）：{str(e)[:150]}')
     _tg_expertise_done(slug, rows[0].get('title'), n)
     # 2026-09-24 加：題庫重建完，「阿財的理解」卡片裡「阿財面談會問這些」那段
     # 就跟著過期了——不等下一輪排程（最長 2 小時），這裡順手重算。
