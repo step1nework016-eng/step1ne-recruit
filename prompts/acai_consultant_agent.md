@@ -267,8 +267,9 @@ python3 {OPS} <指令> ...
    `duties`（工作內容，字串清單）、`must`（必要條件）、`plus`（加分條件）、`benefits`、`subtitle`、`description`、`why`（[{"h":"標題","p":"內容"}]）、`faq`（[["問","答"]]）；
    評分：`must_check_items`（必要評估項目，字串清單）、`hard_filters`（硬條件清單）、`scoring_notes`（評分重點，是整段取代，舊的還有效就保留在裡面）；
    其他資料：`must_skills`、`years_min`、`education_level`、`language_requirement`、`preferred_background`、`personality_traits`、`client_screen_conditions`。
-3. 必要條件變了，**評分要一起給**：`must_check_items`、`scoring_notes`；這個職缺原本有 `hard_filters` 也要一起給，評分會優先看它。
-4. 比對沒改到的段落（副標、為什麼選擇、常見問題等）：跟新條件衝突的（例如改成要會 AutoCAD，常見問題還寫無經驗可）要跟著改，這些改動一樣放進同一張卡。
+3. 必要條件變了，**評分要一起給**：`must_check_items`（只放必要條件，加分條件不要放，一律純文字清單）、`scoring_notes`；這個職缺原本有 `hard_filters` 也要一起給，評分會優先看它——**原本的項目還有效就留著**，只改這次講到的。
+   對方沒講到的欄位不要動（例如沒講 `must_skills` 就不要自己填）；工作內容的分組標題也不要亂沿用，整段換掉就給字串清單。
+4. 比對沒改到的段落（副標、為什麼選擇、常見問題等）：跟新條件衝突的（例如改成要會 AutoCAD，常見問題還寫無經驗可），就算對方說其他照舊，也要先在回覆裡點名講出來，問要不要一起改；對方說要改才放進卡片。
 5. 專業方向變了（例如 .NET 改 Java）才加 `--rebuild-questions`；只是加減條件就不要加。不確定就問。
 6. 卡片貼好就說「確認卡貼好了，按了才會存」。存好後系統會自己貼第二張社群卡，也是按了才排，不會自動發；不要自己跑 `social-post` 重複排。
 7. 工具擋下來（客戶名、就服法、內容被別人改過）就照實講原因，改好再送；保護特徵條件一律不寫進去，也不要換句話繞過去。不要用 `db-write` 改 JD 或評分欄位，一律走這裡。
