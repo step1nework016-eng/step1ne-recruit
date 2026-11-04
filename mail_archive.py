@@ -90,9 +90,20 @@ def boxes():
             ('jackychen@step1ne.com', b['MAIL_USER'], b['MAIL_PASS'])]
 
 
+# 2026-11-04 欣葉事故：Outlook 標 gb2312，實際混了 gbk 才有的字（繁體字），照標示解會整段亂碼、主旨解不開。
+# gb18030 是 gb2312／gbk 的超集，一律用它解。
+_CHARSET_FIX = {'gb2312': 'gb18030', 'gbk': 'gb18030', 'gb_2312-80': 'gb18030', 'x-gbk': 'gb18030', 'big5': 'big5hkscs'}
+
+
+def fix_charset(c):
+    c = (c or 'utf-8').strip().lower()
+    return _CHARSET_FIX.get(c, c)
+
+
 def dec(v):
     try:
-        return str(email.header.make_header(email.header.decode_header(v or ''))).strip()
+        return ''.join(b.decode(fix_charset(c), 'replace') if isinstance(b, bytes) else b
+                       for b, c in email.header.decode_header(v or '')).strip()
     except Exception:
         return (v or '').strip()
 
@@ -120,7 +131,7 @@ def body_text(msg):
         if ct not in ('text/plain', 'text/html'):
             continue
         try:
-            s = (part.get_payload(decode=True) or b'').decode(part.get_content_charset() or 'utf-8', 'replace')
+            s = (part.get_payload(decode=True) or b'').decode(fix_charset(part.get_content_charset()), 'replace')
         except Exception:
             continue
         if ct == 'text/plain' and not plain:

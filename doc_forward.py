@@ -328,7 +328,7 @@ def cmd_tick(args):
                 continue
             d1_http.query(f"INSERT OR IGNORE INTO candidate_doc_seen (message_id, request_id, seen_at) VALUES ({q(mid)}, {q(r['id'])}, {q(now())})")
             seen.add(mid)
-            subj = str(make_header(decode_header(m['Subject'] or '')))
+            subj = ''.join(b.decode({'gb2312': 'gb18030', 'gbk': 'gb18030'}.get((c or 'utf-8').lower(), c or 'utf-8'), 'replace') if isinstance(b, bytes) else b for b, c in decode_header(m['Subject'] or ''))
             ok = [a for a in atts if ATT_OK.search(a[0])]
             if not ok:
                 tg(f"📩 {r['candidate_name']} 回信了，但沒有附 Word／PDF／圖片檔，沒轉寄。\n主旨：{subj}\n請到信箱看內容。")

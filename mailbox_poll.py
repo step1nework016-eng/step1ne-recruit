@@ -46,6 +46,12 @@ except Exception:
     _api_token = None
 
 
+# 2026-11-04 欣葉事故：標 gb2312 實際混 gbk 字，照標示解會亂碼。gb18030 是超集。
+def _fix_cs(c):
+    c = (c or 'utf-8').strip().lower()
+    return {'gb2312': 'gb18030', 'gbk': 'gb18030', 'gb_2312-80': 'gb18030', 'x-gbk': 'gb18030', 'big5': 'big5hkscs'}.get(c, c)
+
+
 def _env(path):
     e = {}
     for l in open(os.path.expanduser(path), encoding='utf-8'):
@@ -57,7 +63,7 @@ def _env(path):
 
 def _dec(v):
     try:
-        return str(email.header.make_header(email.header.decode_header(v or '')))
+        return ''.join(b.decode(_fix_cs(c), 'replace') if isinstance(b, bytes) else b for b, c in email.header.decode_header(v or ''))
     except Exception:
         return v or ''
 
@@ -71,7 +77,7 @@ def _text(msg):
         ct = part.get_content_type()
         try:
             payload = part.get_payload(decode=True) or b''
-            s = payload.decode(part.get_content_charset() or 'utf-8', 'replace')
+            s = payload.decode(_fix_cs(part.get_content_charset()), 'replace')
         except Exception:
             continue
         if ct == 'text/plain' and not plain:
