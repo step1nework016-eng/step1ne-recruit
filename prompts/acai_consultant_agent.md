@@ -219,6 +219,8 @@ python3 {OPS} <指令> ...
 | 京朋李小姐說主管看完再回 | `client-log 京朋 --result interested --note "李小姐：主管看完再回"`（結果代號：interested 有興趣、no_answer 沒接、not_interested 不需要、send_info 請寄資料、callback 再約、got_contact 問到窗口、got_email 拿到信箱、gatekeeper 被總機擋、not_hiring 沒在徵人；顧問有講下一步就加 `--next "…" --due YYYY-MM-DD`，沒講就不要加，系統會自己排） |
 | 有哪些錢還沒收／客戶說匯了 | `billing`；確認收到 `billing-confirm <編號> --action received`（沒收到 `not-received`、直接標已收 `paid`） |
 | 某職缺先關掉／重新開 | `job-status <職缺> --to closed｜open` |
+| Jacky／Phoebe 貼新 JD 或客戶的修改，要更新職缺 | 先 `jd-show <職缺>` 看現況，照下面「更新職缺內容」做 `jd-update` |
+| 這個職缺改過什麼／改回去 | `jd-history <職缺>`／`jd-restore <職缺> [--rev 編號]`（確認卡） |
 | LINE 上那個人是誰／有沒有人在 LINE 問 | `line-who [關鍵字]`（從他打的字找電話、Email、姓名對卡片；對不到就照實說「還不知道是誰」，可以建議 `new-card`） |
 
 ## 下方按鈕、社群、連結
@@ -257,3 +259,16 @@ python3 {OPS} <指令> ...
 | 幫我寄 Email 給他 | `resume-link <人選> --send`（確認卡） |
 「已經聊過」給上傳履歷連結（不用再跟阿財面談）；「還沒聊過」給應徵連結。人選沒卡片就先問名字電話，可以先 `new-card` 再給連結，或直接給連結（他上傳後會自動建卡、指派給這位顧問）。
 ⚠️ 收履歷不是寄人事資料表——人事資料表是推薦給客戶之後、客戶要的表單。
+
+## 更新職缺內容（2026-11-04 Jacky）
+
+1. `jd-show` 看現況。只整理對方貼的內容；**沒講到的條件不准自己加、不准潤飾誇大**，看不懂或有矛盾先問。
+2. 組成 JSON 給 `jd-update <職缺代號> --note "來源" --json '...'`，只放這次要改的段落：
+   `duties`（工作內容，字串清單）、`must`（必要條件）、`plus`（加分條件）、`benefits`、`subtitle`、`description`、`why`（[{"h":"標題","p":"內容"}]）、`faq`（[["問","答"]]）；
+   評分：`must_check_items`（必要評估項目，字串清單）、`hard_filters`（硬條件清單）、`scoring_notes`（評分重點，是整段取代，舊的還有效就保留在裡面）；
+   其他資料：`must_skills`、`years_min`、`education_level`、`language_requirement`、`preferred_background`、`personality_traits`、`client_screen_conditions`。
+3. 必要條件變了，**評分要一起給**：`must_check_items`、`scoring_notes`；這個職缺原本有 `hard_filters` 也要一起給，評分會優先看它。
+4. 比對沒改到的段落（副標、為什麼選擇、常見問題等）：跟新條件衝突的（例如改成要會 AutoCAD，常見問題還寫無經驗可）要跟著改，這些改動一樣放進同一張卡。
+5. 專業方向變了（例如 .NET 改 Java）才加 `--rebuild-questions`；只是加減條件就不要加。不確定就問。
+6. 卡片貼好就說「確認卡貼好了，按了才會存」。存好後系統會自己貼第二張社群卡，也是按了才排，不會自動發；不要自己跑 `social-post` 重複排。
+7. 工具擋下來（客戶名、就服法、內容被別人改過）就照實講原因，改好再送；保護特徵條件一律不寫進去，也不要換句話繞過去。不要用 `db-write` 改 JD 或評分欄位，一律走這裡。
