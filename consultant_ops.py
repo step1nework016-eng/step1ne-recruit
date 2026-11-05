@@ -2240,6 +2240,55 @@ def cmd_resume_link(a):
                     f'已寄上傳履歷連結給 {app["name"]}', '寄上傳履歷連結')
 
 
+def _dash_overlay_update(fn):
+    r = rows("SELECT value FROM site_settings WHERE key='pipeline_dash_overlay'")
+    ov = json.loads(r[0]['value']) if r else {}
+    fn(ov)
+    d1("UPDATE site_settings SET value=? WHERE key='pipeline_dash_overlay'", [json.dumps(ov, ensure_ascii=False)])
+
+
+def cmd_dash_refresh(a):
+    """2026-11-05 Jacky：帶案頁要讓 Jacky、Phoebe 的阿財與 Claude Code 都能自己更新。"""
+    build = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_dash', 'build.py')
+    r = subprocess.run([sys.executable, build], capture_output=True, text=True, timeout=240)
+    if r.returncode:
+        die('帶案頁更新失敗：' + (r.stderr or r.stdout)[-300:])
+    print('✅ 帶案頁已更新。')
+
+
+def cmd_dash_status(a):
+    """改某位已推薦人選在帶案頁顯示的狀況；--clear 改回系統判斷。"""
+    app = resolve(a.who)
+    name = (app['name'] or '').strip()
+
+    def f(ov):
+        so = ov.setdefault('status_override', {})
+        if a.clear:
+            so.pop(name, None)
+        else:
+            so[name] = a.text.strip()
+    if not a.clear and not (a.text or '').strip():
+        die('要寫狀況：--text "副總評估中"；要改回系統判斷用 --clear')
+    _dash_overlay_update(f)
+    cmd_dash_refresh(a)
+    print(f'✅ {name} 的帶案狀況：' + ('改回系統判斷' if a.clear else a.text.strip()))
+
+
+def cmd_dash_client(a):
+    """改某家客戶在帶案頁的「球在誰」和說明。"""
+    if not (a.ball or a.note):
+        die('至少要給 --ball 或 --note')
+
+    def f(ov):
+        if a.ball:
+            ov.setdefault('ball', {})[a.client] = a.ball
+        if a.note:
+            ov.setdefault('note_ball', {})[a.client] = a.note
+    _dash_overlay_update(f)
+    cmd_dash_refresh(a)
+    print(f'✅ {a.client} 的帶案頁已更新。')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Step1ne 顧問助理工具箱', epilog='硬規則：回答合約條款、價格、期限、客戶條件一定附出處（kb 會印）；查不到就說查不到，不准推測。列客戶／職缺前先跑 clients。')
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -2339,6 +2388,9 @@ def main():
     p.set_defaults(fn=cmd_summary)
     p = sp.add_parser('book', help='登記約好的電話＋提醒（確認卡）'); p.add_argument('who'); p.add_argument('--at', required=True)
     p.add_argument('--before', type=int, default=30); p.add_argument('--note'); p.set_defaults(fn=cmd_book)
+    p = sp.add_parser('dash-refresh', help='立刻更新帶案頁（電話、寄信、推薦等最新紀錄）'); p.set_defaults(fn=cmd_dash_refresh)
+    p = sp.add_parser('dash-status', help='改已推薦人選在帶案頁顯示的狀況'); p.add_argument('who'); p.add_argument('--text'); p.add_argument('--clear', action='store_true'); p.set_defaults(fn=cmd_dash_status)
+    p = sp.add_parser('dash-client', help='改客戶在帶案頁的球在誰與說明'); p.add_argument('client'); p.add_argument('--ball'); p.add_argument('--note'); p.set_defaults(fn=cmd_dash_client)
     p = sp.add_parser('remind', help='只提醒自己（不寫卡片）'); p.add_argument('--at', required=True); p.add_argument('--text', default=''); p.add_argument('--name', default='', help='沒掛人選卡時的顯示名稱（例：Stanley Wang（美德 供應鏈主管））；有名字才會進發財基地行事曆')
     p.add_argument('--app'); p.add_argument('--before', type=int, default=30)
     p.add_argument('--for', dest='for_', help='提醒其他顧問（Phoebe、Jacky…），時間到私訊對方'); p.set_defaults(fn=cmd_remind)
