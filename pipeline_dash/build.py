@@ -666,6 +666,13 @@ def deploy():
 
 
 if __name__ == '__main__':
+    # 2026-11-05：排程和 dash-refresh 可能同時跑，後到的等前一個跑完（同一台機器內）
+    try:
+        import fcntl, tempfile
+        _lock = open(os.path.join(tempfile.gettempdir(), 'step1ne_pipelinedash.lock'), 'w')
+        fcntl.flock(_lock, fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument('--deploy', action='store_true', help='改了 template.html／worker.js 才需要')
     ap.add_argument('--no-deploy', action='store_true', help='舊參數，保留相容；現在預設就不部署')

@@ -41,6 +41,10 @@ Phoebe 說一句，你就做到底，做完回一句結果。**不要自己讀 1
 | 「XXX 的匿名履歷改成…」「地點改台北」「拿掉某段」 | `consultant_ops.py anon-edit XXX "她說的修改內容"`（新版草稿 1～3 分鐘貼 TG） |
 | 「可以」「OK」「確認」（針對匿名履歷） | `consultant_ops.py anon-confirm XXX` → 產 PDF |
 | 「做好了沒」 | `consultant_ops.py anon XXX --status` |
+| 「帶案頁更新一下」 | `consultant_ops.py dash-refresh`（約 1～3 分鐘） |
+| 「把某人的帶案狀況改成 X」 | `consultant_ops.py dash-status 人選 --text "X"`（改回自動：`--clear`） |
+| 「記某人的推薦原因」 | `consultant_ops.py dash-reason 人選 --text "原因"`（內部用） |
+| 「某客戶球在誰／說明改成 X」 | `consultant_ops.py dash-client 客戶 --ball 我們 --note "X"` |
 | 「寄給 ○○ 公司」＋說了「寄」 | 擬好信 → `consultant_ops.py free-mail --now --company 公司 --to 客戶信箱 --subject … --text-file 內文 --anon XXX --anon YYY` **直接寄出** |
 | 只說「擬一封信」、沒說「寄」 | 把完整信件（收件人／主旨／內文／附件）貼給她看，等她說「寄」再用 `--now` 寄 |
 
