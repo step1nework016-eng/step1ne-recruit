@@ -156,7 +156,7 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .bdt.cards tbody td:is([data-label="寄信"],[data-label="電話"])::before{flex:none}
 
 }
-</style></head><body>
+td.note{white-space:pre-line;line-height:1.55}</style></head><body>
 <div class="wrap">
 <header><h1>Step1ne 帶案狀況</h1><p class="sub" id="sub"></p></header>
 <div class="ctl"><select id="wk" aria-label="選擇週次"></select>
@@ -166,7 +166,7 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 <div class="sec" role="tablist" aria-label="客戶類別"><button role="tab" id="s-sig" aria-selected="true">已簽約客戶招募</button><button role="tab" id="s-bd" aria-selected="false">未簽約開發客戶</button></div>
 <div class="funnel" id="funnel"></div>
 <section><div id="sigbox"><h2 id="th" style="margin:6px 0 10px">各客戶人選狀況</h2>
-<div class="tw cards"><table><thead><tr><th class="l">客戶</th><th>職缺</th><th>應徵</th><th>面談完成</th><th>推薦</th><th>推薦中</th><th>客戶面試</th><th>錄取</th><th>到職</th><th>推薦率</th><th>面試率</th><th>錄取率</th><th>報到率</th><th class="l">球在誰</th><th class="l">說明</th></tr></thead><tbody id="rows"></tbody><tfoot id="foot"></tfoot></table></div>
+<div class="tw cards"><table><thead><tr><th class="l">客戶</th><th>職缺</th><th>有聯繫</th><th>顧問找來</th><th>應徵</th><th>面談完成</th><th>推薦</th><th>推薦中</th><th>客戶面試</th><th>錄取</th><th>到職</th><th>推薦率</th><th>面試率</th><th>錄取率</th><th>報到率</th><th class="l">球在誰</th><th class="l">說明</th></tr></thead><tbody id="rows"></tbody><tfoot id="foot"></tfoot></table></div>
 <p class="fine" id="fine"></p></div><div id="bdbox" hidden></div></section>
 <div class="two">
 <section class="card"><h2>每週趨勢（這週新增）</h2><div id="trend"></div><p class="fine">灰：應徵｜淺色：阿財面談完成｜深色：推薦。框起來的是目前選的那週。</p></section>
@@ -180,14 +180,16 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 <script>
 const S=/*__DATA__*/null;
 const W=S.weeks; // 新到舊
+// 2026-11-05：舊週報沒有「有聯繫」「顧問找來」，補空值
+W.forEach(w=>[w.new,w.cum,w.prev_same].forEach(v=>Object.values(v||{}).forEach(x=>{(x.rows||[]).forEach(r=>{r.touch=r.touch||0;r.src=r.src||0});Object.values(x.det||{}).forEach(js=>js.forEach(j=>{j.touch=j.touch||[];j.src=j.src||[]}))})));
 const st={tab:'all',wi:0,view:'new',sec:'sig'};
 try{const q=JSON.parse(localStorage.getItem('pdash')||'{}');if(q.tab)st.tab=q.tab;if(q.view)st.view=q.view;if(q.sec)st.sec=q.sec}catch(e){}
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pct=(a,b)=>b?Math.min(100,Math.round(a*100/b))+'%':'—';
-const KN={app:'應徵',iv:'面談完成',fw:'推薦',active:'推薦中',ci:'客戶面試',of:'錄取',on:'到職'};
+const KN={touch:'有聯繫',src:'顧問找來',app:'應徵',iv:'面談完成',fw:'推薦',active:'推薦中',ci:'客戶面試',of:'錄取',on:'到職'};
 const TN={all:'全部',jacky:'Jacky',phoebe:'Phoebe'};
-const K=['app','iv','fw','active','ci','of','on'];
+const K=['touch','src','app','iv','fw','active','ci','of','on'];
 const wkLabel=(w,i)=>i===0&&!w.frozen?`本週 ${w.label}（每天更新）`:`${w.label}（已封存）`;
 function view(w,v){return (w&&w[v])?w[v][st.tab]:null}
 function tot(rows){const T={jobs:0};K.forEach(k=>T[k]=0);(rows||[]).forEach(r=>{T.jobs+=r.jobs;K.forEach(k=>T[k]+=r[k])});return T}
@@ -209,10 +211,10 @@ function render(){
   const show=st.view==='cum'||st.wi===0;
   $('s-sig').setAttribute('aria-selected',st.sec==='sig');$('s-bd').setAttribute('aria-selected',st.sec==='bd');$('sigbox').hidden=st.sec!=='sig';$('bdbox').hidden=st.sec!=='bd';$('funnel').hidden=st.sec!=='sig';
   $('rows').innerHTML=rows.map(r=>{const b=show?(ov.ball||{})[r.client]||'':'';const L=(k,v)=>`<button class="lk" data-c="${esc(r.client)}" data-k="${k}" ${v?'':'disabled'}>${v}</button>`;
-    return `<tr><td><button class="lk cl" data-c="${esc(r.client)}" data-k="jobs">${esc(r.client)}</button></td><td>${L('jobs',r.jobs)}</td>${K.map(k=>`<td>${L(k,r[k])}</td>`).join('')}<td class="pct">${pct(r.fw,r.iv)}</td><td class="pct">${pct(r.ci,r.fw)}</td><td class="pct">${pct(r.of,r.ci)}</td><td class="pct">${pct(r.on,r.of)}</td><td class="l">${b?`<span class="chip c-${b}">${b}</span>`:''}</td><td class="l note">${esc(show?(ov.note_ball||{})[r.client]||'':'')}</td></tr>`}).join('')||`<tr><td class="note">這週這個分頁沒有新動靜</td></tr>`;
+    return `<tr><td><button class="lk cl" data-c="${esc(r.client)}" data-k="jobs">${esc(r.client)}</button></td><td>${L('jobs',r.jobs)}</td>${K.map(k=>`<td>${L(k,r[k])}</td>`).join('')}<td class="pct">${pct(r.fw,r.iv)}</td><td class="pct">${pct(r.ci,r.fw)}</td><td class="pct">${pct(r.of,r.ci)}</td><td class="pct">${pct(r.on,r.of)}</td><td class="l">${b?`<span class="chip c-${b}">${b}</span>`:''}</td><td class="l note">${esc(r.auto_note||(show?(ov.note_ball||{})[r.client]||'':''))}</td></tr>`}).join('')||`<tr><td class="note">這週這個分頁沒有新動靜</td></tr>`;
   $('foot').innerHTML=rows.length?`<tr><td>合計</td><td>${T.jobs}</td>${K.map(k=>`<td>${T[k]}</td>`).join('')}<td class="pct">${pct(T.fw,T.iv)}</td><td class="pct">${pct(T.ci,T.fw)}</td><td class="pct">${pct(T.of,T.ci)}</td><td class="pct">${pct(T.on,T.of)}</td><td></td><td></td></tr>`:'';
   lab(document.querySelector('.tw.cards'));
-  $('fine').textContent=(st.view==='new'?'這週新增＝日期落在這週的事：新應徵、阿財面談完成、推薦出去、客戶面試／錄取／到職（後三項以系統最後更新階段的日期為準）。':'累計＝開放中的職缺，加上已關閉但有錄取的職缺，從開始到這週的總數。')+'點客戶名稱看職缺，點任何數字看是哪些人選。推薦率＝推薦÷面談完成｜面試率＝客戶面試÷推薦｜錄取率＝錄取÷客戶面試｜報到率＝到職÷錄取。'+(w.backfill?' 這週是事後用系統日期回推的，沒有累計數字。':'');
+  $('fine').textContent=(st.view==='new'?'這週新增＝日期落在這週的事：有聯繫（寄信、電話）、顧問找來、人選自己應徵、阿財面談完成、推薦出去、客戶面試／錄取／到職（後三項以系統最後更新階段的日期為準）。':'累計＝開放中的職缺，加上已關閉但有錄取的職缺，從開始到這週的總數。')+'點客戶名稱看職缺，點任何數字看是哪些人選。推薦率＝推薦÷面談完成｜面試率＝客戶面試÷推薦｜錄取率＝錄取÷客戶面試｜報到率＝到職÷錄取。'+(w.backfill?' 這週是事後用系統日期回推的，沒有累計數字。':'');
   // 每週趨勢
   const ws=W.slice(0,8).reverse();const mx=Math.max(4,...ws.map(x=>Math.max(...['app','iv','fw'].map(k=>tot(view(x,'new')?.rows)[k]))));
   const gw=46,bw=12,Hh=190,top=18,base=150;let svg='',x=26;

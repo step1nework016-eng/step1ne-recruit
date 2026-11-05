@@ -43,7 +43,8 @@ ACTIVE = {'open', 'social_only'}   # social_only＝未簽約客戶先上社群�
 TABS = [('all', lambda o: True), ('jacky', lambda o: o == 'jacky'), ('phoebe', lambda o: o == 'phoebe')]
 IV = {'interviewed', 'passed', 'ready', 'scheduled', 'pending_assessment', 'reported', 'rejected', 'closed'}
 STL = {'stage1': '客戶一面', 'stage2': '客戶二面', 'offer': '談 Offer', 'onboard': '已到職'}
-KEYS = ('app', 'iv', 'fw', 'active', 'ci', 'of', 'on')
+KEYS = ('touch', 'src', 'app', 'iv', 'fw', 'active', 'ci', 'of', 'on')
+TOUCH_TYPES = ('寄信', '電洽紀錄', '電洽預約', '聯繫紀錄')  # 2026-11-05 Jacky：跟進過的人選也要看得到
 ALIAS = [('橘子', '遊戲橘子'), ('美德', '美德'), ('弘昌', '弘昌'), ('律准', '律准'), ('築樂', '築樂'),
          ('海德生', '海德生'), ('新享動', '新享動'), ('華上', '華上'), ('招待所', '私人招待所'),
          ('宇泰華', '宇泰華'), ('鏮正', '鏮正')]
@@ -78,16 +79,32 @@ def week_start(d):
 
 
 def load():
-    jobs = c.rows("SELECT j.slug,j.title,j.status,j.locations,j.company_id cid,"
+    jobs = c.rows("SELECT j.slug,j.title,j.status,j.locations,j.company_id cid,j.headcount hc,"
                   "COALESCE(cc.display_name,j.client_name,'') co,COALESCE(cc.relation,'') rel FROM jobs j "
                   "LEFT JOIN client_companies cc ON cc.id=j.company_id", [])
     apps = c.rows("SELECT id,name,job_slug,status,created_at,interview_ended_at,"
-                  "LOWER(COALESCE(owner,'')) owner FROM applications WHERE status!='duplicate'", [])
+                  "LOWER(COALESCE(owner,'')) owner,COALESCE(utm_campaign,'') camp,"
+                  "CASE WHEN utm_campaign='104' OR COALESCE(note,'') LIKE '%【104%' THEN 1 ELSE 0 END src104,"
+                  "CASE WHEN utm_campaign='104' OR utm_medium='sourced' OR COALESCE(note,'') LIKE '%【104%' THEN 1 ELSE 0 END sourced "
+                  "FROM applications WHERE status!='duplicate' AND name NOT LIKE '測試%'", [])
+    # 2026-10-27 Jacky：104 寄信匯進來的卡片不是「應徵」——還沒回應前顯示「104 已寄信，還沒回應」，
+    # 打過電話（電話名單頁送出的電洽紀錄）就改顯示最新一次電話結果。
+    calls = {}
+    for r in c.rows("SELECT application_id a, content, created_at FROM candidate_notes "
+                    "WHERE type IN ('電洽紀錄','電洽預約') ORDER BY created_at", []):
+        calls[r['a']] = (r['content'] or '', r['created_at'] or '')
+    touches = defaultdict(list)
+    for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at FROM candidate_notes "
+                    f"WHERE type IN ({','.join(repr(t) for t in TOUCH_TYPES)})", []):
+        touches[r['a']].append((r['by_'], r['at'] or ''))
+    for a in apps:
+        a['call'] = calls.get(a['id'])
+        a['touches'] = touches.get(a['id'])
     fws = c.rows("SELECT f.application_id,a.name,COALESCE(f.job_slug,a.job_slug) js,"
                  "COALESCE(f.manual_stage,'') st,f.manual_stage_at sat,f.forwarded_at fat,"
                  "f.client_rejected_at r,f.advisor_not_recommended_at nr,f.candidate_withdrawn_at w,"
                  "LOWER(COALESCE(a.owner,'')) owner FROM candidate_forwards f "
-                 "JOIN applications a ON a.id=f.application_id", [])
+                 "JOIN applications a ON a.id=f.application_id WHERE a.name NOT LIKE '測試%'", [])
     # 報到日還沒到的「已到職」先算錄取（2026-10-20 邱萬豪：客戶上傳 offer 時標了到職，實際 11/10 才報到）
     od = {r['application_id']: r['d'] for r in c.rows(
         "SELECT application_id, COALESCE(actual_start_date, onboard_date, expected_start_date, offer_start_date) d "
@@ -142,7 +159,21 @@ def person_status(apps, fws, ovr, jobmap):
     other = {}
     for a in apps:
         ts = max(filter(None, [a['created_at'], a['interview_ended_at']]), default='')
-        P[a['job_slug']][nm(a['name'])] = [APS.get(a['status'], '已應徵'), md(ts)]
+        lab = APS.get(a['status'], '已應徵')
+        if a.get('src104') and a['status'] == 'new':
+            lab = '104 已寄信，還沒回應'
+            if a.get('call'):
+                first = re.split(r'[\n｜]', a['call'][0].strip())[0]
+                m = re.search(r'電話[：:]\s*(\S+)', first)
+                lab = f"電話：{m.group(1)}" if m else first[:24]
+                ts = max(ts, a['call'][1])
+        elif a.get('sourced') and a['status'] == 'new':
+            lab = '顧問找來，還沒回應'
+            if a.get('call'):
+                ts = max(ts, a['call'][1])
+        elif a.get('call') and a['status'] in ('new', 'pending_screen'):
+            ts = max(ts, a['call'][1])
+        P[a['job_slug']][nm(a['name'])] = [lab, md(ts)]
     for f in fws:
         n, lab = fw_label(f, ovr)
         if f['nr']:
@@ -179,6 +210,10 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
     signed = {j['g'] for j in jobmap.values() if j['rel'] in ('signed', 'private')}
     PS = person_status(apps, fws, ovr, jobmap)
     out = {}
+
+    def once(lst, name):   # 同一個人同一個職缺只算一次（重複建卡不要算兩位）
+        if name not in lst:
+            lst.append(name)
     for tab, flt in TABS:
         D = defaultdict(dict)
 
@@ -189,12 +224,19 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
             for s in scope:
                 slot(s)
         for a in apps:
-            if a['job_slug'] not in scope or not flt(a['owner']):
+            if a['job_slug'] not in scope:
                 continue
+            # 2026-11-05 Jacky：寄信、打電話跟進過的人選也要看得到；算在實際聯繫的顧問名下，沒記是誰才看負責顧問
+            if any((mode == 'cum' or inwin(at)) and flt(by or a['owner']) for by, at in a.get('touches') or []):
+                once(slot(a['job_slug'])['touch'], nm(a['name']))
+            if not flt(a['owner']):
+                continue
+            # 顧問找來（104 寄信、LinkedIn）、人選還沒自己應徵／面談：不算應徵，另外算「顧問找來」
+            is_src = a.get('sourced') and a['status'] == 'new'
             if mode == 'cum' or inwin(a['created_at']):
-                slot(a['job_slug'])['app'].append(nm(a['name']))
+                once(slot(a['job_slug'])['src' if is_src else 'app'], nm(a['name']))
             if (mode == 'cum' and a['status'] in IV) or (mode == 'new' and inwin(a['interview_ended_at'])):
-                slot(a['job_slug'])['iv'].append(nm(a['name']))
+                once(slot(a['job_slug'])['iv'], nm(a['name']))
         for f in fws:
             if f['js'] not in scope or not flt(f['owner']) or f['nr']:
                 continue   # 顧問不推＝沒有真的推給客戶，不算推薦
@@ -214,8 +256,48 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
                 if f['st'] == 'onboard':
                     x['on'].append(n)
         det = {g: [{'slug': s, 'ps': PS.get(s, {}), **v} for s, v in sorted(js.items(), key=lambda kv: (not kv[1]['open'], -len(kv[1]['app'])))]
-               for g, js in D.items()}
-        rows = [{'client': g, 'signed': g in signed, 'jobs': sum(1 for j in js if j['open']), **{k: sum(len(j[k]) for j in js) for k in KEYS}}
+               for g, js in D.items() if '測試' not in g}
+        # 2026-10-27 Jacky：「說明」改成自動：這家客戶目前各職缺缺幾人、已錄取幾位（只算這個分頁顧問負責的人選）。
+        def auto_note(g):
+            # 2026-10-27 Jacky：要換行、不要贅字。一行一個職缺「地點 職稱 缺 N」，再一行錄取、一行未報到。
+            def jshort(j2):
+                t = j2['title'].replace('(儲備培訓)', '').replace('（儲備培訓）', '').strip()
+                l = loc(j2['locations'])
+                if '后里' in l:
+                    return f'后里 {t}'
+                hits = [(l.find(k), k) for k in ('后里', '新竹', '台中', '台北', '新北', '桃園', '雲林', '苗栗', '桃竹苗') if k in l]
+                return f'{min(hits)[1]} {t}' if hits else t
+            lines, unl, blank = [], 0, 0
+            for s2, j2 in jobmap.items():
+                if j2['g'] != g or j2['status'] not in ACTIVE:
+                    continue
+                hc = str(j2.get('hc') or '').strip()
+                m = re.search(r'\d+', hc)
+                hired_n = sum(1 for f in fws if f['js'] == s2 and f['st'] in ('offer', 'onboard') and not f['w'] and flt(f['owner']))
+                if m:
+                    lines.append(f"{jshort(j2)} 缺 {max(int(m.group()) - hired_n, 0)}")
+                elif hc:
+                    unl += 1
+                else:
+                    blank += 1
+            if unl:
+                lines.append(f"{unl} 個缺人數不限" if lines or unl > 1 else '人數不限')
+            if blank:
+                lines.append(f"{blank} 個缺沒填人數")
+            hires, gone = [], []
+            for f in fws:
+                if (jobmap.get(f['js']) or {}).get('g') != g or f['st'] not in ('offer', 'onboard') or not flt(f['owner']):
+                    continue
+                n, lab = fw_label(f, ovr)
+                lab = lab.replace('已到職', '到職').replace('已錄取，', '')
+                (gone if f['w'] else hires).append(n if f['w'] else f'{n}（{lab}）')
+            if hires:
+                lines.append('錄取：' + '、'.join(hires))
+            if gone:
+                lines.append('未報到：' + '、'.join(gone))
+            return '\n'.join(lines)
+        rows = [{'client': g, 'signed': g in signed, 'jobs': sum(1 for j in js if j['open']), 'auto_note': auto_note(g),
+                 **{k: sum(len(j[k]) for j in js) for k in KEYS}}
                 for g, js in det.items()]
         if mode == 'new':
             rows = [r for r in rows if any(r[k] for k in KEYS)]
