@@ -2274,6 +2274,16 @@ def cmd_dash_status(a):
     print(f'✅ {name} 的帶案狀況：' + ('改回系統判斷' if a.clear else a.text.strip()))
 
 
+def cmd_dash_reason(a):
+    """記推薦原因（內部），帶案頁「目前狀況」旁會顯示。"""
+    app = resolve(a.who)
+    w = who()
+    d1("INSERT INTO candidate_notes (id,application_id,type,content,created_at,created_by) VALUES (?,?,'推薦原因',?,?,?)",
+       [secrets.token_hex(16), app['id'], a.text.strip(), fmt(now_tpe()), w.get('name') or ''])
+    cmd_dash_refresh(a)
+    print(f'✅ {app["name"]} 的推薦原因已更新。')
+
+
 def cmd_dash_client(a):
     """改某家客戶在帶案頁的「球在誰」和說明。"""
     if not (a.ball or a.note):
@@ -2390,6 +2400,7 @@ def main():
     p.add_argument('--before', type=int, default=30); p.add_argument('--note'); p.set_defaults(fn=cmd_book)
     p = sp.add_parser('dash-refresh', help='立刻更新帶案頁（電話、寄信、推薦等最新紀錄）'); p.set_defaults(fn=cmd_dash_refresh)
     p = sp.add_parser('dash-status', help='改已推薦人選在帶案頁顯示的狀況'); p.add_argument('who'); p.add_argument('--text'); p.add_argument('--clear', action='store_true'); p.set_defaults(fn=cmd_dash_status)
+    p = sp.add_parser('dash-reason', help='記推薦原因（內部，顯示在帶案頁）'); p.add_argument('who'); p.add_argument('--text', required=True); p.set_defaults(fn=cmd_dash_reason)
     p = sp.add_parser('dash-client', help='改客戶在帶案頁的球在誰與說明'); p.add_argument('client'); p.add_argument('--ball'); p.add_argument('--note'); p.set_defaults(fn=cmd_dash_client)
     p = sp.add_parser('remind', help='只提醒自己（不寫卡片）'); p.add_argument('--at', required=True); p.add_argument('--text', default=''); p.add_argument('--name', default='', help='沒掛人選卡時的顯示名稱（例：Stanley Wang（美德 供應鏈主管））；有名字才會進發財基地行事曆')
     p.add_argument('--app'); p.add_argument('--before', type=int, default=30)

@@ -156,7 +156,7 @@ dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:80vh;mar
 .bdt.cards tbody td:is([data-label="寄信"],[data-label="電話"])::before{flex:none}
 
 }
-td.note{white-space:pre-line;line-height:1.55}</style></head><body>
+td.note{white-space:pre-line;line-height:1.55}td.why{white-space:normal;min-width:240px;line-height:1.5;font-size:13.5px}</style></head><body>
 <div class="wrap">
 <header><h1>Step1ne 帶案狀況</h1><p class="sub" id="sub"></p></header>
 <div class="ctl"><select id="wk" aria-label="選擇週次"></select>
@@ -275,7 +275,7 @@ function jobsView(c){const js=DET()[c]||[];const n=j=>Object.fromEntries(K.map(k
  const rows=js.map(j=>`<tr><td>${esc(j.t)}</td>${K.map(k=>`<td><button class="lk" data-c="${esc(c)}" data-j="${j.slug}" data-k="${k}" ${j[k].length?'':'disabled'}>${j[k].length}</button></td>`).join('')}<td class="rtd">${rates(n(j))}</td></tr>`).join('');
  return `<p class="jt">整體（${TN[st.tab]}｜${st.view==='new'?'這週新增':'累計'}）</p>${rates(t)}<div class="tw cards" style="margin-top:14px"><table><thead><tr><th class="l">職缺</th>${K.map(k=>`<th>${KN[k]}</th>`).join('')}<th class="l">比率</th></tr></thead><tbody>${rows}</tbody></table></div><p class="fine">點數字看是哪些人選｜有些人選是從別的職缺轉推過來，所以比率最高只算到 100%</p>`}
 function namesView(c,k,slug){const js=(DET()[c]||[]).filter(j=>!slug||j.slug===slug).filter(j=>j[k].length);
- return js.map(j=>`<p class="jt">${esc(j.t)}（${j[k].length}）</p><div class="tw"><table class="pst"><thead><tr><th class="l">人選</th><th class="l">目前狀況</th><th>最近更新</th></tr></thead><tbody>${j[k].map(x=>{const ps=j.ps||{};const n=ps[x]?x:x.replace(/（[^（）]*）$/,'');const p=ps[n]||['—',''];return `<tr><td class="l">${esc(n)}</td><td class="l">${esc(p[0])}</td><td>${esc(p[1]||'—')}</td></tr>`}).join('')}</tbody></table></div>`).join('')||'<p class="fine">沒有人選</p>'}
+ return js.map(j=>{const ps=j.ps||{};const rows=j[k].map(x=>{const n=ps[x]?x:x.replace(/（[^（）]*）$/,'');return [n,ps[n]||['—','','']]});const hasR=rows.some(([,p])=>p[2]);return `<p class="jt">${esc(j.t)}（${j[k].length}）</p><div class="tw"><table class="pst"><thead><tr><th class="l">人選</th><th class="l">目前狀況</th>${hasR?'<th class="l">推薦原因</th>':''}<th>最近更新</th></tr></thead><tbody>${rows.map(([n,p])=>`<tr><td class="l">${esc(n)}</td><td class="l">${esc(p[0])}</td>${hasR?`<td class="l why">${esc(p[2]||'—')}</td>`:''}<td>${esc(p[1]||'—')}</td></tr>`).join('')}</tbody></table></div>`}).join('')||'<p class="fine">沒有人選</p>'}
 document.addEventListener('click',e=>{const b=e.target.closest('.lk');if(!b||b.disabled)return;
  if(b.dataset.bd!=null){const i=BDL[+b.dataset.bd];const hasJ=(DET()[i.company]||[]).length;hist=[];show(`${i.company}｜開發紀錄`,`<p class="bl">進度：${esc(i.stage)}${i.owner?'｜負責 '+esc(i.owner):''}</p>${i.next?`<p class="bn"><b>下一步</b>　${esc(i.next)}${i.due?`（${esc(i.due)}）`:''}</p>`:''}${i.recruit?`<p class="bl">招募：${esc(i.recruit)}${hasJ?` <button class="lk" data-c="${esc(i.company)}" data-k="jobs">看職缺與人選 ›</button>`:''}</p>`:''}${i.mails?`<p class="bl">寄信 ${i.mails[0]} 封（這週 ${i.mails[1]}）｜電話 ${i.calls[0]} 通（這週 ${i.calls[1]}）</p>`:''}${i.cands?`<p class="jt">給過的人選</p>${i.cands.length?`<ol>${i.cands.map(x=>`<li>${esc(x.code)}｜${esc(x.d)} 寄出（${esc(x.via)}）</li>`).join('')}</ol><p class="bl">對方回覆：${esc(i.resp||'—')}（這是整家公司給人選之後的最新回應，看不出是針對哪一位人選）</p>`:'<p class="bl">—（系統裡沒有寄過匿名人選的紀錄）</p>'}`:''}<p class="jt">聯繫紀錄（新到舊）</p><ol>${(i.logs.length?i.logs:['還沒有紀錄']).map(l=>`<li>${esc(l)}</li>`).join('')}</ol>`,false);return}
  const c=b.dataset.c,k=b.dataset.k,j=b.dataset.j;

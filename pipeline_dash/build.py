@@ -115,6 +115,12 @@ def load():
                  "f.client_rejected_at r,f.advisor_not_recommended_at nr,f.candidate_withdrawn_at w,"
                  "LOWER(COALESCE(a.owner,'')) owner FROM candidate_forwards f "
                  "JOIN applications a ON a.id=f.application_id WHERE a.name NOT LIKE '測試%'", [])
+    # 2026-11-05 Jacky：有推薦的人選要看得到推薦原因（只在內部帶案頁）
+    reasons = {}
+    for r in c.rows("SELECT application_id a, content FROM candidate_notes WHERE type='推薦原因' ORDER BY created_at", []):
+        reasons[r['a']] = (r['content'] or '').strip()
+    for f in fws:
+        f['reason'] = reasons.get(f['application_id'], '')
     # 報到日還沒到的「已到職」先算錄取（2026-10-20 邱萬豪：客戶上傳 offer 時標了到職，實際 11/10 才報到）
     od = {r['application_id']: r['d'] for r in c.rows(
         "SELECT application_id, COALESCE(actual_start_date, onboard_date, expected_start_date, offer_start_date) d "
@@ -205,7 +211,7 @@ def person_status(apps, fws, ovr, jobmap):
         elif not f['st'] and not (f['r'] or f['w']):
             lab = '已推薦，' + lab
         ts = max(filter(None, [f['fat'], f['sat'], f['r'], f['nr'], f['w']]), default='')
-        P[f['js']][n] = [lab, md(ts)]
+        P[f['js']][n] = [lab, md(ts), f.get('reason') or '']
         hop = aj.get(f['application_id'])
         if hop and hop != f['js']:   # 轉推到別的職缺：應徵的那個職缺底下也要看得到
             t = (jobmap.get(f['js']) or {}).get('t', f['js'])
