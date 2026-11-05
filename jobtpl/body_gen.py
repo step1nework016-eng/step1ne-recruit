@@ -24,6 +24,23 @@ def _spec(rows):
     return f'<dl class="spec">{"".join(out)}</dl>'
 
 
+
+def has_content(j):
+    """這份規格有沒有真正的職缺內容（工作內容或應徵條件至少一項）。
+
+    2026-11-05：只存了薪資的規格會產出沒有工作內容、也沒有條件的空白頁（2 頁已上線）。
+    沒內容就不准產頁，由呼叫端回報失敗。"""
+    def _real(x):
+        if isinstance(x, str):
+            return bool(x.strip())
+        if isinstance(x, dict):
+            return _real(x.get('items'))
+        if isinstance(x, (list, tuple)):
+            return any(_real(i) for i in x)
+        return False
+    return _real(j.get('duties')) or _real(j.get('must'))
+
+
 def build_body(j):
     """j 是一份職缺資料 dict。缺的區塊自動略過，不要為了填滿而編。"""
     E = lambda x: (x or '')

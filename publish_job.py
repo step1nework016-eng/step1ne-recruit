@@ -139,25 +139,58 @@ def render_page(j):
 
 
 def upsert_d1(j):
+    """把規格同步回 jobs。
+
+    ⚠️ 2026-11-05：重產頁面只更新頁面，不准清掉 jobs 既有欄位。原本衝突時整欄蓋回，規格沒帶到的
+    years_min／must_skills／locations／employment／notes／client_name 全被清空。
+    現在：已上架的職缺這些欄位只補空的、不蓋掉；草稿第一次上架才用規格的值。
+    薪資與職稱是頁面會同步的欄位，規格有值才更新，沒值保留原值。
+    後台改這些欄位時 Worker 會直接寫進 jobs，不靠這裡。
+    """
     q = D.q
-    emp = json.dumps(j.get('employment') or ["FULL_TIME"], ensure_ascii=False)
+
+    def blank(v):
+        return v is None or (isinstance(v, (str, list, tuple, dict)) and not (v.strip() if isinstance(v, str) else v))
+
+    def text(v):
+        if blank(v):
+            return 'NULL'
+        return q('、'.join(str(x) for x in v) if isinstance(v, (list, tuple)) else v)
+
+    def fill(col, lit):
+        return (f"{col}=CASE WHEN jobs.status='draft' AND {lit} IS NOT NULL THEN {lit} "
+                f"WHEN COALESCE(TRIM(jobs.{col}),'') IN ('','[]','\"\"','null') THEN {lit} "
+                f"ELSE jobs.{col} END")
+
+    emp = j.get('employment')
+    emp_lit = 'NULL' if blank(emp) else q(json.dumps(emp, ensure_ascii=False))
+    emp_ins = emp_lit if emp_lit != 'NULL' else q(json.dumps(["FULL_TIME"]))
+    yrs = j.get('years_min')
+    yrs_lit = 'NULL' if blank(yrs) else str(int(yrs))
+    loc_lit, skills_lit, notes_lit, client_lit = (text(j.get(k)) for k in ('locations', 'must_skills', 'notes', 'client_name'))
+    sal_min = q(j.get('salary_min')) if j.get('salary_min') else 'NULL'
+    sal_max = q(j.get('salary_max')) if j.get('salary_max') else 'NULL'
+    unit = j.get('salary_unit') if j.get('salary_unit') in ('MONTH', 'YEAR', 'HOUR', 'DAY') else None
     D.d1(f"""INSERT INTO jobs (slug,title,client_name,employment,salary_min,salary_max,
              salary_unit,locations,status,years_min,must_skills,notes,cv_mode,salary_note,updated_at)
-        VALUES ({q(j['slug'])},{q(j['title'])},{q(j.get('client_name'))},{q(emp)},
-             {q(j.get('salary_min')) if j.get('salary_min') else 'NULL'},
-             {q(j.get('salary_max')) if j.get('salary_max') else 'NULL'},
-             {q(j.get('salary_unit') if j.get('salary_unit') in ('MONTH','YEAR','HOUR','DAY') else 'MONTH')},
-             {q(j.get('locations'))},'open',{j.get('years_min') if j.get('years_min') is not None else 'NULL'},
-             {q(j.get('must_skills'))},{q(j.get('notes'))},{q(j.get('cv_mode'))},{q(j.get('salary_note'))},datetime('now'))
-        ON CONFLICT(slug) DO UPDATE SET title=excluded.title, client_name=excluded.client_name,
-             employment=excluded.employment, salary_min=excluded.salary_min,
-             salary_max=excluded.salary_max, salary_unit=excluded.salary_unit, locations=excluded.locations,
-             years_min=excluded.years_min, must_skills=excluded.must_skills,
-             notes=COALESCE(jobs.notes,'')||char(10)||excluded.notes,
+        VALUES ({q(j['slug'])},{q(j['title'])},{client_lit},{emp_ins},{sal_min},{sal_max},
+             {q(unit or 'MONTH')},{loc_lit},'open',{yrs_lit},{skills_lit},{notes_lit},{q(j.get('cv_mode'))},{q(j.get('salary_note'))},datetime('now'))
+        ON CONFLICT(slug) DO UPDATE SET title=excluded.title,
+             {fill('client_name', client_lit)},
+             {fill('employment', emp_lit)},
+             salary_min=COALESCE({sal_min}, jobs.salary_min),
+             salary_max=COALESCE({sal_max}, jobs.salary_max),
+             salary_unit=COALESCE({q(unit) if unit else 'NULL'}, jobs.salary_unit),
+             {fill('locations', loc_lit)},
+             {fill('years_min', yrs_lit)},
+             {fill('must_skills', skills_lit)},
+             notes=CASE WHEN {notes_lit} IS NULL THEN jobs.notes
+                        WHEN COALESCE(TRIM(jobs.notes),'')='' THEN {notes_lit}
+                        WHEN instr(jobs.notes, {notes_lit})>0 THEN jobs.notes
+                        ELSE jobs.notes||char(10)||{notes_lit} END,
              cv_mode=COALESCE(excluded.cv_mode, jobs.cv_mode),
              salary_note=COALESCE(excluded.salary_note, jobs.salary_note),
              updated_at=datetime('now')""")
-
 
 EMPLOYMENT_LABEL = {'FULL_TIME': '正職', 'PART_TIME': '兼職', 'CONTRACTOR': '承攬',
                     'TEMPORARY': '派遣', 'INTERN': '實習', 'PER_DIEM': '日薪'}
@@ -346,11 +379,17 @@ def main():
     for k in ('slug', 'title', 'page_title', 'description'):
         if not j.get(k):
             sys.exit(f'缺少必要欄位：{k}')
+    if not BG.has_content(j):
+        sys.exit(f"⛔ {j['slug']} 的頁面資料沒有工作內容也沒有應徵條件，沒有產頁面（不准上空白頁）。"
+                 f"請先補工作內容與條件再重產。")
 
     # --dry 只寫到 /tmp、不碰網站也不碰 D1，那不算「公開」，不擋。
     if not a.dry:
         # 2026-10-07 未簽約客戶職缺（只發社群）絕對不准上官網——簽約後要先在後台「轉成正式職缺」
-        st = D.d1(f"SELECT status FROM jobs WHERE slug={D.q(j['slug'])}") or []
+        st = D.d1(f"SELECT status, locations FROM jobs WHERE slug={D.q(j['slug'])}") or []
+        # 規格沒帶地點就用 jobs 既有的，職缺卡才不會少一格（2026-11-05）
+        if st and not j.get('locations') and st[0].get('locations'):
+            j['locations'] = st[0]['locations']
         if st and st[0].get('status') == 'social_only':
             sys.exit(f"⛔ {j['slug']} 是未簽約客戶職缺（只發社群），不能上官網。"
                      f"簽約後請在後台職缺管理按「轉成正式職缺」，再走一般上架流程。")

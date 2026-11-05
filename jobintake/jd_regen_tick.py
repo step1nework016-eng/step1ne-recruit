@@ -25,7 +25,7 @@ jobs.client_named=0 的職缺（未簽約、對外要匿名）絕對不能把 cl
 抓文字，是雙重保險：文字比對抓得到「提到客戶名字」，但抓不到「這欄位
 本來就是客戶名字」這種結構性外洩。
 """
-import json, os, re, subprocess, sys, time, tempfile
+import importlib.util, json, os, re, subprocess, sys, time, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECRUIT = os.path.dirname(HERE)
@@ -35,6 +35,10 @@ LOCK = '/tmp/step1ne-jdregen.lock'
 sys.path.insert(0, HERE)
 import draft_job as DJ  # noqa: E402  借用 tg_send／_esc
 import slug_promote as SP  # noqa: E402  暫存網址轉正
+sys.path.insert(0, RECRUIT)
+import autoupdate as AU  # noqa: E402  程式更新後自己換新版（WSL2 這支原本不會，要人工重啟）
+_bg_spec = importlib.util.spec_from_file_location('body_gen', os.path.join(RECRUIT, 'jobtpl', 'body_gen.py'))
+BG = importlib.util.module_from_spec(_bg_spec); _bg_spec.loader.exec_module(BG)  # noqa: E305
 
 
 def log(m):
@@ -103,8 +107,6 @@ def build_spec(job, saved_spec):
         spec['page_title'] = f'{title}｜Step1ne 德仁管理顧問'
     if not spec.get('description'):
         spec['description'] = spec.get('card_desc') or spec.get('intro') or title
-    if not spec.get('employment'):
-        spec['employment'] = ['FULL_TIME']
     # 未簽約客戶對外一律匿名——這個欄位絕對不能出現在要產頁面的規格裡，
     # 不管 jd_spec_json 裡有沒有存到（理論上顧問不該存，這裡再擋一次）。
     if str(job.get('client_named')) == '0':
@@ -147,6 +149,16 @@ def process_one(job):
             log(f'⚠️ {slug} 的 jd_spec_json 壞掉，無法解析')
             mark_done(slug, error='jd_spec_json 壞掉（不是合法 JSON），需要人工檢查')
             return
+
+    # 2026-11-05：沒有工作內容也沒有條件的規格不准產頁（曾產出空白頁上線），改回報失敗。
+    # 放在網址轉正之前，失敗時不留下任何改動。
+    if not BG.has_content(build_spec(job, saved)):
+        err = '頁面資料沒有工作內容也沒有應徵條件，沒有產頁面（不准上空白頁）'
+        log(f'⛔ {job["slug"]}：{err}')
+        mark_done(job['slug'], error=err)
+        DJ.tg_send(f'⛔ <b>JD 頁面沒有更新</b>　{DJ._esc(job.get("title") or job["slug"])}\n'
+                   f'{err}，線上頁面維持原樣。', [], job['slug'])
+        return
 
     slug, slug_err = promote_slug_if_needed(job, saved)
     if slug_err:
@@ -238,7 +250,9 @@ if __name__ == '__main__':
         main()
     else:
         log('JD 重新發布處理器啟動（常駐，每 10 分鐘掃一次）')
+        _last_update_check = 0
         while True:
+            _last_update_check = AU.maybe_self_update(_last_update_check, log=log, name='jdregen')
             try:
                 main()
             except Exception as e:
