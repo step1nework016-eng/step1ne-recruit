@@ -93,6 +93,12 @@ def load():
     for r in c.rows("SELECT application_id a, content, created_at FROM candidate_notes "
                     "WHERE type IN ('電洽紀錄','電洽預約') ORDER BY created_at", []):
         calls[r['a']] = (r['content'] or '', r['created_at'] or '')
+    # 2026-11-05 Jacky：「面談完成」會被誤會成客戶面談，改成「初談」＝阿財面談或真的講到電話。未接不算。
+    talks = defaultdict(list)
+    for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at, SUBSTR(content,1,40) head FROM candidate_notes "
+                    "WHERE type='電洽紀錄'", []):
+        if not re.search(r'未接|沒接|電話中|無人接聽|關機|空號', r['head'] or ''):
+            talks[r['a']].append((r['by_'], r['at'] or ''))
     touches = defaultdict(list)
     mailed = set()
     for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at, type FROM candidate_notes "
@@ -108,6 +114,7 @@ def load():
     for a in apps:
         a['call'] = calls.get(a['id'])
         a['touches'] = touches.get(a['id'])
+        a['talks'] = talks.get(a['id'])
         a['replied'] = replied.get(a['id'])
         a['mailed'] = a['id'] in mailed
     fws = c.rows("SELECT f.application_id,a.name,COALESCE(f.job_slug,a.job_slug) js,"
@@ -159,9 +166,9 @@ def fw_label(f, ovr):
     return n, ovr.get(n, lab)
 
 
-APS = {'new': '已應徵，還沒面談', 'pending_screen': '已應徵，還沒面談', 'pending_assessment': '等人選做測驗',
-       'scheduled': '已約阿財面談', 'ready': '已約阿財面談', 'interviewed': '面談完成，還沒推薦',
-       'reported': '面談完成，還沒推薦', 'passed': '面談完成，還沒推薦', 'rejected': '面談後不適合', 'closed': '已結案'}
+APS = {'new': '已應徵，還沒初談', 'pending_screen': '已應徵，還沒初談', 'pending_assessment': '等人選做測驗',
+       'scheduled': '已約阿財面談', 'ready': '已約阿財面談', 'interviewed': '已初談，還沒推薦',
+       'reported': '已初談，還沒推薦', 'passed': '已初談，還沒推薦', 'rejected': '初談後不適合', 'closed': '已結案'}
 
 
 def md(ts):
@@ -226,7 +233,7 @@ def person_status(apps, fws, ovr, jobmap):
 
 def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
     """mode='cum'：開放中職缺＋已關閉但有錄取的職缺，全部歷史；
-       mode='new'：只算日期落在 [ws, we) 的事件（新應徵、面談完成、推薦、客戶面試／錄取／到職）。"""
+       mode='new'：只算日期落在 [ws, we) 的事件（新應徵、初談、推薦、客戶面試／錄取／到職）。"""
     def inwin(ts):
         return ts and ws <= ts[:10] < we
     hired = {f['js'] for f in fws if f['st'] in ('offer', 'onboard')}
@@ -259,6 +266,8 @@ def build_view(jobmap, apps, fws, ovr, mode, ws=None, we=None):
             # 2026-11-05 Jacky：寄信、打電話跟進過的人選也要看得到；算在實際聯繫的顧問名下，沒記是誰才看負責顧問
             if any((mode == 'cum' or inwin(at)) and flt(by or a['owner']) for by, at in a.get('touches') or []):
                 once(slot(a['job_slug'])['touch'], nm(a['name']))
+            if any((mode == 'cum' or inwin(at)) and flt(by or a['owner']) for by, at in a.get('talks') or []):
+                once(slot(a['job_slug'])['iv'], nm(a['name']))
             if not flt(a['owner']):
                 continue
             # 顧問找來（104 寄信、LinkedIn）、人選還沒自己應徵／面談：不算應徵，另外算「顧問找來」

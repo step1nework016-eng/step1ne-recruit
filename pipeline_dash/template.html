@@ -81,7 +81,7 @@ h1{font-size:22px}.tabs{gap:6px}.tabs button{flex:1;padding:0 8px}
 .cards td:has(.chip){grid-column:9/13;order:-1;flex-direction:row;justify-content:flex-end}
 .cards td.note{grid-column:1/-1;order:2;font-size:13px;font-weight:400;align-items:flex-start;text-align:left;margin-top:4px}
 .cards td.note::before{display:none}.cards td:empty{display:none}
-.cards td:is([data-label="面談完成"],[data-label="推薦"],[data-label="客戶面試"],[data-label="錄取"],[data-label="到職"]){border-left:1px solid var(--line)}
+.cards td:is([data-label="初談（阿財／電話）"],[data-label="推薦"],[data-label="客戶面試"],[data-label="錄取"],[data-label="到職"]){border-left:1px solid var(--line)}
 .cards .lk{margin:0;padding:2px 0;min-height:36px;width:100%;display:flex;align-items:center;justify-content:center;text-decoration:none;color:var(--accent)}
 .cards .lk[disabled]{color:var(--muted);font-weight:400}
 .cards .lk.cl{width:auto;justify-content:flex-start;color:var(--ink)}
@@ -166,10 +166,10 @@ td.note{white-space:pre-line;line-height:1.55}td.why{white-space:normal;min-widt
 <div class="sec" role="tablist" aria-label="客戶類別"><button role="tab" id="s-sig" aria-selected="true">已簽約客戶招募</button><button role="tab" id="s-bd" aria-selected="false">未簽約開發客戶</button></div>
 <div class="funnel" id="funnel"></div>
 <section><div id="sigbox"><h2 id="th" style="margin:6px 0 10px">各客戶人選狀況</h2>
-<div class="tw cards"><table><thead><tr><th class="l">客戶</th><th>職缺</th><th>有聯繫</th><th>顧問找來</th><th>應徵</th><th>面談完成</th><th>推薦</th><th>推薦中</th><th>客戶面試</th><th>錄取</th><th>到職</th><th>推薦率</th><th>面試率</th><th>錄取率</th><th>報到率</th><th class="l">球在誰</th><th class="l">說明</th></tr></thead><tbody id="rows"></tbody><tfoot id="foot"></tfoot></table></div>
+<div class="tw cards"><table><thead><tr><th class="l">客戶</th><th>職缺</th><th>有聯繫</th><th>顧問找來</th><th>應徵</th><th>初談（阿財／電話）</th><th>推薦</th><th>推薦中</th><th>客戶面試</th><th>錄取</th><th>到職</th><th>推薦率</th><th>面試率</th><th>錄取率</th><th>報到率</th><th class="l">球在誰</th><th class="l">說明</th></tr></thead><tbody id="rows"></tbody><tfoot id="foot"></tfoot></table></div>
 <p class="fine" id="fine"></p></div><div id="bdbox" hidden></div></section>
 <div class="two">
-<section class="card"><h2>每週趨勢（這週新增）</h2><div id="trend"></div><p class="fine">灰：應徵｜淺色：阿財面談完成｜深色：推薦。框起來的是目前選的那週。</p></section>
+<section class="card"><h2>每週趨勢（這週新增）</h2><div id="trend"></div><p class="fine">灰：應徵｜淺色：初談（阿財面談或講到電話）｜深色：推薦。框起來的是目前選的那週。</p></section>
 <section class="card"><h2 id="dh">阿財每日面談完成數</h2><div id="chart"></div><p class="fine" id="wkn"></p></section>
 </div>
 <div>
@@ -187,7 +187,7 @@ try{const q=JSON.parse(localStorage.getItem('pdash')||'{}');if(q.tab)st.tab=q.ta
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pct=(a,b)=>b?Math.min(100,Math.round(a*100/b))+'%':'—';
-const KN={touch:'有聯繫',src:'顧問找來',app:'應徵',iv:'面談完成',fw:'推薦',active:'推薦中',ci:'客戶面試',of:'錄取',on:'到職'};
+const KN={touch:'有聯繫',src:'顧問找來',app:'應徵',iv:'初談（阿財／電話）',fw:'推薦',active:'推薦中',ci:'客戶面試',of:'錄取',on:'到職'};
 const TN={all:'全部',jacky:'Jacky',phoebe:'Phoebe'};
 const K=['touch','src','app','iv','fw','active','ci','of','on'];
 const wkLabel=(w,i)=>i===0&&!w.frozen?`本週 ${w.label}（每天更新）`:`${w.label}（已封存）`;
@@ -205,7 +205,7 @@ function render(){
   const V=view(w,st.view);const same=st.wi===0&&!w.frozen&&st.view==='new'&&w.prev_same;const P=same?w.prev_same[st.tab]:view(prev,st.view);
   const rows=(V?V.rows:[]).filter(r=>r.signed!==false).filter(r=>st.tab==='all'||r.app||r.fw||r.ci);
   const T=tot(rows),PT=P?tot(P.rows.filter(r=>r.signed!==false)):null;DLW=same?'比上週同期':'比上週';
-  $('funnel').innerHTML=[['應徵','app',''],['阿財面談完成','iv','面談率 '+pct(T.iv,T.app)],['推薦給客戶','fw','推薦率 '+pct(T.fw,T.iv)],['客戶面試','ci','面試率 '+pct(T.ci,T.fw)],['錄取','of','錄取率 '+pct(T.of,T.ci)],['到職','on','報到率 '+pct(T.on,T.of)]]
+  $('funnel').innerHTML=[['應徵','app',''],['初談（阿財／電話）','iv','初談率 '+pct(T.iv,T.app)],['推薦給客戶','fw','推薦率 '+pct(T.fw,T.iv)],['客戶面試','ci','面試率 '+pct(T.ci,T.fw)],['錄取','of','錄取率 '+pct(T.of,T.ci)],['到職','on','報到率 '+pct(T.on,T.of)]]
     .map(([l,k,p])=>`<div class="step"><span>${l}</span><b>${T[k]}</b>${dl(T[k],PT&&PT[k])}<i>${p||'&nbsp;'}</i></div>`).join('');
   $('th').textContent=st.view==='new'?'各客戶這週新增':'各客戶累計狀況';
   const show=st.view==='cum'||st.wi===0;
@@ -214,7 +214,7 @@ function render(){
     return `<tr><td><button class="lk cl" data-c="${esc(r.client)}" data-k="jobs">${esc(r.client)}</button></td><td>${L('jobs',r.jobs)}</td>${K.map(k=>`<td>${L(k,r[k])}</td>`).join('')}<td class="pct">${pct(r.fw,r.iv)}</td><td class="pct">${pct(r.ci,r.fw)}</td><td class="pct">${pct(r.of,r.ci)}</td><td class="pct">${pct(r.on,r.of)}</td><td class="l">${b?`<span class="chip c-${b}">${b}</span>`:''}</td><td class="l note">${esc(r.auto_note||(show?(ov.note_ball||{})[r.client]||'':''))}</td></tr>`}).join('')||`<tr><td class="note">這週這個分頁沒有新動靜</td></tr>`;
   $('foot').innerHTML=rows.length?`<tr><td>合計</td><td>${T.jobs}</td>${K.map(k=>`<td>${T[k]}</td>`).join('')}<td class="pct">${pct(T.fw,T.iv)}</td><td class="pct">${pct(T.ci,T.fw)}</td><td class="pct">${pct(T.of,T.ci)}</td><td class="pct">${pct(T.on,T.of)}</td><td></td><td></td></tr>`:'';
   lab(document.querySelector('.tw.cards'));
-  $('fine').textContent=(st.view==='new'?'這週新增＝日期落在這週的事：有聯繫（寄信、電話）、顧問找來、人選自己應徵、阿財面談完成、推薦出去、客戶面試／錄取／到職（後三項以系統最後更新階段的日期為準）。':'累計＝開放中的職缺，加上已關閉但有錄取的職缺，從開始到這週的總數。')+'點客戶名稱看職缺，點任何數字看是哪些人選。推薦率＝推薦÷面談完成｜面試率＝客戶面試÷推薦｜錄取率＝錄取÷客戶面試｜報到率＝到職÷錄取。'+(w.backfill?' 這週是事後用系統日期回推的，沒有累計數字。':'');
+  $('fine').textContent=(st.view==='new'?'這週新增＝日期落在這週的事：有聯繫（寄信、電話）、顧問找來、人選自己應徵、初談（阿財面談或講到電話，未接不算；11/2 這週以前只算阿財）、推薦出去、客戶面試／錄取／到職（後三項以系統最後更新階段的日期為準）。':'累計＝開放中的職缺，加上已關閉但有錄取的職缺，從開始到這週的總數。')+'點客戶名稱看職缺，點任何數字看是哪些人選。推薦率＝推薦÷面談完成｜面試率＝客戶面試÷推薦｜錄取率＝錄取÷客戶面試｜報到率＝到職÷錄取。'+(w.backfill?' 這週是事後用系統日期回推的，沒有累計數字。':'');
   // 每週趨勢
   const ws=W.slice(0,8).reverse();const mx=Math.max(4,...ws.map(x=>Math.max(...['app','iv','fw'].map(k=>tot(view(x,'new')?.rows)[k]))));
   const gw=46,bw=12,Hh=190,top=18,base=150;let svg='',x=26;
@@ -223,7 +223,7 @@ function render(){
     if(sel)svg+=`<rect x="${x-4}" y="${top-12}" width="${gw-6}" height="${base-top+46}" rx="6" fill="none" stroke="var(--accent)"/>`;
     [['app','var(--line)'],['iv','var(--accent-soft)'],['fw','var(--accent)']].forEach(([k,col],i)=>{const h=(base-top)*t[k]/mx;svg+=`<rect x="${x+i*bw}" y="${base-h}" width="${bw-2}" height="${h}" rx="2" fill="${col}" ${k==='iv'?'stroke="var(--accent)" stroke-width=".5"':''}/>`});
     svg+=`<text class="v" x="${x+bw*1.5}" y="${base-(base-top)*t.fw/mx-5}" text-anchor="middle">${t.fw}</text><text x="${x+bw*1.5}" y="${base+16}" text-anchor="middle">${x0.label.split('–')[0]}</text>`;x+=gw});
-  $('trend').innerHTML=`<svg viewBox="0 0 ${30+ws.length*gw} ${Hh}" width="100%" role="img" aria-label="每週應徵、面談、推薦數">${svg}</svg>`;
+  $('trend').innerHTML=`<svg viewBox="0 0 ${30+ws.length*gw} ${Hh}" width="100%" role="img" aria-label="每週應徵、初談、推薦數">${svg}</svg>`;
   // 阿財每日
   const d=w.days[st.tab],dn=['一','二','三','四','五','六','日'],m=Math.max(6,...d);let s2='',x2=30;const b2=30,g2=12;
   for(let v=0;v<=m;v+=2){const y=150-(132)*v/m;s2+=`<line x1="24" x2="${30+7*(b2+g2)}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="4" y="${y+4}">${v}</text>`}
