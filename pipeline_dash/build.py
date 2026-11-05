@@ -97,7 +97,7 @@ def load():
     talks = defaultdict(list)
     for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at, SUBSTR(content,1,40) head FROM candidate_notes "
                     "WHERE type='電洽紀錄'", []):
-        if not re.search(r'未接|沒接|電話中|無人接聽|關機|空號', r['head'] or ''):
+        if not re.search(r'未接|沒接|電話中|無人接聽|關機|空號|對方掛掉|移出', r['head'] or ''):
             talks[r['a']].append((r['by_'], r['at'] or ''))
     touches = defaultdict(list)
     mailed = set()
