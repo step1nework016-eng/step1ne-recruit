@@ -2250,7 +2250,7 @@ def _dash_overlay_update(fn):
 def cmd_dash_refresh(a):
     """2026-11-05 Jacky：帶案頁要讓 Jacky、Phoebe 的阿財與 Claude Code 都能自己更新。"""
     build = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_dash', 'build.py')
-    r = subprocess.run([sys.executable, build], capture_output=True, text=True, timeout=240)
+    r = subprocess.run([sys.executable, build], capture_output=True, text=True, timeout=420)
     if r.returncode:
         die('帶案頁更新失敗：' + (r.stderr or r.stdout)[-300:])
     print('✅ 帶案頁已更新。')
