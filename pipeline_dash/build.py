@@ -169,8 +169,12 @@ def person_status(apps, fws, ovr, jobmap):
                 ts = max(ts, a['call'][1])
         elif a.get('sourced') and a['status'] == 'new':
             lab = '顧問找來，還沒回應'
-            if a.get('call'):
+            if a.get('call'):   # 2026-11-05 Jacky：已經通過電話就不是還沒回應
+                lab = '顧問找來，已電洽'
                 ts = max(ts, a['call'][1])
+            elif a.get('touches'):
+                lab = '顧問找來，已聯繫'
+                ts = max(ts, max(t[1] for t in a['touches']))
         elif a.get('call') and a['status'] in ('new', 'pending_screen'):
             ts = max(ts, a['call'][1])
         P[a['job_slug']][nm(a['name'])] = [lab, md(ts)]
