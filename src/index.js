@@ -3928,6 +3928,14 @@ async function processLineWebhookEvents(env, events) {
   }
 }
 
+// 2026-11-05 Jacky：「想了解」第 3 題不要通用，依該職缺的第一項必備條件問；沒有資料才問相關經驗。
+function wantSkillQuestion(job) {
+  const raw = String((job && (job.must_skills || job.required_conditions)) || '').replace(/^\s*\d+[.、．]\s*/, '');
+  const first = raw.split(/[；;\n]|\s+\d+[.、．]\s*/).map((x) => x.trim()).find(Boolean) || '';
+  if (!first) return '和這個職缺相關的工作或學習經驗';
+  return `是否符合這項條件：${first.length > 40 ? first.slice(0, 40) + '…' : first}`;
+}
+
 async function handleLineEvent(env, ev) {
   // 面談時段 Carousel 卡片上的「選這個時段」按鈕——postback 事件，不是 message，
   // 要在最上面單獨處理，跟查進度那條 message 流程完全分開。
@@ -4482,7 +4490,7 @@ async function handleLineEvent(env, ev) {
   // 2026-10-21：培訓職缺模板寫「回覆『想了解』讓顧問先幫你確認」——這裡接住，不能讓這句被後面的核對流程當成答案吃掉。
   if (/^(我)?想了解/.test(String(text || '').trim()) && !/\[LC\d+\]/.test(text)) {
     const last = await env.DB.prepare(
-      `SELECT lc.job_slug, COALESCE(j.title, lc.job_slug) AS title FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug
+      `SELECT lc.job_slug, COALESCE(j.title, lc.job_slug) AS title, j.must_skills, j.required_conditions FROM link_clicks lc LEFT JOIN jobs j ON j.slug = lc.job_slug
         WHERE lc.line_user_id = ? AND lc.clicked_at >= datetime('now','+8 hours','-14 days') ORDER BY lc.clicked_at DESC LIMIT 1`
     ).bind(userId).first().catch(() => null) || { title: '培訓職缺' };   // 從預設訊息／關鍵字卡片按的，沒有點擊紀錄也要回
     // 2026-10-21 實際狀況：人選連按好幾次「想了解」，系統每次都回同一段、顧問已經在聊了還插話。
@@ -4496,7 +4504,7 @@ async function handleLineEvent(env, ev) {
     if (repliedRecently) return;
     if (last) {
       const msg = `收到 🙌 顧問會在上班時間盡快用 LINE 回覆你，先幫你確認「${last.title}」的工作內容和基本條件。\n\n`
-        + `方便的話，可以先在這裡告訴我們：\n① 你的名字\n② 目前住哪個縣市\n③ 有沒有用過 AutoCAD 或 Revit`;
+        + `方便的話，可以先在這裡告訴我們：\n① 你的名字\n② 目前住哪個縣市\n③ ${wantSkillQuestion(last)}`;
       const okReply = await lineReply(env, replyToken, msg);
       if (!okReply) { try { await linePushMessages(env, userId, [{ type: 'text', text: msg }]); } catch { /* ignore */ } }
       await notify(env, `🙋 LINE 有人回覆「想了解」：${last.title}\n請到 LINE 官方帳號接手（還沒應徵，先確認工作內容與基本條件）`);
@@ -10012,7 +10020,8 @@ export default {
     // 2026-10-21：LINE webhook 去重紀錄只留 2 天（src/line_dedupe.js）
     try { await purgeOldLineEvents(env.DB); } catch (e) { console.error('purgeOldLineEvents', String(e)); }
     // 2026-10-21 Jacky：LINE 問了職缺（帶 [LC] 代碼）卻 24 小時沒應徵 → 自動補一則提醒，只補一次。
-    try { await lineClickNudge(env); } catch (e) { console.error('lineClickNudge', String(e)); }
+    // 2026-11-05 Jacky 看到林小瑋已面談還收到應徵提醒（會害死人），先關。沒綁定的人對不上應徵紀錄，修好比對才能開。
+    // try { await lineClickNudge(env); } catch (e) { console.error('lineClickNudge', String(e)); }
     // 2026-10-21「先送出，晚點再聊」：隔天 10:00 提醒一次（LINE 卡片／沒綁寄信）＋滿 7 天標「沒完成面談」（src/apply_later.js）
     try { await applyLaterTick(env, { nowTaipei, linePushMessages, notify, uid, THREAD }); } catch (e) { console.error('applyLaterTick', String(e)); }
 
