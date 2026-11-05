@@ -83,7 +83,7 @@ def load():
                   "COALESCE(cc.display_name,j.client_name,'') co,COALESCE(cc.relation,'') rel FROM jobs j "
                   "LEFT JOIN client_companies cc ON cc.id=j.company_id", [])
     apps = c.rows("SELECT id,name,job_slug,status,created_at,interview_ended_at,"
-                  "LOWER(COALESCE(owner,'')) owner,COALESCE(utm_campaign,'') camp,"
+                  "LOWER(COALESCE(owner,'')) owner,COALESCE(utm_campaign,'') camp,COALESCE(origin,'') org,COALESCE(source_channel,'') chan,"
                   "CASE WHEN utm_campaign='104' OR COALESCE(note,'') LIKE '%【104%' THEN 1 ELSE 0 END src104,"
                   "CASE WHEN utm_campaign='104' OR utm_medium='sourced' OR COALESCE(note,'') LIKE '%【104%' OR COALESCE(source_channel,'') LIKE '%主動開發%' OR COALESCE(note,'') LIKE '%主動開發%' THEN 1 ELSE 0 END sourced "
                   "FROM applications WHERE status!='duplicate' AND name NOT LIKE '測試%'", [])
@@ -94,9 +94,12 @@ def load():
                     "WHERE type IN ('電洽紀錄','電洽預約') ORDER BY created_at", []):
         calls[r['a']] = (r['content'] or '', r['created_at'] or '')
     touches = defaultdict(list)
-    for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at FROM candidate_notes "
+    mailed = set()
+    for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at, type FROM candidate_notes "
                     f"WHERE type IN ({','.join(repr(t) for t in TOUCH_TYPES)})", []):
         touches[r['a']].append((r['by_'], r['at'] or ''))
+        if r['type'] == '寄信':
+            mailed.add(r['a'])
     # 2026-11-05 Jacky：有聯繫、有回覆的不能寫「還沒回應」。對方來信或 LinkedIn 對話都算有回覆
     replied = {}
     for r in c.rows("SELECT application_id a, created_at at FROM candidate_notes "
@@ -106,6 +109,7 @@ def load():
         a['call'] = calls.get(a['id'])
         a['touches'] = touches.get(a['id'])
         a['replied'] = replied.get(a['id'])
+        a['mailed'] = a['id'] in mailed
     fws = c.rows("SELECT f.application_id,a.name,COALESCE(f.job_slug,a.job_slug) js,"
                  "COALESCE(f.manual_stage,'') st,f.manual_stage_at sat,f.forwarded_at fat,"
                  "f.client_rejected_at r,f.advisor_not_recommended_at nr,f.candidate_withdrawn_at w,"
@@ -167,26 +171,30 @@ def person_status(apps, fws, ovr, jobmap):
         ts = max(filter(None, [a['created_at'], a['interview_ended_at']]), default='')
         lab = APS.get(a['status'], '已應徵')
         if a.get('src104') and a['status'] == 'new':
-            lab = '104 已寄信，還沒回應'
+            lab = '104 已寄信，等回覆'
             if a.get('call'):
                 first = re.split(r'[\n｜]', a['call'][0].strip())[0]
                 m = re.search(r'電話[：:]\s*(\S+)', first)
                 lab = f"電話：{m.group(1)}" if m else first[:24]
                 ts = max(ts, a['call'][1])
             elif a.get('replied'):
-                lab = '104 已寄信，已回覆'
+                lab = '104 已寄信，對方有回覆'
                 ts = max(ts, a['replied'])
         elif a.get('sourced') and a['status'] == 'new':
-            lab = '顧問找來，還沒回應'
-            if a.get('call'):   # 2026-11-05 Jacky：已經通過電話就不是還沒回應
-                lab = '顧問找來，已電洽'
+            # 2026-11-05 Jacky：要寫清楚走哪個管道、現在等什麼，不要籠統寫「顧問找來」
+            li = 'linkedin' in f"{a.get('camp')} {a.get('org')} {a.get('chan')}".lower()
+            ch = 'LinkedIn' if li else '顧問開發'
+            if a.get('call'):
+                lab = f'{ch}，已電話聊過'
                 ts = max(ts, a['call'][1])
             elif a.get('replied'):
-                lab = '顧問找來，已回覆'
+                lab = f'{ch}，對方有回覆'
                 ts = max(ts, a['replied'])
             elif a.get('touches'):
-                lab = '顧問找來，已聯繫'
+                lab = f'{ch}，已傳訊息，等回覆' if li else (f'{ch}，已寄信，等回覆' if a.get('mailed') else f'{ch}，已聯繫，等回覆')
                 ts = max(ts, max(t[1] for t in a['touches']))
+            else:
+                lab = 'LinkedIn 已加好友，還沒傳訊息' if li else f'{ch}，還沒聯繫'
         elif a.get('call') and a['status'] in ('new', 'pending_screen'):
             ts = max(ts, a['call'][1])
         P[a['job_slug']][nm(a['name'])] = [lab, md(ts)]
