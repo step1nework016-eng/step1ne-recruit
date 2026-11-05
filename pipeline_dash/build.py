@@ -85,7 +85,7 @@ def load():
     apps = c.rows("SELECT id,name,job_slug,status,created_at,interview_ended_at,"
                   "LOWER(COALESCE(owner,'')) owner,COALESCE(utm_campaign,'') camp,"
                   "CASE WHEN utm_campaign='104' OR COALESCE(note,'') LIKE '%【104%' THEN 1 ELSE 0 END src104,"
-                  "CASE WHEN utm_campaign='104' OR utm_medium='sourced' OR COALESCE(note,'') LIKE '%【104%' THEN 1 ELSE 0 END sourced "
+                  "CASE WHEN utm_campaign='104' OR utm_medium='sourced' OR COALESCE(note,'') LIKE '%【104%' OR COALESCE(source_channel,'') LIKE '%主動開發%' OR COALESCE(note,'') LIKE '%主動開發%' THEN 1 ELSE 0 END sourced "
                   "FROM applications WHERE status!='duplicate' AND name NOT LIKE '測試%'", [])
     # 2026-10-27 Jacky：104 寄信匯進來的卡片不是「應徵」——還沒回應前顯示「104 已寄信，還沒回應」，
     # 打過電話（電話名單頁送出的電洽紀錄）就改顯示最新一次電話結果。
@@ -97,9 +97,15 @@ def load():
     for r in c.rows("SELECT application_id a, LOWER(COALESCE(created_by,'')) by_, created_at at FROM candidate_notes "
                     f"WHERE type IN ({','.join(repr(t) for t in TOUCH_TYPES)})", []):
         touches[r['a']].append((r['by_'], r['at'] or ''))
+    # 2026-11-05 Jacky：有聯繫、有回覆的不能寫「還沒回應」。對方來信或 LinkedIn 對話都算有回覆
+    replied = {}
+    for r in c.rows("SELECT application_id a, created_at at FROM candidate_notes "
+                    "WHERE type='來信' OR (type='顧問備註' AND content LIKE '%LinkedIn 對話%') ORDER BY created_at", []):
+        replied[r['a']] = r['at'] or ''
     for a in apps:
         a['call'] = calls.get(a['id'])
         a['touches'] = touches.get(a['id'])
+        a['replied'] = replied.get(a['id'])
     fws = c.rows("SELECT f.application_id,a.name,COALESCE(f.job_slug,a.job_slug) js,"
                  "COALESCE(f.manual_stage,'') st,f.manual_stage_at sat,f.forwarded_at fat,"
                  "f.client_rejected_at r,f.advisor_not_recommended_at nr,f.candidate_withdrawn_at w,"
@@ -167,11 +173,17 @@ def person_status(apps, fws, ovr, jobmap):
                 m = re.search(r'電話[：:]\s*(\S+)', first)
                 lab = f"電話：{m.group(1)}" if m else first[:24]
                 ts = max(ts, a['call'][1])
+            elif a.get('replied'):
+                lab = '104 已寄信，已回覆'
+                ts = max(ts, a['replied'])
         elif a.get('sourced') and a['status'] == 'new':
             lab = '顧問找來，還沒回應'
             if a.get('call'):   # 2026-11-05 Jacky：已經通過電話就不是還沒回應
                 lab = '顧問找來，已電洽'
                 ts = max(ts, a['call'][1])
+            elif a.get('replied'):
+                lab = '顧問找來，已回覆'
+                ts = max(ts, a['replied'])
             elif a.get('touches'):
                 lab = '顧問找來，已聯繫'
                 ts = max(ts, max(t[1] for t in a['touches']))
